@@ -7,49 +7,18 @@ import os from "node:os";
 import path from "node:path";
 
 import { red } from "../lib/tty.mjs";
-import { CAP, CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
+import { CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
+import { suggestionsOf } from "../worktree/fit.mjs";
 import { screen } from "./screen.mjs";
 
-/** A file path an issue names: with a folder or not, with an extension of the repo's files. */
-const PATH =
-  /(?:[\w@.-]+\/)*[\w@-][\w@.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|json|md|css|scss|sql|toml|ya?ml)\b/g;
-/** The file paths `text` (an issue's description) names, each once. */
-export const pathsOf = text => [...new Set(String(text ?? "").match(PATH))];
-/** The paths of `paths` a file of `files` is: the same, or `files` has it under a folder. */
-export const sharedOf = (paths, files) =>
-  paths.filter(name =>
-    files.some(file => file === name || file.endsWith(`/${name}`)),
-  );
-/**
- * For each issue (`{ number, paths }`, in the order they wait), the free
- * worker (`{ name, share, files }`) that shares the most of its paths, the
- * one with the most room in its context on a tie: `number → { worker,
- * shared }`. Each worker gets one issue; one sharing nothing gets none.
- */
-export const suggestionsOf = (issues, workers) => {
-  const taken = new Set();
-  const suggested = new Map();
-  for (const issue of issues) {
-    const [best] = workers
-      .filter(worker => !taken.has(worker))
-      .map(worker => ({ worker, shared: sharedOf(issue.paths, worker.files) }))
-      .filter(({ shared }) => shared.length > 0)
-      .toSorted(
-        (a, b) =>
-          b.shared.length - a.shared.length || a.worker.share - b.worker.share,
-      );
-    if (!best) continue;
-    taken.add(best.worker);
-    suggested.set(issue.number, best);
-  }
-  return suggested;
-};
+export { pathsOf, sharedOf, suggestionsOf } from "../worktree/fit.mjs";
+
 /**
  * An agent whose work waits for no one but the human: its MR merged, or
  * ready with its pipeline passed. Only such an agent is suggested, and only
  * a merged one gets a queued issue by itself.
  */
-const isDoneMr = mr =>
+export const isDoneMr = mr =>
   mr?.state === "merged" ||
   (mr?.state === "opened" && !mr.isDraft && mr.pipeline?.status === "success");
 /**
@@ -82,21 +51,15 @@ export const freeWorkersOf = (issues, of, agents, known = {}) =>
   });
 
 /**
- * How many agents of an orchestration are at work: one per worktree whose
- * MR isn't done yet. An agent idle between two turns still holds its issue.
+ * Which queued issues (in the order they wait) go to their suggested agent
+ * now (`suggested`, suggestionsOf): those whose agent is merged. An agent
+ * only ready, not merged, may still be needed for its own MR. No count holds
+ * one back (#229); an issue nothing fits waits for a click (start fresh).
  */
-export const atWorkOf = (issues, of) =>
-  issues.filter(issue => issue.tree && !isDoneMr(of(issue).mr)).length;
-/**
- * Which queued issues (in the order they wait) start now, `slots` of them:
- * each to the agent suggested for it when that one is merged (`suggested`,
- * suggestionsOf), else to a fresh agent (`worker: null`). An agent only
- * ready, not merged, may still be needed for its own MR.
- */
-export const handOutOf = (queued, suggested, slots) =>
-  queued.slice(0, Math.max(0, slots)).map(({ number }) => {
+export const handOutOf = (queued, suggested) =>
+  queued.flatMap(({ number }) => {
     const worker = suggested.get(number)?.worker;
-    return { number, worker: worker?.isMerged ? worker : null };
+    return worker?.isMerged ? [{ number, worker }] : [];
   });
 
 /** number → its start or handover running in the background, or what stopped it. */
@@ -134,21 +97,22 @@ const runInBackground = (name, number, args) => {
 };
 const handOver = (name, number, worker) =>
   runInBackground(name, number, ["--to", worker.name]);
-/** A fresh agent for a queued issue, past the cap's check: the overview counted already. */
+/** A fresh agent for a queued issue, no idle one asked again: the overview found none that fits. */
 const startFresh = (name, number) => runInBackground(name, number, ["--now"]);
 
 /** How much of its context an agent has used, for a row: `18 %`. */
 const percent = share => `${Math.round(share * 100)} %`;
 /**
- * The rows of UP NEXT for the workers of the orchestration `name`: per
- * queued issue its suggested agent, `hand over`, as automatic actions
- * (`{ key, kind, text, at, issue, who, go }`), and `held`, the worktrees of
- * the suggested agents. Their clean-up waits: it would close the agent with
- * the space. An agent nothing fits closes with its clean-up, its
- * conversation kept for `/resume`.
+ * The rows of UP NEXT for the workers of the orchestration `name`, as
+ * automatic actions (`{ key, kind, text, at, issue, who, go }`): per queued
+ * issue its suggested agent, `hand over`, else `start`, a fresh agent on a
+ * click. `held`: the worktrees of the suggested agents, whose clean-up
+ * waits, it would close the agent with the space. An agent nothing fits
+ * closes with its clean-up, its conversation kept for `/resume`.
+ * `suggested`: number → `{ worker, shared }`, for AGENTS (agents.mjs).
  *
- * `shouldHandOut` (the one live overview, once GitLab answered): queued
- * issues start by themselves while fewer than `cap` agents are at work.
+ * `shouldHandOut` (the one live overview, once GitLab answered): a queued
+ * issue goes to its suggested agent by itself once that one is merged.
  */
 export const workerActionsOf = (
   name,
@@ -156,7 +120,7 @@ export const workerActionsOf = (
   of,
   agents,
   known,
-  { cap = CAP, shouldHandOut = false } = {},
+  { shouldHandOut = false } = {},
 ) => {
   const free = freeWorkersOf(issues, of, agents, known);
   const queued = issues
@@ -168,21 +132,31 @@ export const workerActionsOf = (
     }));
   const suggested = suggestionsOf(queued, free);
   if (shouldHandOut) {
-    const starting = [...running.values()].filter(s => s.isRunning).length;
     // Not one started already, nor one that failed: it would fail again on every read, a click retries it.
     const waiting = queued.filter(({ number }) => !running.has(number));
-    const slots = cap - atWorkOf(issues, of) - starting;
-    for (const { number, worker } of handOutOf(waiting, suggested, slots)) {
-      if (worker) handOver(name, number, worker);
-      else startFresh(name, number);
-    }
+    for (const { number, worker } of handOutOf(waiting, suggested))
+      handOver(name, number, worker);
   }
   const actions = [];
   for (const { number, issue } of queued) {
     const found = suggested.get(number);
-    if (!found) continue;
-    const { worker, shared } = found;
     const state = running.get(number);
+    const error = state?.error ? `  ${red(state.error)}` : "";
+    if (!found) {
+      actions.push({
+        key: `start:#${number}`,
+        kind: "start",
+        who: issue.feature,
+        issue,
+        at: "",
+        text: state?.isRunning
+          ? `#${number}: starting a fresh agent …`
+          : `#${number} queued (--queue), no idle agent knows its files: a click starts a fresh one${error}`,
+        go: () => startFresh(name, number),
+      });
+      continue;
+    }
+    const { worker, shared } = found;
     actions.push({
       key: `hand over:#${number}:${worker.name}`,
       kind: "hand over",
@@ -191,12 +165,13 @@ export const workerActionsOf = (
       at: "",
       text: state?.isRunning
         ? `#${number} → ${worker.name}: handing over …`
-        : `#${number} → ${worker.name} (shares ${shared.join(", ")}, ${percent(worker.share)})${state?.error ? `  ${red(state.error)}` : ""}`,
+        : `#${number} → ${worker.name} (shares ${shared.join(", ")}, ${percent(worker.share)})${error}`,
       go: () => handOver(name, number, worker),
     });
   }
   return {
     actions,
     held: new Set([...suggested.values()].map(({ worker }) => worker.dir)),
+    suggested,
   };
 };

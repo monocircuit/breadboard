@@ -1,8 +1,12 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 import { fail, flagValue, quote, step } from "../../lib/proc.mjs";
-import { NAME } from "../constants.mjs";
+import { isInHerdr } from "../../lib/herdr.mjs";
+import { ENTRY, NAME } from "../constants.mjs";
 import endCommand from "../end.mjs";
+import { startsOf } from "../fit.mjs";
+import { freeMemory } from "../memory.mjs";
 import {
   BRIEF_PROMPT,
   briefOf,
@@ -21,7 +25,7 @@ import {
   updateRecord,
   writeRecord,
 } from "../origins.mjs";
-import { CAP, atWorkNow } from "../workers.mjs";
+import { idleWorkersNow } from "../workers.mjs";
 import handOverCommand from "./handover.mjs";
 
 /**
@@ -40,7 +44,7 @@ import handOverCommand from "./handover.mjs";
  */
 export default async function orchestrateCommand(name, flags) {
   const usage =
-    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--shared] [--peer <session>] [--brief <file>] [--cap <n>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
+    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
   // The end: its space, the orchestrator's claude, record and checkout (worktree/end.mjs).
   if (flags.has("--end")) {
     if (!name || !NAME.test(name)) fail(usage);
@@ -50,7 +54,7 @@ export default async function orchestrateCommand(name, flags) {
   const positional = argv.filter(
     (arg, i) =>
       !arg.startsWith("--") &&
-      !["--peer", "--brief", "--to", "--limit", "--cap"].includes(argv[i - 1]),
+      !["--peer", "--brief", "--to", "--limit"].includes(argv[i - 1]),
   );
   const wanted = positional.slice(1);
   if (!name || !NAME.test(name) || wanted.length === 0) fail(usage);
@@ -64,15 +68,16 @@ export default async function orchestrateCommand(name, flags) {
   const extraFile = flagValue("--brief");
   if (extraFile && !fs.existsSync(extraFile))
     fail(`${extraFile} does not exist`);
-  const capArg = flagValue("--cap");
-  if (capArg !== undefined && !(Number(capArg) >= 1)) fail(usage);
+  if (flags.has("--cap"))
+    fail(
+      "--cap is gone (#229): every issue starts at once, the machine's memory is the only limit; --queue queues them",
+    );
   // Left out, as the first run said: an issue started later from the queue gets the same brief.
   const record = recordOf(name);
   const peer = flagValue("--peer") ?? record?.peer;
   const extra = extraFile
     ? fs.readFileSync(extraFile, "utf-8")
     : (record?.brief ?? "");
-  const cap = capArg === undefined ? (record?.cap ?? CAP) : Number(capArg);
   // The next issue to an agent that has one done (workers.mjs).
   if (flags.has("--to")) {
     if (wanted.length !== 1) fail("--to hands over one issue at a time");
@@ -107,6 +112,31 @@ export default async function orchestrateCommand(name, flags) {
     fail(
       "nothing to start: every issue is closed, claimed or has its worktree already",
     );
+  // No count holds one back (#229): each to an idle agent that knows its
+  // files, else to a fresh one at once, on the shared stack when memory is
+  // short (memory.mjs). `--queue` queues all of them for the overview,
+  // `--now` (the overview's own start) looks for no idle one: it looked already.
+  const toStart = plan.filter(item => !item.isSkipped);
+  const isQueued = flags.has("--queue");
+  const idle =
+    isQueued || flags.has("--now") || !isInHerdr()
+      ? []
+      : await idleWorkersNow(name);
+  const starts = startsOf(toStart, idle, {
+    isShared: flags.has("--shared"),
+    free: freeMemory(),
+  });
+  const queued = isQueued ? toStart : [];
+  for (const item of isQueued ? [] : toStart) {
+    Object.assign(item, starts.get(item));
+    console.log(
+      `  #${item.number.padEnd(4)} ${
+        item.worker
+          ? `→ ${item.worker.name} (idle, shares ${item.shared.join(", ")})`
+          : `→ a fresh agent${item.stack.why ? `: ${item.stack.why}` : item.stack.isShared ? " on the shared stack" : ""}`
+      }`,
+    );
+  }
   if (isDry) {
     const first = plan.find(item => !item.isSkipped) ?? plan[0];
     console.log(
@@ -121,18 +151,7 @@ export default async function orchestrateCommand(name, flags) {
   updateRecord(name, {
     peer: flagValue("--peer"),
     brief: extraFile ? extra : undefined,
-    cap: capArg === undefined ? undefined : cap,
   });
-  // At most `cap` agents at work (#217): the rest waits in the record, the
-  // overview hands it out as agents finish. `--queue` queues all of them,
-  // `--now` (the overview's own start) none.
-  const toStart = plan.filter(item => !item.isSkipped);
-  const slots = flags.has("--queue")
-    ? 0
-    : flags.has("--now")
-      ? toStart.length
-      : Math.max(0, cap - (await atWorkNow(name)));
-  const queued = toStart.slice(slots);
   // After the space, which keeps it from being pruned; the overview in there reads it from now on.
   writeRecord(
     name,
@@ -144,13 +163,31 @@ export default async function orchestrateCommand(name, flags) {
   );
   if (queued.length)
     step(
-      `queued ${queued.map(item => `#${item.number}`).join(", ")}${slots ? `: ${cap} agents at work at most` : ""}. The overview of ${label} hands each to an idle agent that knows its code, or a fresh one, as agents finish (UP NEXT); by hand: pnpm wt:orchestrate ${name} <issue> --to <agent>`,
+      `queued ${queued.map(item => `#${item.number}`).join(", ")} (--queue). The overview of ${label} hands each to an idle agent that knows its code once its MR is merged (UP NEXT), a click there starts a fresh one; by hand: pnpm wt:orchestrate ${name} <issue> --to <agent>`,
     );
 
   const results = [];
-  for (const item of toStart.slice(0, slots)) {
-    step(`pnpm wt:new ${item.feature} --origin ${name}`);
-    const made = makeWorktree(item, name, { isShared: flags.has("--shared") });
+  for (const item of isQueued ? [] : toStart) {
+    if (item.worker) {
+      // handover.mjs, in its own process: its fail() must not stop the rest.
+      const args = ["orchestrate", name, item.number, "--to", item.worker.name];
+      if (flags.has("--shared")) args.push("--shared");
+      step(`pnpm wt:${args.join(" ")}`);
+      const handed = spawnSync(process.execPath, [ENTRY, ...args], {
+        stdio: "inherit",
+      });
+      results.push(
+        handed.status === 0
+          ? `✓ #${item.number} ${item.feature}: went to ${item.worker.name}, idle and knowing its files`
+          : `✗ #${item.number} ${item.feature}: the handover to ${item.worker.name} failed (see above); a fresh agent: pnpm wt:orchestrate ${name} ${item.number} --now`,
+      );
+      continue;
+    }
+    if (item.stack.why) step(`memory: ${item.stack.why}`);
+    step(
+      `pnpm wt:new ${item.feature} --origin ${name}${item.stack.isShared ? " --shared" : ""}`,
+    );
+    const made = makeWorktree(item, name, { isShared: item.stack.isShared });
     const { isThere, failed } = made;
     if (!isThere || failed) {
       results.push(
@@ -185,7 +222,7 @@ export default async function orchestrateCommand(name, flags) {
   The overview's FEED shows what each agent does: look there, don't ask and don't relay it.
   An agent messages you${peer ? ` (${peer})` : ""} only for a decision, a changed plan or another agent's work.
   Say hello first, so it has your address:
-${started.map(item => `    SendMessage(to: "${item.feature}", message: "…")`).join("\n")}
+${started.map(item => `    SendMessage(to: "${item.worker?.name ?? item.feature}", message: "…")`).join("\n")}
 
   The overview of ${label} answers the user's "what now?": keep it true.
     pnpm wt:plan ${name} --work <issue>… --merge <issue>… --why "<one line>"

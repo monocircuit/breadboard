@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-  atWorkOf,
   freeWorkersOf,
   handOutOf,
   pathsOf,
   sharedOf,
   suggestionsOf,
+  workerActionsOf,
 } from "./workers.mjs";
 
 describe("pathsOf", () => {
@@ -79,42 +79,56 @@ describe("suggestionsOf", () => {
   });
 });
 
-describe("atWorkOf and handOutOf", () => {
-  const tree = { dir: "/nonexistent" };
-  const of = issue => ({ mr: issue.mr });
-
-  it("counts a worktree as at work until its MR is merged or ready and green", () => {
-    const issues = [
-      { tree, mr: null },
-      { tree, mr: { state: "opened", isDraft: true } },
-      {
-        tree,
-        mr: {
-          state: "opened",
-          isDraft: false,
-          pipeline: { status: "success" },
-        },
-      },
-      { tree, mr: { state: "merged" } },
-      { tree: null, queued: true },
-    ];
-    assert.equal(atWorkOf(issues, of), 2);
-  });
-
-  it("starts as many queued issues as there are slots, each to its merged agent or a fresh one", () => {
-    const merged = { name: "m", isMerged: true };
+describe("handOutOf", () => {
+  it("hands every queued issue to its merged agent, no count holding one back", () => {
+    const merged = name => ({ name, isMerged: true });
     const ready = { name: "r", isMerged: false };
     const suggested = new Map([
-      [1, { worker: merged }],
+      [1, { worker: merged("a") }],
       [2, { worker: ready }],
+      [3, { worker: merged("b") }],
+      [4, { worker: merged("c") }],
+      [5, { worker: merged("d") }],
+      [6, { worker: merged("e") }],
     ]);
-    const queued = [{ number: 1 }, { number: 2 }, { number: 3 }];
-    assert.deepEqual(handOutOf(queued, suggested, 2), [
-      { number: 1, worker: merged },
-      { number: 2, worker: null },
-    ]);
-    assert.deepEqual(handOutOf(queued, suggested, 0), []);
-    assert.deepEqual(handOutOf(queued, suggested, -1), []);
+    const queued = [1, 2, 3, 4, 5, 6, 7].map(number => ({ number }));
+    assert.deepEqual(
+      handOutOf(queued, suggested).map(({ number }) => number),
+      [1, 3, 4, 5, 6],
+    );
+  });
+});
+
+describe("workerActionsOf", () => {
+  it("offers a queued issue nothing fits as a start, one that fits as a hand over", () => {
+    const claude = { id: "c1", used: 20_000, window: 200_000 };
+    const issues = [
+      {
+        number: 3,
+        feature: "3-done",
+        tree: { dir: "/nonexistent/platform-3-done", name: "3-done", claude },
+        mr: { state: "merged" },
+      },
+      { number: 8, feature: "8-fits", queued: true, paths: ["src/a.mjs"] },
+      { number: 9, feature: "9-new", queued: true, paths: ["src/z.mjs"] },
+    ];
+    const of = issue => ({ mr: issue.mr, issue: { paths: issue.paths } });
+    const { actions, held, suggested } = workerActionsOf(
+      "o",
+      issues,
+      of,
+      new Map([["c1", { status: "idle" }]]),
+      { c1: { name: "3-done", files: ["src/a.mjs"] } },
+    );
+    assert.deepEqual(
+      actions.map(({ kind, who }) => [kind, who]),
+      [
+        ["hand over", "3-done"],
+        ["start", "9-new"],
+      ],
+    );
+    assert.deepEqual([...held], ["/nonexistent/platform-3-done"]);
+    assert.equal(suggested.get(8).worker.name, "3-done");
   });
 });
 

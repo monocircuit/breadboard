@@ -17,6 +17,7 @@ export const FOLLOW_UPS = new Set([
   "pipeline",
   "end",
   "hand over",
+  "start",
   "order",
 ]);
 /**

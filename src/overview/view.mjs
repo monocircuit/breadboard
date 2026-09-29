@@ -90,8 +90,6 @@ export const readView = async () => {
       plan: recordOf(orchestration)?.plan ?? null,
       // Each agent's name and what it worked on before (#217, worktree/workers.mjs).
       workers: recordOf(orchestration)?.workers ?? {},
-      // How many agents work at once (wt:orchestrate --cap); workers.mjs has the default.
-      cap: recordOf(orchestration)?.cap,
       ownActions: actionsOf(file),
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and FEED: what herdr says each agent does.

@@ -58,6 +58,7 @@ const KIND = {
   end: red("end"),
   order: cyan("order"),
   "hand over": cyan("hand over"),
+  start: cyan("start"),
   ...AUTO_KIND,
 };
 /** The kinds whose click opens the spot to check; `browser-check` is stored before `try` came. */
@@ -125,11 +126,8 @@ const actionsOf = (local, issues, of, remote) => {
     of,
     local.agents ?? new Map(),
     local.workers,
-    // Queued issues start by themselves, from the one live overview that also delivers the answers.
-    {
-      cap: local.cap,
-      shouldHandOut: Boolean(remote) && deliversAnswers(orchestration),
-    },
+    // Queued issues go to their agent by themselves, from the one live overview that also delivers the answers.
+    { shouldHandOut: Boolean(remote) && deliversAnswers(orchestration) },
   );
   const workers = handovers.actions.map(
     ({ key, go, issue, who, ...action }) => ({

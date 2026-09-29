@@ -6,8 +6,8 @@
 //     [--origin <orchestration>]              started for an orchestration: recorded, its space marked
 //   pnpm wt:orchestrate <name> <issue>…       a space ⇶ <name> for this session, a worktree per issue
 //     [--shared] [--peer <s>] [--brief <f>]   and in its space a claude briefed on the issue (--dry-run);
-//     [--cap <n>] [--queue]                   past 4 (--cap) agents at work the rest is queued, the
-//                                             overview hands it out (--queue: all of them)
+//     [--queue]                               each starts at once, in an idle agent that knows its
+//                                             files or a fresh one; --queue: the overview hands them out
 //   pnpm wt:orchestrate <name> <issue>        the issue to an idle agent of it instead of a fresh one:
 //     --to <agent> [--limit <percent>]        its worktree made, the agent moved in and told
 //   pnpm wt:orchestrate <name> --end          once its worktrees are gone: its space, the orchestrator's
@@ -92,7 +92,7 @@ export { focusSpace, spaceLabel } from "./worktree/spaces.mjs";
 export { compose, isPortFree, offsetOf, readEnv } from "./worktree/stack.mjs";
 export { featureOf } from "./worktree/tabs.mjs";
 export { isWaiting, waitOf, waitsText } from "./worktree/wait.mjs";
-export { CAP, CONTEXT_LIMIT, filesOf } from "./worktree/workers.mjs";
+export { CONTEXT_LIMIT, filesOf } from "./worktree/workers.mjs";
 export { mainDir, worktrees } from "./worktree/worktrees.mjs";
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

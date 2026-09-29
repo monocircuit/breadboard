@@ -8,7 +8,7 @@ import { glabApi } from "../lib/glab.mjs";
 import { herdr, herdrDid } from "../lib/herdr.mjs";
 import { git, lines } from "../lib/proc.mjs";
 import { EDITOR, OVERVIEW, ROOT } from "./constants.mjs";
-import { boundSession, sessionFile } from "./conversations.mjs";
+import { boundSession, contextShareOf, sessionFile } from "./conversations.mjs";
 import { originOf, recordOf, writeWorker } from "./origins.mjs";
 import { spaceOf } from "./spaces.mjs";
 import { dropDuplicates, featureOf, keepOrder } from "./tabs.mjs";
@@ -16,8 +16,6 @@ import { worktrees } from "./worktrees.mjs";
 
 /** The share of its context above which an agent gets no next issue: it would run out in the middle of it. */
 export const CONTEXT_LIMIT = 0.5;
-/** The agents of an orchestration at work in parallel, unless its record says otherwise (`wt:orchestrate --cap`). */
-export const CAP = 4;
 
 /**
  * The agents of the orchestration `name`, one per worktree of it with a
@@ -150,28 +148,48 @@ export const recordHandover = (name, worker, number) => {
 };
 
 /**
- * How many agents of the orchestration `name` are at work, for
- * wt:orchestrate: its worktrees whose branch has no merged MR yet. The
- * overview counts one whose MR is ready and green as done too; this is the
- * careful count, before anything is started.
+ * The agents of the orchestration `name` free for a next issue now, for
+ * wt:orchestrate: herdr sees them idle (or done), their context below the
+ * limit and their MR merged (an agent only ready may still be needed for
+ * it). `{ name, share, files, dir, isMerged }`, `files` those of its
+ * worktree and, from the record, of its earlier ones (fit.mjs).
  */
-export const atWorkNow = async name => {
-  const branches = worktrees()
-    .slice(1)
-    .filter(({ dir }) => originOf(dir)?.name === name)
-    .map(({ branch }) => branch)
-    .filter(Boolean);
+export const idleWorkersNow = async name => {
+  const known = recordOf(name)?.workers ?? {};
+  const branchOf = new Map(worktrees().map(({ dir, branch }) => [dir, branch]));
+  const candidates = workersOf(name)
+    .map(worker => ({ ...worker, share: contextShareOf(worker.id) }))
+    .filter(
+      worker =>
+        refusalOf({
+          pane: paneOfConversation(worker.id),
+          share: worker.share,
+        }) === null,
+    );
   const merged = await Promise.all(
-    branches.map(branch =>
+    candidates.map(({ dir }) =>
       glabApi(
-        `projects/:fullpath/merge_requests?state=merged&source_branch=${encodeURIComponent(branch)}`,
+        `projects/:fullpath/merge_requests?state=merged&source_branch=${encodeURIComponent(branchOf.get(dir) ?? "")}`,
       ).then(
         mrs => mrs.length > 0,
         () => false,
       ),
     ),
   );
-  return merged.filter(isMerged => !isMerged).length;
+  return candidates
+    .filter((_, i) => merged[i])
+    .map(worker => ({
+      name: worker.name,
+      share: worker.share ?? 0,
+      files: [
+        ...new Set([
+          ...(known[worker.id]?.files ?? []),
+          ...filesOf(worker.dir),
+        ]),
+      ],
+      dir: worker.dir,
+      isMerged: true,
+    }));
 };
 /** dir → `{ head, files }`: the files of a worktree's commits, read again after a new commit. */
 const filesCache = new Map();

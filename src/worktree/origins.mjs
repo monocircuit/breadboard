@@ -207,9 +207,9 @@ export const writeWorker = (name, id, worker) => {
   );
 };
 /**
- * Fields of the whole record of `name` set, e.g. `cap` (how many of its
- * agents work at once, #217), `peer` and `brief` (of wt:orchestrate, for an
- * issue started later from the queue). An undefined one is left as it is.
+ * Fields of the whole record of `name` set, e.g. `peer` and `brief` (of
+ * wt:orchestrate, for an issue started later from the queue). An undefined
+ * one is left as it is.
  */
 export const updateRecord = (name, fields) => {
   const record = recordOf(name) ?? { issues: [] };
