@@ -180,6 +180,8 @@ export const removalOf = dir => removals.get(dir);
  * in UP NEXT says why). `holds`: dir → why a handover holds it.
  */
 export const removeMerged = (issues, of, agents, holds = new Map()) => {
+  // herdr told nothing: a working agent would look idle.
+  if (agents.size === 0) return;
   for (const issue of issues) {
     const { tree } = issue;
     if (!tree || removals.has(tree.dir)) continue;
