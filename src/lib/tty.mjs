@@ -21,7 +21,8 @@ export const link = (url, text) =>
 /** Colours and the OSC 8 link sequences: both take no room on screen. */
 const ESCAPE = String.raw`\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\`;
 export const ESCAPES = new RegExp(ESCAPE, "g");
-export const visible = text => text.replace(ESCAPES, "").length;
+/** The columns a line takes: its characters, not its UTF-16 units (the logo's `🭭` is two of them, one column). */
+export const visible = text => [...text.replace(ESCAPES, "")].length;
 export const pad = (text, width) =>
   text + " ".repeat(Math.max(0, width - visible(text)));
 /** Cut a painted line to `width` visible characters, keeping its colours. */
@@ -36,8 +37,9 @@ export const fit = (line, width) => {
     }
     const room = width - 1 - shown;
     if (room <= 0) break;
-    out += token.slice(0, room);
-    shown += Math.min(token.length, room);
+    const characters = [...token];
+    out += characters.slice(0, room).join("");
+    shown += Math.min(characters.length, room);
   }
   // A cut can end inside a colour or a link: close both.
   return `${out}…${isColor ? "\x1b[0m\x1b]8;;\x1b\\" : ""}`;

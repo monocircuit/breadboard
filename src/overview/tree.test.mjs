@@ -91,41 +91,84 @@ describe("treeOf", () => {
       removed.map(row => row.issue.number),
       [4, 2],
     );
-    assert.match(plain(removed[0].cells[5]), /^removed /);
+    assert.match(plain(removed[0].state.text), /^removed \d/);
   });
 
   it("shows the work order number in front of the feature", () => {
     const { live } = treeOf([issue(7)], () => ({}), new Map(), [3, 7]);
-    assert.equal(plain(live[0].cells[0]), "2. 7-feature");
+    assert.equal(plain(live[0].place + live[0].name), "2. 7-feature");
     const [, outside] = treeOf(
       [issue(3), issue(9)],
       () => ({}),
       new Map(),
       [3, 7],
     ).live;
-    assert.equal(plain(outside.cells[0]), "   9-feature");
+    assert.equal(plain(outside.place + outside.name), "   9-feature");
   });
 });
 
 describe("pushWorktrees", () => {
-  const draw = issues => {
+  const draw = (issues, of = () => ({})) => {
     const lines = [];
     pushWorktrees(lines, {
       name: "orch",
       issues,
-      of: () => ({}),
+      of,
       agents: new Map(),
       work: [],
       hasRemote: true,
     });
-    return lines.map(plain).join("\n");
+    return lines
+      .map(line => plain(line).replace(/^│ /, "").replace(/ │$/, ""))
+      .join("\n");
   };
+  const found = ({ number }) => ({
+    issue: {
+      state: "opened",
+      url: "i",
+      title: `the title of ${number}`,
+    },
+  });
 
   it("draws the orchestration at the root and a branch per worktree", () => {
     const text = draw([issue(1), issue(2)]);
     assert.match(text, /⇶ orch/);
     assert.match(text, /├─ 1-feature/);
     assert.match(text, /└─ 2-feature/);
+  });
+
+  it("gives a node its name and state, its facts and title below it", () => {
+    const text = draw(
+      [issue(1, { tree: tree({ ahead: 2, claude: null }) }), issue(2)],
+      found,
+    );
+    const lines = text.split("\n");
+    const at = lines.findIndex(line => /├─ 1-feature/.test(line));
+    assert.match(lines[at], /├─ 1-feature +no agent\s*$/);
+    assert.match(lines[at + 1], /^│ {2}#1 open · no MR yet · 2 ahead\s*$/);
+    assert.match(lines[at + 2], /^│ {2}the title of 1\s*$/);
+    // The last node: no `│` below it.
+    assert.match(lines[at + 3], /└─ 2-feature +idle/);
+    assert.match(lines[at + 4], /^ {3}#2 open · no MR yet · no answer yet/);
+    assert.match(lines[at + 5], /^ {3}the title of 2/);
+  });
+
+  it("gives a removed node its times", () => {
+    const gone = issue(2, {
+      tree: null,
+      removedAt: "2026-09-29T15:40:00",
+      mergedAt: "2026-09-29T15:12:00",
+    });
+    const text = draw([issue(1), gone], ({ number }) =>
+      number === 2
+        ? {
+            ...found({ number: 2 }),
+            mr: { state: "merged", iid: 211, url: "m" },
+          }
+        : found({ number: 1 }),
+    );
+    assert.match(text, / {3}└─ 2-feature +removed .*3:40/);
+    assert.match(text, /\n {6}#2 open · !211 merged .*3:12/);
   });
 
   it("folds a long done and removed into one line", () => {
