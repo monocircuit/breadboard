@@ -26,6 +26,7 @@ export const reader = (url = new URL("./read-worker.mjs", import.meta.url)) => {
     started.on("message", ({ id, local, error }) => {
       const waiter = waiting.get(id);
       waiting.delete(id);
+      if (waiting.size === 0) started.unref();
       if (error) waiter?.reject(new Error(error));
       else waiter?.resolve(local);
     });
@@ -34,13 +35,14 @@ export const reader = (url = new URL("./read-worker.mjs", import.meta.url)) => {
       if (worker === started) worker = null;
       failAll(new Error("the read worker ended"));
     });
-    // The overview ends with process.exit; the worker never keeps it alive.
-    started.unref();
     return started;
   };
   return () =>
     new Promise((resolve, reject) => {
       worker ??= start();
+      // A read keeps the process alive until it is answered, an idle worker
+      // never does: the overview ends with process.exit, a test by itself.
+      worker.ref();
       const id = next++;
       waiting.set(id, { resolve, reject });
       worker.postMessage(id);
