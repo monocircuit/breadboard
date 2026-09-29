@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "platform: a tab group per herdr space",
+  "description": "Opens what pnpm wt:new and pnpm overview open in the tab group named like the herdr space it belongs to.",
+  "version": "1.0.0",
+  "permissions": ["tabGroups", "tabs"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjKUFmKI4jQVfE1ueXdyYjX2MtL+Pi2TsT2detPNQ4z5TOnZidRQLU70LP/s38voZxX0h8y/casAs580ndWmurvPx3TlESRqgrxGT9J3/NkCleIl0fO3iMCxsMKKK9O8Z4Fi5Vj54Sam3cnmlchBD1VEL8B5thEDCpNJBGpz4nWUn5GlDGEiLDQWuSbkkYwXFnaT1kAvHu0QkxWimga0FISdOKrvdNW+2PS4NnVNZmGDlIhOMCUanx9Hy+T0bT3Rcpy51fPeM4F67Qk4qLW3RBDgEHZoXpFFl5mN/4mZ8z326GN/pqahKmavTc98GhMFhb2WvM4ULJ5CIvIKawPy0MwIDAQAB"
+}

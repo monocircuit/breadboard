@@ -1,0 +1,14 @@
+{
+  // Only for the lint (typescript-eslint's project service): plain JavaScript,
+  // not type-checked, nothing is built.
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src", "herdr", "chromium"]
+}

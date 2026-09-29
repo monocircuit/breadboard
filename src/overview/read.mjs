@@ -1,0 +1,219 @@
+// What there is: local state (worktrees, stacks, apps) every few seconds,
+// GitLab (MRs, pipelines, issues) every half minute.
+import path from "node:path";
+
+import {
+  VITA,
+  boxesOf,
+  isInside,
+  isPortFree,
+  mainDir,
+  offsetOf,
+  originOf,
+  readEnv,
+  worktrees,
+} from "../worktree.mjs";
+import { here, only, orchestration } from "./args.mjs";
+import { pathsOf } from "./workers.mjs";
+import { composeProjects } from "./claude.mjs";
+import { jobsOf } from "./gitlab.mjs";
+import { needsOf } from "./merge-order.mjs";
+import { exec, glab, sh } from "./io.mjs";
+import { waitingFor } from "./waiting.mjs";
+
+export const readLocal = async () => {
+  const main = mainDir();
+  const projects = composeProjects();
+  const trees = [];
+  for (const [index, { dir, branch }] of worktrees().entries()) {
+    if (only && dir !== only) continue;
+    if (orchestration && originOf(dir)?.name !== orchestration) continue;
+    const env = readEnv(path.join(dir, VITA, ".env.local"));
+    const offset = index === 0 ? 0 : offsetOf(dir);
+    const hasOwnPort = index === 0 || offset > 0;
+    const project = env?.COMPOSE_PROJECT_NAME ?? "vita";
+    trees.push({
+      dir,
+      name:
+        index === 0
+          ? path.basename(main)
+          : path.basename(dir).replace(`${path.basename(main)}-`, ""),
+      branch: branch ?? "(detached)",
+      // The orchestration that started it (wt:orchestrate), or null.
+      origin: index === 0 ? null : originOf(dir),
+      isHere: isInside(here, dir),
+      hasEnv: Boolean(env),
+      offset,
+      hasOwnPort,
+      isUp: Boolean(env) && hasOwnPort && !(await isPortFree(3000 + offset)),
+      project,
+      env,
+      stack: projects?.get(project) ?? null,
+      changed: sh("git", ["status", "--porcelain"], dir)
+        .stdout.split("\n")
+        .filter(Boolean).length,
+      ahead:
+        Number(
+          sh(
+            "git",
+            ["rev-list", "--count", "origin/develop..HEAD"],
+            dir,
+          ).stdout.trim(),
+        ) || 0,
+    });
+  }
+  const known = new Set(trees.map(tree => tree.project));
+  const orphans = projects
+    ? [...projects].filter(
+        ([name]) => name.startsWith("vita") && !known.has(name),
+      )
+    : [];
+  return { trees, orphans, hasDocker: Boolean(projects) };
+};
+export const readRemote = async () => {
+  const [mrs, pipelines, issues, heads] = await Promise.all([
+    glab("projects/:fullpath/merge_requests?state=opened&per_page=50"),
+    glab("projects/:fullpath/pipelines?per_page=100"),
+    glab(
+      "projects/:fullpath/issues?state=opened&per_page=100&order_by=updated_at",
+    ),
+    exec("git", ["ls-remote", "--heads", "origin"], { cwd: mainDir() }).then(
+      ({ stdout }) =>
+        stdout
+          .split("\n")
+          .map(line => line.split("refs/heads/")[1])
+          .filter(Boolean),
+    ),
+  ]);
+  // Newest first: the first pipeline of a ref is its state.
+  const pipelineOf = new Map();
+  for (const pipeline of pipelines)
+    if (!pipelineOf.has(pipeline.ref)) pipelineOf.set(pipeline.ref, pipeline);
+  const mrList = mrs.map(mr => ({
+    iid: mr.iid,
+    title: mr.title.replace(/^Draft:\s*/, ""),
+    branch: mr.source_branch,
+    isDraft: mr.draft,
+    who: mr.assignees?.map(a => a.username).join(",") || mr.author?.username,
+    url: mr.web_url,
+    pipeline:
+      pipelineOf.get(`refs/merge-requests/${mr.iid}/head`) ??
+      pipelineOf.get(mr.source_branch) ??
+      null,
+  }));
+  const claimOf = number =>
+    heads.find(branch => branch.split("/").at(-1).startsWith(`${number}-`));
+  const issueList = issues.map(issue => {
+    const branch = claimOf(issue.iid);
+    return {
+      iid: issue.iid,
+      title: issue.title,
+      url: issue.web_url,
+      labels: issue.labels,
+      who: issue.assignees?.map(a => a.username).join(","),
+      branch,
+      mr: mrList.find(mr => mr.branch === branch)?.iid,
+    };
+  });
+  // Claimed ones first: that is the work in flight.
+  issueList.sort(
+    (a, b) => Number(Boolean(b.branch)) - Number(Boolean(a.branch)),
+  );
+  return {
+    mrs: mrList,
+    issues: issueList,
+    develop: pipelineOf.get("develop") ?? null,
+    at: new Date(),
+  };
+};
+/** The merge request of one branch with its pipeline, and the issue the branch claims. */
+/**
+ * One worktree's part of GitLab: its MR (open, else the latest) with the
+ * pipeline's jobs, its issue, and with `dir` the open MRs it waits for
+ * (waiting.mjs), with their pipelines.
+ */
+export const readRemoteOf = async (branch, dir = null) => {
+  const number = branch?.match(/\/(\d+)-/)?.[1];
+  const [mrs, issue, links, open, pipelines] = await Promise.all([
+    // Every state: after the merge the branch still has its MR, just not an open one.
+    branch
+      ? glab(
+          `projects/:fullpath/merge_requests?source_branch=${encodeURIComponent(branch)}&order_by=updated_at`,
+        )
+      : [],
+    number
+      ? glab(`projects/:fullpath/issues/${number}`).catch(() => null)
+      : null,
+    // GitLab's "blocked by" links, for the merge order (order.mjs).
+    number
+      ? glab(`projects/:fullpath/issues/${number}/links`).catch(() => [])
+      : [],
+    dir
+      ? glab("projects/:fullpath/merge_requests?state=opened&per_page=100")
+      : [],
+    dir ? glab("projects/:fullpath/pipelines?per_page=100") : [],
+  ]);
+  const latest = mrs.find(mr => mr.state === "opened") ?? mrs[0];
+  const found = latest
+    ? await glab(`projects/:fullpath/merge_requests/${latest.iid}`)
+    : null;
+  const mr = found && {
+    iid: found.iid,
+    title: found.title.replace(/^Draft:\s*/, ""),
+    isDraft: found.draft,
+    state: found.state,
+    mergedAt: found.merged_at ?? null,
+    hasConflicts: Boolean(found.has_conflicts),
+    // GitLab's word on whether it can be merged: only `mergeable` can.
+    mergeStatus: found.detailed_merge_status ?? null,
+    url: found.web_url,
+    pipeline: found.head_pipeline ?? null,
+  };
+  // The jobs are extra: without them issue and MR still show.
+  const jobs = mr?.pipeline ? await jobsOf(mr.pipeline.id).catch(() => []) : [];
+  const pipelineOf = new Map();
+  for (const pipeline of pipelines)
+    if (!pipelineOf.has(pipeline.ref)) pipelineOf.set(pipeline.ref, pipeline);
+  const waiting = dir
+    ? waitingFor(
+        dir,
+        branch,
+        open.map(candidate => ({
+          iid: candidate.iid,
+          title: candidate.title.replace(/^Draft:\s*/, ""),
+          branch: candidate.source_branch,
+          isDraft: candidate.draft,
+          state: candidate.state,
+          url: candidate.web_url,
+          pipeline:
+            pipelineOf.get(`refs/merge-requests/${candidate.iid}/head`) ??
+            pipelineOf.get(candidate.source_branch) ??
+            null,
+        })),
+      )
+    : [];
+  return {
+    mr,
+    jobs,
+    waiting,
+    issue: issue && {
+      iid: issue.iid,
+      title: issue.title,
+      url: issue.web_url,
+      state: issue.state,
+      boxes: boxesOf(issue.description ?? ""),
+      // The issues it names as prerequisites, or is blocked by.
+      needs: [
+        ...new Set([
+          ...needsOf(issue.description),
+          ...links
+            .filter(link => link.link_type === "is_blocked_by")
+            .map(link => link.iid),
+        ]),
+      ],
+      // The files it names: the agent that knows them is suggested for it (workers.mjs).
+      paths: pathsOf(issue.description),
+    },
+    at: new Date(),
+  };
+};

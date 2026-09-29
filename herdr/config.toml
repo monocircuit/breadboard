@@ -1,0 +1,13 @@
+# The base config of the herdr session `platform` for people without an own
+# herdr config. pnpm herdr copies it into .herdr/config.toml and appends
+# keys.toml; {{RUN}} becomes the path of run.mjs.
+#
+# Everything else is herdr's default. Your own keys and theme: put a whole
+# config into .herdr/config.local.toml, it is used instead of this file.
+
+[ui]
+# The running vita stacks next to the tab bar.
+tab_bar_right = [
+  { type = "command", command = "node {{RUN}} status", interval_seconds = 10, timeout_seconds = 3 },
+  { type = "zoom" },
+]

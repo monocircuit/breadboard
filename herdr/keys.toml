@@ -1,0 +1,38 @@
+# The keys of the plugin monocircuit.platform. pnpm herdr appends them to the
+# config of the session `platform`; pnpm herdr:install writes them into yours as one marked block.
+
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "monocircuit.platform.overview"
+description = "platform: live overview"
+
+[[keys.command]]
+key = "prefix+g"
+type = "plugin_action"
+command = "monocircuit.platform.commands"
+description = "platform: pnpm commands"
+
+[[keys.command]]
+key = "prefix+s"
+type = "plugin_action"
+command = "monocircuit.platform.stack-ps"
+description = "platform: the stack of this tab"
+
+[[keys.command]]
+key = "prefix+shift+u"
+type = "plugin_action"
+command = "monocircuit.platform.stack-up"
+description = "platform: stack up"
+
+[[keys.command]]
+key = "prefix+shift+d"
+type = "plugin_action"
+command = "monocircuit.platform.stack-down"
+description = "platform: stack down"
+
+[[keys.command]]
+key = "prefix+shift+l"
+type = "plugin_action"
+command = "monocircuit.platform.reload"
+description = "platform: load new workflow code"

@@ -1,0 +1,15 @@
+{
+  "name": "@monocircuit/breadboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The dev workflow of the repo: worktrees, stacks, the overview, the herdr plugin, the Chromium extension",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@monocircuit/eslint-config": "workspace:*",
+    "eslint": "^9.25.1"
+  }
+}

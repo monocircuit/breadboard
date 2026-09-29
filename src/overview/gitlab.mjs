@@ -1,0 +1,148 @@
+// GitLab beyond the MR list: pipeline jobs with the end of a failed log,
+// branches, the issues of an orchestration; and the containers of the stacks.
+import {
+  compose,
+  mainDir,
+  originOf,
+  recordOf,
+  worktrees,
+} from "../worktree.mjs";
+import { exec, glab } from "./io.mjs";
+import { readRemoteOf } from "./read.mjs";
+import { deliverWaits } from "./waits.mjs";
+
+/** How many lines of a failed job's log the view shows. */
+const LOG_LINES = 6;
+/** GitLab's section markers and colours in a job log. */
+const LOG_NOISE =
+  /\x1b\[[0-9;]*[A-Za-z]|section_(start|end):\d+:[\w.-]+(\[[^\]]*\])?\r?/g;
+/** The time and stream GitLab puts in front of each line: `2026-09-28T13:02:20.886478Z 01E+`. */
+const LOG_STAMP = /^\d{4}-\d\d-\d\dT[\d:.]+Z \d\d[OE]\+? ?/;
+/** What the runner writes after the error: not what went wrong. */
+const RUNNER_TAIL =
+  /^(Cleaning up |Uploading artifacts|Running after_script|Saving cache|ERROR: Job failed|WARNING: )/;
+/** A failed job's log doesn't change any more: job id → its last lines. */
+const logs = new Map();
+/**
+ * The jobs of a pipeline in the order they ran, the last try of each; a
+ * failed one with the last lines of its log, where the error usually is.
+ */
+export const jobsOf = async pipeline => {
+  const all = await glab(
+    `projects/:fullpath/pipelines/${pipeline}/jobs?per_page=100&include_retried=false`,
+  );
+  const jobs = all
+    .toSorted((a, b) => a.id - b.id)
+    .map(job => ({
+      id: job.id,
+      name: job.name,
+      status: job.status,
+      url: job.web_url,
+      log: null,
+    }));
+  await Promise.all(
+    jobs
+      .filter(job => job.status === "failed")
+      .map(async job => {
+        if (!logs.has(job.id)) {
+          const { stdout } = await exec(
+            "glab",
+            ["api", `projects/:fullpath/jobs/${job.id}/trace`],
+            { cwd: mainDir(), maxBuffer: 1 << 24 },
+          );
+          const lines = stdout
+            .replace(LOG_NOISE, "")
+            .split("\n")
+            .map(line =>
+              line.split("\r").at(-1).replace(LOG_STAMP, "").trimEnd(),
+            )
+            .filter(Boolean);
+          const end = lines.findLastIndex(line => !RUNNER_TAIL.test(line));
+          logs.set(
+            job.id,
+            lines.slice(Math.max(0, end + 1 - LOG_LINES), end + 1),
+          );
+        }
+        job.log = logs.get(job.id);
+      }),
+  );
+  return jobs;
+};
+/**
+ * The branches of an orchestration: the ones its record lists (pnpm
+ * wt:orchestrate), started or skipped, and those of worktrees started for it
+ * by hand (`wt:new --origin`).
+ */
+const branchesOf = name =>
+  [
+    ...new Set([
+      ...(recordOf(name)?.issues ?? []).map(issue => issue.branch),
+      ...worktrees()
+        .slice(1)
+        .filter(({ dir }) => originOf(dir)?.name === name)
+        .map(({ branch }) => branch),
+    ]),
+  ].filter(Boolean);
+/**
+ * Of every branch of an orchestration: its merge request (merged ones too)
+ * with its pipeline, and its issue. Delivers the lines of the waits that
+ * ended without their command.
+ */
+export const readRemoteOfOrchestration = async name => {
+  const found = await Promise.all(
+    branchesOf(name).map(async branch => [branch, await readRemoteOf(branch)]),
+  );
+  // With GitLab read anyway: the waits whose command is gone (waits.mjs).
+  await deliverWaits(
+    name,
+    worktrees()
+      .slice(1)
+      .filter(({ dir }) => originOf(dir)?.name === name)
+      .map(({ dir }) => dir),
+  );
+  return { of: new Map(found), at: new Date() };
+};
+/**
+ * The issues of an orchestration, each with its worktree while that is there
+ * (`trees`: the worktrees readLocal found for it), by number.
+ */
+export const issuesOf = (name, trees) => {
+  const issues = (recordOf(name)?.issues ?? []).map(issue => ({
+    ...issue,
+    tree: trees.find(tree => tree.branch === issue.branch) ?? null,
+  }));
+  for (const tree of trees) {
+    if (issues.some(issue => issue.tree === tree)) continue;
+    const number = Number(tree.branch.match(/\/(\d+)-/)?.[1]) || null;
+    issues.push({
+      number,
+      title: null,
+      feature: tree.name,
+      branch: tree.branch,
+      why: null,
+      tree,
+    });
+  }
+  return issues.toSorted(
+    (a, b) => (a.number ?? Infinity) - (b.number ?? Infinity),
+  );
+};
+/** The containers of one checkout's stack: service, state, health. */
+export const containersOf = dir => {
+  const listed = compose(dir, ["ps", "--all", "--format", "json"], {
+    quiet: true,
+    allowFail: true,
+  }).out;
+  return listed
+    .split("\n")
+    .filter(Boolean)
+    .map(line => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .map(c => ({ service: c.Service, state: c.State, health: c.Health || "" }));
+};
