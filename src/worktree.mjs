@@ -87,7 +87,12 @@ export {
   recordOf,
 } from "./worktree/origins.mjs";
 export { hasOwnCommits, isInside, pruneSpaces } from "./worktree/prune.mjs";
-export { REPO_TOKEN, STATE_TOKEN, sidebarConfig } from "./worktree/sidebar.mjs";
+export {
+  REPO_TOKEN,
+  STATE_TOKEN,
+  branchColourOf,
+  sidebarConfig,
+} from "./worktree/sidebar.mjs";
 export { focusSpace, spaceLabel } from "./worktree/spaces.mjs";
 export { compose, isPortFree, offsetOf, readEnv } from "./worktree/stack.mjs";
 export { featureOf } from "./worktree/tabs.mjs";

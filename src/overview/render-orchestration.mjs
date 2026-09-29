@@ -425,6 +425,7 @@ export const renderOrchestration = (local, remote, error) => {
     of,
     agents: local.agents,
     work,
+    merge: order.open.map(item => item.number),
     hasRemote: Boolean(remote),
   });
 

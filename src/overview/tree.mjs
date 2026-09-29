@@ -4,7 +4,8 @@
 // for you, ready, merged and about to go, gone. The ones wt:remove took are
 // in the record with their times (markRemoved), under "done and removed".
 // A node reads like a folder listing: its name and state, its facts and
-// title in the lines below (#223).
+// title in the lines below (#223). Every node has its number, its name is
+// in the pink of herdr's sidebar (#227).
 import {
   bold,
   cyan,
@@ -22,6 +23,8 @@ import { ORCHESTRATOR, focusSpace, waitsText } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
 import { show } from "./io.mjs";
+import { pink } from "./names.mjs";
+import { numbersOf } from "./numbering.mjs";
 import { ago, mrState, tokens } from "./render-worktree.mjs";
 import { screen } from "./screen.mjs";
 
@@ -37,15 +40,9 @@ const clock = at => {
     : `${date.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
 };
 
-/** `10. ` for the tenth of the work order, as wide as its last; blanks for one it leaves out, so the features line up. */
-const placeCell = (work, place) => {
-  const width = String(work.length).length + 2;
-  return place === -1
-    ? work.length
-      ? " ".repeat(width)
-      : ""
-    : dim(`${String(place + 1).padStart(width - 2)}. `);
-};
+/** `10. ` for the tenth, as wide as the last of `count`, so the features line up. */
+const placeCell = (count, number) =>
+  dim(`${String(number).padStart(String(count).length)}. `);
 /**
  * Where a worktree stands in its life: `{ key, text }`. `issue` as issuesOf
  * gives it (its `tree` while the worktree is there, with `ownCommits`: commits
@@ -140,21 +137,21 @@ const factsOf = (issue, found, mr, hasRemote) => {
 };
 
 /**
- * The tree of an orchestration's issues, in the order given (the work
- * order): `live`, the worktrees there and the issues that never got one,
- * `removed`, the ones whose worktree is gone, the last removed first. Each
- * `{ issue, state, place, name, facts, title }`: `place` the work order
- * number in front of `name`, the feature (bold while its worktree is
- * there); `facts` and `title` go below it.
- * `of(issue)`: its part of GitLab; `agents`: agentsOf(); `work`: the order.
+ * The tree of an orchestration's issues, each numbered (numbering.mjs):
+ * `live`, the worktrees there and the issues that never got one, by their
+ * number, `removed`, the ones whose worktree is gone, the last removed
+ * first. Each `{ issue, state, place, name, facts, title }`: `place` its
+ * number in front of `name`, the feature in pink (bold while its worktree
+ * is there); `facts` and `title` go below it.
+ * `of(issue)`: its part of GitLab; `agents`: agentsOf(); `work`: the work
+ * order of wt:plan; `merge`: the open MRs' issues in the computed merge order.
  */
 export const treeOf = (
   issues,
   of,
-  agents = new Map(),
-  work = [],
-  hasRemote = true,
+  { agents = new Map(), work = [], merge = [], hasRemote = true } = {},
 ) => {
+  const numbers = numbersOf(issues, { work, merge, of });
   const rows = issues.map(issue => {
     const { mr, issue: found } = of(issue);
     const { tree } = issue;
@@ -167,14 +164,17 @@ export const treeOf = (
     return {
       issue,
       state,
-      place: placeCell(work, work.indexOf(issue.number)),
-      name: tree ? bold(issue.feature) : issue.feature,
+      number: numbers.get(issue),
+      place: placeCell(issues.length, numbers.get(issue)),
+      name: pink(tree ? bold(issue.feature) : issue.feature),
       facts: factsOf(issue, found, mr, hasRemote),
       title: dim(found?.title ?? issue.title ?? issue.branch),
     };
   });
   return {
-    live: rows.filter(row => row.state.key !== "removed"),
+    live: rows
+      .filter(row => row.state.key !== "removed")
+      .toSorted((a, b) => a.number - b.number),
     removed: rows
       .filter(row => row.state.key === "removed")
       .toSorted((a, b) =>
@@ -221,9 +221,14 @@ let isRemovedOpen = null;
  */
 export const pushWorktrees = (
   lines,
-  { name, issues, of, agents, work, hasRemote },
+  { name, issues, of, agents, work, merge, hasRemote },
 ) => {
-  const { live, removed } = treeOf(issues, of, agents, work, hasRemote);
+  const { live, removed } = treeOf(issues, of, {
+    agents,
+    work,
+    merge,
+    hasRemote,
+  });
   const box = openBox(lines);
   lines.push(
     `  ${bold(`${ORCHESTRATOR} ${name}`)}  ${dim(`.claude/orchestrations/${name}.json`)}`,

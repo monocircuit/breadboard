@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { ESCAPES } from "../lib/tty.mjs";
 import { withRemoved } from "../worktree/origins.mjs";
+import { numbersOf } from "./numbering.mjs";
 import { lifecycleOf, pushWorktrees, treeOf } from "./tree.mjs";
 
 const plain = text => text.replace(ESCAPES, "");
@@ -94,16 +95,52 @@ describe("treeOf", () => {
     assert.match(plain(removed[0].state.text), /^removed \d/);
   });
 
-  it("shows the work order number in front of the feature", () => {
-    const { live } = treeOf([issue(7)], () => ({}), new Map(), [3, 7]);
-    assert.equal(plain(live[0].place + live[0].name), "2. 7-feature");
-    const [, outside] = treeOf(
-      [issue(3), issue(9)],
-      () => ({}),
-      new Map(),
-      [3, 7],
-    ).live;
-    assert.equal(plain(outside.place + outside.name), "   9-feature");
+  it("numbers every node: the work order first, then the rest", () => {
+    const { live } = treeOf([issue(7), issue(3), issue(9)], () => ({}), {
+      work: [3, 7],
+    });
+    assert.deepEqual(
+      live.map(row => plain(row.place + row.name)),
+      ["1. 3-feature", "2. 7-feature", "3. 9-feature"],
+    );
+  });
+});
+
+describe("numbersOf", () => {
+  const numbered = (issues, options) =>
+    [...numbersOf(issues, options)]
+      .toSorted(([, a], [, b]) => a - b)
+      .map(([entry]) => entry.number);
+  const mrOf = mrs => entry => ({ mr: mrs[entry.number] });
+
+  it("numbers every issue without a plan: by number", () => {
+    assert.deepEqual(numbered([issue(9), issue(3), issue(5)], {}), [3, 5, 9]);
+  });
+
+  it("goes by the work order, then the merge order, then the merged by time", () => {
+    const of = mrOf({
+      2: { state: "merged", mergedAt: "2026-09-29T12:00:00Z" },
+      4: { state: "opened" },
+      6: { state: "opened" },
+    });
+    const gone = issue(1, {
+      tree: null,
+      removedAt: "2026-09-29T11:00:00Z",
+      mergedAt: "2026-09-29T10:00:00Z",
+    });
+    assert.deepEqual(
+      numbered([gone, issue(2), issue(4), issue(6), issue(8), issue(5)], {
+        work: [5],
+        merge: [6, 4],
+        of,
+      }),
+      [5, 6, 4, 8, 1, 2],
+    );
+  });
+
+  it("gives two entries of one issue number a number each", () => {
+    const numbers = numbersOf([issue(3), issue(3)], {});
+    assert.deepEqual([...numbers.values()], [1, 2]);
   });
 });
 
@@ -133,8 +170,8 @@ describe("pushWorktrees", () => {
   it("draws the orchestration at the root and a branch per worktree", () => {
     const text = draw([issue(1), issue(2)]);
     assert.match(text, /⇶ orch/);
-    assert.match(text, /├─ 1-feature/);
-    assert.match(text, /└─ 2-feature/);
+    assert.match(text, /├─ 1\. 1-feature/);
+    assert.match(text, /└─ 2\. 2-feature/);
   });
 
   it("gives a node its name and state, its facts and title below it", () => {
@@ -143,14 +180,14 @@ describe("pushWorktrees", () => {
       found,
     );
     const lines = text.split("\n");
-    const at = lines.findIndex(line => /├─ 1-feature/.test(line));
-    assert.match(lines[at], /├─ 1-feature +no agent\s*$/);
-    assert.match(lines[at + 1], /^│ {2}#1 open · no MR yet · 2 ahead\s*$/);
-    assert.match(lines[at + 2], /^│ {2}the title of 1\s*$/);
+    const at = lines.findIndex(line => /├─ 1\. 1-feature/.test(line));
+    assert.match(lines[at], /├─ 1\. 1-feature +no agent\s*$/);
+    assert.match(lines[at + 1], /^│ {5}#1 open · no MR yet · 2 ahead\s*$/);
+    assert.match(lines[at + 2], /^│ {5}the title of 1\s*$/);
     // The last node: no `│` below it.
-    assert.match(lines[at + 3], /└─ 2-feature +idle/);
-    assert.match(lines[at + 4], /^ {3}#2 open · no MR yet · no answer yet/);
-    assert.match(lines[at + 5], /^ {3}the title of 2/);
+    assert.match(lines[at + 3], /└─ 2\. 2-feature +idle/);
+    assert.match(lines[at + 4], /^ {6}#2 open · no MR yet · no answer yet/);
+    assert.match(lines[at + 5], /^ {6}the title of 2/);
   });
 
   it("gives a removed node its times", () => {
@@ -167,14 +204,14 @@ describe("pushWorktrees", () => {
           }
         : found({ number: 1 }),
     );
-    assert.match(text, / {3}└─ 2-feature +removed .*3:40/);
-    assert.match(text, /\n {6}#2 open · !211 merged .*3:12/);
+    assert.match(text, / {3}└─ 2\. 2-feature +removed .*3:40/);
+    assert.match(text, /\n {9}#2 open · !211 merged .*3:12/);
   });
 
   it("folds a long done and removed into one line", () => {
     const gone = [2, 3, 4, 5].map(n => issue(n, { tree: null }));
     const text = draw([issue(1), ...gone]);
-    assert.match(text, /├─ 1-feature/);
+    assert.match(text, /├─ 1\. 1-feature/);
     assert.match(text, /└─ ▸ done and removed \(4\)/);
     assert.doesNotMatch(text, /2-feature/);
   });
@@ -182,7 +219,7 @@ describe("pushWorktrees", () => {
   it("shows a short one open", () => {
     const text = draw([issue(1), issue(2, { tree: null })]);
     assert.match(text, /└─ ▾ done and removed \(1\)/);
-    assert.match(text, / {3}└─ 2-feature/);
+    assert.match(text, / {3}└─ 2\. 2-feature/);
   });
 });
 
