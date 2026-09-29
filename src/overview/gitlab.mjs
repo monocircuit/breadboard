@@ -2,6 +2,7 @@
 // branches, the issues of an orchestration; and the containers of the stacks.
 import {
   compose,
+  handoversOf,
   mainDir,
   originOf,
   recordOf,
@@ -100,7 +101,22 @@ export const readRemoteOfOrchestration = async name => {
       .filter(({ dir }) => originOf(dir)?.name === name)
       .map(({ dir }) => dir),
   );
-  return { of: new Map(found), at: new Date() };
+  // The MRs the announced handovers wait for (worktree/handovers.mjs), by iid.
+  const iids = [
+    ...new Set(handoversOf(recordOf(name)).flatMap(({ after }) => after)),
+  ];
+  const awaited = new Map(
+    await Promise.all(
+      iids.map(async iid => [
+        iid,
+        await glab(`projects/:fullpath/merge_requests/${iid}`).then(
+          mr => ({ iid, state: mr.state }),
+          () => null,
+        ),
+      ]),
+    ),
+  );
+  return { of: new Map(found), awaited, at: new Date() };
 };
 /**
  * The issues of an orchestration, each with its worktree while that is there

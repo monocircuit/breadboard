@@ -23,6 +23,7 @@ import { ORCHESTRATOR, focusSpace, waitsText } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
 import { show } from "./io.mjs";
+import { nextText } from "./handovers.mjs";
 import { pink } from "./names.mjs";
 import { numbersOf } from "./numbering.mjs";
 import { ago, mrState, tokens } from "./render-worktree.mjs";
@@ -120,9 +121,9 @@ const agentFact = claude => {
 };
 /**
  * The facts line of a node: issue, MR and pipeline, work, agent, a wait
- * (#216). What doesn't apply is left out; a worktree without an MR says so.
+ * (#216), the next issue announced for its agent (#227). What doesn't apply is left out; a worktree without an MR says so.
  */
-const factsOf = (issue, found, mr, hasRemote) => {
+const factsOf = (issue, found, mr, hasRemote, handover) => {
   const { tree } = issue;
   const mergedAt = issue.mergedAt ?? mr?.mergedAt;
   return [
@@ -131,6 +132,8 @@ const factsOf = (issue, found, mr, hasRemote) => {
     tree ? workFact(tree) : "",
     tree ? agentFact(tree.claude) : "",
     tree?.wait ? yellow(waitsText(tree.wait)) : "",
+    // Its agent's next issue, announced (#227).
+    handover ? cyan(nextText(handover)) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -144,14 +147,23 @@ const factsOf = (issue, found, mr, hasRemote) => {
  * number in front of `name`, the feature in pink (bold while its worktree
  * is there); `facts` and `title` go below it.
  * `of(issue)`: its part of GitLab; `agents`: agentsOf(); `work`: the work
- * order of wt:plan; `merge`: the open MRs' issues in the computed merge order.
+ * order of wt:plan; `merge`: the open MRs' issues in the computed merge order;
+ * `announced`: the announced handovers (handovers.mjs).
  */
 export const treeOf = (
   issues,
   of,
-  { agents = new Map(), work = [], merge = [], hasRemote = true } = {},
+  {
+    agents = new Map(),
+    work = [],
+    merge = [],
+    announced = [],
+    hasRemote = true,
+  } = {},
 ) => {
   const numbers = numbersOf(issues, { work, merge, of });
+  const handoverOf = tree =>
+    tree && announced.find(handover => handover.tree?.dir === tree.dir);
   const rows = issues.map(issue => {
     const { mr, issue: found } = of(issue);
     const { tree } = issue;
@@ -167,7 +179,7 @@ export const treeOf = (
       number: numbers.get(issue),
       place: placeCell(issues.length, numbers.get(issue)),
       name: pink(tree ? bold(issue.feature) : issue.feature),
-      facts: factsOf(issue, found, mr, hasRemote),
+      facts: factsOf(issue, found, mr, hasRemote, handoverOf(tree)),
       title: dim(found?.title ?? issue.title ?? issue.branch),
     };
   });
@@ -221,12 +233,13 @@ let isRemovedOpen = null;
  */
 export const pushWorktrees = (
   lines,
-  { name, issues, of, agents, work, merge, hasRemote },
+  { name, issues, of, agents, work, merge, announced, hasRemote },
 ) => {
   const { live, removed } = treeOf(issues, of, {
     agents,
     work,
     merge,
+    announced,
     hasRemote,
   });
   const box = openBox(lines);

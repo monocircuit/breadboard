@@ -10,6 +10,7 @@ import {
   actionsFile,
   actionsOf,
   feedFile,
+  handoversOf,
   hasOwnCommits,
   isPortFree,
   mainDir,
@@ -92,6 +93,8 @@ export const readView = async () => {
       workers: recordOf(orchestration)?.workers ?? {},
       // How many agents work at once (wt:orchestrate --cap); workers.mjs has the default.
       cap: recordOf(orchestration)?.cap,
+      // The handovers the orchestrator announced (#227, worktree/handovers.mjs).
+      handovers: handoversOf(recordOf(orchestration)),
       ownActions: actionsOf(file),
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and FEED: what herdr says each agent does.

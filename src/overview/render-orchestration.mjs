@@ -37,6 +37,7 @@ import {
 } from "./boxes.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { pushFeed } from "./feed.mjs";
+import { announcedOf } from "./handovers.mjs";
 import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
@@ -73,7 +74,7 @@ const AUTO = dim("auto");
  * by merge order. A merge whose MR is merged is left out.
  * Each with what a click on it does and where its answer goes (answers.mjs).
  */
-const actionsOf = (local, issues, of, remote) => {
+const actionsOf = (local, issues, of, remote, announced) => {
   const merge = local.order.numbers;
   const own = (local.ownActions ?? []).map(action => ({
     action,
@@ -129,6 +130,7 @@ const actionsOf = (local, issues, of, remote) => {
     {
       cap: local.cap,
       shouldHandOut: Boolean(remote) && deliversAnswers(orchestration),
+      announced,
     },
   );
   const workers = handovers.actions.map(
@@ -398,7 +400,13 @@ export const renderOrchestration = (local, remote, error) => {
   // the live overview that delivers (never a --once print).
   if (remote && deliversAnswers(orchestration)) tellConflicts(issues, of);
 
-  const actions = actionsOf(ordered, issues, of, remote);
+  // The handovers the orchestrator announced, where they stand (handovers.mjs).
+  const announced = announcedOf(local.handovers, issues, {
+    known: local.workers,
+    agents: local.agents,
+    awaited: remote?.awaited ?? null,
+  });
+  const actions = actionsOf(ordered, issues, of, remote, announced);
   if (!isOnce)
     notifyNewActions(
       label,
@@ -426,6 +434,7 @@ export const renderOrchestration = (local, remote, error) => {
     agents: local.agents,
     work,
     merge: order.open.map(item => item.number),
+    announced,
     hasRemote: Boolean(remote),
   });
 
