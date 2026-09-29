@@ -111,6 +111,38 @@ describe("installPushGuard", () => {
   });
 });
 
+describe("the shim", () => {
+  const runShim = dir => {
+    installPushGuard(dir);
+    return spawnSync(path.join(dir, ".git", "hooks", "pre-push"), [], {
+      cwd: dir,
+      encoding: "utf-8",
+    }).stdout;
+  };
+  const withHook = (dir, name) => {
+    const hooks = path.join(dir, "packages", name, "src", "git-hooks");
+    fs.mkdirSync(hooks, { recursive: true });
+    fs.writeFileSync(
+      path.join(hooks, "pre-push.mjs"),
+      `console.log("${name}");\n`,
+    );
+  };
+
+  it("runs the hook of breadboard, or of workflow on a branch from before the rename", () => {
+    const dir = tempRepo();
+    withHook(dir, "workflow");
+    assert.equal(runShim(dir), "workflow\n");
+    withHook(dir, "breadboard");
+    assert.equal(runShim(dir), "breadboard\n");
+    fs.rmSync(dir, { recursive: true });
+  });
+  it("does nothing in a checkout without the hook", () => {
+    const dir = tempRepo();
+    assert.equal(runShim(dir), "");
+    fs.rmSync(dir, { recursive: true });
+  });
+});
+
 describe("the pre-push hook", () => {
   it("lets a push through when nothing is pushed to a branch", () => {
     const hook = path.join(

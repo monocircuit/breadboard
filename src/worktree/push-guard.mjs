@@ -9,12 +9,19 @@ import { git } from "../lib/proc.mjs";
 
 const ZERO = /^0+$/;
 const MARKER = "monocircuit push guard (#184)";
-/** The hook lives in the repo, so every worktree runs the guard of its own branch; one without it pushes unguarded. */
+/**
+ * The hook lives in the repo, so every worktree runs the guard of its own
+ * branch; one without it pushes unguarded. packages/workflow: a branch from
+ * before the rename to breadboard (#219).
+ */
 export const SHIM = `#!/bin/sh
 # ${MARKER}, installed by pnpm wt:new and wt:mr.
-hook="$(git rev-parse --show-toplevel)/packages/workflow/src/git-hooks/pre-push.mjs"
-[ -f "$hook" ] || exit 0
-exec node "$hook" "$@"
+top="$(git rev-parse --show-toplevel)"
+for package in breadboard workflow; do
+  hook="$top/packages/$package/src/git-hooks/pre-push.mjs"
+  [ -f "$hook" ] && exec node "$hook" "$@"
+done
+exit 0
 `;
 
 /**
