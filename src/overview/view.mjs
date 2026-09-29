@@ -47,17 +47,6 @@ export const readView = async () => {
   const local = await readLocal();
   // An orchestration: its issues, the conversation of each worktree's agent and what it asks for.
   if (orchestration) {
-    // Answers that didn't get into an agent's pane yet: again, once it
-    // changed state. Only by the live overview: a --once print changes nothing.
-    retryAnswers(orchestration, [
-      ...local.trees.map(tree => ({
-        file: actionsFile(tree.dir),
-        to: { dir: tree.dir },
-      })),
-      { file: recordFile(orchestration), to: { orchestration } },
-    ]);
-    // The lines after a merge (merge.mjs) that didn't get in either.
-    retryMergeLines(local.trees.map(tree => tree.dir));
     const trees = local.trees.map(tree => ({
       ...tree,
       claude: readClaude(tree.dir),
@@ -142,6 +131,24 @@ export const readView = async () => {
     isStudioUp: !(await isPortFree(STUDIO_PORT + offset)),
     isStorybookUp: !(await isPortFree(STORYBOOK_PORT + offset)),
   };
+};
+/**
+ * What a read of an orchestration sets off, apart from reading: answers that
+ * didn't get into an agent's pane yet, again once it changed state, and the
+ * lines after a merge (merge.mjs) that didn't get in either. In the thread
+ * of the clicks, which hold what was tried (readView runs in a worker,
+ * reader.mjs). Only by the live overview: a --once print changes nothing.
+ */
+export const retryDeliveries = local => {
+  if (!orchestration) return;
+  retryAnswers(orchestration, [
+    ...local.trees.map(tree => ({
+      file: actionsFile(tree.dir),
+      to: { dir: tree.dir },
+    })),
+    { file: recordFile(orchestration), to: { orchestration } },
+  ]);
+  retryMergeLines(local.trees.map(tree => tree.dir));
 };
 export const view = (...args) => {
   screen.clicks = [];
