@@ -65,8 +65,12 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
  * mark (scroll.mjs); `isSet` is false for a view drawn without one.
  */
 export const lastTitle = { left: "", right: "", keys: "", isSet: false };
-/** How many lines the title band takes, the logo's height: the sticky top of a view (scroll.mjs). */
-export const titleHeight = () => LOGO_LINES;
+/**
+ * How many lines the title band takes: the logo's height and a line above
+ * and below it, the same space on both sides. The sticky top of a view
+ * (scroll.mjs).
+ */
+export const titleHeight = () => LOGO_LINES + 2;
 /** The band's text: light on its grey, 9:1. */
 const BAND_TEXT = "\x1b[38;2;235;235;235m";
 /** Time and keys: quieter, still 4.9:1 on the grey. */
@@ -86,10 +90,10 @@ const spread = (left, right, width) => {
   ];
 };
 /**
- * The title band across the screen, the logo's height: the name on its
- * middle line on the left, the time (and the scroll mark) on the first line
- * and the keys on the last on the right, the logo at the right end with a
- * column of margin. All of it on the grey of the section heads, the logo's
+ * The title band across the screen, the logo's height and a line above and
+ * below it: the logo at the right end with a column of margin, on its lines
+ * the name on the left of its middle line, the time (and the scroll mark) on
+ * the right of its first line and the keys on the right of its last. All of it on the grey of the section heads, the logo's
  * half blocks too, so no black shows between them. Without colours the same
  * lines, plain. A terminal too narrow for name and logo drops the logo.
  * Pushed with `lines.push(...titleLines())`, every line one row.
@@ -103,14 +107,16 @@ export const titleLines = (left, right, keys = "", width = boxWidth()) => {
   // A column of margin on both ends, two between the text and the logo.
   const hasLogo = artWidth > 0 && width - 2 - artWidth - 2 >= name.length;
   const inner = width - 2 - (hasLogo ? artWidth + 2 : 0);
+  // The lines of the logo, between the band's first and last line.
   const rows = [
+    ["", ""],
     ["", time],
     [name, ""],
     ["", hint],
   ];
   return Array.from({ length: titleHeight() }, (_, i) => {
     const [l, gap, r] = spread(...(rows[i] ?? ["", ""]), inner);
-    const mark = hasLogo ? `  ${art[i] ?? " ".repeat(artWidth)}` : "";
+    const mark = hasLogo ? `  ${art[i - 1] ?? " ".repeat(artWidth)}` : "";
     if (!isColor) return ` ${l}${gap}${r}${mark} `;
     return `${ISLAND_HEAD}${BAND_TEXT} \x1b[1m${l}\x1b[22m${gap}${BAND_QUIET}${r}${BAND_TEXT}${mark} \x1b[0m`;
   });
