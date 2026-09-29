@@ -41,6 +41,7 @@ import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
 import { orderActions, placeIn } from "./order.mjs";
+import { pushAgents } from "./agents.mjs";
 import { ago } from "./render-worktree.mjs";
 import { workerActionsOf } from "./workers.mjs";
 import { KEYS, pushRows, screen } from "./screen.mjs";
@@ -203,14 +204,18 @@ const actionsOf = (local, issues, of, remote) => {
           },
         ]
       : [];
-  return orderActions([
-    ...own,
-    ...agents,
-    ...auto,
-    ...workers,
-    ...end,
-    ...replan,
-  ]);
+  return {
+    ...orderActions([
+      ...own,
+      ...agents,
+      ...auto,
+      ...workers,
+      ...end,
+      ...replan,
+    ]),
+    // For AGENTS: which agent gets which queued issue next.
+    suggested: handovers.suggested,
+  };
 };
 /** How much of an MR's title its row in MERGE REQUESTS shows. */
 const TITLE_WIDTH = 40;
@@ -416,6 +421,18 @@ export const renderOrchestration = (local, remote, error) => {
   pushActions(lines, actions.actions, of);
   pushUpNext(lines, actions.upNext, of);
   pushFeed(lines, issues, local.agents);
+  pushAgents(
+    lines,
+    issues,
+    of,
+    local.agents ?? new Map(),
+    {
+      known: local.workers,
+      handovers: local.handovers,
+      suggested: actions.suggested,
+    },
+    local.free,
+  );
 
   pushWorktrees(lines, {
     name: orchestration,

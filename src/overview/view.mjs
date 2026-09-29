@@ -2,6 +2,7 @@
 // the view that fits the command line.
 import path from "node:path";
 
+import { freeMemory } from "../worktree/memory.mjs";
 import { diffOf, filesOf } from "./diff.mjs";
 import { developOf, migrationsOf } from "./develop.mjs";
 import {
@@ -90,6 +91,10 @@ export const readView = async () => {
       plan: recordOf(orchestration)?.plan ?? null,
       // Each agent's name and what it worked on before (#217, worktree/workers.mjs).
       workers: recordOf(orchestration)?.workers ?? {},
+      // Announced handovers (#227): what an agent gets next, for AGENTS.
+      handovers: recordOf(orchestration)?.handovers ?? [],
+      // For AGENTS: whether a fresh agent would get its own stack (#229).
+      free: freeMemory(),
       ownActions: actionsOf(file),
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and FEED: what herdr says each agent does.
