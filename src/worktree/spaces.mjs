@@ -48,7 +48,7 @@ export const mainSpace = () => {
 let hasNvim = null;
 /**
  * The tab `nvim` with nvim open in the worktree, on the files it changes
- * against develop (packages/workflow/nvim/changes.lua: `:Changes`, `:ChangesDiff`; from
+ * against develop (packages/breadboard/nvim/changes.lua: `:Changes`, `:ChangesDiff`; from
  * the checkout that builds the space, like the overview). Quit, its shell
  * idles and the next layout (a herdr restart, a worktree coming or going)
  * opens it again. Nothing without nvim on the PATH.

@@ -27,7 +27,7 @@ const DESCRIPTIONS = {
     "check:agents":
       "every AGENTS.md, skill and subagent within 150 lines, every link in them resolves",
     herdr:
-      "the pinned herdr with the repo's session and plugin (--reload new workflow code, --stop)",
+      "the pinned herdr with the repo's session and plugin (--reload new breadboard code, --stop)",
     "herdr:install":
       "the repo in your own herdr instead (e.g. Omarchy's): plugin, keys, the space Monocircuit/Platform",
     browser:

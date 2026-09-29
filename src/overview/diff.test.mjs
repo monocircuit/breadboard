@@ -9,12 +9,15 @@ describe("areaOf", () => {
       areaOf("products/vita/src/server/db/schema.ts"),
       "vita/server",
     );
-    assert.equal(areaOf("packages/workflow/src/lib/tty.mjs"), "workflow/lib");
+    assert.equal(
+      areaOf("packages/breadboard/src/lib/tty.mjs"),
+      "breadboard/lib",
+    );
   });
 
   it("names a file at a package's top, or directly in src, by the package", () => {
     assert.equal(areaOf("products/vita/package.json"), "vita");
-    assert.equal(areaOf("packages/workflow/src/overview.mjs"), "workflow");
+    assert.equal(areaOf("packages/breadboard/src/overview.mjs"), "breadboard");
   });
 
   it("names a file outside the packages by its top-level folder or itself", () => {

@@ -14,10 +14,10 @@ describe("pathsOf", () => {
   it("finds the files an issue names, with a folder or without, each once", () => {
     assert.deepEqual(
       pathsOf(
-        "Read `packages/workflow/src/overview/render-orchestration.mjs`, overview/boxes.mjs and `tty.mjs`; tty.mjs again, orchestrate.md.",
+        "Read `packages/breadboard/src/overview/render-orchestration.mjs`, overview/boxes.mjs and `tty.mjs`; tty.mjs again, orchestrate.md.",
       ),
       [
-        "packages/workflow/src/overview/render-orchestration.mjs",
+        "packages/breadboard/src/overview/render-orchestration.mjs",
         "overview/boxes.mjs",
         "tty.mjs",
         "orchestrate.md",
@@ -31,8 +31,8 @@ describe("pathsOf", () => {
 describe("sharedOf", () => {
   it("matches a named file to a worktree's file by its end", () => {
     const files = [
-      "packages/workflow/src/overview/boxes.mjs",
-      "packages/workflow/src/lib/tty.mjs",
+      "packages/breadboard/src/overview/boxes.mjs",
+      "packages/breadboard/src/lib/tty.mjs",
     ];
     assert.deepEqual(
       sharedOf(

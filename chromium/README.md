@@ -42,7 +42,7 @@ extension after its merge. A directory missing at the browser's start gives a
 `src/browser.mjs` looks for `chromium`, `chromium-browser`,
 `google-chrome-stable` or `google-chrome` that loads the copy (the flags file)
 or knows the id (a profile's preferences), and every time it opens something
-it brings the copy up to `packages/workflow/chromium` of the checkout it runs from.
+it brings the copy up to `packages/breadboard/chromium` of the checkout it runs from.
 Without such a browser, a url opens with `xdg-open` (`open` on macOS) as
 before, without a group, and `wt:new` opens no app: it would show a
 connection error.

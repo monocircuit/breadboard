@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { withStatusEntry } from "./setup.mjs";
 
-const RUN = "/repo/packages/workflow/herdr/run.mjs";
+const RUN = "/repo/packages/breadboard/herdr/run.mjs";
 const ENTRY = `{ type = "command", command = "node ${RUN} status", interval_seconds = 10, timeout_seconds = 3 }`;
 
 describe("withStatusEntry", () => {

@@ -39,7 +39,7 @@ export const bin = path.join(home, "bin", "herdr");
 export const configFile = path.join(home, "config.toml");
 /** The plugin of the main checkout once it is merged, else the one of the checkout you run this in. */
 export const pluginDir = [
-  path.join(main, "packages", "workflow", "herdr"),
+  path.join(main, "packages", "breadboard", "herdr"),
   path.resolve(import.meta.dirname, "..", "..", "herdr"),
 ].find(dir => fs.existsSync(path.join(dir, "herdr-plugin.toml")));
 /**

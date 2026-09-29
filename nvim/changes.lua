@@ -1,6 +1,6 @@
 -- What a worktree changes against develop, in nvim. The herdr tab `nvim` of a
--- worktree's space loads it (packages/workflow/src/worktree.mjs, ensureEditor); any nvim can:
--- :luafile packages/workflow/nvim/changes.lua. Built-ins only, gitsigns used where there.
+-- worktree's space loads it (packages/breadboard/src/worktree.mjs, ensureEditor); any nvim can:
+-- :luafile packages/breadboard/nvim/changes.lua. Built-ins only, gitsigns used where there.
 --
 --   :Changes       the changed files in the quickfix list (+added -removed each),
 --                  kept up to date while nvim has the focus; ]q / :cnext walks them

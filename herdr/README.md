@@ -122,7 +122,7 @@ that ask something. The session `platform` puts it in front of your own
 `tab_bar_right` (`config.toml` here has it for a session without a config of
 yours). Your own herdr: a block can't add to your `[ui]`, so add it to your
 `tab_bar_right` yourself:
-`{ type = "command", command = "node <main checkout>/packages/workflow/herdr/run.mjs status", interval_seconds = 10, timeout_seconds = 3 }`.
+`{ type = "command", command = "node <main checkout>/packages/breadboard/herdr/run.mjs status", interval_seconds = 10, timeout_seconds = 3 }`.
 
 ## An agent card
 

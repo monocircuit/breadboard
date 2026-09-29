@@ -94,7 +94,9 @@ describe("mergeOrderOf", () => {
   });
 
   it("merges the one further along first when two share files", () => {
-    const shared = ["packages/workflow/src/overview/render-orchestration.mjs"];
+    const shared = [
+      "packages/breadboard/src/overview/render-orchestration.mjs",
+    ];
     const order = mergeOrderOf(
       [
         entry(1, { files: shared, ...draft }),

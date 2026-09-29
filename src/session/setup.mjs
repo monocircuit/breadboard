@@ -98,7 +98,7 @@ export const writeConfig = () => {
   );
   const rows = sidebarConfig(baseText);
   const text = [
-    `# Written by pnpm herdr from ${base} and packages/workflow/herdr/keys.toml. Changes here are`,
+    `# Written by pnpm herdr from ${base} and packages/breadboard/herdr/keys.toml. Changes here are`,
     "# overwritten: put your own into .herdr/config.local.toml.",
     "",
     baseText,

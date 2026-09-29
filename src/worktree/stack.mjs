@@ -75,7 +75,7 @@ const stackEnv = (source, feature, offset) => {
   return [
     ...lines,
     "",
-    `# --- own dev stack of the worktree ${feature}, written by packages/workflow/src/worktree.mjs ---`,
+    `# --- own dev stack of the worktree ${feature}, written by packages/breadboard/src/worktree.mjs ---`,
     `COMPOSE_PROJECT_NAME=vita-${feature}`,
     ...Object.entries(PORTS)
       .filter(([, variable]) => variable)

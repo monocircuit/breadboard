@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// herdr for this repo in one command, see packages/workflow/herdr/README.md.
+// herdr for this repo in one command, see packages/breadboard/herdr/README.md.
 //
 //   pnpm herdr                    the pinned herdr in .herdr/, the session `platform`
 //                                 with the repo's config and plugin, in a new window
@@ -57,7 +57,7 @@ import {
 import { SPACE } from "./worktree.mjs";
 
 const flags = new Set(process.argv.slice(2));
-if (!pluginDir) fail("packages/workflow/herdr is missing in this checkout");
+if (!pluginDir) fail("packages/breadboard/herdr is missing in this checkout");
 if (flags.has("--install")) {
   await installIntoOwn();
   process.exit(0);
@@ -71,7 +71,13 @@ if (flags.has("--reload")) {
   // The pull can bring new workflow code, but this process runs what it
   // imported before it: the rest goes on in one that runs the pulled code.
   if (!flags.has("--pulled") && pullDevelop()) {
-    const pulled = path.join(main, "packages", "workflow", "src", "herdr.mjs");
+    const pulled = path.join(
+      main,
+      "packages",
+      "breadboard",
+      "src",
+      "herdr.mjs",
+    );
     const again = spawnSync(
       process.execPath,
       [pulled, "--reload", "--pulled"],
@@ -110,7 +116,7 @@ step(
 );
 if (hasOwnRows)
   step(
-    "your [ui.sidebar.spaces] stays: add $orch1..$orch3 to its rows to see the orchestrations (packages/workflow/herdr/README.md)",
+    "your [ui.sidebar.spaces] stays: add $orch1..$orch3 to its rows to see the orchestrations (packages/breadboard/herdr/README.md)",
   );
 if (!isRunning()) {
   await startServer();

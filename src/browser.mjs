@@ -4,7 +4,7 @@
 //   pnpm browser    put the extension where the browser loads it from, say how to load it
 //
 // Chromium has no command line for tab groups, an extension does: the one in
-// packages/workflow/chromium (see its README). With Chromium and the extension there, the
+// packages/breadboard/chromium (see its README). With Chromium and the extension there, the
 // url opens through its page, which moves the tab into the group; otherwise
 // the desktop's browser opens it as before, without a group.
 //
@@ -21,7 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Fixed by the `key` of packages/workflow/chromium/manifest.json. */
+/** Fixed by the `key` of packages/breadboard/chromium/manifest.json. */
 const EXTENSION_ID = "aikcnbeljldocaafkokjbngkboecmoli";
 const SOURCE = path.join(import.meta.dirname, "..", "chromium");
 const INSTALL_DIR = path.join(
@@ -52,7 +52,7 @@ const configOf = browser =>
   );
 
 /**
- * INSTALL_DIR as packages/workflow/chromium of this checkout, files that differ written
+ * INSTALL_DIR as packages/breadboard/chromium of this checkout, files that differ written
  * anew; the README stays behind. True when something changed: the browser
  * takes it at its next start.
  */

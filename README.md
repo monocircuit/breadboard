@@ -1,7 +1,11 @@
-# @monocircuit/workflow
+# @monocircuit/breadboard
 
-The dev workflow of the repo: worktrees with their own dev stacks, the live
-overview, the herdr plugin and the Chromium extension. How to use it: skill
+The dev workflow of the repo. The name says what it does: worktrees and their
+stacks side by side, plugged in, tried, rewired and pulled out again, like
+circuits on a breadboard before they are soldered. It holds the worktrees with
+their own dev stacks, the live overview, the herdr plugin and the Chromium
+extension; the commands keep their names (`wt:*`, `stack:*`, `overview`). How
+to use it: skill
 [`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). Nothing here
 ships; the package is private.
 
@@ -20,7 +24,7 @@ ships; the package is private.
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | `:Changes` and `:ChangesDiff` in a worktree's `nvim` tab |
 
-The commands run from the root `package.json` (`node packages/workflow/src/…`),
+The commands run from the root `package.json` (`node packages/breadboard/src/…`),
 so they work from every checkout without a `--filter`.
 
 ## No dependencies
@@ -33,6 +37,6 @@ are fine.
 ## Checks
 
 ```sh
-pnpm --filter @monocircuit/workflow lint
-pnpm --filter @monocircuit/workflow test   # node --test, *.test.mjs next to the code
+pnpm --filter @monocircuit/breadboard lint
+pnpm --filter @monocircuit/breadboard test   # node --test, *.test.mjs next to the code
 ```

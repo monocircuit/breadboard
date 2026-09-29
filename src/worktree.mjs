@@ -100,7 +100,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const flags = new Set([feature, ...rest].filter(a => a?.startsWith("--")));
   if (!commands[command])
     fail(
-      "usage: node packages/workflow/src/worktree.mjs new|orchestrate|plan|stack|control|mr|note|tick|action|wait|issues|herdr|prune|list|remove …",
+      "usage: node packages/breadboard/src/worktree.mjs new|orchestrate|plan|stack|control|mr|note|tick|action|wait|issues|herdr|prune|list|remove …",
     );
   await commands[command](
     feature?.startsWith("--") ? undefined : feature,
