@@ -21,7 +21,9 @@ import {
 } from "../lib/tty.mjs";
 import { ORCHESTRATOR, focusSpace, waitsText } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
+import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
+import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
 import { nextText } from "./handovers.mjs";
 import { pink } from "./names.mjs";
@@ -48,15 +50,18 @@ const placeCell = (count, number) =>
  * Where a worktree stands in its life: `{ key, text }`. `issue` as issuesOf
  * gives it (its `tree` while the worktree is there, with `ownCommits`: commits
  * develop doesn't have), `mr` its merge request, `status` herdr's state of its
- * agent. Merged comes first: what is left then is the clean-up.
- * - `removable`: merged, nothing left in it: what wt:remove / clean up takes
+ * agent, `hold` why a handover holds the agent, `removal` the automatic
+ * wt:remove's `{ isRunning, error }` (auto-actions.mjs). Merged comes first:
+ * what is left then is the clean-up (clean-up.mjs).
+ * - `removable`: merged, nothing left in it: the overview removes it
  * - `kept`: merged, but changes or commits not in develop keep it
+ * - `held`: merged, its clean-up waits for its agent (at work, a handover)
  * - `asks`: its agent is blocked on you; `waits`: an action of it is open
  * - `working`: its agent is at work; `ready`: the MR is ready, pipeline passed
- * - `idle`: none of those; `removed`: gone; `skipped`: never started, why;
+ * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
  */
-export const lifecycleOf = (issue, { mr, status } = {}) => {
+export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
   const { tree } = issue;
   if (!tree)
     return issue.queued
@@ -64,17 +69,22 @@ export const lifecycleOf = (issue, { mr, status } = {}) => {
       : issue.why
         ? { key: "skipped", text: yellow(issue.why) }
         : { key: "removed", text: dim("removed") };
-  if (mr?.state === "merged") {
-    const why = [
-      tree.changed ? `${tree.changed} changed` : "",
-      tree.ownCommits ? "commits not in develop" : "",
-    ]
-      .filter(Boolean)
-      .join(", ");
-    return why
-      ? { key: "kept", text: yellow(`merged: kept, ${why}`) }
-      : { key: "removable", text: cyan("merged: will be removed") };
-  }
+  const cleanUp = cleanUpOf(issue, { mr, status, hold });
+  if (cleanUp?.key === "kept")
+    return { key: "kept", text: yellow(`kept: ${cleanUp.why}`) };
+  if (cleanUp?.key === "waits")
+    return { key: "held", text: yellow(`waits: ${cleanUp.why}`) };
+  if (cleanUp)
+    return removal?.error
+      ? { key: "removable", text: red(`merged: ${removal.error}`) }
+      : {
+          key: "removable",
+          text: cyan(
+            removal?.isRunning
+              ? "merged: removing …"
+              : "merged: will be removed",
+          ),
+        };
   if (status === "blocked") return { key: "asks", text: red("asks you") };
   if (tree.actions?.some(action => !action.answer))
     return { key: "waits", text: yellow("waits for you") };
@@ -148,7 +158,8 @@ const factsOf = (issue, found, mr, hasRemote, handover) => {
  * is there); `facts` and `title` go below it.
  * `of(issue)`: its part of GitLab; `agents`: agentsOf(); `work`: the work
  * order of wt:plan; `merge`: the open MRs' issues in the computed merge order;
- * `announced`: the announced handovers (handovers.mjs).
+ * `announced`: the announced handovers (handovers.mjs); `holds`: dir → why
+ * the clean-up of a worktree waits for a handover (workers.mjs).
  */
 export const treeOf = (
   issues,
@@ -158,6 +169,7 @@ export const treeOf = (
     work = [],
     merge = [],
     announced = [],
+    holds = new Map(),
     hasRemote = true,
   } = {},
 ) => {
@@ -168,10 +180,20 @@ export const treeOf = (
     const { mr, issue: found } = of(issue);
     const { tree } = issue;
     const status = tree?.claude ? agents.get(tree.claude.id)?.status : null;
-    const lifecycle = lifecycleOf(issue, { mr, status });
+    const lifecycle = lifecycleOf(issue, {
+      mr,
+      status,
+      hold: tree && holds.get(tree.dir),
+      removal: tree && removalOf(tree.dir),
+    });
     const state =
       lifecycle.key === "removed" && issue.removedAt
-        ? { ...lifecycle, text: dim(`removed ${clock(issue.removedAt)}`) }
+        ? {
+            ...lifecycle,
+            text: dim(
+              `${issue.mergedAt || mr?.state === "merged" ? "merged: " : ""}removed ${clock(issue.removedAt)}`,
+            ),
+          }
         : lifecycle;
     return {
       issue,
@@ -233,13 +255,14 @@ let isRemovedOpen = null;
  */
 export const pushWorktrees = (
   lines,
-  { name, issues, of, agents, work, merge, announced, hasRemote },
+  { name, issues, of, agents, work, merge, announced, holds, hasRemote },
 ) => {
   const { live, removed } = treeOf(issues, of, {
     agents,
     work,
     merge,
     announced,
+    holds,
     hasRemote,
   });
   const box = openBox(lines);

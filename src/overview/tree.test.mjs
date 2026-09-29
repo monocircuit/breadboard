@@ -34,10 +34,34 @@ describe("lifecycleOf", () => {
       mr: merged,
     });
     assert.equal(kept.key, "kept");
-    assert.match(plain(kept.text), /merged: kept, 2 changed/);
+    assert.match(plain(kept.text), /^kept: 2 changed$/);
     assert.equal(
       stateOf(issue(1, { tree: tree({ ownCommits: true }) }), { mr: merged }),
       "kept",
+    );
+  });
+
+  it("names what stops the clean-up of a merged worktree", () => {
+    const text = (entry, facts) => plain(lifecycleOf(entry, facts).text);
+    assert.equal(
+      text(issue(1, { tree: tree({ ownCommits: 1 }) }), { mr: merged }),
+      "kept: 1 commit not in develop",
+    );
+    assert.equal(
+      text(issue(1), { mr: merged, status: "working" }),
+      "waits: its agent is working",
+    );
+    assert.equal(
+      text(issue(1), {
+        mr: merged,
+        status: "idle",
+        hold: "its agent takes #226 after !232",
+      }),
+      "waits: its agent takes #226 after !232",
+    );
+    assert.equal(
+      text(issue(1), { mr: merged, removal: { isRunning: true } }),
+      "merged: removing …",
     );
   });
 
@@ -204,7 +228,7 @@ describe("pushWorktrees", () => {
           }
         : found({ number: 1 }),
     );
-    assert.match(text, / {3}└─ 2\. 2-feature +removed .*3:40/);
+    assert.match(text, / {3}└─ 2\. 2-feature +merged: removed .*3:40/);
     assert.match(text, /\n {9}#2 open · !211 merged .*3:12/);
   });
 

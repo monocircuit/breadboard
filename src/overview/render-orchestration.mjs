@@ -17,6 +17,7 @@ import {
   ORCHESTRATOR,
   actionsFile,
   focusSpace,
+  isInHerdr,
   waitsText,
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
@@ -25,6 +26,7 @@ import { isOnce, orchestration } from "./args.mjs";
 import {
   AUTO_KIND,
   autoActionsOf,
+  removeMerged,
   notifyNewActions,
   tellConflicts,
 } from "./auto-actions.mjs";
@@ -207,14 +209,20 @@ const actionsOf = (local, issues, of, remote, announced) => {
           },
         ]
       : [];
-  return orderActions([
-    ...own,
-    ...agents,
-    ...auto,
-    ...workers,
-    ...end,
-    ...replan,
-  ]);
+  // Merged worktrees nothing holds go by themselves, from the one live overview (clean-up.mjs).
+  if (remote && isInHerdr() && deliversAnswers(orchestration))
+    removeMerged(issues, of, local.agents ?? new Map(), handovers.holds);
+  return {
+    holds: handovers.holds,
+    ...orderActions([
+      ...own,
+      ...agents,
+      ...auto,
+      ...workers,
+      ...end,
+      ...replan,
+    ]),
+  };
 };
 /** How much of an MR's title its row in MERGE REQUESTS shows. */
 const TITLE_WIDTH = 40;
@@ -435,6 +443,7 @@ export const renderOrchestration = (local, remote, error) => {
     work,
     merge: order.open.map(item => item.number),
     announced,
+    holds: actions.holds,
     hasRemote: Boolean(remote),
   });
 

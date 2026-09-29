@@ -8,6 +8,7 @@ import path from "node:path";
 
 import { red } from "../lib/tty.mjs";
 import { CAP, CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
+import { takesText } from "./handovers.mjs";
 import { screen } from "./screen.mjs";
 
 /** A file path an issue names: with a folder or not, with an extension of the repo's files. */
@@ -144,7 +145,7 @@ const percent = share => `${Math.round(share * 100)} %`;
  * The rows of UP NEXT for the workers of the orchestration `name`: per
  * queued issue its suggested agent, `hand over`, as automatic actions
  * (`{ key, kind, text, at, issue, who, go }`), and `held`, the worktrees of
- * the suggested agents. Their clean-up waits: it would close the agent with
+ * the suggested and announced agents (`holds`: dir → why). Their clean-up waits: it would close the agent with
  * the space. An agent nothing fits closes with its clean-up, its
  * conversation kept for `/resume`.
  *
@@ -224,11 +225,15 @@ export const workerActionsOf = (
       go: () => handOver(name, number, worker),
     });
   }
-  return {
-    actions,
-    held: new Set([
-      ...[...suggested.values()].map(({ worker }) => worker.dir),
-      ...[...promised].filter(Boolean),
+  // Why the clean-up of each held worktree waits, for its node (tree.mjs).
+  const holds = new Map([
+    ...[...suggested].map(([number, { worker }]) => [
+      worker.dir,
+      `its agent is suggested for #${number}`,
     ]),
-  };
+    ...announced
+      .filter(({ tree }) => tree)
+      .map(handover => [handover.tree.dir, takesText(handover)]),
+  ]);
+  return { actions, held: new Set(holds.keys()), holds };
 };
