@@ -18,9 +18,15 @@ import {
   wrap,
   yellow,
 } from "../lib/tty.mjs";
-import { ORCHESTRATOR, focusSpace, waitsText } from "../worktree.mjs";
+import {
+  ORCHESTRATOR,
+  focusSpace,
+  isChangeOpen,
+  waitsText,
+} from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
+import { changeFact, unpushedFact } from "./change.mjs";
 import { show } from "./io.mjs";
 import { ago, mrState, tokens } from "./render-worktree.mjs";
 import { screen } from "./screen.mjs";
@@ -82,7 +88,12 @@ export const lifecycleOf = (issue, { mr, status } = {}) => {
     return { key: "waits", text: yellow("waits for you") };
   if (status === "working") return { key: "working", text: yellow("working") };
   const pipeline = mr?.pipeline?.status ?? mr?.pipeline;
-  if (mr?.state === "opened" && !mr.isDraft && pipeline === "success")
+  if (
+    mr?.state === "opened" &&
+    !mr.isDraft &&
+    pipeline === "success" &&
+    !isChangeOpen(tree, mr)
+  )
     return { key: "ready", text: green("ready to merge") };
   return { key: "idle", text: dim(tree.claude ? "idle" : "no agent") };
 };
@@ -123,7 +134,8 @@ const agentFact = claude => {
 };
 /**
  * The facts line of a node: issue, MR and pipeline, work, agent, a wait
- * (#216). What doesn't apply is left out; a worktree without an MR says so.
+ * (#216), a requested change and what isn't pushed (#228). What doesn't
+ * apply is left out; a worktree without an MR says so.
  */
 const factsOf = (issue, found, mr, hasRemote) => {
   const { tree } = issue;
@@ -134,6 +146,8 @@ const factsOf = (issue, found, mr, hasRemote) => {
     tree ? workFact(tree) : "",
     tree ? agentFact(tree.claude) : "",
     tree?.wait ? yellow(waitsText(tree.wait)) : "",
+    tree ? changeFact(tree, mr) : "",
+    tree ? unpushedFact(tree) : "",
   ]
     .filter(Boolean)
     .join(" · ");

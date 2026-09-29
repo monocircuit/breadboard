@@ -21,12 +21,14 @@ export const FOLLOW_UPS = new Set([
 ]);
 /**
  * The kinds of ACTIONS by what blocks most: an agent that stands still
- * (`waits`, `decide`, `plan`), then the merges, then what only looks.
+ * (`waits`, `decide`, `plan`), work only a worktree has (`push`), then the
+ * merges, then what only looks.
  */
 const BLOCKS = [
   "waits",
   "decide",
   "plan",
+  "push",
   "merge",
   "try",
   "browser-check",

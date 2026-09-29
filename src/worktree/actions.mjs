@@ -74,7 +74,7 @@ const pause = ms =>
  * overview, the Stop hook and wt:action read and write it from processes of
  * their own, and a read between another's read and write would undo it. The
  * lock is a directory next to the file (mkdir is atomic); `actions` left out
- * writes nothing. Returns `result`.
+ * writes nothing, `fields` are written next to them. Returns `result`.
  */
 const changeActions = (file, fn) => {
   const lock = `${file}.lock`;
@@ -93,8 +93,13 @@ const changeActions = (file, fn) => {
     }
   }
   try {
-    const { actions, result } = fn(actionsOf(file));
+    const { actions, result, fields } = fn(actionsOf(file));
     if (actions) writeActions(file, actions);
+    if (fields)
+      fs.writeFileSync(
+        file,
+        `${JSON.stringify({ ...readFile(file), ...fields }, null, 2)}\n`,
+      );
     return result;
   } finally {
     fs.rmSync(lock, { recursive: true, force: true });
@@ -103,7 +108,8 @@ const changeActions = (file, fn) => {
 /**
  * A new action in `file`, numbered after the highest there. The same kind
  * and text again replaces the older one: an agent that announces twice waits
- * for one thing, not two.
+ * for one thing, not two. A merge ends the requested change (`change`): its
+ * agent says it is built, pushed and green.
  */
 export const addAction = (
   file,
@@ -126,6 +132,7 @@ export const addAction = (
         action,
       ],
       result: action,
+      ...(kind === "merge" ? { fields: { change: null } } : {}),
     };
   });
 /** The action `id` in `file` done: it goes. False when there is none. */
@@ -202,3 +209,20 @@ export const takeAnswers = (file, { pane } = {}) =>
         }
       : { result: [] };
   });
+/**
+ * The change requested for a worktree's MR (`wt:action change`), in the same
+ * file as its actions: `{ text, at, mr, head }`, `head` the commit of the
+ * origin branch when it was asked for; null when none is open.
+ */
+export const changeOf = file => readFile(file).change ?? null;
+/**
+ * `change` requested in `file`: the merge actions there are withdrawn, the MR
+ * is no longer to be merged until the change is pushed and green. Returns
+ * the merge actions it withdrew.
+ */
+export const requestChange = (file, change) =>
+  changeActions(file, actions => ({
+    actions: actions.filter(action => action.kind !== "merge"),
+    result: actions.filter(action => action.kind === "merge"),
+    fields: { change },
+  }));

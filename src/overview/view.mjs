@@ -9,11 +9,13 @@ import {
   STUDIO_PORT,
   actionsFile,
   actionsOf,
+  changeOf,
   feedFile,
   hasOwnCommits,
   isPortFree,
   mainDir,
   noteOf,
+  pushStateOf,
   recordFile,
   recordOf,
   stoppedOf,
@@ -80,6 +82,9 @@ export const readView = async () => {
         tree.branch !== "(detached)" && hasOwnCommits(tree.branch, tree.dir),
       // What it waits for (wt:wait), for its MR row.
       wait: waitOf(tree.dir),
+      // A change requested for its MR (wt:action change) and what isn't pushed (#228, change.mjs).
+      change: changeOf(actionsFile(tree.dir)),
+      ...pushStateOf(tree.dir, tree.branch),
     }));
     // The orchestrator's order (wt:plan) and its own actions, from the record.
     const file = recordFile(orchestration);

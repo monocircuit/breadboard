@@ -35,6 +35,7 @@ import {
   pipelineMark,
   titleLines,
 } from "./boxes.mjs";
+import { changeFact } from "./change.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { pushFeed } from "./feed.mjs";
 import { open, show } from "./io.mjs";
@@ -464,6 +465,11 @@ export const renderOrchestration = (local, remote, error) => {
               // What its agent waits for (wt:wait).
               item.issue.tree?.wait
                 ? `  ${yellow(waitsText(item.issue.tree.wait))}`
+                : ""
+            }${
+              // A change requested for it (wt:action change, #228).
+              item.issue.tree && changeFact(item.issue.tree, mr)
+                ? `  ${changeFact(item.issue.tree, mr)}`
                 : ""
             }`,
       ];

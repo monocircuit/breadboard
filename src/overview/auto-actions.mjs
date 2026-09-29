@@ -9,8 +9,9 @@ import path from "node:path";
 
 import { herdr, isInHerdr } from "../lib/herdr.mjs";
 import { ESCAPES, cyan, red, yellow } from "../lib/tty.mjs";
-import { featureOf, focusSpace, mainDir } from "../worktree.mjs";
+import { featureOf, focusSpace, isChangeOpen, mainDir } from "../worktree.mjs";
 import { deliverTo } from "./answers.mjs";
+import { unpushedActionOf } from "./change.mjs";
 import { show } from "./io.mjs";
 import { screen } from "./screen.mjs";
 
@@ -19,6 +20,7 @@ export const AUTO_KIND = {
   pipeline: red("pipeline"),
   "clean up": cyan("clean up"),
   waits: yellow("waits"),
+  push: red("push"),
 };
 
 // ---------------------------------------------------------------------------
@@ -274,7 +276,9 @@ export const sendOnce = (dir, key, line) => {
  * them: `{ key, kind, text, at, issue, go }`, `key` the same for as long as
  * the cause lasts. `of(issue)`: its part of GitLab (`{ mr, jobs, issue }`);
  * `agents`: agentsOf().
- * - `merge`: the MR is ready and its pipeline passed, unless the agent posted one;
+ * - `merge`: the MR is ready and its pipeline passed, unless the agent posted
+ *   one or a requested change still blocks it (change.mjs);
+ * - `push`: its worktree holds commits origin doesn't have for long;
  * - `pipeline`: the pipeline of the open MR failed; the click tells the agent
  *   which job, with its url;
  * - `clean up`: the MR is merged; the worktree to remove (two clicks), the
@@ -307,7 +311,8 @@ export const autoActionsOf = (issues, of, agents) =>
       status === "success" &&
       // GitLab's word, not ours: conflicts, a check still running, … block.
       mr.mergeStatus === "mergeable" &&
-      !tree?.actions?.some(action => action.kind === "merge")
+      !tree?.actions?.some(action => action.kind === "merge") &&
+      !isChangeOpen(tree, mr)
     )
       add("merge", "ready, pipeline passed", pipelineAt, () =>
         show(mr.url, tree?.dir),
@@ -331,6 +336,13 @@ export const autoActionsOf = (issues, of, agents) =>
           show(job?.url ?? mr.url, tree?.dir),
       );
     }
+    const unpushed =
+      tree &&
+      unpushedActionOf(issue, mr, sent, {
+        send: sendOnce,
+        focus: () => focusAgent(tree.dir, agent),
+      });
+    if (unpushed) add(unpushed.kind, unpushed.text, unpushed.at, unpushed.go);
     if (mr?.state === "merged") {
       if (tree)
         actions.push({

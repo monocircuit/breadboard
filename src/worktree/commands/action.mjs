@@ -10,19 +10,29 @@ import {
   doneAction,
   takeAnswers,
 } from "../actions.mjs";
+import { pushStateOf } from "../change.mjs";
 import { feedFile, setNote } from "../feed.mjs";
 import { originOf, recordFile, recordOf } from "../origins.mjs";
 import { mainDir } from "../worktrees.mjs";
+import changeCommand from "./change.mjs";
 
 const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>] [--option <answer>]…   kind: ${ACTION_KINDS.join(", ")}
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action note <one line>   what you do, for the FEED
+       pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list
        pnpm wt:action --done <id>
        pnpm wt:action --answers   the answers not yet delivered, handed over (they go)
        … --orchestration <name>   the orchestrator's own, from any checkout`;
 /** The flags that take a value. */
-const VALUED = ["--url", "--run", "--done", "--orchestration", "--option"];
+const VALUED = [
+  "--url",
+  "--run",
+  "--done",
+  "--orchestration",
+  "--option",
+  "--mr",
+];
 
 /** The words of the command line after `<kind>` that are no flag and no flag's value. */
 const textOf = () => {
@@ -75,6 +85,12 @@ const whereOf = () => {
  */
 export default function actionCommand(given, flags) {
   const kind = KIND_ALIASES[given] ?? given;
+  if (kind === "change") {
+    const text = textOf();
+    if (!text) fail(USAGE);
+    changeCommand(text, flagValue("--orchestration"));
+    return;
+  }
   const { file, name } = whereOf();
 
   if (flags.has("--list")) {
@@ -133,6 +149,15 @@ export default function actionCommand(given, flags) {
     );
   if (run && (kind !== "try" || flagValue("--orchestration")))
     fail("only an agent's try runs a command: --run <command>");
+  if (kind === "merge" && !flagValue("--orchestration")) {
+    const dir = git(["rev-parse", "--show-toplevel"]).out;
+    const branch = git(["branch", "--show-current"], dir).out;
+    const { unpushed, hasRemoteBranch } = pushStateOf(dir, branch);
+    if (unpushed)
+      fail(
+        `${unpushed} commit${unpushed === 1 ? "" : "s"} not pushed${hasRemoteBranch ? "" : " (no remote branch)"}: push first, the merge takes only what GitLab has`,
+      );
+  }
   const options = valuesOf("--option");
   if (options.length && kind !== "decide")
     fail("only a decide has options: --option <answer>");
