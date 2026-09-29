@@ -86,22 +86,26 @@ describe("windowOf", () => {
     screen.scroll = 0;
   });
 
-  it("puts the mark into the title bar and keeps the position clamped", () => {
+  // The band and two rows of the view under it.
+  const rows = () => titleHeight() + 2;
+
+  it("puts the mark by the time in the title band and keeps the position clamped", () => {
     const text = [...titleLines("⇶ test", "12:00"), ...view(20)].join("\n");
     screen.scroll = 100;
-    const shown = windowOf(text, 5);
+    const shown = windowOf(text, rows());
     assert.equal(screen.scroll, 18);
-    assert.match(shown[0].replace(ESCAPES, ""), /↑ 18 more\s+12:00/);
+    assert.match(shown[1].replace(ESCAPES, ""), /↑ 18 more\s+12:00/);
+    assert.equal(shown.length, rows());
     assert.equal(shown.at(-1), "line 19");
   });
 
   it("scrolls to the top and the bottom", () => {
     const text = [...titleLines("⇶ test", "12:00"), ...view(20)].join("\n");
     scrollBy(Infinity);
-    windowOf(text, 5);
+    windowOf(text, rows());
     assert.equal(screen.scroll, 18);
     scrollBy(-Infinity);
-    windowOf(text, 5);
+    windowOf(text, rows());
     assert.equal(screen.scroll, 0);
   });
 });
