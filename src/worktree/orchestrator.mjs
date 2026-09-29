@@ -281,7 +281,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
 
 1. Read the issue: \`glab issue view ${number} --comments\`, then the AGENTS.md files and skills it touches.
 2. Work as AGENTS.md says: commit and push per green step, the draft MR with the first commit (\`pnpm wt:mr\`), boxes ticked with \`pnpm wt:tick\`.
-   When you have to wait for other MRs, run \`pnpm wt:wait !N … --then "<what next>"\` with \`run_in_background\` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
+   Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run \`pnpm wt:wait !N … --then "<what next>"\` with \`run_in_background\` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
 3. **The overview shows your work, you don't report it.** Its FEED has one line per agent: after every stage, \`pnpm wt:action note "<one line: what is pushed, what comes next>"\` (at every stop a hook puts the first line of your last answer there when it is newer: let that line say something). Its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline.
    \`SendMessage\` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
