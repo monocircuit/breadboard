@@ -197,7 +197,8 @@ describe("clicks in a scrolled orchestration view", () => {
       frame.scrolled();
       flush();
       shown.forEach((row, at) => {
-        if (at === 0) return; // the title's first line, with the mark
+        // The band: its time line carries the mark, and it has no clicks.
+        if (at < titleHeight()) return;
         const index = frame.viewRowAt(at);
         const where = `row ${at} at offset ${offset}`;
         // The row shows that line of the view…
