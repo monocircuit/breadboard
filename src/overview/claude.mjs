@@ -122,8 +122,6 @@ export const readClaude = dir => {
   const claude = {
     prompt: lastPromptOf(transcript, size, lines),
     answer: answer?.text ?? null,
-    // When it said it: the FEED shows the newer of it and the agent's note.
-    answerAt: answer?.at ?? null,
     id,
     // The file itself, not the link a worktree's project is (worktree.mjs, shareConversations).
     transcript: fs.realpathSync(transcript),

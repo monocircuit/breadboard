@@ -12,7 +12,6 @@ import {
   takeAnswers,
 } from "../actions.mjs";
 import { pushStateOf } from "../change.mjs";
-import { feedFile, setNote } from "../feed.mjs";
 import { originOf, recordFile, recordOf } from "../origins.mjs";
 import { mainDir } from "../worktrees.mjs";
 import changeCommand from "./change.mjs";
@@ -20,7 +19,6 @@ import changeCommand from "./change.mjs";
 const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>]   kind: ${ACTION_KINDS.join(", ")}
        pnpm wt:action decide "<what is decided>?" --option "<what happens>" --option "<what happens>"… --recommend <option>
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
-       pnpm wt:action note <one line>   what you do, for the FEED
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list
        pnpm wt:action --done <id>
@@ -144,17 +142,6 @@ export default function actionCommand(given, flags) {
     return;
   }
 
-  if (kind === "note") {
-    const dir = git(["rev-parse", "--show-toplevel"]).out;
-    if (!dir || dir === mainDir()) fail("a note is for a worktree's agent");
-    const text = textOf();
-    if (!text) fail(USAGE);
-    setNote(feedFile(dir), text);
-    console.log(
-      `\n✓ ${name ? `in FEED of ⇶ ${name}` : "noted (no orchestration shows it)"}: ${text}\n`,
-    );
-    return;
-  }
   if (!ACTION_KINDS.includes(kind)) fail(USAGE);
   const text = textOf();
   if (!text) fail(USAGE);

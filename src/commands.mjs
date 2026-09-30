@@ -54,7 +54,7 @@ const DESCRIPTIONS = {
     "wt:tick":
       "[<issue>] [<box>…] the boxes of the issue, numbered; ticks the given ones",
     "wt:action":
-      "<kind> <text> [--url <u> | --run <cmd>] ask the human for merge, try (opens the spot to check), decide (a question, --option per consequence, --recommend <option>), plan or look: a row in ACTIONS of the orchestration's overview (--list, --done <id>, --orchestration <name> for the orchestrator); note <line>: what you do, a row in FEED; change <what>: a change for the MR, draft at once and its merge withdrawn (--mr !N with --orchestration)",
+      "<kind> <text> [--url <u> | --run <cmd>] ask the human for merge, try (opens the spot to check), decide (a question, --option per consequence, --recommend <option>), plan or look: a row in ACTIONS of the orchestration's overview (--list, --done <id>, --orchestration <name> for the orchestrator); change <what>: a change for the MR, draft at once and its merge withdrawn (--mr !N with --orchestration)",
     "wt:wait":
       '!<mr>… [--then "<what>"] run in the background: ends with the line to go on with once the MRs are merged (early when one is closed or stays in conflict, after --hours, default 8); the overview shows the wait (--cancel)',
     "wt:issues": "issues of merged MRs nobody commented on since the merge",
