@@ -300,7 +300,9 @@ export const sendOnce = (dir, key, line) => {
  * the cause lasts. `of(issue)`: its part of GitLab (`{ mr, jobs, issue }`);
  * `agents`: agentsOf().
  * - `merge`: the MR is ready and its pipeline passed, unless the agent posted
- *   one or a requested change still blocks it (change.mjs);
+ *   one or a requested change still blocks it (change.mjs); a draft of
+ *   `readyDrafts` too (issue numbers: next in the merge order, green, every
+ *   Work box ticked), whose agent could not mark it ready: its merge does;
  * - `push`: its worktree holds commits origin doesn't have for long;
  * - `pipeline`: the pipeline of the open MR failed; the click tells the agent
  *   which job, with its url;
@@ -310,14 +312,19 @@ export const sendOnce = (dir, key, line) => {
  * - `waits`: the agent asks something (a question, a permission) or stopped
  *   on a question; the click goes to its tab.
  */
-export const autoActionsOf = (issues, of, agents) =>
+export const autoActionsOf = (
+  issues,
+  of,
+  agents,
+  { readyDrafts = new Set() } = {},
+) =>
   issues.flatMap(issue => {
     const { mr, jobs = [], issue: found } = of(issue);
     const { tree } = issue;
     const agent = tree?.claude && agents.get(tree.claude.id);
     const sent = tree ? sentOf(tree.dir) : new Set();
     const actions = [];
-    const add = (kind, text, at, go) =>
+    const add = (kind, text, at, go, more = {}) =>
       actions.push({
         key: `${kind}:${issue.branch}`,
         kind,
@@ -325,20 +332,28 @@ export const autoActionsOf = (issues, of, agents) =>
         at: new Date(at ?? Date.now()).toISOString(),
         issue,
         go,
+        ...more,
       });
     const status = mr?.pipeline?.status;
     const pipelineAt = mr?.pipeline?.finished_at ?? mr?.pipeline?.updated_at;
+    const isReadyDraft = Boolean(mr?.isDraft) && readyDrafts.has(issue.number);
     if (
       mr?.state === "opened" &&
-      !mr.isDraft &&
+      (!mr.isDraft || isReadyDraft) &&
       status === "success" &&
       // GitLab's word, not ours: conflicts, a check still running, … block.
-      mr.mergeStatus === "mergeable" &&
+      (mr.mergeStatus === "mergeable" || isReadyDraft) &&
       !tree?.actions?.some(action => action.kind === "merge") &&
       !isChangeOpen(tree, mr)
     )
-      add("merge", "ready, pipeline passed", pipelineAt, () =>
-        show(mr.url, tree?.dir),
+      add(
+        "merge",
+        isReadyDraft
+          ? "pipeline passed, every Work box ticked, still a draft"
+          : "ready, pipeline passed",
+        pipelineAt,
+        () => show(mr.url, tree?.dir),
+        { canMarkReady: isReadyDraft },
       );
     const failed = `pipeline:!${mr?.iid}:${mr?.pipeline?.id ?? pipelineAt}`;
     if (mr?.state === "opened" && status === "failed" && !sent.has(failed)) {
