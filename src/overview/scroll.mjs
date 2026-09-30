@@ -1,5 +1,5 @@
 // The scroll window: a view taller than the pane shows a part of it. The
-// first `screen.sticky` lines (the title bar with its logo, in an orchestration
+// first `screen.sticky` lines (the title band with its logo, in an orchestration
 // NEXT too)
 // stay on top, the rest scrolls under them.
 import { lastTitle, titleLines } from "./boxes.mjs";
@@ -35,7 +35,7 @@ export const moreMark = (above, below) =>
 
 /**
  * The view `text` cut to the pane (`screen.scroll` clamped on the way), its
- * title bar with the mark of what is cut off.
+ * title band with the mark of what is cut off, by its time.
  */
 export const windowOf = (text, rows) => {
   const shown = scrollWindow(text.split("\n"), rows, {
@@ -44,12 +44,16 @@ export const windowOf = (text, rows) => {
   });
   screen.scroll = shown.offset;
   const mark = moreMark(shown.above, shown.below);
-  if (mark && lastTitle.isSet)
-    [shown.lines[0]] = titleLines(
+  if (mark && lastTitle.isSet) {
+    // The band again with the mark by the time, as far as the pane shows it.
+    const band = titleLines(
       lastTitle.left,
       `${mark}  ${lastTitle.right}`,
       lastTitle.keys,
     );
+    const count = Math.min(band.length, screen.sticky, shown.lines.length);
+    shown.lines.splice(0, count, ...band.slice(0, count));
+  }
   return shown.lines;
 };
 
