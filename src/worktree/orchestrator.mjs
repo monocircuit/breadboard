@@ -11,7 +11,7 @@ import {
   tabsOf,
 } from "../lib/herdr.mjs";
 import { git, quote, run } from "../lib/proc.mjs";
-import { ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
+import { CHANGELOG, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
 import { exclusive } from "./lock.mjs";
 import {
@@ -75,11 +75,22 @@ export const removeOrchestratorCheckout = name => {
     ? null
     : `kept the checkout of ${orchestratorLabel(name)}, it has changes: ${dir}`;
 };
+/** The tab order of the space `⇶ <name>`; a function, origins.mjs and this import each other. */
+export const orchestratorOrder = () => [
+  ROOT,
+  OVERVIEW,
+  ORCHESTRATOR_TAB,
+  CHANGELOG,
+];
+/** What the tab `changelog` runs: the changelog of the orchestration, live (changelog-view.mjs). */
+export const changelogTabCommand = name =>
+  `node ${quote(ENTRY)} orchestrate ${name} --changelog --watch`;
 /**
  * The space `⇶ <name>`: `root`, its `overview` (the issues and merge
- * requests of the orchestration) and the orchestrator's tab, in that order.
- * The layout calls it for every such space, so the overview comes back after
- * a herdr restart and an older space gets it.
+ * requests of the orchestration), the orchestrator's tab and `changelog`
+ * (what it got done, #248), in that order. The layout calls it for every
+ * such space, so overview and changelog come back after a herdr restart and
+ * an older space gets them.
  */
 export const orchestratorSpace = name => {
   const main = mainDir();
@@ -118,7 +129,12 @@ export const orchestratorSpace = name => {
     tabs,
   );
   ensureTab(workspace, { label: ROOT, cwd: main }, tabs);
-  keepOrder(workspace, [ROOT, OVERVIEW, ORCHESTRATOR_TAB]);
+  ensureTab(
+    workspace,
+    { label: CHANGELOG, cwd: main, command: changelogTabCommand(name) },
+    tabs,
+  );
+  keepOrder(workspace, orchestratorOrder());
   return workspace;
 };
 /**
@@ -148,7 +164,7 @@ export const openOrchestrator = exclusive(async name => {
     if (created) herdr(["tab", "rename", created.tab_id, ORCHESTRATOR_TAB]);
     isMoved = Boolean(created);
   }
-  keepOrder(workspace, [ROOT, OVERVIEW, ORCHESTRATOR_TAB]);
+  keepOrder(workspace, orchestratorOrder());
   mainSpace();
   const found = spaces().find(w => w.workspace_id === workspace);
   if (found) markSpace(found, { name, slot: slotOf(name) });
