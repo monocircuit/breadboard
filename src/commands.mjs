@@ -42,7 +42,9 @@ const DESCRIPTIONS = {
     "wt:new":
       "<feature> a worktree on a new branch with its own stack (--shared, --fix, --origin <orchestration>)",
     "wt:orchestrate":
-      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --end ends it once its worktrees are gone",
+      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --title " <
+      text >
+      " what it shows instead of its name; <name> --end ends it once its worktrees are gone",
     "wt:plan":
       "<name> [--work <n>…] [--merge <n>…] [--why <t>] the order of an orchestration's issues and merges, for its overview",
     "wt:stack": "give the worktree you are in its own stack",

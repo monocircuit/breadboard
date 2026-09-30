@@ -24,7 +24,7 @@ time it
    else `~/.config/herdr/config.toml`, which is only read), else `config.toml`
    here, `keys.toml` appended, and the sidebar rows (`../src/worktree/sidebar.mjs`,
    colours from your `[theme.custom]`): the spaces of an orchestration
-   (`pnpm wt:orchestrate`) marked `⇶ <name>` in its colour (`$orch1`..`$orch3`
+   (`pnpm wt:orchestrate`) marked `⇶ <name>` (or its `--title`) in its colour (`$orch1`..`$orch3`
    in `blue`, `teal`, `mauve`), and under each agent of a worktree what it
    waits for (`$wt_state`, see below). A base with its own
    `[ui.sidebar.spaces]` keeps it; one with its own `[ui.sidebar.agents]`

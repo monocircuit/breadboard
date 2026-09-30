@@ -20,6 +20,7 @@ import {
   pushStateOf,
   recordFile,
   recordOf,
+  titleOf,
   stoppedOf,
   waitOf,
   worktrees,
@@ -88,6 +89,8 @@ export const readView = async () => {
       trees,
       issues: issuesOf(orchestration, trees),
       plan: recordOf(orchestration)?.plan ?? null,
+      // What its title band shows (#234): `⇶ <title>`, else `⇶ <name>`.
+      title: titleOf(orchestration),
       // Each agent's name and what it worked on before (#217, worktree/workers.mjs).
       workers: recordOf(orchestration)?.workers ?? {},
       // The handovers the orchestrator announced (#227, worktree/handovers.mjs).

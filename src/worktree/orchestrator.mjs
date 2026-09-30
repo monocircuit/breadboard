@@ -15,6 +15,7 @@ import { ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
 import { exclusive } from "./lock.mjs";
 import {
+  ORCHESTRATOR,
   ORCHESTRATOR_TAB,
   markSpace,
   orchestrationOf,
@@ -82,13 +83,22 @@ export const removeOrchestratorCheckout = name => {
  */
 export const orchestratorSpace = name => {
   const main = mainDir();
+  // A new title (`wt:orchestrate <name> --title`): its space is renamed, what runs in it keeps running.
+  const label = orchestratorLabel(name);
+  const all = spaces();
+  const retitled = all.some(w => w.label === label)
+    ? null
+    : all.find(
+        w =>
+          w.label.startsWith(`${ORCHESTRATOR} `) &&
+          orchestrationOf(w.label) === name,
+      );
+  if (retitled) herdr(["workspace", "rename", retitled.workspace_id, label]);
   // On its checkout, in the group of the main space; without one (git refused) at the top, in the main checkout.
   const checkout = orchestratorCheckout(name);
   const workspace = checkout
-    ? ensureWorktreeSpace(orchestratorLabel(name), checkout, spaceOf(main), {
-        label: ROOT,
-      })
-    : ensureSpace(orchestratorLabel(name), main, { label: ROOT });
+    ? ensureWorktreeSpace(label, checkout, spaceOf(main), { label: ROOT })
+    : ensureSpace(label, main, { label: ROOT });
   if (!workspace) return null;
   // An older space of the orchestration (`Monocircuit/Platform ⇶ <name>`) hands its tabs over; its overview starts anew here.
   for (const old of spaces().filter(
