@@ -9,7 +9,9 @@ import path from "node:path";
  *   the human's (overview/merge.mjs), an agent never does. Gone once merged.
  * - `try`: something only a person can check, with the spot the click opens
  *   (overview/try.mjs): `--run <command>` a terminal running it in the
- *   worktree, `--url <page>` the page on the worktree's app. `browser-check`
+ *   worktree, `--url <page>` the page on the worktree's app; with `--on test`
+ *   the path on the test instance, once the MR is merged and deployed
+ *   (overview/try-state.mjs). `browser-check`
  *   is `try --url`, and is stored as a `try`.
  * - `decide`: a decision that is the human's, with the options the agent
  *   gave (`--option`); a click on one answers it.
@@ -38,7 +40,8 @@ export const answersOf = action =>
 /**
  * Where a worktree keeps its actions, in its ignored `.claude/`. The
  * orchestrator's own go into the record of the orchestration (origins.mjs);
- * both hold them under `actions`: `[{ id, kind, text, url, run, options, pane, at }]`,
+ * both hold them under `actions`: `[{ id, kind, text, url, run, on, options, pane, at }]`
+ * (`on: "test"` only for a try on the test instance),
  * an answered one with `answer` and `answeredAt` until it is delivered.
  * `pane`: `$HERDR_PANE_ID` of whoever asked, how the Stop hook of the main
  * checkout tells the orchestrator's answers from another's (an identity only:
@@ -113,7 +116,7 @@ const changeActions = (file, fn) => {
  */
 export const addAction = (
   file,
-  { kind, text, url = null, run = null, options = [], pane = null },
+  { kind, text, url = null, run = null, on = null, options = [], pane = null },
 ) =>
   changeActions(file, actions => {
     const action = {
@@ -122,6 +125,7 @@ export const addAction = (
       text,
       url,
       run,
+      ...(on ? { on } : {}),
       options,
       pane,
       at: new Date().toISOString(),

@@ -18,6 +18,7 @@ import changeCommand from "./change.mjs";
 
 const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>] [--option <answer>]…   kind: ${ACTION_KINDS.join(", ")}
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
+       pnpm wt:action try <what to check> --on test --url <path>   on the test instance, ready once the MR is merged and deployed
        pnpm wt:action note <one line>   what you do, for the FEED
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list
@@ -32,6 +33,7 @@ const VALUED = [
   "--orchestration",
   "--option",
   "--mr",
+  "--on",
 ];
 
 /** The words of the command line after `<kind>` that are no flag and no flag's value. */
@@ -100,7 +102,7 @@ export default function actionCommand(given, flags) {
         ? actions
             .map(
               a =>
-                `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`,
+                `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.on ? `  on ${a.on}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`,
             )
             .join("\n")
         : "  no open actions",
@@ -149,6 +151,19 @@ export default function actionCommand(given, flags) {
     );
   if (run && (kind !== "try" || flagValue("--orchestration")))
     fail("only an agent's try runs a command: --run <command>");
+  const on = flagValue("--on") ?? null;
+  if (on && on !== "test")
+    fail(
+      "a try is on the worktree's app (the default) or on the test instance: --on test",
+    );
+  if (on && (kind !== "try" || flagValue("--orchestration")))
+    fail(
+      "only an agent's try is on the test instance: its MR says when it is deployed",
+    );
+  if (on && !url?.startsWith("/"))
+    fail(
+      "a try on the test instance opens a path there: --url /atlas/…, never its hostname",
+    );
   if (kind === "merge" && !flagValue("--orchestration")) {
     const dir = git(["rev-parse", "--show-toplevel"]).out;
     const branch = git(["branch", "--show-current"], dir).out;
@@ -166,14 +181,17 @@ export default function actionCommand(given, flags) {
     text,
     url,
     run,
+    on,
     options,
     pane: process.env.HERDR_PANE_ID ?? null,
   });
   const spot = run
     ? `  the click opens a terminal in this worktree: ${run}\n`
-    : kind === "try"
-      ? `  the click opens ${url}${url.startsWith("/") ? " on this worktree's app (its stack started first when it is down)" : ""}\n`
-      : "";
+    : on
+      ? `  the click opens ${url} on the test instance (VITA_TEST_ORIGIN); the row waits for the merge and the deployment\n`
+      : kind === "try"
+        ? `  the click opens ${url}${url.startsWith("/") ? " on this worktree's app (its stack started first when it is down)" : ""}\n`
+        : "";
   console.log(
     `\n✓ action ${action.id} (${kind}): ${text}\n${spot}  ${
       name
