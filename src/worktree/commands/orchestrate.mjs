@@ -251,7 +251,7 @@ ${started.map(item => `    SendMessage(to: "${item.worker?.name ?? item.feature}
   The overview of ${label} answers the user's "what now?": keep it true.
     pnpm wt:plan ${name} --work <issue>… --merge <issue>… --why "<one line>"
                                   the order now, again whenever it changes (a dependency, a failed pipeline)
-    pnpm wt:action decide "<question>" --orchestration ${name}
+    pnpm wt:action decide "<what is decided>? <why the recommendation>" --option "<what happens>"… --recommend <option> --orchestration ${name}
                                   a step that is the user's and no agent's (--done <id> --orchestration ${name} after)
   The agents leave their own actions (merge, try, decide, look, plan) whenever they wait for the user.
 `);
