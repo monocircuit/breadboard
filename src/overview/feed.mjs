@@ -4,6 +4,7 @@
 import { bold, dim, green, red, yellow } from "../lib/tty.mjs";
 import { feedLineOf, focusSpace, lastAnswerOf } from "../worktree.mjs";
 import { closeBox, openBox } from "./boxes.mjs";
+import { pink } from "./names.mjs";
 import { ago } from "./render-worktree.mjs";
 import { pushRows } from "./screen.mjs";
 
@@ -36,7 +37,7 @@ export const feedRowsOf = (issues, agents = new Map()) =>
         cells: [
           "",
           STATE[status] ?? " ",
-          bold(issue.feature),
+          pink(bold(issue.feature)),
           dim(line?.at ? ago(line.at) : ""),
           line
             ? `${dim(line.source === "note" ? "›" : '"')} ${line.text}`

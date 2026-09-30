@@ -11,6 +11,13 @@ export const red = paint(31);
 export const green = paint(32);
 export const yellow = paint(33);
 export const cyan = paint(36);
+/** A colour of the theme as herdr's config names it, `#FF79C6`: 24 bits, as herdr paints its sidebar. */
+export const hex = colour => {
+  const [r, g, b] = [1, 3, 5].map(at =>
+    Number.parseInt(colour.slice(at, at + 2), 16),
+  );
+  return paint(`38;2;${r};${g};${b}`);
+};
 /** An OSC 8 hyperlink: Ctrl-click opens it, in herdr and most terminals. */
 export const link = (url, text) =>
   isColor && url ? `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\` : String(text);

@@ -9,7 +9,8 @@
 //     [--cap <n>] [--queue]                   past 4 (--cap) agents at work the rest is queued, the
 //                                             overview hands it out (--queue: all of them)
 //   pnpm wt:orchestrate <name> <issue>        the issue to an idle agent of it instead of a fresh one:
-//     --to <agent> [--limit <percent>]        its worktree made, the agent moved in and told
+//     --to <agent> [--limit <percent>]        its worktree made, the agent moved in and told;
+//     [--after !<mr>…]                        announced: the overview does it once the MRs are merged
 //   pnpm wt:orchestrate <name> --end          once its worktrees are gone: its space, the orchestrator's
 //                                             claude (kept for /resume), its record and checkout away
 //   pnpm wt:plan <name> [--work <n>…]         the order of an orchestration's issues and merges
@@ -86,8 +87,14 @@ export {
   recordFile,
   recordOf,
 } from "./worktree/origins.mjs";
+export { handoversOf } from "./worktree/handovers.mjs";
 export { hasOwnCommits, isInside, pruneSpaces } from "./worktree/prune.mjs";
-export { REPO_TOKEN, STATE_TOKEN, sidebarConfig } from "./worktree/sidebar.mjs";
+export {
+  REPO_TOKEN,
+  STATE_TOKEN,
+  branchColourOf,
+  sidebarConfig,
+} from "./worktree/sidebar.mjs";
 export { focusSpace, spaceLabel } from "./worktree/spaces.mjs";
 export { compose, isPortFree, offsetOf, readEnv } from "./worktree/stack.mjs";
 export { featureOf } from "./worktree/tabs.mjs";

@@ -8,7 +8,12 @@ import {
   recordEntry,
   writeBrief,
 } from "../orchestrator.mjs";
-import { orchestratorLabel, originOf, writeRecord } from "../origins.mjs";
+import {
+  orchestratorLabel,
+  originOf,
+  recordOf,
+  writeRecord,
+} from "../origins.mjs";
 import {
   CONTEXT_LIMIT,
   beforeLine,
@@ -21,6 +26,7 @@ import {
   refusalOf,
   workersOf,
 } from "../workers.mjs";
+import { announceHandover, dropHandover } from "../handovers.mjs";
 import { worktrees } from "../worktrees.mjs";
 
 /**
@@ -103,6 +109,8 @@ export default function handOverCommand(
     );
   const { isMoved, isTold } = moveWorker(worker, pane, item.number, item.dir);
   recordHandover(name, worker, Number(item.number));
+  // Announced before (--after): done now, by the overview or by hand.
+  dropHandover(name, Number(item.number));
   step(
     isMoved
       ? `herdr: the tab of ${worker.name} moved into the space ${item.feature}`
@@ -112,5 +120,41 @@ export default function handOverCommand(
     isTold
       ? `\n✓ #${item.number} ${item.feature} went to ${worker.name}, told in its prompt`
       : `\n✓ #${item.number} ${item.feature} is ready for ${worker.name}, but herdr took no line: type it into its tab\n    ${nextIssueLine(item.number, item.dir)}`,
+  );
+}
+
+/**
+ * `pnpm wt:orchestrate <name> <issue> --to <agent> --after !<mr>…`: the
+ * handover announced, not done (handovers.mjs). The record keeps it, the
+ * issue queued; the overview of the orchestration hands the issue over once
+ * the MRs are merged and the agent is idle, and holds the clean-up of the
+ * agent's worktree until then. The agent may be at work now.
+ */
+export function announceCommand(name, arg, { after, isDry }) {
+  const label = orchestratorLabel(name);
+  const who = flagValue("--to");
+  const workers = workersOf(name);
+  const worker = findWorker(workers, who);
+  if (!worker)
+    fail(
+      `${label} has no agent ${who}; its agents: ${workers.map(w => w.name).join(", ") || "none"}`,
+    );
+  const item = readIssue(arg);
+  if (!item) fail(`issue #${arg.match(/^\d+/)[0]} could not be read`);
+  const number = Number(item.number);
+  const known = recordOf(name)?.issues.find(issue => issue.number === number);
+  // Queued already is fine: it waits for an agent either way.
+  if (item.why && !known?.queued) fail(`#${number}: ${item.why}`);
+  const mrs = after.map(iid => `!${iid}`).join(", ");
+  if (isDry) {
+    console.log(
+      `\n▸ nothing was done (--dry-run). ${worker.name} would take #${number} once ${mrs} ${after.length > 1 ? "are" : "is"} merged.`,
+    );
+    return;
+  }
+  writeRecord(name, [{ ...recordEntry(item), queued: true }]);
+  announceHandover(name, { number, to: worker.name, after });
+  console.log(
+    `\n✓ #${number} ${item.feature} goes to ${worker.name} once ${mrs} ${after.length > 1 ? "are" : "is"} merged: the overview of ${label} hands it over then (its worktree is kept until), shown on ${worker.name}'s node as → next #${number}`,
   );
 }

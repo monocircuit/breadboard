@@ -40,12 +40,15 @@ const sectionOf = (text, name) =>
  *   as TOML can't add to a table defined above). Not when the base has
  *   `rows_by_agent` already.
  */
+/** The hex of `colour` in the `[theme.custom]` of the config text `base`, else its fallback. */
+const colourIn = (base, { colour, fallback }) =>
+  (sectionOf(base, "theme.custom") ?? "").match(
+    new RegExp(`^${colour}\\s*=\\s*"(#[0-9A-Fa-f]{6})"`, "m"),
+  )?.[1] ?? fallback;
+/** The pink herdr's sidebar gives branches, from the config text `base`: the overview names worktrees in it too. */
+export const branchColourOf = base => colourIn(base, BRANCH_COLOUR);
 export const sidebarConfig = base => {
-  const custom = sectionOf(base, "theme.custom") ?? "";
-  const colourOf = ({ colour, fallback }) =>
-    custom.match(
-      new RegExp(`^${colour}\\s*=\\s*"(#[0-9A-Fa-f]{6})"`, "m"),
-    )?.[1] ?? fallback;
+  const colourOf = slot => colourIn(base, slot);
   const parts = [];
 
   if (!sectionOf(base, "ui.sidebar.spaces")) {

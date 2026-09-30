@@ -10,6 +10,7 @@ import {
   actionsFile,
   actionsOf,
   feedFile,
+  handoversOf,
   hasOwnCommits,
   isPortFree,
   mainDir,
@@ -64,9 +65,13 @@ export const readView = async () => {
             tree.dir,
           ).stdout.trim(),
         ) || 0,
-      // What keeps a merged one from wt:remove (tree.mjs): `cherry` as wt:remove checks it.
+      // What keeps a merged one from wt:remove (clean-up.mjs): `cherry` as wt:remove checks it, counted.
       ownCommits:
-        tree.branch !== "(detached)" && hasOwnCommits(tree.branch, tree.dir),
+        tree.branch === "(detached)"
+          ? 0
+          : sh("git", ["cherry", "origin/develop", tree.branch], tree.dir)
+              .stdout.split("\n")
+              .filter(line => line.startsWith("+")).length,
       // What it waits for (wt:wait), for its MR row.
       wait: waitOf(tree.dir),
     }));
@@ -81,6 +86,8 @@ export const readView = async () => {
       workers: recordOf(orchestration)?.workers ?? {},
       // How many agents work at once (wt:orchestrate --cap); workers.mjs has the default.
       cap: recordOf(orchestration)?.cap,
+      // The handovers the orchestrator announced (#227, worktree/handovers.mjs).
+      handovers: handoversOf(recordOf(orchestration)),
       ownActions: actionsOf(file),
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and FEED: what herdr says each agent does.
