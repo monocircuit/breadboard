@@ -5,6 +5,7 @@
 //                                             with its own dev stack, push it as the claim
 //     [--origin <orchestration>]              started for an orchestration: recorded, its space marked
 //   pnpm wt:orchestrate <name> <issue>…       a space ⇶ <name> for this session, a worktree per issue
+//   pnpm wt:orchestrate <name> --title "<t>"  what it shows instead of its name: ⇶ <t> (--title with issues too)
 //     [--shared] [--peer <s>] [--brief <f>]   and in its space a claude briefed on the issue (--dry-run);
 //     [--queue]                               each starts at once, in an idle agent that knows its
 //                                             files or a fresh one; --queue: the overview hands them out
@@ -92,6 +93,7 @@ export {
   originOf,
   recordFile,
   recordOf,
+  titleOf,
 } from "./worktree/origins.mjs";
 export { handoversOf } from "./worktree/handovers.mjs";
 export { hasOwnCommits, isInside, pruneSpaces } from "./worktree/prune.mjs";

@@ -82,4 +82,23 @@ describe("renderOrchestration", () => {
     assert.match(text, /MERGE REQUESTS 1 open/);
     assert.match(text, /!220/);
   });
+
+  it("heads its view with the title of the orchestration, else its name", () => {
+    const local = { issues: [], trees: [], ownActions: [], agents: new Map() };
+    const plain = view => view.replace(ESCAPES, "");
+    assert.match(
+      plain(
+        renderOrchestration(
+          { ...local, title: "@monocircuit/breadboard" },
+          null,
+          null,
+        ),
+      ),
+      /⇶ @monocircuit\/breadboard/,
+    );
+    assert.doesNotMatch(
+      plain(renderOrchestration(local, null, null)),
+      /@monocircuit/,
+    );
+  });
 });

@@ -62,7 +62,7 @@ export const sidebarConfig = base => {
       `{ token = "$${BRANCH_TOKEN}", fg = "${pink}" }`,
     ];
     parts.push(
-      "# The spaces of an orchestration (pnpm wt:orchestrate) show `⇶ <name>` in its colour, written by pnpm herdr.",
+      "# The spaces of an orchestration (pnpm wt:orchestrate) show `⇶ <title>` (its name without one) in its colour, written by pnpm herdr.",
       "[ui.sidebar.spaces]",
       "# A worktree's branch is $wt_branch: herdr's branch stays empty for a linked worktree. Both in pink.",
       `rows = [["state_icon", "workspace"], [${[...tokens, ...branches].join(", ")}, "git_status"]]`,
