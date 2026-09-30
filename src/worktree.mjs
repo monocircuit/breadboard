@@ -101,6 +101,7 @@ export {
   REPO_TOKEN,
   STATE_TOKEN,
   branchColourOf,
+  herdrConfigText,
   sidebarConfig,
 } from "./worktree/sidebar.mjs";
 export { focusSpace, spaceLabel } from "./worktree/spaces.mjs";
