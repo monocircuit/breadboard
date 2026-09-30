@@ -74,12 +74,18 @@ describe("lifecycleOf", () => {
 
 describe("treeOf", () => {
   it("puts the gone ones under removed, the last removed first", () => {
+    // Today's: one of another day shows its date instead of the time.
+    const today = hour => {
+      const at = new Date();
+      at.setHours(hour, 0, 0, 0);
+      return at.toISOString();
+    };
     const { live, removed } = treeOf(
       [
         issue(1),
-        issue(2, { tree: null, removedAt: "2026-09-29T10:00:00Z" }),
+        issue(2, { tree: null, removedAt: today(10) }),
         issue(3, { tree: null, why: "failed at the start" }),
-        issue(4, { tree: null, removedAt: "2026-09-29T12:00:00Z" }),
+        issue(4, { tree: null, removedAt: today(12) }),
       ],
       () => ({}),
     );
