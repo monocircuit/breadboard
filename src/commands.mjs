@@ -88,6 +88,8 @@ const DESCRIPTIONS = {
     "pg:studio": "Drizzle Studio on the database",
     "pg:visualizer": "the schema as a diagram, on the port of this worktree",
     "storage:setup": "create the bucket in SeaweedFS",
+    "screenshots:manifest":
+      "the install dialog's screenshots of the atlas, from pnpm dev (Chromium)",
     "keycloak:setup":
       "the MCP clients, their scopes and the login theme in Keycloak",
     lint: "ESLint",
