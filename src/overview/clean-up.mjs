@@ -9,7 +9,8 @@ const counted = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 /**
  * Where the clean-up of a merged worktree stands: `{ key, why }`, `key`
  * - `kept`: changes or commits not in develop, wt:remove would refuse;
- * - `waits`: its agent is working or asks you, or `hold` (why a handover
+ * - `waits`: its agent is working or asks you, a try on the test instance
+ *   is open (its actions go with the worktree), or `hold` (why a handover
  *   holds its agent, handovers.mjs / workers.mjs);
  * - `due`: nothing stops it.
  * Null for a worktree whose MR isn't merged. `issue.tree.ownCommits`: how
@@ -28,6 +29,8 @@ export const cleanUpOf = (issue, { mr, status, hold } = {}) => {
   if (status === "working")
     return { key: "waits", why: "its agent is working" };
   if (status === "blocked") return { key: "waits", why: "its agent asks you" };
+  if (tree.actions?.some(action => action.on === "test" && !action.answer))
+    return { key: "waits", why: "its try on the test instance is open" };
   if (hold) return { key: "waits", why: hold };
   return { key: "due", why: null };
 };

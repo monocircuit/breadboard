@@ -121,6 +121,30 @@ describe("try", () => {
     );
   });
 
+  it("takes a try on the test instance as a path, only for a try", () => {
+    const dir = worktreeOf();
+    const test = action(dir, "try", "boxes", "--on", "test", "--url", "/atlas");
+    assert.equal(test.status, 0, test.stderr);
+    assert.match(test.stdout, /on the test instance/);
+    assert.deepEqual(
+      actionsOf(actionsFile(dir)).map(a => [a.kind, a.url, a.on]),
+      [["try", "/atlas", "test"]],
+    );
+    assert.equal(
+      trySpot(actionsOf(actionsFile(dir))[0], null).replace(ESCAPES, ""),
+      "opens /atlas on the test instance",
+    );
+    // A hostname, a command, another place or kind: refused.
+    for (const args of [
+      ["try", "x", "--on", "test", "--url", "https://example.com/a"],
+      ["try", "x", "--on", "test", "--run", "ls"],
+      ["try", "x", "--on", "prod", "--url", "/a"],
+      ["look", "x", "--on", "test", "--url", "/a"],
+    ])
+      assert.equal(action(dir, ...args).status, 1, args.join(" "));
+    assert.equal(actionsOf(actionsFile(dir)).length, 1);
+  });
+
   it("refuses a try without one spot, and a command on another kind", () => {
     const dir = worktreeOf();
     assert.equal(action(dir, "try", "none").status, 1);
