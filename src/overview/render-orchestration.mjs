@@ -9,7 +9,6 @@ import {
   green,
   link,
   red,
-  tableRows,
   underRows,
   visible,
   wrap,
@@ -20,7 +19,6 @@ import {
   actionsFile,
   focusSpace,
   isInHerdr,
-  waitsText,
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
 import {
@@ -44,13 +42,13 @@ import {
   pipelineMark,
   titleLines,
 } from "./boxes.mjs";
-import { changeFact } from "./change.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { pushFeed } from "./feed.mjs";
 import { announcedOf } from "./handovers.mjs";
 import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
+import { blockersText, mrRowLines, rowBlockersOf } from "./mr-blockers.mjs";
 import { orderActions, placeIn } from "./order.mjs";
 import { pushAgents } from "./agents.mjs";
 import { ago } from "./render-worktree.mjs";
@@ -88,16 +86,36 @@ const AUTO = dim("auto");
  */
 const actionsOf = (local, issues, of, remote, announced) => {
   const merge = local.order.numbers;
-  const own = (local.ownActions ?? []).map(action => ({
-    action,
-    who: `${ORCHESTRATOR} orchestrator`,
-    file: local.recordFile,
-    to: { orchestration },
-    rank: -1,
-    // The overview stands in the orchestrator's space already, next to its tab;
-    // a page of its try is one on the app of the main checkout.
-    go: () => action.url && open(pageOf(action.url, 0)),
-  }));
+  const own = (local.ownActions ?? [])
+    .map(action => {
+      // A merge the orchestrator posted for an MR (`--mr !N`) is that MR's.
+      const issue =
+        action.kind === "merge" && action.mr
+          ? issues.find(candidate => of(candidate).mr?.iid === action.mr)
+          : null;
+      return {
+        action,
+        issue,
+        who: `${ORCHESTRATOR} orchestrator`,
+        file: local.recordFile,
+        to: { orchestration },
+        rank: -1,
+        // The overview stands in the orchestrator's space already, next to its tab;
+        // a page of its try is one on the app of the main checkout.
+        go: () =>
+          issue
+            ? clickMerge({
+                issue,
+                mr: of(issue).mr,
+                boxes: of(issue).issue?.boxes ?? [],
+                others: openAfter(issues, issue.number, merge, of),
+                file: local.recordFile,
+                actionId: action.id,
+              })
+            : action.url && open(pageOf(action.url, 0)),
+      };
+    })
+    .filter(({ issue }) => !issue || of(issue).mr?.state !== "merged");
   const agents = issues
     .filter(issue => issue.tree?.actions?.length)
     .flatMap(issue =>
@@ -155,7 +173,16 @@ const actionsOf = (local, issues, of, remote, announced) => {
       go,
     }),
   );
-  const auto = autoActionsOf(issues, of, local.agents ?? new Map())
+  // Drafts nothing but the draft holds up, next in the merge order: their
+  // agents may not mark them ready, the merge's click does (#242).
+  const readyDrafts = new Set(
+    local.order.open
+      .filter(item => item.holdUp.length === 1 && item.holdUp[0] === "draft")
+      .map(item => item.number),
+  );
+  const auto = autoActionsOf(issues, of, local.agents ?? new Map(), {
+    readyDrafts,
+  })
     .filter(
       ({ key, issue }) =>
         !(key.endsWith(":remove") && handovers.held.has(issue.tree?.dir)),
@@ -176,6 +203,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
                 mr: of(issue).mr,
                 boxes: of(issue).issue?.boxes ?? [],
                 others: openAfter(issues, issue.number, merge, of),
+                canMarkReady: action.canMarkReady,
               })
           : go,
     }));
@@ -235,19 +263,18 @@ const actionsOf = (local, issues, of, remote, announced) => {
     suggested: handovers.suggested,
   };
 };
-/** How much of an MR's title its row in MERGE REQUESTS shows. */
-const TITLE_WIDTH = 40;
 /** Whether the merged MRs are folded under their divider, over redraws. */
 let isMergedFolded = false;
 /**
  * The text of an action, a merge's with its MR in front and what its two
  * clicks do or what blocks them, a try's with what its click opens behind.
- * A merge its agent posted (it has a file) marks a draft ready first.
+ * A merge posted (it has a file) or found for a ready draft marks the draft
+ * ready first.
  */
 const actionText = ({ action, issue, file }, of) => {
   const mr = issue && of(issue).mr;
   if (action.kind === "merge" && mr)
-    return `${link(mr.url, `!${mr.iid}`)} ${mergeText(mr, action.text, of(issue).issue?.boxes ?? [], { canMarkReady: Boolean(file) })}`;
+    return `${link(mr.url, `!${mr.iid}`)} ${mergeText(mr, action.text, of(issue).issue?.boxes ?? [], { canMarkReady: Boolean(file) || Boolean(action.canMarkReady) })}`;
   if (TRY_KINDS.has(action.kind))
     return `${action.text}  ${trySpot(action, issue?.tree)}`;
   return action.text;
@@ -491,7 +518,7 @@ export const renderOrchestration = (local, remote, error) => {
   });
 
   const byNumber = withMr;
-  const holdUpOf = new Map(order.open.map(item => [item.number, item.holdUp]));
+  const afterOf = new Map(order.open.map(item => [item.number, item.after]));
   const doneMrs = order.merged.map(number => byNumber.get(number));
   const mrsBox = openBox(lines);
   if (!remote) {
@@ -508,35 +535,36 @@ export const renderOrchestration = (local, remote, error) => {
       { isDivider: true },
       ...doneMrs.map(issue => ({ issue, isMerged: true })),
     ];
-    const cellsOf = item => {
-      const { mr } = item.issue ? of(item.issue) : {};
+    const rowOf = item => {
+      const { mr, jobs } = item.issue ? of(item.issue) : {};
       // A line of the graph alone, or (never again, #221) a row without its MR.
-      if (!mr) return ["", dim(item.graph ?? "")];
-      const holdUp = holdUpOf.get(item.issue.number);
-      return [
-        "",
-        dim(item.graph ?? ""),
-        link(mr.url, `!${mr.iid}`),
-        pipelineMark(mr.pipeline),
-        fit(mr.title, TITLE_WIDTH),
-        // What holds it up, everything or that nothing does; a merged one: when.
-        item.isMerged
+      if (!mr) return { graph: item.graph };
+      const reasons = item.isMerged
+        ? []
+        : rowBlockersOf({
+            mr,
+            boxes: of(item.issue).issue?.boxes ?? [],
+            behind: item.issue.tree?.behind ?? 0,
+            after: afterOf.get(item.issue.number) ?? [],
+            jobs,
+            tree: item.issue.tree,
+          });
+      return {
+        graph: item.graph,
+        below: item.below,
+        cells: [link(mr.url, `!${mr.iid}`), pipelineMark(mr.pipeline)],
+        title: mr.title,
+        // A merged one: when; an open one nothing holds up: that it is ready.
+        status: item.isMerged
           ? dim(`merged ${mr.mergedAt ? ago(new Date(mr.mergedAt)) : ""}`)
-          : `${holdUp.length ? yellow(holdUp.join(" · ")) : green("ready to merge")}${
-              // What its agent waits for (wt:wait).
-              item.issue.tree?.wait
-                ? `  ${yellow(waitsText(item.issue.tree.wait))}`
-                : ""
-            }${
-              // A change requested for it (wt:action change, #228).
-              item.issue.tree && changeFact(item.issue.tree, mr)
-                ? `  ${changeFact(item.issue.tree, mr)}`
-                : ""
-            }`,
-      ];
+          : reasons.length
+            ? ""
+            : green("ready to merge"),
+        text: blockersText(reasons),
+      };
     };
     const shown = items.filter(item => !item.isDivider);
-    const rows = tableRows(shown.map(cellsOf), { width: boxInner() });
+    const rows = mrRowLines(shown.map(rowOf), { width: boxInner() });
     const isMergedShown = isOnce || !isMergedFolded;
     shown.forEach((item, i) => {
       if (item.isMerged && shown[i - 1] && !shown[i - 1].isMerged) {
@@ -554,17 +582,12 @@ export const renderOrchestration = (local, remote, error) => {
         );
       }
       if (item.isMerged && !isMergedShown) return;
-      rows[i].forEach((text, lineOfRow) => {
+      for (const text of rows[i]) {
         if (item.issue)
           screen.clicks[lines.length] = () =>
             show(of(item.issue).mr.url, item.issue.tree?.dir);
-        // Its further lines carry on the lanes that go on below it.
-        lines.push(
-          lineOfRow > 0 && item.below
-            ? `  ${dim(item.below.padEnd(visible(item.graph)))}${text.slice(2 + visible(item.graph))}`
-            : text,
-        );
-      });
+        lines.push(text);
+      }
     });
   }
   const waiting = issues.filter(

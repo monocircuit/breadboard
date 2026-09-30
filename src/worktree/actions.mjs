@@ -59,7 +59,8 @@ export const decideProblem = (text, options, recommend) => {
  * Where a worktree keeps its actions, in its ignored `.claude/`. The
  * orchestrator's own go into the record of the orchestration (origins.mjs);
  * both hold them under `actions`: `[{ id, kind, text, url, run, options, recommend, pane, at }]`,
- * an answered one with `answer` and `answeredAt` until it is delivered.
+ * an answered one with `answer` and `answeredAt` until it is delivered, the
+ * orchestrator's merge with the iid of its MR (`mr`).
  * `pane`: `$HERDR_PANE_ID` of whoever asked, how the Stop hook of the main
  * checkout tells the orchestrator's answers from another's (an identity only:
  * a moved pane gets a new id, its process keeps the old one).
@@ -141,6 +142,7 @@ export const addAction = (
     options = [],
     recommend = null,
     pane = null,
+    mr = null,
   },
 ) =>
   changeActions(file, actions => {
@@ -153,6 +155,7 @@ export const addAction = (
       options,
       recommend,
       pane,
+      ...(mr ? { mr } : {}),
       at: new Date().toISOString(),
     };
     return {

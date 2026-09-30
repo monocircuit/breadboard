@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { ESCAPES } from "../lib/tty.mjs";
-import { blockersText, rowBlockersOf } from "./mr-blockers.mjs";
+import { ESCAPES, visible } from "../lib/tty.mjs";
+import { blockersText, mrRowLines, rowBlockersOf } from "./mr-blockers.mjs";
 
 /** An open MR, ready and green unless `over` says otherwise. */
 const mrOf = over => ({
@@ -126,8 +126,84 @@ describe("blockersText", () => {
       blockersText([
         { text: "pipeline running", who: "GitLab" },
         { text: "draft: mark ready", who: "you" },
-      ]).replace(ESCAPES, ""),
+      ])
+        .replace(ESCAPES, "")
+        .replaceAll("\u00a0", " "),
       "pipeline running → GitLab · draft: mark ready → you",
     );
+  });
+});
+
+describe("mrRowLines", () => {
+  const plain = rows =>
+    rows.map(row => row.map(line => line.replace(ESCAPES, "")));
+  const row = (iid, over = {}) => ({
+    graph: "●",
+    cells: [`!${iid}`, "✓ passed"],
+    title: `feat(breadboard): the change of !${iid}, told in a title that goes on and on for a while`,
+    ...over,
+  });
+  const lacking = blockersText([
+    { text: "pipeline failed at check:test", who: "agent" },
+    {
+      text: "3 Work boxes open: Row layout: first line …, The blockers, in the … +1",
+      who: "agent",
+    },
+    { text: "draft: mark ready", who: "you" },
+    { text: "after !253 (shares render-orchestration.mjs +2)", who: "!253" },
+    { text: "change requested: a shorter title for the row", who: "agent" },
+    { text: "2 commits not pushed", who: "agent" },
+  ]);
+
+  it("keeps a mergeable MR on one line, with the whole title where it fits", () => {
+    const [lines] = plain(
+      mrRowLines([row(256, { status: "ready to merge" })], { width: 196 }),
+    );
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /and on for a while {2}ready to merge$/);
+  });
+
+  it("puts what it lacks under the title, at most three lines at 200 columns", () => {
+    const [lines] = plain(
+      mrRowLines([row(256, { text: lacking })], { width: 196 }),
+    );
+    assert.ok(lines.length <= 3);
+    const under = lines[0].indexOf("feat(");
+    assert.ok(
+      lines
+        .slice(1)
+        .every(
+          line =>
+            line.indexOf("pipeline") === -1 ||
+            line.indexOf("pipeline") === under,
+        ),
+    );
+    assert.ok(lines.every(line => visible(line) <= 196));
+  });
+
+  it("wraps at a narrow width without parting a reason from who acts", () => {
+    const [lines] = plain(
+      mrRowLines([row(256, { text: lacking })], { width: 80 }),
+    );
+    assert.equal(lines.length, 3);
+    assert.ok(lines.every(line => visible(line) <= 80));
+    assert.ok(lines.slice(1).every(line => !/^\s*→/.test(line)));
+    assert.match(lines[2], /…$/);
+  });
+
+  it("carries the lanes that go on below on its further lines", () => {
+    const rows = plain(
+      mrRowLines(
+        [
+          row(254, { graph: "● │", below: "│ │", text: lacking }),
+          { graph: "├─┘" },
+          row(256, { status: "ready to merge" }),
+        ],
+        { width: 120 },
+      ),
+    );
+    assert.ok(rows[0].slice(1).every(line => line.startsWith("  │ │")));
+    assert.deepEqual(rows[1], ["  ├─┘"]);
+    assert.equal(rows[2].length, 1);
   });
 });

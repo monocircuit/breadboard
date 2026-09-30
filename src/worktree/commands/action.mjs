@@ -21,6 +21,7 @@ const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>]   kind: ${ACTIO
        pnpm wt:action decide "<what is decided>?" --option "<what happens>" --option "<what happens>"… --recommend <option>
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action note <one line>   what you do, for the FEED
+       pnpm wt:action merge <what is in it> --orchestration <name> --mr !N   the orchestrator's merge of an MR
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list
        pnpm wt:action --done <id>
@@ -177,6 +178,12 @@ export default function actionCommand(given, flags) {
         `${unpushed} commit${unpushed === 1 ? "" : "s"} not pushed${hasRemoteBranch ? "" : " (no remote branch)"}: push first, the merge takes only what GitLab has`,
       );
   }
+  // The orchestrator's merge names its MR: the overview merges that one.
+  const mr = Number(flagValue("--mr")?.replace(/^!/, "")) || null;
+  if (kind === "merge" && flagValue("--orchestration") && !mr)
+    fail("which MR does it merge? --mr !N");
+  if (mr && kind !== "merge")
+    fail("only a merge or a change names its MR: --mr !N");
   const options = valuesOf("--option");
   const recommend = recommendOf(options);
   if (kind === "decide") checkDecide(text, options, recommend);
@@ -190,6 +197,7 @@ export default function actionCommand(given, flags) {
     options,
     recommend,
     pane: process.env.HERDR_PANE_ID ?? null,
+    mr,
   });
   const spot = run
     ? `  the click opens a terminal in this worktree: ${run}\n`
