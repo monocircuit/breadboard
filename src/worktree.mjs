@@ -14,6 +14,8 @@
 //     [--after !<mr>…]                        announced: the overview does it once the MRs are merged
 //   pnpm wt:orchestrate <name> --end          once its worktrees are gone: its space, the orchestrator's
 //                                             claude (kept for /resume), its record and checkout away
+//   pnpm wt:orchestrate <name> --changelog    its changelog (every merged MR) rewritten from record and
+//     [--watch]                               GitLab and printed; --watch: live, the tab `changelog`
 //   pnpm wt:plan <name> [--work <n>…]         the order of an orchestration's issues and merges
 //     [--merge <n>…] [--why <text>]           for its overview (NEXT, WORKTREES, MERGE REQUESTS)
 //   pnpm wt:list                            every worktree: branch, url, stack, what runs
@@ -76,6 +78,7 @@ export {
   isUnpushedLong,
   pushStateOf,
 } from "./worktree/change.mjs";
+export { isChangelogBehind, writeChangelog } from "./worktree/changelog.mjs";
 export { endInBackground, endLog } from "./worktree/end.mjs";
 export {
   feedFile,
