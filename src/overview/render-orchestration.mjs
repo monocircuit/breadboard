@@ -10,7 +10,9 @@ import {
   link,
   red,
   tableRows,
+  underRows,
   visible,
+  wrap,
   yellow,
 } from "../lib/tty.mjs";
 import {
@@ -21,7 +23,12 @@ import {
   waitsText,
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
-import { answerCell, clickAction, deliversAnswers } from "./answers.mjs";
+import {
+  answerCell,
+  clickAction,
+  deliversAnswers,
+  optionsText,
+} from "./answers.mjs";
 import { isOnce, orchestration } from "./args.mjs";
 import {
   AUTO_KIND,
@@ -48,7 +55,7 @@ import { orderActions, placeIn } from "./order.mjs";
 import { pushAgents } from "./agents.mjs";
 import { ago } from "./render-worktree.mjs";
 import { workerActionsOf } from "./workers.mjs";
-import { KEYS, pushRows, screen } from "./screen.mjs";
+import { KEYS, pushUnder, screen } from "./screen.mjs";
 import { pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, trySpot } from "./try.mjs";
 
@@ -291,45 +298,62 @@ const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
     upNext.find(item => !["clean up", "order"].includes(item.action.kind)) ??
     (merge ? null : upNext[0]);
   const line = first
-    ? `${KIND[first.action.kind] ?? first.action.kind} ${bold(first.who)}  ${actionText(first, of)}`
+    ? `${KIND[first.action.kind] ?? first.action.kind} ${bold(first.who)}${first.action.at ? `  ${dim(ago(new Date(first.action.at)))}` : ""}`
     : merge
-      ? `${dim("next to merge")} ${merge.line}`
+      ? dim("next to merge")
       : dim(
           remote ? "nothing waits for you: the agents are at work" : "GitLab …",
         );
   // NEXT has no ✓: a click on any of its lines always does it.
   const go = first?.go ?? merge?.go;
   const why = local.plan?.merge?.length ? local.plan.why : null;
-  // Both go on under the text, not under NEXT.
-  const rows = [[` ${bold("NEXT")}`, line]];
-  if (why) rows.push(["", dim(why)]);
-  const [next, ...rest] = tableRows(rows, {
-    width: process.stdout.columns || 120,
-  });
-  for (const text of next) {
+  // Its text under the kind, like in ACTIONS, a decide's options after it;
+  // the plan's why under that.
+  const width = process.stdout.columns || 120;
+  const head = [` ${bold("NEXT")}`, line];
+  const text = first
+    ? [
+        actionText(first, of),
+        first.action.kind === "decide" && optionsText(first.action),
+      ]
+        .filter(Boolean)
+        .join("  ")
+    : (merge?.line ?? "");
+  const [next] = underRows([{ head, text }], { width, under: 1 });
+  for (const nextLine of next) {
     if (go) screen.clicks[lines.length] = () => go();
-    lines.push(text);
+    lines.push(nextLine);
   }
-  lines.push(...rest.flat());
+  if (!why) return;
+  const indent = " ".repeat(visible(head[0]) + 2);
+  lines.push(...wrap(dim(why), width - indent.length).map(l => indent + l));
 };
 
+/**
+ * A row of ACTIONS: its buttons, kind, agent and age on the first line, its
+ * text under the kind (pushUnder with `under: 2`).
+ */
+export const actionRow = (item, of) => ({
+  head: [
+    "",
+    item.isAuto ? AUTO : answerCell(item.action),
+    KIND[item.action.kind] ?? item.action.kind,
+    bold(item.who),
+    dim(ago(new Date(item.action.at))),
+  ],
+  text: actionText(item, of),
+});
 /** ACTIONS: what needs the user, asked for with `pnpm wt:action` or found waiting. */
 const pushActions = (lines, actions, of) => {
   const box = openBox(lines);
   if (actions.length === 0) {
     lines.push(dim("  none: an agent asks with pnpm wt:action <kind> <text>"));
   } else {
-    pushRows(
+    pushUnder(
       lines,
-      actions.map(item => [
-        "",
-        item.isAuto ? AUTO : answerCell(item.action),
-        KIND[item.action.kind] ?? item.action.kind,
-        bold(item.who),
-        dim(ago(new Date(item.action.at))),
-        actionText(item, of),
-      ]),
+      actions.map(item => actionRow(item, of)),
       actions.map(clickOf),
+      { under: 2 },
     );
   }
   closeBox(
@@ -342,16 +366,19 @@ const pushActions = (lines, actions, of) => {
 const pushUpNext = (lines, upNext, of) => {
   if (upNext.length === 0) return;
   const box = openBox(lines);
-  pushRows(
+  pushUnder(
     lines,
-    upNext.map(item => [
-      "",
-      KIND[item.action.kind] ?? item.action.kind,
-      bold(item.who),
-      item.action.at ? dim(ago(new Date(item.action.at))) : "",
-      actionText(item, of),
-    ]),
+    upNext.map(item => ({
+      head: [
+        "",
+        KIND[item.action.kind] ?? item.action.kind,
+        bold(item.who),
+        item.action.at ? dim(ago(new Date(item.action.at))) : "",
+      ],
+      text: actionText(item, of),
+    })),
     upNext.map(item => () => item.go()),
+    { under: 1 },
   );
   closeBox(
     lines,

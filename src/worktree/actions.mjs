@@ -11,8 +11,9 @@ import path from "node:path";
  *   (overview/try.mjs): `--run <command>` a terminal running it in the
  *   worktree, `--url <page>` the page on the worktree's app. `browser-check`
  *   is `try --url`, and is stored as a `try`.
- * - `decide`: a decision that is the human's, with the options the agent
- *   gave (`--option`); a click on one answers it.
+ * - `decide`: a decision that is the human's: one question, the options
+ *   the agent gave (`--option`, each saying what happens) and the one it
+ *   recommends (`--recommend`, marked on its button); a click on one answers it.
  * - `look`: anything else to look at in the agent's space.
  * - `plan`: the agent's plan before larger work, for an `ok` or `different`.
  */
@@ -36,9 +37,28 @@ export const answersOf = action =>
     ? (action.options ?? [])
     : (ANSWERS[action.kind] ?? []);
 /**
+ * A decide the user can answer from its row: one question (what is decided,
+ * in one sentence; a second one may say why the recommendation), at least
+ * two options each saying what happens, not `A` / `B`, and the recommended one.
+ */
+export const decideProblem = (text, options, recommend) => {
+  if (!text.includes("?"))
+    return 'a decide asks one question: what is decided, in one sentence, ending in "?"';
+  if (options.length < 2)
+    return 'a decide offers at least two options: --option "<what happens>" --option "<what happens>"';
+  const bare = options.filter(option => option.trim().split(/\s+/).length < 2);
+  if (bare.length)
+    return `each option says what happens, in a few words, not just ${bare.map(option => `"${option}"`).join(", ")}: --option "keep both lines"`;
+  if (!recommend)
+    return "a decide names its recommendation: --recommend <option or its number>";
+  if (!options.includes(recommend))
+    return `--recommend ${recommend} is none of the options: ${options.map((option, i) => `${i + 1} "${option}"`).join(", ")}`;
+  return null;
+};
+/**
  * Where a worktree keeps its actions, in its ignored `.claude/`. The
  * orchestrator's own go into the record of the orchestration (origins.mjs);
- * both hold them under `actions`: `[{ id, kind, text, url, run, options, pane, at }]`,
+ * both hold them under `actions`: `[{ id, kind, text, url, run, options, recommend, pane, at }]`,
  * an answered one with `answer` and `answeredAt` until it is delivered.
  * `pane`: `$HERDR_PANE_ID` of whoever asked, how the Stop hook of the main
  * checkout tells the orchestrator's answers from another's (an identity only:
@@ -113,7 +133,15 @@ const changeActions = (file, fn) => {
  */
 export const addAction = (
   file,
-  { kind, text, url = null, run = null, options = [], pane = null },
+  {
+    kind,
+    text,
+    url = null,
+    run = null,
+    options = [],
+    recommend = null,
+    pane = null,
+  },
 ) =>
   changeActions(file, actions => {
     const action = {
@@ -123,6 +151,7 @@ export const addAction = (
       url,
       run,
       options,
+      recommend,
       pane,
       at: new Date().toISOString(),
     };

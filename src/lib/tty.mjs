@@ -141,5 +141,37 @@ export const tableRows = (rows, { width, maxLines = MAX_LINES } = {}) => {
     );
   });
 };
+/** Below this many columns a text under its heads starts further left. */
+const MIN_TEXT = 40;
+/**
+ * Rows of a head and a text, as the lines of each row: the heads (painted
+ * cells) aligned in columns on the first line, the text on the lines below,
+ * indented to where column `under` starts (the second column's when that
+ * leaves less than MIN_TEXT) and wrapped at the full `width`,
+ * at most `maxLines` of it (the last cut with `…`). A row without text is
+ * its head alone.
+ */
+export const underRows = (rows, { width, under = 0, maxLines = 3 } = {}) => {
+  const heads = tableRows(rows.map(row => row.head));
+  const widths = [];
+  for (const { head } of rows)
+    head.forEach(
+      (cell, i) => (widths[i] = Math.max(widths[i] ?? 0, visible(cell))),
+    );
+  const startOf = column =>
+    widths.slice(0, column).reduce((sum, w) => sum + w + 2, 0);
+  // Heads too wide for it (long buttons at a narrow width): under the second column.
+  const indent =
+    (width ?? Infinity) - startOf(under) >= MIN_TEXT
+      ? startOf(under)
+      : startOf(Math.min(under, 1));
+  const room = Math.max(MIN_WRAP, (width ?? Infinity) - indent);
+  return rows.map(({ text }, i) => [
+    ...heads[i],
+    ...(text
+      ? wrap(text, room, maxLines).map(line => " ".repeat(indent) + line)
+      : []),
+  ]);
+};
 /** Columns of painted cells, each as wide as its widest cell; see `tableRows`. */
 export const table = (rows, options) => tableRows(rows, options).flat();

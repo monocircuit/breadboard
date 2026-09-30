@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { fit, table, tableRows, visible, wrap } from "./tty.mjs";
+import { fit, table, tableRows, underRows, visible, wrap } from "./tty.mjs";
 
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -124,5 +124,35 @@ describe("tableRows", () => {
     assert.deepEqual(tableRows([["a", "x ".repeat(50)]]), [
       [`a  ${"x ".repeat(50)}`],
     ]);
+  });
+});
+
+describe("underRows", () => {
+  const rows = [
+    {
+      head: ["", "[ ok ]", "try", "vita"],
+      text: "one two three four five six",
+    },
+    { head: ["", "[ ✓ ]", "merge", "db"], text: "" },
+  ];
+
+  it("aligns the heads and puts the text under the column it names", () => {
+    const [first, second] = underRows(rows, { width: 80, under: 2 });
+    assert.deepEqual(first, [
+      "  [ ok ]  try    vita",
+      "          one two three four five six",
+    ]);
+    assert.deepEqual(second, ["  [ ✓ ]   merge  db"]);
+  });
+
+  it("wraps the text at the full width, the last of its lines cut with …", () => {
+    const long = { head: ["", "x"], text: "word ".repeat(40).trim() };
+    const [lines] = underRows([long], { width: 30, under: 1, maxLines: 2 });
+    assert.equal(lines.length, 3);
+    for (const line of lines.slice(1)) {
+      assert.ok(line.startsWith("  word"));
+      assert.ok(visible(line) <= 30);
+    }
+    assert.ok(lines.at(-1).endsWith("…"));
   });
 });
