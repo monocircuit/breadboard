@@ -18,6 +18,7 @@ import {
 import { ENTRY, VITA, featureOf, mainDir } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { button, closeBox, openBox, pipelineMark } from "./boxes.mjs";
+import { toneOf } from "./herdr-tones.mjs";
 import { show } from "./io.mjs";
 import { claudeLine, home, plural, someFiles } from "./render-worktree.mjs";
 import { pushRows, screen } from "./screen.mjs";
@@ -145,12 +146,12 @@ const firstLine = text =>
     .split("\n")
     .find(line => line.trim())
     ?.trim() ?? "";
-/** herdr's state of an agent, as the title of AGENT says it. */
+/** herdr's state of an agent, as the title of AGENT says it, in herdr's colour of it. */
 const AGENT_STATES = {
-  working: yellow("◐ at work"),
-  blocked: red("● asks you something"),
-  idle: dim("waiting for you"),
-  done: green("✓ done, waiting for you"),
+  working: "◐ at work",
+  blocked: "● asks you something",
+  idle: "waiting for you",
+  done: "✓ done, waiting for you",
 };
 /**
  * AGENT: the conversation bound to the space. What herdr says it does, its
@@ -172,7 +173,11 @@ export const pushAgent = (lines, claude, status) => {
   if (claude.prompt) rows.push(["", dim("asked"), firstLine(claude.prompt)]);
   if (claude.answer) rows.push(["", dim("said"), firstLine(claude.answer)]);
   lines.push(...table(rows));
-  closeBox(lines, start, `${bold("AGENT")} ${AGENT_STATES[status] ?? ""}`);
+  closeBox(
+    lines,
+    start,
+    `${bold("AGENT")} ${AGENT_STATES[status] ? toneOf(status)(AGENT_STATES[status]) : ""}`,
+  );
 };
 /** How many open boxes ISSUE lists before it counts the rest. */
 const MAX_OPEN = 10;
