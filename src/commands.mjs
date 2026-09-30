@@ -88,6 +88,8 @@ const DESCRIPTIONS = {
     "pg:studio": "Drizzle Studio on the database",
     "pg:visualizer": "the schema as a diagram, on the port of this worktree",
     "storage:setup": "create the bucket in SeaweedFS",
+    "startup-images":
+      "the iOS launch screens per device, light and dark, from the logo",
     "screenshots:manifest":
       "the install dialog's screenshots of the atlas, from pnpm dev (Chromium)",
     "keycloak:setup":
