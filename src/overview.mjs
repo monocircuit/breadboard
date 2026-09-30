@@ -39,8 +39,15 @@ import {
 import { guarded } from "./overview/guard.mjs";
 import { notifyChanges } from "./overview/notify.mjs";
 import { screen } from "./overview/screen.mjs";
-import { pageOf, scrollBy, viewRowOf, windowOf } from "./overview/scroll.mjs";
-import { readRemoteSafely, readView, view } from "./overview/view.mjs";
+import { WRAP_OFF, WRAP_ON, painter } from "./overview/frame.mjs";
+import { pageOf, scrollBy } from "./overview/scroll.mjs";
+import { reader } from "./overview/reader.mjs";
+import {
+  readRemoteSafely,
+  readView,
+  retryDeliveries,
+  view,
+} from "./overview/view.mjs";
 import {
   layout,
   pruneSpaces,
@@ -58,24 +65,47 @@ if (isOnce) {
   process.exit(0);
 }
 
-let local = await readView();
+// The local read runs in a worker (overview/reader.mjs): what it blocks
+// doesn't hold up the wheel. What it sets off stays here, with the clicks.
+const readInWorker = reader();
+const read = async () => {
+  const next = await readInWorker();
+  retryDeliveries(next);
+  return next;
+};
+let local = await read();
 let remote = null;
 let error = null;
 let isFetching = false;
-// Overwrite in place (home, each line cleared to its end, the rest below
-// cleared) instead of clearing the screen first: a redraw every LOCAL_MS
-// would flicker otherwise. Only the part that fits the pane, at the scroll
-// position (kept over redraws and resizes).
 const rows = () => process.stdout.rows || 40;
-// A view that throws shows its error on top of the last one and is tried
-// again at the next redraw, instead of ending the tab (overview/guard.mjs).
-const render = guarded(() => view(local, remote, error));
-const draw = () =>
-  process.stdout.write(
-    `\x1b[H${windowOf(render(), rows()).join("\x1b[K\n")}\x1b[K\x1b[J`,
-  );
+// A view that throws shows its error in the first line of the last one and is tried
+// again at the next redraw, instead of ending the tab (overview/guard.mjs);
+// the clicks stay those of the view on screen.
+let good = null;
+const render = guarded(() => {
+  const text = view(local, remote, error);
+  good = {
+    clicks: screen.clicks,
+    sticky: screen.sticky,
+    upTarget: screen.upTarget,
+  };
+  return text;
+});
+// The view is kept until its data changes; scrolling cuts a window out of
+// it, once per frame, and only the rows that changed are written
+// (overview/frame.mjs).
+const frame = painter({
+  render: () => {
+    const text = render();
+    Object.assign(screen, good);
+    return text;
+  },
+  rows,
+  write: text => process.stdout.write(text),
+});
+const draw = frame.changed;
 screen.redraw = async ({ isReread = false } = {}) => {
-  if (isReread) local = await readView();
+  if (isReread) local = await read();
   draw();
 };
 const fetchRemote = async () => {
@@ -120,7 +150,7 @@ const press = key => {
   if (key === "u" && screen.upTarget) startStack(screen.upTarget);
   if (SCROLL[key]) {
     scrollBy(SCROLL[key](pageOf(rows())));
-    draw();
+    frame.scrolled();
   }
   const click = key.match(CLICK);
   if (!click) return;
@@ -129,19 +159,19 @@ const press = key => {
   const wheel = { 64: -WHEEL, 65: WHEEL }[button & ~MODIFIERS];
   if (wheel) {
     scrollBy(wheel);
-    draw();
+    frame.scrolled();
   }
   // The left button alone: no modifier (4, 8, 16), no motion (32), no wheel (64).
-  if (button === 0) screen.clicks[viewRowOf(row - 1, screen)]?.(column);
+  if (button === 0) frame.clickAt(row - 1, column);
 };
 const leave = () => {
-  process.stdout.write(`${MOUSE_OFF}\x1b[?25h\x1b[?1049l`);
+  process.stdout.write(`${MOUSE_OFF}${WRAP_ON}\x1b[?25h\x1b[?1049l`);
   process.exit(0);
 };
-process.stdout.write(`\x1b[?1049h\x1b[?25l${MOUSE_ON}`);
+process.stdout.write(`\x1b[?1049h\x1b[?25l${WRAP_OFF}${MOUSE_ON}`);
 process.on("SIGINT", leave);
 process.on("SIGTERM", leave);
-process.stdout.on("resize", draw);
+process.stdout.on("resize", frame.repaint);
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.on("data", chunk => {
@@ -191,7 +221,7 @@ const keepInStep = async () => {
 keepInStep();
 setInterval(async () => {
   // A read that fails keeps the last one: the next tick reads again.
-  local = await readView().catch(() => local);
+  local = await read().catch(() => local);
   // Its worktree is gone (the ✕, or wt:remove elsewhere): nothing left to show.
   if (only && local.trees.length === 0) leave();
   draw();

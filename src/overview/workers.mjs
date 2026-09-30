@@ -8,6 +8,7 @@ import path from "node:path";
 
 import { red } from "../lib/tty.mjs";
 import { CAP, CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
+import { takesText } from "./handovers.mjs";
 import { screen } from "./screen.mjs";
 
 /** A file path an issue names: with a folder or not, with an extension of the repo's files. */
@@ -132,8 +133,9 @@ const runInBackground = (name, number, args) => {
   });
   screen.redraw();
 };
+/** `worker`: `{ name }` of a free worker, or an announced handover's `{ to }`. */
 const handOver = (name, number, worker) =>
-  runInBackground(name, number, ["--to", worker.name]);
+  runInBackground(name, number, ["--to", worker.name ?? worker.to]);
 /** A fresh agent for a queued issue, past the cap's check: the overview counted already. */
 const startFresh = (name, number) => runInBackground(name, number, ["--now"]);
 
@@ -143,12 +145,16 @@ const percent = share => `${Math.round(share * 100)} %`;
  * The rows of UP NEXT for the workers of the orchestration `name`: per
  * queued issue its suggested agent, `hand over`, as automatic actions
  * (`{ key, kind, text, at, issue, who, go }`), and `held`, the worktrees of
- * the suggested agents. Their clean-up waits: it would close the agent with
+ * the suggested and announced agents (`holds`: dir → why). Their clean-up waits: it would close the agent with
  * the space. An agent nothing fits closes with its clean-up, its
  * conversation kept for `/resume`.
  *
  * `shouldHandOut` (the one live overview, once GitLab answered): queued
  * issues start by themselves while fewer than `cap` agents are at work.
+ *
+ * `announced` (overview/handovers.mjs): the handovers the orchestrator
+ * announced (#227). Their issues and agents are no one else's; each is a
+ * row of its own, done by itself once due, and its agent's worktree is held.
  */
 export const workerActionsOf = (
   name,
@@ -156,11 +162,18 @@ export const workerActionsOf = (
   of,
   agents,
   known,
-  { cap = CAP, shouldHandOut = false } = {},
+  { cap = CAP, shouldHandOut = false, announced = [] } = {},
 ) => {
-  const free = freeWorkersOf(issues, of, agents, known);
+  const promised = new Set(announced.map(({ tree }) => tree?.dir));
+  const free = freeWorkersOf(issues, of, agents, known).filter(
+    worker => !promised.has(worker.dir),
+  );
   const queued = issues
-    .filter(issue => issue.queued)
+    .filter(
+      issue =>
+        issue.queued &&
+        !announced.some(({ number }) => number === issue.number),
+    )
     .map(issue => ({
       number: issue.number,
       issue,
@@ -178,6 +191,23 @@ export const workerActionsOf = (
     }
   }
   const actions = [];
+  for (const handover of announced) {
+    const { number, to } = handover;
+    const state = running.get(number);
+    if (shouldHandOut && handover.isDue && !state)
+      handOver(name, number, handover);
+    actions.push({
+      key: `hand over:#${number}:${to}`,
+      kind: "hand over",
+      who: to,
+      issue: issues.find(candidate => candidate.number === number),
+      at: handover.at ?? "",
+      text: running.get(number)?.isRunning
+        ? `#${number} → ${to}: handing over …`
+        : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : "once it is idle"} (announced)${state?.error ? `  ${red(state.error)}` : ""}`,
+      go: () => handOver(name, number, handover),
+    });
+  }
   for (const { number, issue } of queued) {
     const found = suggested.get(number);
     if (!found) continue;
@@ -195,8 +225,15 @@ export const workerActionsOf = (
       go: () => handOver(name, number, worker),
     });
   }
-  return {
-    actions,
-    held: new Set([...suggested.values()].map(({ worker }) => worker.dir)),
-  };
+  // Why the clean-up of each held worktree waits, for its node (tree.mjs).
+  const holds = new Map([
+    ...[...suggested].map(([number, { worker }]) => [
+      worker.dir,
+      `its agent is suggested for #${number}`,
+    ]),
+    ...announced
+      .filter(({ tree }) => tree)
+      .map(handover => [handover.tree.dir, takesText(handover)]),
+  ]);
+  return { actions, held: new Set(holds.keys()), holds };
 };

@@ -207,7 +207,7 @@ describe("autoActionsOf", () => {
     ]);
   });
 
-  it("cleans up after the merge: the worktree, the open boxes through the agent", () => {
+  it("cleans up after the merge: the open boxes through the agent, the worktree goes by itself", () => {
     const of = () => ({
       mr: mr({ state: "merged" }),
       issue: { iid: 7, boxes: [{ isTicked: true }, { isTicked: false }] },
@@ -216,9 +216,9 @@ describe("autoActionsOf", () => {
     const actions = autoActionsOf([issue()], of, agents);
     assert.deepEqual(
       actions.map(action => action.key),
-      ["clean up:feature/7-thing:remove", "clean up:feature/7-thing:boxes"],
+      ["clean up:feature/7-thing:boxes"],
     );
-    assert.match(actions[1].text, /1 open boxes/);
+    assert.match(actions[0].text, /1 open boxes/);
     // Its worktree gone, nothing to remove.
     assert.deepEqual(kinds([issue({ tree: null })], of), []);
   });
@@ -245,7 +245,7 @@ describe("autoActionsOf", () => {
     });
     assert.deepEqual(
       autoActionsOf([sent], merged, agents).map(action => action.key),
-      ["clean up:feature/7-thing:remove"],
+      [],
     );
   });
 

@@ -12,6 +12,7 @@ import { ESCAPES, cyan, red, yellow } from "../lib/tty.mjs";
 import { featureOf, focusSpace, isChangeOpen, mainDir } from "../worktree.mjs";
 import { deliverTo } from "./answers.mjs";
 import { unpushedActionOf } from "./change.mjs";
+import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
 import { screen } from "./screen.mjs";
 
@@ -173,6 +174,28 @@ const removeWorktree = dir => {
   });
   screen.redraw();
 };
+/** Where the wt:remove of the worktree `dir` stands: `{ isArmed, isRunning, error }`, or undefined. */
+export const removalOf = dir => removals.get(dir);
+/**
+ * The automatic clean-up (#227, clean-up.mjs): wt:remove of each merged
+ * worktree nothing stops, once. One that failed stays for a click (its row
+ * in UP NEXT says why). `holds`: dir → why a handover holds it.
+ */
+export const removeMerged = (issues, of, agents, holds = new Map()) => {
+  // herdr told nothing: a working agent would look idle.
+  if (agents.size === 0) return;
+  for (const issue of issues) {
+    const { tree } = issue;
+    if (!tree || removals.has(tree.dir)) continue;
+    const status = tree.claude ? agents.get(tree.claude.id)?.status : null;
+    const cleanUp = cleanUpOf(issue, {
+      mr: of(issue).mr,
+      status,
+      hold: holds.get(tree.dir),
+    });
+    if (cleanUp?.key === "due") removeWorktree(tree.dir);
+  }
+};
 const clickRemove = dir => {
   const state = removals.get(dir);
   if (state?.isRunning) return;
@@ -281,8 +304,8 @@ export const sendOnce = (dir, key, line) => {
  * - `push`: its worktree holds commits origin doesn't have for long;
  * - `pipeline`: the pipeline of the open MR failed; the click tells the agent
  *   which job, with its url;
- * - `clean up`: the MR is merged; the worktree to remove (two clicks), the
- *   issue's open boxes for the agent to tick;
+ * - `clean up`: the MR is merged; the worktree to remove (two clicks) when
+ *   the automatic removal failed, the issue's open boxes for the agent to tick;
  * a row whose click sent its line to the agent is gone (sendOnce);
  * - `waits`: the agent asks something (a question, a permission) or stopped
  *   on a question; the click goes to its tab.
@@ -344,7 +367,8 @@ export const autoActionsOf = (issues, of, agents) =>
       });
     if (unpushed) add(unpushed.kind, unpushed.text, unpushed.at, unpushed.go);
     if (mr?.state === "merged") {
-      if (tree)
+      // The automatic one does the rest (removeMerged): a row only for one that failed.
+      if (tree && removals.get(tree.dir)?.error)
         actions.push({
           key: `clean up:${issue.branch}:remove`,
           kind: "clean up",

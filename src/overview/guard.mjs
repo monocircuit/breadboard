@@ -1,5 +1,5 @@
 // A redraw that throws doesn't kill the overview (#221): the screen keeps the
-// last view that worked with the error in a line on top, the stack trace goes
+// last view that worked with the error in its first line, the stack trace goes
 // to a log file, and the next redraw tries again.
 import fs from "node:fs";
 import os from "node:os";
@@ -13,7 +13,8 @@ export const errorLog = () =>
 
 /**
  * `render()` as a guarded draw: its text, or when it throws, the last text
- * that worked (nothing before the first) under a line with the error, the
+ * that worked (nothing before the first) with a line with the error in place
+ * of its first, the
  * trace appended to `log`.
  */
 export const guarded = (render, log = errorLog()) => {
@@ -34,7 +35,9 @@ export const guarded = (render, log = errorLog()) => {
       const line = red(
         ` the overview failed to draw: ${String(error?.message ?? error).split("\n")[0]} · trace in ${log} · trying again`,
       );
-      return last ? `${line}\n${last}` : line;
+      // In place of the view's first line, not above it: every other line
+      // keeps its row, and with it its click.
+      return [line, ...last.split("\n").slice(1)].join("\n");
     }
   };
 };
