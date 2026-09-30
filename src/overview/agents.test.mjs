@@ -93,19 +93,12 @@ describe("agentRowsOf", () => {
     assert.equal(agentCountsOf(agents), "3 at work · 1 idle · 1 waiting");
   });
 
-  it("says why each issue without an agent waits", () => {
+  it("leaves the queued issues to WORKTREES' queue", () => {
     const { waiting } = agentRowsOf(issues, of, status, {
       handovers: [{ number: 8, to: "4-d", after: [240] }],
       suggested: new Map([[6, { worker }]]),
     });
-    assert.deepEqual(
-      waiting.map(row => [row.issue.number, row.text]),
-      [
-        [6, "goes to 3-c once its MR is merged"],
-        [8, "goes to 4-d after !240"],
-        [9, "queued (--queue): a click on its start in UP NEXT"],
-      ],
-    );
+    assert.deepEqual(waiting, []);
   });
 
   it("names a worktree whose agent never started", () => {
