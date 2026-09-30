@@ -48,6 +48,7 @@ import {
 import { changeFact } from "./change.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { announcedOf } from "./handovers.mjs";
+import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
@@ -77,10 +78,10 @@ const KIND = {
 /** The kinds whose click opens the spot to check; `browser-check` is stored before `try` came. */
 const TRY_KINDS = new Set(["try", "browser-check"]);
 /**
- * How a try's state shows (try-state.mjs `tone`).
- * TODO(#240): take these from its mapping of herdr's state colours.
+ * How a try's state shows (try-state.mjs `tone`), in herdr's state colours
+ * (herdr-tones.mjs): ready as done, waiting as working, failed as blocked.
  */
-const TRY_TONE = { ready: green, waits: yellow, failed: red };
+const TRY_STATUS = { ready: "done", waits: "working", failed: "blocked" };
 /** A row that can't be done yet: grey, its own colours and links dropped. */
 const grey = text => dim(String(text).replace(ESCAPES, ""));
 /** Whether an item is a try that can't be tried yet: grey, no answer, NEXT skips it. */
@@ -371,7 +372,7 @@ export const actionRow = (item, of) => {
   ];
   const text = actionText(item, of);
   if (!item.tryState) return { head: cells, text };
-  const state = TRY_TONE[item.tryState.tone](item.tryState.label);
+  const state = toneOf(TRY_STATUS[item.tryState.tone])(item.tryState.label);
   if (!isWaitingTry(item)) return { head: [...cells, state], text };
   return {
     head: [...cells.map(cell => (cell ? grey(cell) : cell)), state],
