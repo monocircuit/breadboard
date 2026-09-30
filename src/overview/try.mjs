@@ -4,9 +4,14 @@
 // `--url <page>`: the page on the worktree's app, its stack and `pnpm dev`
 // started first when the app is down (as `▶ start the stack` does). The
 // command runs only on the click, and the row shows it in full before.
+// `--on test --url <path>`: the path on the test instance, whose origin comes
+// from VITA_TEST_ORIGIN (never a hostname in the repo); try-state.mjs says
+// when it is deployed, and before that a click does nothing.
+import path from "node:path";
+
 import { herdr, isInHerdr, tabsOf } from "../lib/herdr.mjs";
 import { dim, red, yellow } from "../lib/tty.mjs";
-import { isPortFree } from "../worktree.mjs";
+import { VITA, isPortFree, mainDir, readEnv } from "../worktree.mjs";
 import { spaceOf } from "../worktree/spaces.mjs";
 import { ensureTab } from "../worktree/tabs.mjs";
 import { isStarting, stackProgress, startStack } from "./actions.mjs";
@@ -31,6 +36,18 @@ export const isOnApp = (page, offset) =>
 export const shortPage = page =>
   page.replace(/^https?:\/\/localhost(?=:)/, "").replace(/^(:\d+)\/$/, "$1");
 
+/**
+ * The origin of the test instance, `https://…` without a slash at the end:
+ * `$VITA_TEST_ORIGIN`, else `VITA_TEST_ORIGIN` in the ignored `.env.local`
+ * of vita in the main checkout; null without either.
+ */
+export const testOrigin = () => {
+  const origin =
+    process.env.VITA_TEST_ORIGIN ||
+    readEnv(path.join(mainDir(), VITA, ".env.local"))?.VITA_TEST_ORIGIN;
+  return origin?.trim().replace(/\/+$/, "") || null;
+};
+
 /** Clicks on their way to a page: dir → `{ stage: "stack" | "app", error }`. */
 const trying = new Map();
 
@@ -40,6 +57,8 @@ const trying = new Map();
  * a click is at it, how far it got.
  */
 export const trySpot = (action, tree) => {
+  if (action.on === "test")
+    return dim(`opens ${action.url} on the test instance`);
   if (action.run) return dim(`opens a terminal: ${action.run}`);
   if (!action.url) return "";
   if (!tree) return dim(`opens ${shortPage(action.url)}`);
@@ -119,9 +138,20 @@ const openPage = async (tree, url) => {
 
 /**
  * A click on the try `action` of the worktree `tree` (past its buttons): the
- * terminal or the page it names. Without a spot, the worktree's space.
+ * terminal or the page it names. Without a spot, the worktree's space. One
+ * that isn't ready (`state`, try-state.mjs) opens nothing, a failed
+ * deployment its job.
  */
-export const clickTry = (action, tree, fallback) => {
+export const clickTry = (action, tree, fallback, state = null) => {
+  if (state && !state.isReady) {
+    if (state.url) open(state.url);
+    return;
+  }
+  if (action.on === "test") {
+    const origin = testOrigin();
+    if (origin) open(`${origin}${action.url}`, tree?.dir);
+    return;
+  }
   if (action.run && tree && openTerminal(tree.dir, action.run)) return;
   if (action.url && tree) return openPage(tree, action.url);
   if (action.url) return open(action.url);

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { underRows, visible } from "../lib/tty.mjs";
-import { actionRow, renderOrchestration } from "./render-orchestration.mjs";
+import { ESCAPES, underRows, visible } from "../lib/tty.mjs";
+import {
+  actionRow,
+  nextActionOf,
+  renderOrchestration,
+} from "./render-orchestration.mjs";
 
 // Without a terminal: buttons in brackets, the box's inside 4 narrower.
 describe("ACTIONS rows", () => {
@@ -66,6 +70,48 @@ describe("ACTIONS rows", () => {
     const [first, second] = rowsAt(200, [decide, look]);
     assert.equal(first[0].indexOf("decide"), second[0].indexOf("look"));
     assert.equal(second[1].indexOf("the new row"), second[0].indexOf("look"));
+  });
+});
+
+describe("a try's state", () => {
+  const at = new Date().toISOString();
+  const tryOf = (tryState, text = "boxes on the test instance") => ({
+    who: "237-overview-try-shows-whether-it",
+    action: { kind: "try", text, url: "/atlas", on: "test", at },
+    tryState,
+  });
+  const waiting = tryOf({
+    isReady: false,
+    label: "deploying (publish, 3 min)",
+    tone: "waits",
+  });
+  const ready = tryOf({ isReady: true, label: "ready", tone: "ready" }, "x");
+  const of = () => ({});
+
+  it("shows the state as a cell after the age", () => {
+    const row = actionRow(waiting, of);
+    assert.equal(row.head.length, 6);
+    assert.equal(
+      row.head.at(-1).replace(ESCAPES, ""),
+      "deploying (publish, 3 min)",
+    );
+    assert.match(row.text.replace(ESCAPES, ""), /^boxes on the test instance/);
+    // Other kinds keep their five cells.
+    const look = { who: "a", action: { kind: "look", text: "y", at } };
+    assert.equal(actionRow(look, of).head.length, 5);
+  });
+
+  it("greys a try that isn't ready, its links dropped", () => {
+    const { head, text } = actionRow(waiting, of);
+    for (const cell of [...head.slice(1, -1), text])
+      assert.doesNotMatch(cell, /\x1b\]8;;|\x1b\[3[1-6]m/);
+  });
+
+  it("NEXT skips a try that isn't ready", () => {
+    const look = { who: "a", action: { kind: "look", text: "y", at } };
+    assert.equal(nextActionOf([waiting, ready], [], false), ready);
+    assert.equal(nextActionOf([waiting, look], [], false), look);
+    assert.equal(nextActionOf([waiting], [], true), null);
   });
 });
 
