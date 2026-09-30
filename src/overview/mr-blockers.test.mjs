@@ -93,11 +93,12 @@ describe("rowBlockersOf", () => {
           behind: 4,
           after: [{ iid: 253, why: "shares tty.mjs" }],
           tree: {
-            wait: { mrs: [253, 249] },
+            wait: { mrs: [253, 249, 248] },
             change: { text: "shorter title", head: "a" },
             pushed: "a",
             unpushed: 2,
           },
+          done: new Set([248]),
         },
       ),
       [

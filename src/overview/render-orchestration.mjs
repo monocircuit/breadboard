@@ -517,6 +517,13 @@ export const renderOrchestration = (local, remote, error) => {
 
   const byNumber = withMr;
   const afterOf = new Map(order.open.map(item => [item.number, item.after]));
+  // The MRs a wait may name that are over already.
+  const doneIids = new Set(
+    issues
+      .map(issue => of(issue).mr)
+      .filter(mr => mr && mr.state !== "opened")
+      .map(mr => mr.iid),
+  );
   const doneMrs = order.merged.map(number => byNumber.get(number));
   const mrsBox = openBox(lines);
   if (!remote) {
@@ -546,6 +553,7 @@ export const renderOrchestration = (local, remote, error) => {
             after: afterOf.get(item.issue.number) ?? [],
             jobs,
             tree: item.issue.tree,
+            done: doneIids,
           });
       return {
         graph: item.graph,

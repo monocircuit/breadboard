@@ -29,7 +29,8 @@ const NAMED_BOXES = 2;
  * (boxesOf), `behind` how many commits of develop its branch lacks, `after`
  * the MRs it comes directly after (merge-order.mjs, `{ iid, why }`), `jobs`
  * its pipeline's (a failed one names the job), `tree` its worktree (the
- * posted actions, `wait`, `change`, `unpushed`).
+ * posted actions, `wait`, `change`, `unpushed`), `done` the iids of the MRs
+ * known merged or closed: a wait for one of them is over.
  */
 export const rowBlockersOf = ({
   mr,
@@ -38,6 +39,7 @@ export const rowBlockersOf = ({
   after = [],
   jobs = [],
   tree = null,
+  done = new Set(),
 }) => {
   const reasons = [];
   const add = (text, who) => reasons.push({ text, who });
@@ -85,7 +87,7 @@ export const rowBlockersOf = ({
     add(`after !${pred.iid} (${pred.why})`, `!${pred.iid}`);
   const named = new Set(after.map(pred => pred.iid));
   for (const iid of tree?.wait?.mrs ?? [])
-    if (!named.has(iid)) add(`waits for !${iid}`, `!${iid}`);
+    if (!named.has(iid) && !done.has(iid)) add(`waits for !${iid}`, `!${iid}`);
 
   if (tree && isChangeOpen(tree, mr))
     add(`change requested: ${tree.change.text}`, WHO.agent);
