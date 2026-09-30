@@ -25,6 +25,7 @@ import {
   markOrigins,
   markSpace,
   orchestrationOf,
+  orchestratorLabel,
   originMark,
 } from "./origins.mjs";
 import { exclusive } from "./lock.mjs";
@@ -245,6 +246,25 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
   return { main, report };
 });
 /**
+ * The orchestration whose space `⇶ <title>` holds the pane running this, or
+ * null. An orchestrator that runs wt:new itself stays there (#245).
+ */
+export const orchestrationHere = () => {
+  if (!isInHerdr() || !process.env.HERDR_PANE_ID) return null;
+  const pane = currentPane();
+  return orchestrationOf(
+    pane && spaces().find(w => w.workspace_id === pane.workspace_id)?.label,
+  );
+};
+/**
+ * Whether wt:new takes the tab running it into the new space: an agent's
+ * goes along, a human's stays, and so does the orchestrator's, whether
+ * wt:orchestrate started the worktree (`origin`) or it ran wt:new itself from
+ * its space (`orchestration`, #245).
+ */
+export const movesTab = ({ isAgent, origin = null, orchestration = null }) =>
+  isAgent && !origin && !orchestration;
+/**
  * After wt:new: the worktree gets its space.
  *
  * A human gets it with a tab to start `claude` in, in front. An agent takes
@@ -255,48 +275,56 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
  * `origin`: the worktree is an orchestration's. Its space is built as for a
  * human, unfocused and marked, and the tab `<feature>` waits for its agent
  * (startAgent); the orchestrator's own tab stays where it is.
+ *
+ * `stays`: the orchestration whose space runs this (#245), the orchestrator
+ * started the worktree itself. Its space is built as for a human, unfocused
+ * and unmarked, and the orchestrator's tab stays where it is.
  */
-export const openSpace = exclusive(async (feature, dir, origin = null) => {
-  if (!isInHerdr() || !mainSpace()) return null;
-  if (!isAgent() || origin) {
-    const workspace = worktreeSpace(dir);
-    if (!workspace) return null;
-    await syncStackTabs(dir, workspace);
-    if (origin) {
-      const found = spaces().find(w => w.workspace_id === workspace);
-      if (found) markSpace(found, origin);
-      return `opened the space ${feature}, marked ${originMark(origin.name)}`;
+export const openSpace = exclusive(
+  async (feature, dir, origin = null, stays = null) => {
+    if (!isInHerdr() || !mainSpace()) return null;
+    if (!movesTab({ isAgent: isAgent(), origin, orchestration: stays })) {
+      const workspace = worktreeSpace(dir);
+      if (!workspace) return null;
+      await syncStackTabs(dir, workspace);
+      if (origin) {
+        const found = spaces().find(w => w.workspace_id === workspace);
+        if (found) markSpace(found, origin);
+        return `opened the space ${feature}, marked ${originMark(origin.name)}`;
+      }
+      if (stays)
+        return `opened the space ${feature}, this tab stays in ${orchestratorLabel(stays)}`;
+      const tab = tabsOf(workspace).find(t => t.label === feature);
+      if (tab) herdr(["tab", "focus", tab.tab_id]);
+      return `opened the space ${feature}`;
     }
-    const tab = tabsOf(workspace).find(t => t.label === feature);
-    if (tab) herdr(["tab", "focus", tab.tab_id]);
-    return `opened the space ${feature}`;
-  }
 
-  const workspace = worktreeSpace(dir, { hasWorkTab: false });
-  const pane = currentPane();
-  if (!workspace || !pane) return null;
-  const moved = herdr([
-    "pane",
-    "move",
-    pane.pane_id,
-    "--workspace",
-    workspace,
-    "--new-tab",
-  ]);
-  const created = moved?.move_result?.created_tab;
-  if (!created) return null;
-  herdr(["tab", "rename", created.tab_id, feature]);
-  // Before the stack tabs, so they open behind it and nothing has to move but the conversation's tab.
-  dropDuplicates(workspace, feature);
-  ensureEditor(workspace, dir, tabsOf(workspace));
-  keepOrder(workspace, [ROOT, OVERVIEW, feature, EDITOR]);
-  await syncStackTabs(dir, workspace);
-  const hadRoot = tabsOf(spaceOf(mainDir()) ?? "").some(
-    tab => tab.label === ROOT,
-  );
-  mainSpace();
-  return `this tab moved into the space ${feature}${hadRoot ? "" : `, a new tab ${ROOT} waits in ${SPACE}`}`;
-});
+    const workspace = worktreeSpace(dir, { hasWorkTab: false });
+    const pane = currentPane();
+    if (!workspace || !pane) return null;
+    const moved = herdr([
+      "pane",
+      "move",
+      pane.pane_id,
+      "--workspace",
+      workspace,
+      "--new-tab",
+    ]);
+    const created = moved?.move_result?.created_tab;
+    if (!created) return null;
+    herdr(["tab", "rename", created.tab_id, feature]);
+    // Before the stack tabs, so they open behind it and nothing has to move but the conversation's tab.
+    dropDuplicates(workspace, feature);
+    ensureEditor(workspace, dir, tabsOf(workspace));
+    keepOrder(workspace, [ROOT, OVERVIEW, feature, EDITOR]);
+    await syncStackTabs(dir, workspace);
+    const hadRoot = tabsOf(spaceOf(mainDir()) ?? "").some(
+      tab => tab.label === ROOT,
+    );
+    mainSpace();
+    return `this tab moved into the space ${feature}${hadRoot ? "" : `, a new tab ${ROOT} waits in ${SPACE}`}`;
+  },
+);
 /**
  * After wt:remove: the space of the worktree goes, its directory is gone.
  *

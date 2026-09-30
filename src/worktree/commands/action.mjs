@@ -6,6 +6,7 @@ import {
   actionsOf,
   addAction,
   answerLine,
+  answeredOf,
   answersOf,
   decideProblem,
   doneAction,
@@ -20,7 +21,7 @@ const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>]   kind: ${ACTIO
        pnpm wt:action decide "<what is decided>?" --option "<what happens>" --option "<what happens>"… --recommend <option>
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
-       pnpm wt:action --list
+       pnpm wt:action --list   the open actions, then the answered ones (a decision answered is taken)
        pnpm wt:action --done <id>
        pnpm wt:action --answers   the answers not yet delivered, handed over (they go)
        … --orchestration <name>   the orchestrator's own, from any checkout`;
@@ -111,16 +112,17 @@ export default function actionCommand(given, flags) {
   const { file, name } = whereOf();
 
   if (flags.has("--list")) {
+    const row = a =>
+      `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.map(option => (option === a.recommend ? `★ ${option}` : option)).join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`;
     const actions = actionsOf(file);
+    // The newest first: what was just decided is what gets relayed late.
+    const answered = answeredOf(file).toReversed().slice(0, 10);
     console.log(
-      actions.length
-        ? actions
-            .map(
-              a =>
-                `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.map(option => (option === a.recommend ? `★ ${option}` : option)).join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`,
-            )
-            .join("\n")
-        : "  no open actions",
+      `${actions.length ? actions.map(row).join("\n") : "  no open actions"}${
+        answered.length
+          ? `\n\n  answered, delivered:\n${answered.map(a => `${row(a)}  (${a.answeredAt})`).join("\n")}`
+          : ""
+      }`,
     );
     return;
   }
