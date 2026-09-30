@@ -28,12 +28,13 @@ describe("titleLines", () => {
       // The triangle is two UTF-16 units, one column: a view's fit keeps the line whole.
       assert.equal(fit(line, 60), line);
     }
-    // A line above and below the logo: the same space on both sides.
+    // A line above and below the logo, and two columns right of it: a line
+    // is about two columns wide, the same space on three sides.
     assert.deepEqual(lines, [
       " ".repeat(60),
-      ` ${" ".repeat(46)}12:00  ▀▀▀▀▀ `,
-      ` ⇶ test${" ".repeat(45)}  ▀▀▀▀▀ `,
-      ` ${" ".repeat(33)}q quit · r refresh  ▀ 🭭 ▀ `,
+      ` ${" ".repeat(45)}12:00  ▀▀▀▀▀  `,
+      ` ⇶ test${" ".repeat(44)}  ▀▀▀▀▀  `,
+      ` ${" ".repeat(32)}q quit · r refresh  ▀ 🭭 ▀  `,
       " ".repeat(60),
     ]);
   });
@@ -41,9 +42,9 @@ describe("titleLines", () => {
   it("cuts the keys first and drops the logo before it cuts the title", () => {
     assert.deepEqual(band(20), [
       " ".repeat(20),
-      "       12:00  ▀▀▀▀▀ ",
-      " ⇶ test       ▀▀▀▀▀ ",
-      " q quit · r   ▀ 🭭 ▀ ",
+      "      12:00  ▀▀▀▀▀  ",
+      " ⇶ test      ▀▀▀▀▀  ",
+      " q quit · r  ▀ 🭭 ▀  ",
       " ".repeat(20),
     ]);
     assert.deepEqual(band(13), [
