@@ -8,6 +8,7 @@ import {
   answerLine,
   answeredOf,
   answersOf,
+  decideProblem,
   doneAction,
   takeAnswers,
 } from "../actions.mjs";
@@ -17,7 +18,8 @@ import { originOf, recordFile, recordOf } from "../origins.mjs";
 import { mainDir } from "../worktrees.mjs";
 import changeCommand from "./change.mjs";
 
-const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>] [--option <answer>]…   kind: ${ACTION_KINDS.join(", ")}
+const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>]   kind: ${ACTION_KINDS.join(", ")}
+       pnpm wt:action decide "<what is decided>?" --option "<what happens>" --option "<what happens>"… --recommend <option>
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action note <one line>   what you do, for the FEED
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
@@ -32,6 +34,7 @@ const VALUED = [
   "--done",
   "--orchestration",
   "--option",
+  "--recommend",
   "--mr",
 ];
 
@@ -59,6 +62,22 @@ const valuesOf = name => {
           : [],
     )
     .filter(value => value && !value.startsWith("--"));
+};
+
+/**
+ * The option `--recommend` names, by its text or its number (from 1); null
+ * without the flag.
+ */
+const recommendOf = options => {
+  const given = flagValue("--recommend");
+  if (!given) return null;
+  return options.includes(given)
+    ? given
+    : (options[Number(given) - 1] ?? given);
+};
+const checkDecide = (text, options, recommend) => {
+  const problem = decideProblem(text, options, recommend);
+  if (problem) fail(problem);
 };
 
 /**
@@ -96,7 +115,7 @@ export default function actionCommand(given, flags) {
 
   if (flags.has("--list")) {
     const row = a =>
-      `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`;
+      `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.map(option => (option === a.recommend ? `★ ${option}` : option)).join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`;
     const actions = actionsOf(file);
     // The newest first: what was just decided is what gets relayed late.
     const answered = answeredOf(file).toReversed().slice(0, 10);
@@ -161,14 +180,17 @@ export default function actionCommand(given, flags) {
       );
   }
   const options = valuesOf("--option");
-  if (options.length && kind !== "decide")
-    fail("only a decide has options: --option <answer>");
+  const recommend = recommendOf(options);
+  if (kind === "decide") checkDecide(text, options, recommend);
+  else if (options.length || flagValue("--recommend"))
+    fail("only a decide has options: --option <answer> --recommend <option>");
   const action = addAction(file, {
     kind,
     text,
     url,
     run,
     options,
+    recommend,
     pane: process.env.HERDR_PANE_ID ?? null,
   });
   const spot = run

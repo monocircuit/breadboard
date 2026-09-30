@@ -18,6 +18,7 @@ import {
   deliverTo,
   deliverToOrchestrator,
   deliversAnswers,
+  optionsText,
   overviewLine,
   retryAnswers,
 } from "./answers.mjs";
@@ -34,6 +35,15 @@ describe("answers", () => {
     assert.equal(buttonAt(decide, 9), 1);
     assert.equal(buttonAt(decide, 14), 1);
     assert.equal(buttonAt(decide, 15), -1);
+  });
+
+  it("marks the recommended option on its button, and counts the mark", () => {
+    const recommended = { ...decide, recommend: "B" };
+    assert.equal(answerCell(recommended), "[ A ] [ ★ B ]");
+    // `[ A ] [ ★ B ]` from column 3: A up to 8, ★ B up to 16.
+    assert.equal(buttonAt(recommended, 16), 1);
+    assert.equal(buttonAt(recommended, 17), -1);
+    assert.equal(optionsText(recommended), "options: A · ★ B");
   });
 
   it("shows ✓ alone for an action without answers", () => {
