@@ -5,7 +5,7 @@ import { isAgent } from "../../lib/herdr.mjs";
 import { fail, flagValue, git, run, step, setHint } from "../../lib/proc.mjs";
 import { NAME, VITA } from "../constants.mjs";
 import { shareConversations } from "../conversations.mjs";
-import { openSpace } from "../layout.mjs";
+import { movesTab, openSpace, orchestrationHere } from "../layout.mjs";
 import { slotOf, writeOrigin } from "../origins.mjs";
 import { prunable, staleIssues } from "../prune.mjs";
 import { installPushGuard } from "../push-guard.mjs";
@@ -32,8 +32,16 @@ export default async function newCommand(feature, flags) {
   const origin = originName
     ? { name: originName, slot: slotOf(originName) }
     : null;
+  // The orchestrator ran wt:new itself: its tab stays in its space, like with --origin (#245).
+  const stays = origin ? null : orchestrationHere();
   // Read before openSpace moves the agent's tab out of it. An orchestrator stays where it is.
-  const previous = origin ? null : leavingWorktree();
+  const previous = movesTab({
+    isAgent: isAgent(),
+    origin,
+    orchestration: stays,
+  })
+    ? leavingWorktree()
+    : null;
 
   step("git fetch");
   git(["fetch", "--prune"]);
@@ -118,7 +126,7 @@ export default async function newCommand(feature, flags) {
         found => found.length,
         () => 0,
       );
-  const space = await openSpace(feature, dir, origin);
+  const space = await openSpace(feature, dir, origin, stays);
   openApp(dir, offset);
   const left = previous && { line: handOver(previous) };
   // The worktree is ready by now: a count that fails costs the hint, not the summary (#130).
