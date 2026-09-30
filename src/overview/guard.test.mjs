@@ -9,7 +9,7 @@ import { guarded } from "./guard.mjs";
 import { renderOrchestration } from "./render-orchestration.mjs";
 
 describe("guarded", () => {
-  it("keeps the last view under the error and tries again", () => {
+  it("keeps the last view with the error in its first line and tries again", () => {
     const log = path.join(
       fs.mkdtempSync(path.join(os.tmpdir(), "guard-")),
       "errors.log",
@@ -17,16 +17,16 @@ describe("guarded", () => {
     let isBroken = false;
     const render = guarded(() => {
       if (isBroken) throw new Error("boom");
-      return "the view";
+      return "the title\nthe view";
     }, log);
-    assert.equal(render(), "the view");
+    assert.equal(render(), "the title\nthe view");
     isBroken = true;
     const [line, ...rest] = render().replace(ESCAPES, "").split("\n");
     assert.match(line, /failed to draw: boom · trace in .* · trying again/);
     assert.deepEqual(rest, ["the view"]);
     assert.match(fs.readFileSync(log, "utf-8"), /Error: boom/);
     isBroken = false;
-    assert.equal(render(), "the view");
+    assert.equal(render(), "the title\nthe view");
   });
 });
 

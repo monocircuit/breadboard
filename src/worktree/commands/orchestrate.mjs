@@ -25,8 +25,9 @@ import {
   updateRecord,
   writeRecord,
 } from "../origins.mjs";
+import { afterArgs, parseAfter } from "../handovers.mjs";
 import { idleWorkersNow } from "../workers.mjs";
-import handOverCommand from "./handover.mjs";
+import handOverCommand, { announceCommand } from "./handover.mjs";
 
 /**
  * One session orchestrates several issues: its own space `⇶ <name>` (its
@@ -36,7 +37,8 @@ import handOverCommand from "./handover.mjs";
  * worktrees one after the other: two at once would pick the same free ports.
  *
  * `--to <agent>` hands one issue to an idle agent of it instead
- * (handover.mjs), `--end` ends it once its worktrees are gone (end.mjs).
+ * (handover.mjs), with `--after !<mr>…` once those MRs are merged (the
+ * overview does it, handovers.mjs), `--end` ends it once its worktrees are gone (end.mjs).
  *
  * An issue is its number (the name comes from its title) or `<n>-<feature>`.
  * A worktree counts as made when it is there: wt:new may still fail after
@@ -44,16 +46,19 @@ import handOverCommand from "./handover.mjs";
  */
 export default async function orchestrateCommand(name, flags) {
   const usage =
-    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
+    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
   // The end: its space, the orchestrator's claude, record and checkout (worktree/end.mjs).
   if (flags.has("--end")) {
     if (!name || !NAME.test(name)) fail(usage);
     return endCommand(name);
   }
   const argv = process.argv.slice(3);
+  // The MRs an announced handover waits for (handovers.mjs): no issues.
+  const after = afterArgs(argv);
   const positional = argv.filter(
     (arg, i) =>
       !arg.startsWith("--") &&
+      !after?.at.includes(i) &&
       !["--peer", "--brief", "--to", "--limit"].includes(argv[i - 1]),
   );
   const wanted = positional.slice(1);
@@ -81,6 +86,11 @@ export default async function orchestrateCommand(name, flags) {
   // The next issue to an agent that has one done (workers.mjs).
   if (flags.has("--to")) {
     if (wanted.length !== 1) fail("--to hands over one issue at a time");
+    if (after) {
+      const parsed = parseAfter(after.values);
+      if (parsed.error) fail(parsed.error);
+      return announceCommand(name, wanted[0], { after: parsed.after, isDry });
+    }
     return handOverCommand(name, wanted[0], {
       peer,
       extra,

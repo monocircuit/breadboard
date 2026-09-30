@@ -11,6 +11,7 @@ import {
   actionsFile,
   actionsOf,
   feedFile,
+  handoversOf,
   hasOwnCommits,
   isPortFree,
   mainDir,
@@ -48,17 +49,6 @@ export const readView = async () => {
   const local = await readLocal();
   // An orchestration: its issues, the conversation of each worktree's agent and what it asks for.
   if (orchestration) {
-    // Answers that didn't get into an agent's pane yet: again, once it
-    // changed state. Only by the live overview: a --once print changes nothing.
-    retryAnswers(orchestration, [
-      ...local.trees.map(tree => ({
-        file: actionsFile(tree.dir),
-        to: { dir: tree.dir },
-      })),
-      { file: recordFile(orchestration), to: { orchestration } },
-    ]);
-    // The lines after a merge (merge.mjs) that didn't get in either.
-    retryMergeLines(local.trees.map(tree => tree.dir));
     const trees = local.trees.map(tree => ({
       ...tree,
       claude: readClaude(tree.dir),
@@ -76,9 +66,13 @@ export const readView = async () => {
             tree.dir,
           ).stdout.trim(),
         ) || 0,
-      // What keeps a merged one from wt:remove (tree.mjs): `cherry` as wt:remove checks it.
+      // What keeps a merged one from wt:remove (clean-up.mjs): `cherry` as wt:remove checks it, counted.
       ownCommits:
-        tree.branch !== "(detached)" && hasOwnCommits(tree.branch, tree.dir),
+        tree.branch === "(detached)"
+          ? 0
+          : sh("git", ["cherry", "origin/develop", tree.branch], tree.dir)
+              .stdout.split("\n")
+              .filter(line => line.startsWith("+")).length,
       // What it waits for (wt:wait), for its MR row.
       wait: waitOf(tree.dir),
     }));
@@ -91,8 +85,8 @@ export const readView = async () => {
       plan: recordOf(orchestration)?.plan ?? null,
       // Each agent's name and what it worked on before (#217, worktree/workers.mjs).
       workers: recordOf(orchestration)?.workers ?? {},
-      // Announced handovers (#227): what an agent gets next, for AGENTS.
-      handovers: recordOf(orchestration)?.handovers ?? [],
+      // The handovers the orchestrator announced (#227, worktree/handovers.mjs).
+      handovers: handoversOf(recordOf(orchestration)),
       // For AGENTS: whether a fresh agent would get its own stack (#229).
       free: freeMemory(),
       ownActions: actionsOf(file),
@@ -145,6 +139,24 @@ export const readView = async () => {
     isStudioUp: !(await isPortFree(STUDIO_PORT + offset)),
     isStorybookUp: !(await isPortFree(STORYBOOK_PORT + offset)),
   };
+};
+/**
+ * What a read of an orchestration sets off, apart from reading: answers that
+ * didn't get into an agent's pane yet, again once it changed state, and the
+ * lines after a merge (merge.mjs) that didn't get in either. In the thread
+ * of the clicks, which hold what was tried (readView runs in a worker,
+ * reader.mjs). Only by the live overview: a --once print changes nothing.
+ */
+export const retryDeliveries = local => {
+  if (!orchestration) return;
+  retryAnswers(orchestration, [
+    ...local.trees.map(tree => ({
+      file: actionsFile(tree.dir),
+      to: { dir: tree.dir },
+    })),
+    { file: recordFile(orchestration), to: { orchestration } },
+  ]);
+  retryMergeLines(local.trees.map(tree => tree.dir));
 };
 export const view = (...args) => {
   screen.clicks = [];

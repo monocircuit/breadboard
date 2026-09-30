@@ -45,7 +45,8 @@ const afterText = after =>
  * agent is bound to, `{ issue, name, state, share, next }`; `waiting` one
  * per issue without an agent, `{ issue, text }`, why it waits.
  * `known`: the record's workers (their names), `handovers`: the announced
- * ones (#227, `{ number, to, after }`), `suggested`: number → `{ worker }`
+ * ones (#227, announcedOf: `{ number, to, after, open }`, the MRs still
+ * `open` named), `suggested`: number → `{ worker }`
  * of UP NEXT (workers.mjs).
  */
 export const agentRowsOf = (
@@ -74,7 +75,7 @@ export const agentRowsOf = (
         ),
         share: claude.window ? Math.min(claude.used / claude.window, 1) : null,
         next: announced
-          ? `next #${announced.number}${afterText(announced.after)}`
+          ? `next #${announced.number}${afterText(announced.open ?? announced.after)}`
           : offered
             ? `next #${offered[0]} once its MR is merged`
             : "",
@@ -92,7 +93,7 @@ export const agentRowsOf = (
         text: issue.tree
           ? "no agent runs in its worktree"
           : announced
-            ? `goes to ${announced.to}${afterText(announced.after)}`
+            ? `goes to ${announced.to}${afterText(announced.open ?? announced.after)}`
             : offered
               ? `goes to ${offered.name} once its MR is merged`
               : "queued (--queue): a click on its start in UP NEXT",

@@ -91,10 +91,12 @@ const spread = (left, right, width) => {
 };
 /**
  * The title band across the screen, the logo's height and a line above and
- * below it: the logo at the right end with a column of margin, on its lines
- * the name on the left of its middle line, the time (and the scroll mark) on
- * the right of its first line and the keys on the right of its last. All of it on the grey of the section heads, the logo's
- * half blocks too, so no black shows between them. Without colours the same
+ * below it: the logo at the right end with two columns right of it (a line
+ * is about two columns wide on screen: the same space as above and below
+ * it), on its lines the name on the left of its middle line, the time (and
+ * the scroll mark) on the right of its first line and the keys on the right
+ * of its last. All of it on the grey of the section heads, the logo's half
+ * blocks too, so no black shows between them. Without colours the same
  * lines, plain. A terminal too narrow for name and logo drops the logo.
  * Pushed with `lines.push(...titleLines())`, every line one row.
  */
@@ -104,9 +106,11 @@ export const titleLines = (left, right, keys = "", width = boxWidth()) => {
   const [name, time, hint] = [left, right, keys].map(plain);
   const art = titleLogo();
   const artWidth = art.length ? visible(art[0]) : 0;
-  // A column of margin on both ends, two between the text and the logo.
-  const hasLogo = artWidth > 0 && width - 2 - artWidth - 2 >= name.length;
-  const inner = width - 2 - (hasLogo ? artWidth + 2 : 0);
+  // A column of margin on both ends, two between the text and the logo and
+  // one more right of the logo: two there, as much as a line above and below.
+  const logoRoom = artWidth + 3;
+  const hasLogo = artWidth > 0 && width - 2 - logoRoom >= name.length;
+  const inner = width - 2 - (hasLogo ? logoRoom : 0);
   // The lines of the logo, between the band's first and last line.
   const rows = [
     ["", ""],
@@ -116,7 +120,7 @@ export const titleLines = (left, right, keys = "", width = boxWidth()) => {
   ];
   return Array.from({ length: titleHeight() }, (_, i) => {
     const [l, gap, r] = spread(...(rows[i] ?? ["", ""]), inner);
-    const mark = hasLogo ? `  ${art[i - 1] ?? " ".repeat(artWidth)}` : "";
+    const mark = hasLogo ? `  ${art[i - 1] ?? " ".repeat(artWidth)} ` : "";
     if (!isColor) return ` ${l}${gap}${r}${mark} `;
     return `${ISLAND_HEAD}${BAND_TEXT} \x1b[1m${l}\x1b[22m${gap}${BAND_QUIET}${r}${BAND_TEXT}${mark} \x1b[0m`;
   });

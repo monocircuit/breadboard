@@ -9,6 +9,7 @@ import path from "node:path";
 import { red } from "../lib/tty.mjs";
 import { CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
 import { suggestionsOf } from "../worktree/fit.mjs";
+import { takesText } from "./handovers.mjs";
 import { screen } from "./screen.mjs";
 
 export { pathsOf, sharedOf, suggestionsOf } from "../worktree/fit.mjs";
@@ -95,8 +96,9 @@ const runInBackground = (name, number, args) => {
   });
   screen.redraw();
 };
+/** `worker`: `{ name }` of a free worker, or an announced handover's `{ to }`. */
 const handOver = (name, number, worker) =>
-  runInBackground(name, number, ["--to", worker.name]);
+  runInBackground(name, number, ["--to", worker.name ?? worker.to]);
 /** A fresh agent for a queued issue, no idle one asked again: the overview found none that fits. */
 const startFresh = (name, number) => runInBackground(name, number, ["--now"]);
 
@@ -106,13 +108,18 @@ const percent = share => `${Math.round(share * 100)} %`;
  * The rows of UP NEXT for the workers of the orchestration `name`, as
  * automatic actions (`{ key, kind, text, at, issue, who, go }`): per queued
  * issue its suggested agent, `hand over`, else `start`, a fresh agent on a
- * click. `held`: the worktrees of the suggested agents, whose clean-up
- * waits, it would close the agent with the space. An agent nothing fits
- * closes with its clean-up, its conversation kept for `/resume`.
- * `suggested`: number → `{ worker, shared }`, for AGENTS (agents.mjs).
+ * click. `held`: the worktrees of the suggested and announced agents
+ * (`holds`: dir → why), whose clean-up waits, it would close the agent with
+ * the space. An agent nothing fits closes with its clean-up, its
+ * conversation kept for `/resume`. `suggested`: number → `{ worker, shared
+ * }`, for AGENTS (agents.mjs).
  *
  * `shouldHandOut` (the one live overview, once GitLab answered): a queued
  * issue goes to its suggested agent by itself once that one is merged.
+ *
+ * `announced` (overview/handovers.mjs): the handovers the orchestrator
+ * announced (#227). Their issues and agents are no one else's; each is a
+ * row of its own, done by itself once due, and its agent's worktree is held.
  */
 export const workerActionsOf = (
   name,
@@ -120,11 +127,18 @@ export const workerActionsOf = (
   of,
   agents,
   known,
-  { shouldHandOut = false } = {},
+  { shouldHandOut = false, announced = [] } = {},
 ) => {
-  const free = freeWorkersOf(issues, of, agents, known);
+  const promised = new Set(announced.map(({ tree }) => tree?.dir));
+  const free = freeWorkersOf(issues, of, agents, known).filter(
+    worker => !promised.has(worker.dir),
+  );
   const queued = issues
-    .filter(issue => issue.queued)
+    .filter(
+      issue =>
+        issue.queued &&
+        !announced.some(({ number }) => number === issue.number),
+    )
     .map(issue => ({
       number: issue.number,
       issue,
@@ -138,6 +152,23 @@ export const workerActionsOf = (
       handOver(name, number, worker);
   }
   const actions = [];
+  for (const handover of announced) {
+    const { number, to } = handover;
+    const state = running.get(number);
+    if (shouldHandOut && handover.isDue && !state)
+      handOver(name, number, handover);
+    actions.push({
+      key: `hand over:#${number}:${to}`,
+      kind: "hand over",
+      who: to,
+      issue: issues.find(candidate => candidate.number === number),
+      at: handover.at ?? "",
+      text: running.get(number)?.isRunning
+        ? `#${number} → ${to}: handing over …`
+        : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : "once it is idle"} (announced)${state?.error ? `  ${red(state.error)}` : ""}`,
+      go: () => handOver(name, number, handover),
+    });
+  }
   for (const { number, issue } of queued) {
     const found = suggested.get(number);
     const state = running.get(number);
@@ -169,9 +200,15 @@ export const workerActionsOf = (
       go: () => handOver(name, number, worker),
     });
   }
-  return {
-    actions,
-    held: new Set([...suggested.values()].map(({ worker }) => worker.dir)),
-    suggested,
-  };
+  // Why the clean-up of each held worktree waits, for its node (tree.mjs).
+  const holds = new Map([
+    ...[...suggested].map(([number, { worker }]) => [
+      worker.dir,
+      `its agent is suggested for #${number}`,
+    ]),
+    ...announced
+      .filter(({ tree }) => tree)
+      .map(handover => [handover.tree.dir, takesText(handover)]),
+  ]);
+  return { actions, held: new Set(holds.keys()), holds, suggested };
 };
