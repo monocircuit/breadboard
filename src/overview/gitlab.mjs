@@ -10,6 +10,7 @@ import {
 } from "../worktree.mjs";
 import { exec, glab } from "./io.mjs";
 import { readRemoteOf } from "./read.mjs";
+import { deployStateOf } from "./try-state.mjs";
 import { deliverWaits } from "./waits.mjs";
 
 /** How many lines of a failed job's log the view shows. */
@@ -39,6 +40,7 @@ export const jobsOf = async pipeline => {
       name: job.name,
       status: job.status,
       url: job.web_url,
+      finishedAt: job.finished_at ?? null,
       log: null,
     }));
   await Promise.all(
@@ -68,6 +70,32 @@ export const jobsOf = async pipeline => {
       }),
   );
   return jobs;
+};
+/** Deployments that won't change any more (try-state.mjs `isFinal`): merge commit → `{ pipeline, jobs }`. */
+const deploys = new Map();
+/**
+ * The develop pipeline of the merge commit `sha` with its jobs, what a try
+ * on the test instance waits for (try-state.mjs): `{ pipeline, jobs }`,
+ * `pipeline` null while GitLab has none for it yet.
+ */
+export const deployOf = async sha => {
+  if (deploys.has(sha)) return deploys.get(sha);
+  const [found] = await glab(
+    `projects/:fullpath/pipelines?ref=develop&sha=${sha}&per_page=1`,
+  );
+  const deploy = {
+    pipeline: found
+      ? {
+          id: found.id,
+          status: found.status,
+          url: found.web_url,
+          createdAt: found.created_at,
+        }
+      : null,
+    jobs: found ? await jobsOf(found.id) : [],
+  };
+  if (deployStateOf(deploy).isFinal) deploys.set(sha, deploy);
+  return deploy;
 };
 /**
  * The branches of an orchestration: the ones its record lists (pnpm
