@@ -61,8 +61,10 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
   lines.push(dim(`╰${"─".repeat(width - 2)}╯`));
 };
 /**
- * The last title band drawn, for the scroll window to draw it again with its
- * mark (scroll.mjs); `isSet` is false for a view drawn without one.
+ * The base title of the last render, for the scroll window to draw the band
+ * again with its mark (`markedTitleLines`); `isSet` is false for a view drawn
+ * without one. A band drawn with a mark never lands here, so the next frame
+ * doesn't put its mark in front of this one's.
  */
 export const lastTitle = { left: "", right: "", keys: "", isSet: false };
 /**
@@ -80,13 +82,15 @@ const BAND_QUIET = "\x1b[38;2;170;170;170m";
  * text; what doesn't fit is cut from the right one first.
  */
 const spread = (left, right, width) => {
-  const room = Math.max(0, width - left.length - (left && right ? 2 : 0));
-  const shownRight = right.slice(0, room);
-  const shownLeft = left.slice(0, width - shownRight.length);
+  // Characters, not UTF-16 units: a character past the BMP is one column too.
+  const [lefts, rights] = [[...left], [...right]];
+  const room = Math.max(0, width - lefts.length - (left && right ? 2 : 0));
+  const shownRight = rights.slice(0, room);
+  const shownLeft = lefts.slice(0, Math.max(0, width - shownRight.length));
   return [
-    shownLeft,
-    " ".repeat(width - shownLeft.length - shownRight.length),
-    shownRight,
+    shownLeft.join(""),
+    " ".repeat(Math.max(0, width - shownLeft.length - shownRight.length)),
+    shownRight.join(""),
   ];
 };
 /**
@@ -102,6 +106,20 @@ const spread = (left, right, width) => {
  */
 export const titleLines = (left, right, keys = "", width = boxWidth()) => {
   Object.assign(lastTitle, { left, right, keys, isSet: true });
+  return band(left, right, keys, width);
+};
+/**
+ * The band of the last render again, `mark` (what the scroll window cuts off)
+ * left of its time; the base title stays as it was.
+ */
+export const markedTitleLines = (mark, width = boxWidth()) =>
+  band(
+    lastTitle.left,
+    mark ? `${mark}  ${lastTitle.right}` : lastTitle.right,
+    lastTitle.keys,
+    width,
+  );
+const band = (left, right, keys, width) => {
   const plain = text => text.replace(ESCAPES, "");
   const [name, time, hint] = [left, right, keys].map(plain);
   const art = titleLogo();
@@ -109,7 +127,7 @@ export const titleLines = (left, right, keys = "", width = boxWidth()) => {
   // A column of margin on both ends, two between the text and the logo and
   // one more right of the logo: two there, as much as a line above and below.
   const logoRoom = artWidth + 3;
-  const hasLogo = artWidth > 0 && width - 2 - logoRoom >= name.length;
+  const hasLogo = artWidth > 0 && width - 2 - logoRoom >= [...name].length;
   const inner = width - 2 - (hasLogo ? logoRoom : 0);
   // The lines of the logo, between the band's first and last line.
   const rows = [

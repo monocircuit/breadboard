@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
-import { ESCAPES } from "../lib/tty.mjs";
+import { ESCAPES, visible } from "../lib/tty.mjs";
 import { titleHeight, titleLines } from "./boxes.mjs";
 import { KEYS, screen } from "./screen.mjs";
 import {
@@ -107,6 +107,51 @@ describe("windowOf", () => {
     scrollBy(-Infinity);
     windowOf(text, rows());
     assert.equal(screen.scroll, 0);
+  });
+
+  it("shows one mark after twenty steps, the logo whole and the band no wider than the pane", () => {
+    const columns = process.stdout.columns;
+    process.stdout.columns = 40;
+    try {
+      const text = [
+        ...titleLines("⇶ test", "10:16:46 AM", "q quit"),
+        ...view(40),
+      ].join("\n");
+      let shown = [];
+      for (let step = 0; step < 20; step++) {
+        scrollBy(step < 10 ? 1 : -1);
+        shown = windowOf(text, rows());
+      }
+      const band = shown
+        .slice(0, titleHeight())
+        .map(line => line.replace(ESCAPES, ""));
+      assert.equal(band.join("\n").match(/more/g)?.length, 1);
+      assert.match(band[1], /↓ 38 more {2}10:16:46 AM {2}▀▀▀▀▀ {2}$/);
+      assert.match(band[2], /▀▀▀▀▀ {2}$/);
+      assert.match(band[3], /▀ 🭭 ▀ {2}$/);
+      for (const line of band) assert.equal(visible(line), 40);
+    } finally {
+      process.stdout.columns = columns;
+    }
+  });
+
+  it("cuts the time before the logo when the mark leaves no room", () => {
+    const columns = process.stdout.columns;
+    process.stdout.columns = 24;
+    try {
+      const text = [...titleLines("⇶ t", "10:16:46 AM"), ...view(40)].join(
+        "\n",
+      );
+      screen.scroll = 5;
+      const band = windowOf(text, rows())
+        .slice(0, titleHeight())
+        .map(line => line.replace(ESCAPES, ""));
+      assert.equal(band[1], " ↑ 5 ↓ 33 more   ▀▀▀▀▀  ");
+      assert.match(band[3], /▀ 🭭 ▀ {2}$/);
+      for (const line of band) assert.equal(visible(line), 24);
+    } finally {
+      process.stdout.columns = columns;
+    }
   });
 });
 
