@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { underRows, visible } from "../lib/tty.mjs";
-import { actionRow } from "./render-orchestration.mjs";
+import { actionRow, renderOrchestration } from "./render-orchestration.mjs";
 
 // Without a terminal: buttons in brackets, the box's inside 4 narrower.
 describe("ACTIONS rows", () => {
@@ -66,5 +66,35 @@ describe("ACTIONS rows", () => {
     const [first, second] = rowsAt(200, [decide, look]);
     assert.equal(first[0].indexOf("decide"), second[0].indexOf("look"));
     assert.equal(second[1].indexOf("the new row"), second[0].indexOf("look"));
+  });
+});
+
+// Without a terminal the view is a --once print: nothing is notified or delivered.
+describe("the orchestration view", () => {
+  it("has no FEED section", () => {
+    const tree = {
+      dir: "/nowhere/240-overview-drop-feed",
+      name: "240-overview-drop-feed",
+      claude: { id: "c1", answer: "Pushed stage 1." },
+      actions: [],
+    };
+    const view = renderOrchestration(
+      {
+        issues: [
+          {
+            number: 240,
+            feature: "240-overview-drop-feed",
+            branch: "feature/240-overview-drop-feed",
+            tree,
+          },
+        ],
+        agents: new Map([["c1", { status: "done" }]]),
+        ownActions: [],
+        trees: [tree],
+      },
+      null,
+    );
+    assert.match(view, /AGENTS/);
+    assert.doesNotMatch(view, /FEED/);
   });
 });
