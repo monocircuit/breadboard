@@ -3,7 +3,7 @@
 // each issue that waits and why. No count holds an issue back any more, so
 // this says who works on what instead of how many slots are free.
 import { bold, cyan, dim, green, red, yellow } from "../lib/tty.mjs";
-import { focusSpace, waitsText } from "../worktree.mjs";
+import { focusSpace, waitsText, wasOf } from "../worktree.mjs";
 import { THRESHOLD, gb } from "../worktree/memory.mjs";
 import { closeBox, openBox } from "./boxes.mjs";
 import { pushRows } from "./screen.mjs";
@@ -42,7 +42,8 @@ const afterText = after =>
 
 /**
  * The rows of AGENTS: `{ agents, waiting }`. `agents` one per worktree an
- * agent is bound to, `{ issue, name, state, share, next }`; `waiting` one
+ * agent is bound to, `{ issue, name, was, state, share, next }`, `was` its
+ * name before its last handover for a day (#251); `waiting` one
  * per issue without an agent, `{ issue, text }`, why it waits.
  * `known`: the record's workers (their names), `handovers`: the announced
  * ones (#227, announcedOf: `{ number, to, after, open }`, the MRs still
@@ -53,7 +54,7 @@ export const agentRowsOf = (
   issues,
   of,
   agentStatus,
-  { known = {}, handovers = [], suggested = new Map() } = {},
+  { known = {}, handovers = [], suggested = new Map(), now = Date.now() } = {},
 ) => {
   const agents = issues
     .filter(issue => issue.tree?.claude)
@@ -61,13 +62,19 @@ export const agentRowsOf = (
       const { tree } = issue;
       const { claude } = tree;
       const name = known[claude.id]?.name ?? tree.name;
-      const announced = handovers.find(handover => handover.to === name);
+      const was = wasOf(known[claude.id], now);
+      // Announced under its name before the handover: the same agent.
+      const announced = handovers.find(
+        handover =>
+          handover.to === name || handover.to === known[claude.id]?.was,
+      );
       const offered = [...suggested].find(
         ([, { worker }]) => worker.name === name,
       );
       return {
         issue,
         name,
+        was,
         state: agentStateOf(
           tree,
           agentStatus.get(claude.id)?.status,
@@ -124,7 +131,7 @@ export const pushAgents = (lines, issues, of, agentStatus, context, free) => {
       ...agents.map(row => [
         "",
         TONE[row.state.key](row.state.text),
-        bold(row.name),
+        row.was ? `${bold(row.name)} ${dim(`was ${row.was}`)}` : bold(row.name),
         `#${row.issue.number}`,
         row.share === null ? "" : dim(`${Math.round(row.share * 100)} %`),
         row.next ? cyan(`→ ${row.next}`) : "",

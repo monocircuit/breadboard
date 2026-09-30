@@ -308,7 +308,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
    - \`pnpm wt:action look "<what>"\` for anything else the user has to do.
    The user's click arrives typed into this tab as one line, \`[overview] #<id> <kind> "<text>" → <answer>\`: go on with it, don't wait or poll for it. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), \`pnpm wt:action --done <id>\` (\`--list\` shows them). While you are working, leave none.
 5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as one line, \`[overview] next issue #<n>: EnterWorktree(path: "<dir>"), then read .claude/brief.md\`: do just that, the brief there is your task from then on.
+6. Your next issue may come as one line, \`[overview] next issue #<n>, your name is <n-feature> now: EnterWorktree(path: "<dir>"), then read .claude/brief.md\`: do just that, the brief there is your task from then on. The \`/rename\` typed before it gave your tab and conversation that name: the orchestrator and the other agents reach you under it, a message to your old name is about your old issue.
 ${before ? `\n## Before this issue\n\n${before}\n` : ""}${extra ? `\n## From the orchestrator\n\n${extra.trim()}\n` : ""}`;
 /**
  * The claude of an orchestrated worktree: its brief written, its conversation

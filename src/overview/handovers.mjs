@@ -29,7 +29,12 @@ export const announcedOf = (
         .map(issue => issue.tree)
         .find(
           candidate =>
-            candidate?.claude && agentNameOf(candidate, known) === handover.to,
+            candidate?.claude &&
+            // Announced under its name before a handover renamed it (#251): the same agent.
+            [
+              agentNameOf(candidate, known),
+              known[candidate.claude.id]?.was,
+            ].includes(handover.to),
         ) ?? null;
     const open = handover.after.filter(
       iid => awaited?.get(iid)?.state !== "merged",
