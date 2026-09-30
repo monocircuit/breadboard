@@ -10,12 +10,14 @@ import {
   STUDIO_PORT,
   actionsFile,
   actionsOf,
+  changeOf,
   feedFile,
   handoversOf,
   hasOwnCommits,
   isPortFree,
   mainDir,
   noteOf,
+  pushStateOf,
   recordFile,
   recordOf,
   stoppedOf,
@@ -75,6 +77,9 @@ export const readView = async () => {
               .filter(line => line.startsWith("+")).length,
       // What it waits for (wt:wait), for its MR row.
       wait: waitOf(tree.dir),
+      // A change requested for its MR (wt:action change) and what isn't pushed (#228, change.mjs).
+      change: changeOf(actionsFile(tree.dir)),
+      ...pushStateOf(tree.dir, tree.branch),
     }));
     // The orchestrator's order (wt:plan) and its own actions, from the record.
     const file = recordFile(orchestration);

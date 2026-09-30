@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
+import { ESCAPES } from "../lib/tty.mjs";
 import {
   conflictsOf,
   autoActionsOf,
@@ -144,6 +145,47 @@ describe("autoActionsOf", () => {
     posted.tree.actions = [{ kind: "merge" }];
     assert.deepEqual(
       kinds([posted], () => ({ mr: mr() })),
+      [],
+    );
+  });
+
+  it("leaves the merge out while a requested change blocks it", () => {
+    const changed = issue();
+    Object.assign(changed.tree, {
+      change: { text: "padding", head: "a" },
+      pushed: "a",
+      unpushed: 0,
+    });
+    const green = sha => () => ({
+      mr: mr({ pipeline: { status: "success", sha } }),
+    });
+    assert.deepEqual(kinds([changed], green("a")), []);
+    // Pushed after the request and green: the merge comes back.
+    changed.tree.pushed = "b";
+    assert.deepEqual(kinds([changed], green("b")), [
+      ["merge", "ready, pipeline passed"],
+    ]);
+  });
+
+  it("asks for a push once commits sit unpushed for long", () => {
+    const old = new Date(Date.now() - 11 * 60_000).toISOString();
+    const late = issue();
+    Object.assign(late.tree, {
+      unpushed: 2,
+      unpushedAt: old,
+      pushed: "a",
+      hasRemoteBranch: true,
+    });
+    assert.deepEqual(
+      kinds([late], () => ({})).map(([kind, text]) => [
+        kind,
+        text.replace(ESCAPES, ""),
+      ]),
+      [["push", "2 commits not pushed for 11 min: click to tell its agent"]],
+    );
+    late.tree.unpushedAt = new Date().toISOString();
+    assert.deepEqual(
+      kinds([late], () => ({})),
       [],
     );
   });

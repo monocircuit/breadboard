@@ -98,6 +98,40 @@ describe("lifecycleOf", () => {
 });
 
 describe("treeOf", () => {
+  it("shows a requested change and what isn't pushed in the facts", () => {
+    const { live } = treeOf(
+      [
+        issue(1, {
+          tree: tree({
+            change: { text: "less padding", head: "a" },
+            pushed: null,
+            unpushed: 2,
+            hasRemoteBranch: false,
+          }),
+        }),
+      ],
+      () => ({ mr: { state: "opened", iid: 5, url: "u", isDraft: true } }),
+    );
+    assert.match(plain(live[0].facts), /change requested: less padding/);
+    assert.match(
+      plain(live[0].facts),
+      /2 commits not pushed \(no remote branch\)/,
+    );
+  });
+
+  it("is not ready while a requested change blocks the MR", () => {
+    const green = {
+      state: "opened",
+      isDraft: false,
+      pipeline: { status: "success", sha: "a" },
+    };
+    const changed = issue(1, {
+      tree: tree({ change: { text: "x", head: "a" }, pushed: "a" }),
+    });
+    assert.equal(stateOf(changed, { mr: green }), "idle");
+    assert.equal(stateOf(issue(1), { mr: green }), "ready");
+  });
+
   it("puts the gone ones under removed, the last removed first", () => {
     // Today's: one of another day shows its date instead of the time.
     const today = hour => {

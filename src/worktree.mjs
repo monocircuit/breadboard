@@ -64,11 +64,17 @@ export {
   answerAction,
   answerLine,
   answersOf,
+  changeOf,
   claimAnswer,
   doneAction,
   releaseAnswer,
   takeAnswers,
 } from "./worktree/actions.mjs";
+export {
+  isChangeOpen,
+  isUnpushedLong,
+  pushStateOf,
+} from "./worktree/change.mjs";
 export { endInBackground, endLog } from "./worktree/end.mjs";
 export {
   feedFile,
