@@ -11,17 +11,14 @@ import {
   actionsFile,
   actionsOf,
   changeOf,
-  feedFile,
   handoversOf,
   hasOwnCommits,
   isPortFree,
   mainDir,
-  noteOf,
   pushStateOf,
   recordFile,
   recordOf,
   titleOf,
-  stoppedOf,
   waitOf,
   worktrees,
 } from "../worktree.mjs";
@@ -56,8 +53,6 @@ export const readView = async () => {
       ...tree,
       claude: readClaude(tree.dir),
       actions: actionsOf(actionsFile(tree.dir)),
-      note: noteOf(feedFile(tree.dir)),
-      stopped: stoppedOf(feedFile(tree.dir)),
       // For the merge order (order.mjs): which MRs share files.
       files: filesOf(tree.dir),
       // How far develop moved on: with conflicts, how much there is to merge in.
@@ -99,7 +94,7 @@ export const readView = async () => {
       free: freeMemory(),
       ownActions: actionsOf(file),
       recordFile: file,
-      // For the automatic actions (auto-actions.mjs) and FEED: what herdr says each agent does.
+      // For the automatic actions (auto-actions.mjs) and AGENTS: what herdr says each agent does.
       agents: agentsOf(),
     };
   }

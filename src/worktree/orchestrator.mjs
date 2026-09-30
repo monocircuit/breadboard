@@ -282,8 +282,8 @@ export const BRIEF_PROMPT =
   "Read .claude/brief.md and work on the issue it describes.";
 /**
  * What an orchestrated agent is told. It stays in its worktree, works like
- * any session there, and shows what it does in the FEED of the overview
- * (`wt:action note`); SendMessage to the orchestrator only for what needs it.
+ * any session there, and the overview shows where it is (AGENTS,
+ * WORKTREES); SendMessage to the orchestrator only for what needs it.
  */
 export const briefOf = ({
   number,
@@ -309,7 +309,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
 2. Work as AGENTS.md says: commit and push per green step, the draft MR with the first commit (\`pnpm wt:mr\`), boxes ticked with \`pnpm wt:tick\`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
    A change requested for your MR (by the user or the orchestrator): \`pnpm wt:action change "<what>"\` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
    Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run \`pnpm wt:wait !N … --then "<what next>"\` with \`run_in_background\` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Its FEED has one line per agent: after every stage, \`pnpm wt:action note "<one line: what is pushed, what comes next>"\` (at every stop a hook puts the first line of your last answer there when it is newer: let that line say something). Its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline.
+3. **The overview shows your work, you don't report it.** Its AGENTS shows herdr's state of your agent and what you wait for, its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline: no note, no status message.
    \`SendMessage\` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
    - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its \`decide\` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;

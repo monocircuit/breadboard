@@ -26,7 +26,6 @@
 //   pnpm wt:tick [<issue>] [<box>…]           the boxes of the issue, numbered; ticks the given ones
 //   pnpm wt:action <kind> <text> [--url <u>]  ask the human (merge, try, decide, look, plan): ACTIONS
 //     [--list | --done <id>]                  of the orchestration's overview
-//   pnpm wt:action note <line>                what the agent does: its row in FEED
 //   pnpm wt:wait !<mr>… [--then <what>]       (in the background) until the MRs are merged, then the
 //     [--hours <h>] [--cancel]                line to go on with; recorded for the overview
 //   pnpm wt:issues                          issues of merged MRs nobody commented on since the merge
@@ -80,13 +79,6 @@ export {
 } from "./worktree/change.mjs";
 export { isChangelogBehind, writeChangelog } from "./worktree/changelog.mjs";
 export { endInBackground, endLog } from "./worktree/end.mjs";
-export {
-  feedFile,
-  feedLineOf,
-  lastAnswerOf,
-  noteOf,
-  stoppedOf,
-} from "./worktree/feed.mjs";
 export { boxesOf } from "./worktree/issues.mjs";
 export { layout, startStorybook, syncStackTabs } from "./worktree/layout.mjs";
 export {

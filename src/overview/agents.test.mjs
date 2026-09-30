@@ -93,6 +93,21 @@ describe("agentRowsOf", () => {
     assert.equal(agentCountsOf(agents), "3 at work · 1 idle · 1 waiting");
   });
 
+  it("keeps herdr's state of each agent for its colour, a waiting one's too", () => {
+    const { agents } = agentRowsOf(issues, of, status);
+    assert.deepEqual(
+      agents.map(row => [row.name, row.status, row.state.key]),
+      [
+        ["1-a", "working", "work"],
+        ["2-b", "working", "work"],
+        ["3-c", "idle", "idle"],
+        ["4-d", "working", "work"],
+        // Waits for !7 as text, coloured by what herdr says: no pane, no state.
+        ["5-e", null, "waits"],
+      ],
+    );
+  });
+
   it("says why each issue without an agent waits", () => {
     const { waiting } = agentRowsOf(issues, of, status, {
       handovers: [{ number: 8, to: "4-d", after: [240] }],
