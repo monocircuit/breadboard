@@ -10,6 +10,7 @@ import {
   addAction,
   answerAction,
   answerLine,
+  answeredOf,
   answersOf,
   claimAnswer,
   doneAction,
@@ -135,5 +136,38 @@ describe("actions", () => {
     ).toISOString();
     fs.writeFileSync(file, JSON.stringify(record));
     assert.notEqual(claimAnswer(file, 1), null);
+  });
+  it("keeps a delivered answer readable, so it is not asked again", () => {
+    const file = fileOf();
+    addAction(file, { kind: "decide", text: "A or B", options: ["A", "B"] });
+    addAction(file, { kind: "plan", text: "the plan" });
+    addAction(file, { kind: "look", text: "the log" });
+    answerAction(file, 1, "B");
+    answerAction(file, 2, "ok");
+    // Typed into the pane by the overview, taken by the Stop hook.
+    claimAnswer(file, 1);
+    doneAction(file, 1);
+    takeAnswers(file);
+    // Ticked off without an answer: nothing to remember.
+    doneAction(file, 3);
+    assert.deepEqual(actionsOf(file), []);
+    assert.deepEqual(
+      answeredOf(file).map(
+        ({ id, kind, answer, answeredAt, deliveredAt, deliveringAt }) => [
+          id,
+          kind,
+          answer,
+          typeof answeredAt,
+          typeof deliveredAt,
+          deliveringAt,
+        ],
+      ),
+      [
+        [1, "decide", "B", "string", "string", undefined],
+        [2, "plan", "ok", "string", "string", undefined],
+      ],
+    );
+    // Numbered after the delivered ones: #1 and #2 stay theirs.
+    assert.equal(addAction(file, { kind: "look", text: "more" }).id, 3);
   });
 });
