@@ -130,13 +130,32 @@ const labelsOf = action => {
   const answers = answersOf(action);
   return answers.length ? answers : ["✓"];
 };
+/** What marks the option a decide recommends (`--recommend`), on its button and in NEXT. */
+const RECOMMENDED = "★";
+const isRecommended = (action, label) =>
+  Boolean(action.recommend) && label === action.recommend;
+/** A label as its button shows it: the recommended one marked. */
+const shownLabel = (action, label) =>
+  isRecommended(action, label) ? `${RECOMMENDED} ${label}` : label;
 /** The cell of an action: its buttons, or the answer on its way. */
 export const answerCell = action =>
   action.answer
     ? `${yellow(`→ ${action.answer}`)} ${dim("at its next stop")}`
     : labelsOf(action)
-        .map(label => button(label, label === "✓" ? "green" : "cyan"))
+        .map(label =>
+          button(
+            shownLabel(action, label),
+            label === "✓" || isRecommended(action, label) ? "green" : "cyan",
+          ),
+        )
         .join(" ");
+/** A decide's options in a line, for NEXT (which has no buttons): the recommended one marked. */
+export const optionsText = action =>
+  answersOf(action).length
+    ? `${dim("options:")} ${answersOf(action)
+        .map(label => shownLabel(action, label))
+        .join(dim(" · "))}`
+    : "";
 /** Where the cell starts on screen (from 1): after the island's margin, or the border and a blank. */
 const CELL_START = isColor ? 2 : 3;
 /** The button at `column` (from 1), a column of slack after each; -1 past them. */
@@ -144,7 +163,7 @@ export const buttonAt = (action, column) => {
   let end = CELL_START - 1;
   const labels = labelsOf(action);
   for (let i = 0; i < labels.length; i++) {
-    end += visible(button(labels[i])) + 1;
+    end += visible(button(shownLabel(action, labels[i]))) + 1;
     if (column <= end) return i;
   }
   return -1;

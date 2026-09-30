@@ -16,6 +16,7 @@ import {
   releaseAnswer,
   takeAnswers,
 } from "./actions.mjs";
+import { decideProblem } from "./actions.mjs";
 
 const fileOf = () =>
   actionsFile(fs.mkdtempSync(path.join(os.tmpdir(), "actions-")));
@@ -135,5 +136,31 @@ describe("actions", () => {
     ).toISOString();
     fs.writeFileSync(file, JSON.stringify(record));
     assert.notEqual(claimAnswer(file, 1), null);
+  });
+});
+
+describe("decideProblem", () => {
+  const options = ["keep both lines", "drop the old line"];
+
+  it("takes a question, options saying what happens and a recommendation", () => {
+    assert.equal(
+      decideProblem(
+        "Which line stays? The old one is shorter.",
+        options,
+        options[1],
+      ),
+      null,
+    );
+  });
+
+  it("names what is missing", () => {
+    assert.match(decideProblem("A or B", options, options[0]), /question/);
+    assert.match(
+      decideProblem("Which?", ["keep both lines"], null),
+      /two options/,
+    );
+    assert.match(decideProblem("Which?", ["A", "B"], "A"), /"A", "B"/);
+    assert.match(decideProblem("Which?", options, null), /--recommend/);
+    assert.match(decideProblem("Which?", options, "C"), /none of the options/);
   });
 });

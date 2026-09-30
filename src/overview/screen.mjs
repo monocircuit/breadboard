@@ -1,5 +1,5 @@
 // What the drawing, the click actions and the loop share.
-import { tableRows } from "../lib/tty.mjs";
+import { tableRows, underRows } from "../lib/tty.mjs";
 import { boxInner } from "./boxes.mjs";
 
 /**
@@ -37,6 +37,30 @@ export const pushRows = (
   { width = boxInner(), maxLines } = {},
 ) => {
   for (const [i, rowLines] of tableRows(rows, { width, maxLines }).entries()) {
+    const action = actions[i];
+    rowLines.forEach((line, lineOfRow) => {
+      if (action)
+        screen.clicks[lines.length] = column => action(column, lineOfRow);
+      lines.push(line);
+    });
+  }
+};
+/**
+ * Rows of `{ head, text }` onto `lines` (underRows): the head cells on the
+ * first line, the text below it from column `under`, wrapped at `width`. A
+ * click on any line of row i runs `actions[i]` like in pushRows.
+ */
+export const pushUnder = (
+  lines,
+  rows,
+  actions,
+  { width = boxInner(), under, maxLines } = {},
+) => {
+  for (const [i, rowLines] of underRows(rows, {
+    width,
+    under,
+    maxLines,
+  }).entries()) {
     const action = actions[i];
     rowLines.forEach((line, lineOfRow) => {
       if (action)
