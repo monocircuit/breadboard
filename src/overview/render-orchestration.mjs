@@ -2,6 +2,7 @@
 // agents ask for, its worktrees and their merge requests, the open ones in
 // the merge order the overview computes (merge-order.mjs), the merged below.
 import {
+  ESCAPES,
   bold,
   cyan,
   dim,
@@ -47,6 +48,7 @@ import {
 import { changeFact } from "./change.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { announcedOf } from "./handovers.mjs";
+import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
@@ -56,7 +58,8 @@ import { ago } from "./render-worktree.mjs";
 import { workerActionsOf } from "./workers.mjs";
 import { KEYS, pushUnder, screen } from "./screen.mjs";
 import { pushWorktrees } from "./tree.mjs";
-import { clickTry, pageOf, trySpot } from "./try.mjs";
+import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
+import { tryStateOf } from "./try-state.mjs";
 
 /** How an action shows its kind. */
 const KIND = {
@@ -74,6 +77,15 @@ const KIND = {
 };
 /** The kinds whose click opens the spot to check; `browser-check` is stored before `try` came. */
 const TRY_KINDS = new Set(["try", "browser-check"]);
+/**
+ * How a try's state shows (try-state.mjs `tone`), in herdr's state colours
+ * (herdr-tones.mjs): ready as done, waiting as working, failed as blocked.
+ */
+const TRY_STATUS = { ready: "done", waits: "working", failed: "blocked" };
+/** A row that can't be done yet: grey, its own colours and links dropped. */
+const grey = text => dim(String(text).replace(ESCAPES, ""));
+/** Whether an item is a try that can't be tried yet: grey, no answer, NEXT skips it. */
+const isWaitingTry = item => item.tryState?.isReady === false;
 /** In place of the buttons of an automatic action: it goes by itself when its cause goes. */
 const AUTO = dim("auto");
 
@@ -100,30 +112,41 @@ const actionsOf = (local, issues, of, remote, announced) => {
   const agents = issues
     .filter(issue => issue.tree?.actions?.length)
     .flatMap(issue =>
-      issue.tree.actions.map(action => ({
-        action,
-        issue,
-        who: issue.feature,
-        file: actionsFile(issue.tree.dir),
-        to: { dir: issue.tree.dir },
-        rank: placeIn(merge, issue.number),
-        go: () => {
-          const { dir } = issue.tree;
-          const { mr } = of(issue);
-          if (action.kind === "merge" && mr)
-            clickMerge({
-              issue,
-              mr,
-              boxes: of(issue).issue?.boxes ?? [],
-              others: openAfter(issues, issue.number, merge, of),
-              file: actionsFile(dir),
-              actionId: action.id,
-            });
-          else if (TRY_KINDS.has(action.kind))
-            clickTry(action, issue.tree, () => focusSpace(dir));
-          else focusSpace(dir);
-        },
-      })),
+      issue.tree.actions.map(action => {
+        const tryState = TRY_KINDS.has(action.kind)
+          ? tryStateOf(action, {
+              tree: issue.tree,
+              mr: of(issue).mr ?? null,
+              origin: action.on === "test" ? testOrigin() : null,
+              hasRemote: Boolean(remote),
+            })
+          : null;
+        return {
+          action,
+          issue,
+          tryState,
+          who: issue.feature,
+          file: actionsFile(issue.tree.dir),
+          to: { dir: issue.tree.dir },
+          rank: placeIn(merge, issue.number),
+          go: () => {
+            const { dir } = issue.tree;
+            const { mr } = of(issue);
+            if (action.kind === "merge" && mr)
+              clickMerge({
+                issue,
+                mr,
+                boxes: of(issue).issue?.boxes ?? [],
+                others: openAfter(issues, issue.number, merge, of),
+                file: actionsFile(dir),
+                actionId: action.id,
+              });
+            else if (TRY_KINDS.has(action.kind))
+              clickTry(action, issue.tree, () => focusSpace(dir), tryState);
+            else focusSpace(dir);
+          },
+        };
+      }),
     )
     .filter(
       ({ action, issue }) =>
@@ -253,10 +276,11 @@ const actionText = ({ action, issue, file }, of) => {
 };
 /**
  * A click on an action: on a button (its first line) it answers, anywhere
- * else it is done. An automatic one has no buttons: a click does it.
+ * else it is done. An automatic one has no buttons: a click does it; nor
+ * has a try that isn't ready (its click opens a failed job, else nothing).
  */
 const clickOf = item => (column, lineOfRow) =>
-  item.isAuto || lineOfRow > 0
+  item.isAuto || lineOfRow > 0 || isWaitingTry(item)
     ? item.go()
     : clickAction(item, column, () => screen.redraw({ isReread: true }));
 
@@ -282,6 +306,15 @@ const nextMerge = (local, issues, of) => {
 };
 
 /**
+ * The action NEXT names: the first not answered yet and, a try, ready; else
+ * the first of UP NEXT but a clean up or a new plan while an MR is left to
+ * merge (`hasMerge`); null for none.
+ */
+export const nextActionOf = (actions, upNext, hasMerge) =>
+  actions.find(item => !item.action.answer && !isWaitingTry(item)) ??
+  upNext.find(item => !["clean up", "order"].includes(item.action.kind)) ??
+  (hasMerge ? null : (upNext[0] ?? null));
+/**
  * NEXT, the answer to "what now?": the first action not answered yet (an
  * answered one waits for its agent), else the first of UP NEXT (the end,
  * once no worktree is left, among them), else the MR that is next to merge
@@ -291,11 +324,7 @@ const nextMerge = (local, issues, of) => {
  */
 const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
   const merge = remote ? nextMerge(local, issues, of) : null;
-  const first =
-    actions.find(item => !item.action.answer) ??
-    // A clean up and a new plan wait until nothing is left to merge.
-    upNext.find(item => !["clean up", "order"].includes(item.action.kind)) ??
-    (merge ? null : upNext[0]);
+  const first = nextActionOf(actions, upNext, Boolean(merge));
   const line = first
     ? `${KIND[first.action.kind] ?? first.action.kind} ${bold(first.who)}${first.action.at ? `  ${dim(ago(new Date(first.action.at)))}` : ""}`
     : merge
@@ -329,19 +358,27 @@ const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
 };
 
 /**
- * A row of ACTIONS: its buttons, kind, agent and age on the first line, its
- * text under the kind (pushUnder with `under: 2`).
+ * A row of ACTIONS: its buttons, kind, agent and age on the first line, a
+ * try's state after them (try-state.mjs), its text under the kind (pushUnder
+ * with `under: 2`). A try that isn't ready is grey but for its state.
  */
-export const actionRow = (item, of) => ({
-  head: [
+export const actionRow = (item, of) => {
+  const cells = [
     "",
     item.isAuto ? AUTO : answerCell(item.action),
     KIND[item.action.kind] ?? item.action.kind,
     bold(item.who),
     dim(ago(new Date(item.action.at))),
-  ],
-  text: actionText(item, of),
-});
+  ];
+  const text = actionText(item, of);
+  if (!item.tryState) return { head: cells, text };
+  const state = toneOf(TRY_STATUS[item.tryState.tone])(item.tryState.label);
+  if (!isWaitingTry(item)) return { head: [...cells, state], text };
+  return {
+    head: [...cells.map(cell => (cell ? grey(cell) : cell)), state],
+    text: grey(text),
+  };
+};
 /** ACTIONS: what needs the user, asked for with `pnpm wt:action` or found waiting. */
 const pushActions = (lines, actions, of) => {
   const box = openBox(lines);
@@ -448,12 +485,15 @@ export const renderOrchestration = (local, remote, error) => {
   if (!isOnce)
     notifyNewActions(
       label,
-      [...actions.actions, ...actions.upNext].map(item => ({
-        key: item.key ?? `${item.file}#${item.action.id}`,
-        who: item.who,
-        kind: item.action.kind,
-        text: item.action.text,
-      })),
+      // A try counts once it is ready: the one that turns ready notifies then.
+      [...actions.actions, ...actions.upNext]
+        .filter(item => !isWaitingTry(item))
+        .map(item => ({
+          key: item.key ?? `${item.file}#${item.action.id}`,
+          who: item.who,
+          kind: item.tryState ? "try, ready" : item.action.kind,
+          text: item.action.text,
+        })),
       Boolean(remote),
     );
   lines.push("");

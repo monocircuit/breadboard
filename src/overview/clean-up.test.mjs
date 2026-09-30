@@ -31,6 +31,27 @@ describe("cleanUpOf", () => {
     );
   });
 
+  it("waits while a try on the test instance is open", () => {
+    const tries = [{ id: 1, kind: "try", on: "test", url: "/atlas" }];
+    assert.deepEqual(cleanUpOf(issue({ actions: tries }), { mr: merged }), {
+      key: "waits",
+      why: "its try on the test instance is open",
+    });
+    // Answered, or on the worktree's app: nothing to keep it for.
+    assert.equal(
+      cleanUpOf(issue({ actions: [{ ...tries[0], answer: "looks good" }] }), {
+        mr: merged,
+      }).key,
+      "due",
+    );
+    assert.equal(
+      cleanUpOf(issue({ actions: [{ id: 1, kind: "try", url: "/a" }] }), {
+        mr: merged,
+      }).key,
+      "due",
+    );
+  });
+
   it("waits for its agent and for a handover", () => {
     assert.equal(
       cleanUpOf(issue(), { mr: merged, status: "working" }).why,
