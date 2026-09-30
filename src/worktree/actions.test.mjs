@@ -27,6 +27,16 @@ describe("actions", () => {
     assert.deepEqual(actionsOf(fileOf()), []);
   });
 
+  it("keeps the MR of the orchestrator's merge", () => {
+    const file = fileOf();
+    addAction(file, { kind: "merge", text: "#242 rows", mr: 256 });
+    addAction(file, { kind: "look", text: "the logo" });
+    assert.deepEqual(
+      actionsOf(file).map(action => action.mr),
+      [256, undefined],
+    );
+  });
+
   it("numbers new actions after the highest", () => {
     const file = fileOf();
     addAction(file, { kind: "merge", text: "!1 ready" });

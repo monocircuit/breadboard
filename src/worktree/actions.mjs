@@ -62,9 +62,10 @@ export const decideProblem = (text, options, recommend) => {
  * orchestrator's own go into the record of the orchestration (origins.mjs);
  * both hold them under `actions`: `[{ id, kind, text, url, run, on, options, recommend, pane, at }]`
  * (`on: "test"` only for a try on the test instance),
- * an answered one with `answer` and `answeredAt` until it is delivered. A
- * delivered answer moves to `answered` (answeredOf), so whoever relays an
- * agent's decision later sees it is taken instead of asking it again.
+ * an answered one with `answer` and `answeredAt` until it is delivered, the
+ * orchestrator's merge with the iid of its MR (`mr`). A delivered answer
+ * moves to `answered` (answeredOf), so whoever relays an agent's decision
+ * later sees it is taken instead of asking it again.
  * `pane`: `$HERDR_PANE_ID` of whoever asked, how the Stop hook of the main
  * checkout tells the orchestrator's answers from another's (an identity only:
  * a moved pane gets a new id, its process keeps the old one).
@@ -170,6 +171,7 @@ export const addAction = (
     options = [],
     recommend = null,
     pane = null,
+    mr = null,
   },
 ) =>
   changeActions(file, actions => {
@@ -189,6 +191,7 @@ export const addAction = (
       options,
       recommend,
       pane,
+      ...(mr ? { mr } : {}),
       at: new Date().toISOString(),
     };
     return {
