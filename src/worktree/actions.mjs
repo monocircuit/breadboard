@@ -62,7 +62,9 @@ export const decideProblem = (text, options, recommend) => {
  * orchestrator's own go into the record of the orchestration (origins.mjs);
  * both hold them under `actions`: `[{ id, kind, text, url, run, on, options, recommend, pane, at }]`
  * (`on: "test"` only for a try on the test instance),
- * an answered one with `answer` and `answeredAt` until it is delivered.
+ * an answered one with `answer` and `answeredAt` until it is delivered. A
+ * delivered answer moves to `answered` (answeredOf), so whoever relays an
+ * agent's decision later sees it is taken instead of asking it again.
  * `pane`: `$HERDR_PANE_ID` of whoever asked, how the Stop hook of the main
  * checkout tells the orchestrator's answers from another's (an identity only:
  * a moved pane gets a new id, its process keeps the old one).
@@ -80,6 +82,29 @@ const readFile = file => {
 export const actionsOf = file => {
   const { actions } = readFile(file);
   return Array.isArray(actions) ? actions : [];
+};
+/** How many delivered answers `answered` keeps, the newest. */
+const ANSWERED_KEPT = 50;
+/**
+ * The answered actions of `file` once delivered, oldest first:
+ * `{ id, kind, text, options, answer, answeredAt, deliveredAt }`.
+ */
+export const answeredOf = file => {
+  const { answered } = readFile(file);
+  return Array.isArray(answered) ? answered : [];
+};
+/** `delivered` as the fields that append them to `answered` in `file`. */
+const answeredFields = (file, delivered) => {
+  const deliveredAt = new Date().toISOString();
+  return {
+    answered: [
+      ...answeredOf(file),
+      ...delivered.map(({ deliveringAt: _, ...action }) => ({
+        ...action,
+        deliveredAt,
+      })),
+    ].slice(-ANSWERED_KEPT),
+  };
 };
 /** `actions` into `file`, whatever else it holds kept. */
 const writeActions = (file, actions) => {
@@ -149,7 +174,13 @@ export const addAction = (
 ) =>
   changeActions(file, actions => {
     const action = {
-      id: Math.max(0, ...actions.map(other => other.id)) + 1,
+      // After the delivered ones too: an answer in `answered` keeps its id.
+      id:
+        Math.max(
+          0,
+          ...actions.map(other => other.id),
+          ...answeredOf(file).map(other => other.id),
+        ) + 1,
       kind,
       text,
       url,
@@ -169,13 +200,20 @@ export const addAction = (
       ...(kind === "merge" ? { fields: { change: null } } : {}),
     };
   });
-/** The action `id` in `file` done: it goes. False when there is none. */
+/**
+ * The action `id` in `file` done: it goes, an answered one into `answered`.
+ * False when there is none.
+ */
 export const doneAction = (file, id) =>
-  changeActions(file, actions =>
-    actions.some(action => action.id === id)
-      ? { actions: actions.filter(action => action.id !== id), result: true }
-      : { result: false },
-  );
+  changeActions(file, actions => {
+    const action = actions.find(other => other.id === id);
+    if (!action) return { result: false };
+    return {
+      actions: actions.filter(other => other !== action),
+      result: true,
+      ...(action.answer ? { fields: answeredFields(file, [action]) } : {}),
+    };
+  });
 /** The action `id` in `file` answered, until it is delivered. False when there is none. */
 export const answerAction = (file, id, answer) =>
   changeActions(file, actions => {
@@ -223,8 +261,8 @@ export const releaseAnswer = (file, id) =>
     ),
   }));
 /**
- * The answered actions in `file`, taken out of it: whoever takes them
- * delivers them, so each answer arrives once. One claimed by another
+ * The answered actions in `file`, taken out of it into `answered`: whoever
+ * takes them delivers them, so each answer arrives once. One claimed by another
  * (`claimAnswer`) stays. `pane`: only those asked from that pane (the
  * orchestrator's in a record that others share).
  */
@@ -240,6 +278,7 @@ export const takeAnswers = (file, { pane } = {}) =>
       ? {
           actions: actions.filter(action => !taken.includes(action)),
           result: taken,
+          fields: answeredFields(file, taken),
         }
       : { result: [] };
   });
