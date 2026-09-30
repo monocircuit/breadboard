@@ -16,7 +16,7 @@ import {
 import { here, only, orchestration } from "./args.mjs";
 import { pathsOf } from "./workers.mjs";
 import { composeProjects } from "./claude.mjs";
-import { jobsOf } from "./gitlab.mjs";
+import { deployOf, jobsOf } from "./gitlab.mjs";
 import { needsOf } from "./merge-order.mjs";
 import { exec, glab, sh } from "./io.mjs";
 import { waitingFor } from "./waiting.mjs";
@@ -168,7 +168,12 @@ export const readRemoteOf = async (branch, dir = null) => {
     mergeStatus: found.detailed_merge_status ?? null,
     url: found.web_url,
     pipeline: found.head_pipeline ?? null,
+    // Merged: the develop pipeline of the merge commit, what a try on the test instance waits for (try-state.mjs).
+    deploy: null,
   };
+  const mergeSha = found?.merge_commit_sha ?? found?.squash_commit_sha;
+  if (mr?.state === "merged" && mergeSha)
+    mr.deploy = await deployOf(mergeSha).catch(() => null);
   // The jobs are extra: without them issue and MR still show.
   const jobs = mr?.pipeline ? await jobsOf(mr.pipeline.id).catch(() => []) : [];
   const pipelineOf = new Map();
