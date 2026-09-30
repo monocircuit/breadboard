@@ -64,10 +64,10 @@ export const mergeStatusText = (
   return MERGE_STATUS[status] ?? `GitLab: ${status.replaceAll("_", " ")}`;
 };
 /** The boxes of the issue's Work section, of its acceptance criteria. */
-const isWork = box => /^work\b/i.test(box.heading ?? "");
+export const isWork = box => /^work\b/i.test(box.heading ?? "");
 const isAcceptance = box => /acceptance/i.test(box.heading ?? "");
 /** The first words of a box, without its markdown. */
-const wordsOf = box => {
+export const wordsOf = box => {
   const words = box.text.replace(/[`*_]/g, "").split(/\s+/);
   return `${words.slice(0, BOX_WORDS).join(" ")}${words.length > BOX_WORDS ? " …" : ""}`;
 };
@@ -288,7 +288,7 @@ const markReady = async fresh => {
  */
 const runMerge = async (context, state) => {
   const { mr, issue } = context;
-  const canMarkReady = Boolean(context.actionId);
+  const canMarkReady = context.canMarkReady ?? Boolean(context.actionId);
   state.phase = "running";
   screen.redraw();
   try {
@@ -342,9 +342,10 @@ const runMerge = async (context, state) => {
 
 /**
  * A click on a merge action. `context`: `{ issue, mr, boxes, others, file,
- * actionId }` — the issue, its MR and its boxes as the overview read them,
- * the other open issues in the merge order, the actions file and id of a merge the
- * agent posted (a draft of such a one is marked ready first). While anything
+ * actionId, canMarkReady }` — the issue, its MR and its boxes as the overview
+ * read them, the other open issues in the merge order, the actions file and
+ * id of a merge the agent posted (a draft of such a one is marked ready
+ * first; `canMarkReady` says so for one the overview found, #242). While anything
  * blocks it opens the MR; the first click arms it for ARM_MS, the second
  * merges.
  */
@@ -352,7 +353,8 @@ export const clickMerge = context => {
   const { mr, issue, boxes } = context;
   const state = merges.get(mr.iid);
   if (["running", "merged"].includes(state?.phase)) return;
-  if (blockersOf(mr, boxes, { canMarkReady: Boolean(context.actionId) }).length)
+  const canMarkReady = context.canMarkReady ?? Boolean(context.actionId);
+  if (blockersOf(mr, boxes, { canMarkReady }).length)
     return show(mr.url, issue.tree?.dir);
   if (state?.phase !== "armed") {
     const armed = { phase: "armed", error: null };

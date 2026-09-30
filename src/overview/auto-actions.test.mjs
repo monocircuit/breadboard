@@ -149,6 +149,28 @@ describe("autoActionsOf", () => {
     );
   });
 
+  it("asks for the merge of a ready draft its agent could not mark ready", () => {
+    const draft = () => ({
+      mr: mr({ isDraft: true, mergeStatus: "draft_status" }),
+    });
+    const only = issue();
+    const found = autoActionsOf([only], draft, new Map(), {
+      readyDrafts: new Set([only.number]),
+    });
+    assert.deepEqual(
+      found.map(action => [action.kind, action.text, action.canMarkReady]),
+      [
+        [
+          "merge",
+          "pipeline passed, every Work box ticked, still a draft",
+          true,
+        ],
+      ],
+    );
+    // Not next in the merge order, or boxes open: none.
+    assert.deepEqual(kinds([only], draft), []);
+  });
+
   it("leaves the merge out while a requested change blocks it", () => {
     const changed = issue();
     Object.assign(changed.tree, {
