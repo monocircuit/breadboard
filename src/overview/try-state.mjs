@@ -91,11 +91,18 @@ export const deployStateOf = (deploy, now = Date.now()) => {
  * `waits`, `failed`; `url` what a click opens in place of the spot (the failed
  * job). `tree`: the worktree with pushStateOf's `unpushed` (none for the
  * orchestrator's own), `mr` its MR as readRemoteOf reads it (with
- * `deploy`), `origin` the test instance's (testOrigin, try.mjs).
+ * `deploy`), `origin` the test instance's (testOrigin, try.mjs),
+ * `hasRemote` whether GitLab has answered yet.
  */
 export const tryStateOf = (
   action,
-  { tree = null, mr = null, origin = null, now = Date.now() } = {},
+  {
+    tree = null,
+    mr = null,
+    origin = null,
+    hasRemote = true,
+    now = Date.now(),
+  } = {},
 ) => {
   if (action.on !== "test") {
     if (tree?.unpushed)
@@ -108,6 +115,7 @@ export const tryStateOf = (
       label: "no test instance: VITA_TEST_ORIGIN unset",
       tone: "failed",
     };
+  if (!hasRemote) return { isReady: false, label: "GitLab …", tone: "waits" };
   if (!mr) return { isReady: false, label: "waits for its MR", tone: "waits" };
   if (mr.state === "closed")
     return { isReady: false, label: `!${mr.iid} closed`, tone: "failed" };
