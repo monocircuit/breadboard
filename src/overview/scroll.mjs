@@ -2,7 +2,7 @@
 // first `screen.sticky` lines (the title band with its logo, in an orchestration
 // NEXT too)
 // stay on top, the rest scrolls under them.
-import { lastTitle, titleLines } from "./boxes.mjs";
+import { lastTitle, markedTitleLines } from "./boxes.mjs";
 import { screen } from "./screen.mjs";
 
 /**
@@ -46,11 +46,7 @@ export const windowOf = (text, rows) => {
   const mark = moreMark(shown.above, shown.below);
   if (mark && lastTitle.isSet) {
     // The band again with the mark by the time, as far as the pane shows it.
-    const band = titleLines(
-      lastTitle.left,
-      `${mark}  ${lastTitle.right}`,
-      lastTitle.keys,
-    );
+    const band = markedTitleLines(mark);
     const count = Math.min(band.length, screen.sticky, shown.lines.length);
     shown.lines.splice(0, count, ...band.slice(0, count));
   }
