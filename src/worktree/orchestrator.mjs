@@ -286,7 +286,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
 3. **The overview shows your work, you don't report it.** Its FEED has one line per agent: after every stage, \`pnpm wt:action note "<one line: what is pushed, what comes next>"\` (at every stop a hook puts the first line of your last answer there when it is newer: let that line say something). Its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline.
    \`SendMessage\` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
-   - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing;
+   - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its \`decide\` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;
    - what concerns another agent's work (an order, a conflict, a dependency).
    No message for a stage end or the end: the overview has them.
    ${peer ? `The orchestrator is the session \`${peer}\` (\`ListAgents\`).` : `The orchestrator messages you first: reply to the \`from\` of its message. Before that, \`ListAgents\` finds it (it works in \`${mainDir()}\`).`}
