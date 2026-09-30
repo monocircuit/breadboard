@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 import { fail, flagValue, quote, step } from "../../lib/proc.mjs";
-import { isInHerdr } from "../../lib/herdr.mjs";
+import { isInHerdr, spaces } from "../../lib/herdr.mjs";
 import { ENTRY, NAME } from "../constants.mjs";
 import endCommand from "../end.mjs";
 import { startsOf } from "../fit.mjs";
@@ -12,12 +12,16 @@ import {
   briefOf,
   makeWorktree,
   openOrchestrator,
+  orchestratorSpace,
   readIssue,
   recordEntry,
   startAgent,
 } from "../orchestrator.mjs";
 import {
+  ORCHESTRATOR,
   ORIGIN_SLOTS,
+  markOrigins,
+  orchestrationOf,
   orchestratorLabel,
   originToken,
   recordOf,
@@ -46,7 +50,7 @@ import handOverCommand, { announceCommand } from "./handover.mjs";
  */
 export default async function orchestrateCommand(name, flags) {
   const usage =
-    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
+    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> --title <text>\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
   // The end: its space, the orchestrator's claude, record and checkout (worktree/end.mjs).
   if (flags.has("--end")) {
     if (!name || !NAME.test(name)) fail(usage);
@@ -59,9 +63,16 @@ export default async function orchestrateCommand(name, flags) {
     (arg, i) =>
       !arg.startsWith("--") &&
       !after?.at.includes(i) &&
-      !["--peer", "--brief", "--to", "--limit"].includes(argv[i - 1]),
+      !["--peer", "--brief", "--to", "--limit", "--title"].includes(
+        argv[i - 1],
+      ),
   );
   const wanted = positional.slice(1);
+  // What the overview, its space and the sidebar show instead of the name (#234).
+  const title = flagValue("--title")?.trim();
+  if (flags.has("--title") && !title) fail(usage);
+  if (title && wanted.length === 0 && name && NAME.test(name))
+    return retitle(name, title, { isDry: flags.has("--dry-run") });
   if (!name || !NAME.test(name) || wanted.length === 0) fail(usage);
   if (
     wanted.some(
@@ -106,7 +117,7 @@ export default async function orchestrateCommand(name, flags) {
     return item;
   });
   const slot = slotOf(name);
-  const label = orchestratorLabel(name);
+  const label = title ? `${ORCHESTRATOR} ${title}` : orchestratorLabel(name);
 
   console.log(
     `\n${label}  colour slot ${slot + 1} (${ORIGIN_SLOTS[slot].colour}, sidebar token $${originToken(slot)})`,
@@ -156,8 +167,11 @@ export default async function orchestrateCommand(name, flags) {
     return;
   }
 
+  // Before the space: it is labelled with the title.
+  if (title) updateRecord(name, { title });
   const opened = await openOrchestrator(name);
   if (opened) step(`herdr: ${opened}`);
+  if (title && isInHerdr()) markOrigins();
   updateRecord(name, {
     peer: flagValue("--peer"),
     brief: extraFile ? extra : undefined,
@@ -243,3 +257,28 @@ ${started.map(item => `    SendMessage(to: "${item.worker?.name ?? item.feature}
 `);
   }
 }
+
+/**
+ * `wt:orchestrate <name> --title "<text>"`: the title into its record, and
+ * its space and the marks of its worktrees' spaces renamed at once. The
+ * overview reads it with its next frame.
+ */
+const retitle = (name, title, { isDry }) => {
+  const before = orchestratorLabel(name);
+  if (isDry) {
+    console.log(
+      `\n▸ nothing was done (--dry-run): ${before} → ${ORCHESTRATOR} ${title}\n`,
+    );
+    return;
+  }
+  updateRecord(name, { title });
+  const hasSpace =
+    isInHerdr() && spaces().some(w => orchestrationOf(w.label) === name);
+  if (hasSpace) {
+    orchestratorSpace(name);
+    markOrigins();
+  }
+  console.log(
+    `\n✓ ${before} → ${orchestratorLabel(name)}${hasSpace ? ", its space and sidebar marks too" : ""}; commands keep the name: pnpm wt:orchestrate ${name} …\n`,
+  );
+};

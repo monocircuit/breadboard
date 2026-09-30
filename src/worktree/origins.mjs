@@ -44,13 +44,32 @@ export const ORIGIN_SLOTS = [
 export const originToken = slot => `orch${slot + 1}`;
 /** Whose tokens they are, for herdr: the plugin's id. */
 export const TOKEN_SOURCE = "monocircuit.platform";
-/** The space of an orchestration, in the group of the main space: `⇶ <name>`. */
-export const orchestratorLabel = name => `${ORCHESTRATOR} ${name}`;
-/** What the spaces of an orchestration's worktrees show: `⇶ <name>`. */
-export const originMark = name => `${ORCHESTRATOR} ${name}`;
-/** The orchestration of a space's label, also of an older space `Monocircuit/Platform ⇶ <name>`; null for any other. */
-export const orchestrationOf = label =>
-  label?.match(new RegExp(`^(?:${SPACE} )?${ORCHESTRATOR} (.+)$`))?.[1] ?? null;
+/**
+ * What an orchestration shows (#234): the `title` of its record
+ * (`wt:orchestrate <name> --title "…"`), else its name. Commands, files
+ * and SendMessage keep the name.
+ */
+export const titleOf = name => recordOf(name)?.title || name;
+/** The space of an orchestration, in the group of the main space: `⇶ <title>`. */
+export const orchestratorLabel = name => `${ORCHESTRATOR} ${titleOf(name)}`;
+/** What the spaces of an orchestration's worktrees show: `⇶ <title>`. */
+export const originMark = name => `${ORCHESTRATOR} ${titleOf(name)}`;
+/**
+ * The orchestration of a space's label `⇶ <title>`, also of `⇶ <name>` (a
+ * space from before its title) and of an older space `Monocircuit/Platform
+ * ⇶ <name>`; null for any other.
+ */
+export const orchestrationOf = (label, titles = titlesNow()) => {
+  const shown = label?.match(
+    new RegExp(`^(?:${SPACE} )?${ORCHESTRATOR} (.+)$`),
+  )?.[1];
+  if (!shown) return null;
+  for (const [name, title] of titles)
+    if (name !== shown && title === shown) return name;
+  return shown;
+};
+/** The title of every recorded orchestration, by its name. */
+const titlesNow = () => new Map(recorded().map(name => [name, titleOf(name)]));
 /** Where a worktree records the orchestration that started it, next to herdr-session: `{ "name", "slot" }`. */
 const originFile = dir => path.join(dir, ".claude", "origin");
 /** The orchestration that started a worktree, or null. */

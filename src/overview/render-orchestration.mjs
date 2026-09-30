@@ -388,14 +388,14 @@ const pushUpNext = (lines, upNext, of) => {
 };
 
 /**
- * The view of one orchestration, for the space `⇶ <name>`: NEXT, ACTIONS,
+ * The view of one orchestration, for the space `⇶ <title>`: NEXT, ACTIONS,
  * FEED, its worktrees as a tree in the work order (tree.mjs), then
  * their merge requests in the merge order (`pnpm wt:plan`). An issue stays
  * after its worktree went with the merge (the record of wt:orchestrate).
  */
 export const renderOrchestration = (local, remote, error) => {
   const width = process.stdout.columns || 120;
-  const label = `${ORCHESTRATOR} ${orchestration}`;
+  const label = `${ORCHESTRATOR} ${local.title ?? orchestration}`;
   const lines = [];
   lines.push(
     ...titleLines(label, new Date().toLocaleTimeString(), isOnce ? "" : KEYS),
