@@ -28,6 +28,7 @@ import {
 import { isOnce } from "./args.mjs";
 import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
+import { toneOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
@@ -91,10 +92,13 @@ export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
               : "merged: will be removed",
           ),
         };
-  if (status === "blocked") return { key: "asks", text: red("asks you") };
+  // An agent's state in the colour herdr's sidebar gives it (herdr-tones.mjs).
+  if (status === "blocked")
+    return { key: "asks", text: toneOf(status)("asks you") };
   if (tree.actions?.some(action => !action.answer))
-    return { key: "waits", text: yellow("waits for you") };
-  if (status === "working") return { key: "working", text: yellow("working") };
+    return { key: "waits", text: toneOf(status)("waits for you") };
+  if (status === "working")
+    return { key: "working", text: toneOf(status)("working") };
   const pipeline = mr?.pipeline?.status ?? mr?.pipeline;
   if (
     mr?.state === "opened" &&
@@ -103,7 +107,10 @@ export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
     !isChangeOpen(tree, mr)
   )
     return { key: "ready", text: green("ready to merge") };
-  return { key: "idle", text: dim(tree.claude ? "idle" : "no agent") };
+  return {
+    key: "idle",
+    text: tree.claude ? toneOf(status)("idle") : dim("no agent"),
+  };
 };
 
 /** The issue of a node: its link and state. */

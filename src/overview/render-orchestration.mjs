@@ -47,7 +47,6 @@ import {
 } from "./boxes.mjs";
 import { changeFact } from "./change.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
-import { pushFeed } from "./feed.mjs";
 import { announcedOf } from "./handovers.mjs";
 import { open, show } from "./io.mjs";
 import { clickMerge, mergeText, openAfter } from "./merge.mjs";
@@ -425,7 +424,7 @@ const pushUpNext = (lines, upNext, of) => {
 
 /**
  * The view of one orchestration, for the space `⇶ <title>`: NEXT, ACTIONS,
- * FEED, its worktrees as a tree in the work order (tree.mjs), then
+ * AGENTS, its worktrees as a tree in the work order (tree.mjs), then
  * their merge requests in the merge order (`pnpm wt:plan`). An issue stays
  * after its worktree went with the merge (the record of wt:orchestrate).
  */
@@ -503,7 +502,6 @@ export const renderOrchestration = (local, remote, error) => {
   screen.sticky = lines.length;
   pushActions(lines, actions.actions, of);
   pushUpNext(lines, actions.upNext, of);
-  pushFeed(lines, issues, local.agents);
   pushAgents(
     lines,
     issues,
