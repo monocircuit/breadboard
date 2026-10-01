@@ -341,6 +341,8 @@ describe("conflictsOf", () => {
       {
         dir: "/w/a",
         key: "conflicts:221",
+        mr: { iid: 221, state: "opened", hasConflicts: true },
+        tree: issue.tree,
         line: "[overview] !221 has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)",
       },
     ]);
@@ -352,6 +354,22 @@ describe("conflictsOf", () => {
       { dir: "/w/a", key: "conflicts:221", isGone: true },
     ]);
     assert.deepEqual(conflictsOf([issue], of(false), none), []);
+  });
+
+  it("tells nobody while GitLab checks, or about commits not pushed (#290)", () => {
+    const checking = () => ({
+      mr: {
+        iid: 221,
+        state: "opened",
+        hasConflicts: true,
+        mergeCheck: "checking",
+      },
+    });
+    assert.deepEqual(conflictsOf([issue], checking, none), []);
+    // Gone conflicts aren't forgotten on a stale answer either.
+    assert.deepEqual(conflictsOf([issue], checking, told), []);
+    const unpushed = { ...issue, tree: { dir: "/w/a", unpushed: 3 } };
+    assert.deepEqual(conflictsOf([unpushed], of(true), none), []);
   });
 
   it("leaves out an MR without a worktree or not open", () => {

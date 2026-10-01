@@ -182,6 +182,10 @@ export const readRemoteOf = async (branch, dir = null) => {
     hasConflicts: Boolean(found.has_conflicts),
     // GitLab's word on whether it can be merged: only `mergeable` can.
     mergeStatus: found.detailed_merge_status ?? null,
+    // Whether GitLab's conflicts are settled (resolve.mjs): `checking` after a push.
+    mergeCheck: found.merge_status ?? null,
+    // The head GitLab has: one older than the pushed commit answers for older commits.
+    sha: found.sha ?? null,
     url: found.web_url,
     pipeline: found.head_pipeline ?? null,
     // Merged: the develop pipeline of the merge commit, what a try on the test instance waits for (try-state.mjs).
