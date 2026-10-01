@@ -132,6 +132,7 @@ dependencies = [
  "breadboard-core",
  "crossterm",
  "futures-util",
+ "libc",
  "ratatui",
  "regex",
  "serde",
