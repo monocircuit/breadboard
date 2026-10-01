@@ -24,6 +24,9 @@ export const overviewCommand = (dir, orchestration = null) =>
         ? `--worktree ${quote(dir)}`
         : "--herdr"
   }`;
+/** What the tab `changelog` of the main space runs: the changelog of the repo, live (#261, changelog-view.mjs). */
+export const overallChangelogTabCommand = () =>
+  `node ${quote(path.join(import.meta.dirname, "..", "worktree.mjs"))} changelog --watch`;
 /** A space by its label, created with the tab `first` (and its command) if missing. */
 export const ensureSpace = (label, cwd, first) => {
   const found = spaces().find(w => w.label === label);

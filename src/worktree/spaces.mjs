@@ -6,7 +6,7 @@ import path from "node:path";
 import { canGroupTabs, openInGroup } from "../browser.mjs";
 import { herdr, isInHerdr, spaces, tabsOf } from "../lib/herdr.mjs";
 import { quote, step } from "../lib/proc.mjs";
-import { EDITOR, OVERVIEW, ROOT, SPACE } from "./constants.mjs";
+import { CHANGELOG, EDITOR, OVERVIEW, ROOT, SPACE } from "./constants.mjs";
 import { resumeSession } from "./conversations.mjs";
 import {
   dropDuplicates,
@@ -18,10 +18,11 @@ import {
   markBranch,
 } from "./tabs.mjs";
 import { mainDir } from "./worktrees.mjs";
-import { overviewCommand } from "./tabs.mjs";
+import { overallChangelogTabCommand, overviewCommand } from "./tabs.mjs";
 
 /**
- * The main space: `root` and `overview`. `root` is the tab a request for the
+ * The main space: `root`, `overview` and `changelog` (what got into develop,
+ * by product and package, #261). `root` is the tab a request for the
  * next piece of work is typed into, and an agent takes it along into its
  * worktree — so it comes back whenever it is missing. The tab was called
  * `develop` before.
@@ -42,7 +43,12 @@ export const mainSpace = () => {
     tabs,
   );
   ensureTab(workspace, { label: ROOT, cwd: main }, tabs);
-  keepOrder(workspace, [ROOT, OVERVIEW]);
+  ensureTab(
+    workspace,
+    { label: CHANGELOG, cwd: main, command: overallChangelogTabCommand() },
+    tabs,
+  );
+  keepOrder(workspace, [ROOT, OVERVIEW, CHANGELOG]);
   return workspace;
 };
 let hasNvim = null;
