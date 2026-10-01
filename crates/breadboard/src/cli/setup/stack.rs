@@ -36,7 +36,7 @@ pub fn stack_env(source: &str, feature: &str, offset: u16) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "# --- own dev stack of the worktree {feature}, written by packages/breadboard/src/worktree.mjs ---"
+        "# --- own dev stack of the worktree {feature}, written by breadboard (pnpm wt:new, wt:stack) ---"
     ));
     lines.push(format!("COMPOSE_PROJECT_NAME=vita-{feature}"));
     for (port, var) in PORTS {
@@ -391,7 +391,7 @@ mod tests {
         let env = stack_env(source, "40-x", 3);
         assert_eq!(
             env,
-            "APP_ORIGIN=http://localhost:3003\nDATABASE_URL=postgres://u@127.0.0.1:5435/vita\nX=localhost:30001\n# localhost:3000\n\n# --- own dev stack of the worktree 40-x, written by packages/breadboard/src/worktree.mjs ---\nCOMPOSE_PROJECT_NAME=vita-40-x\nPOSTGRES_PORT=5435\nKEYCLOAK_PORT=8083\nS3_PORT=8336\nVISUALIZER_PORT=64741\n"
+            "APP_ORIGIN=http://localhost:3003\nDATABASE_URL=postgres://u@127.0.0.1:5435/vita\nX=localhost:30001\n# localhost:3000\n\n# --- own dev stack of the worktree 40-x, written by breadboard (pnpm wt:new, wt:stack) ---\nCOMPOSE_PROJECT_NAME=vita-40-x\nPOSTGRES_PORT=5435\nKEYCLOAK_PORT=8083\nS3_PORT=8336\nVISUALIZER_PORT=64741\n"
         );
     }
 
