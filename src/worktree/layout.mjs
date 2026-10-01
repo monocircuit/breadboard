@@ -22,6 +22,7 @@ import {
 } from "./constants.mjs";
 import { busyReason, isBusy, shareConversations } from "./conversations.mjs";
 import { orchestratorSpace } from "./orchestrator.mjs";
+import { restoreChat } from "./orchestrator-chat.mjs";
 import {
   markOrigins,
   markSpace,
@@ -63,7 +64,8 @@ import { mainDir, worktrees } from "./worktrees.mjs";
 //
 // After a restart herdr brings the tabs back, but as bare shells: the layout
 // runs their commands again, and the `<feature>` tab resumes the one claude
-// conversation bound to the space (.claude/herdr-session of the worktree).
+// conversation bound to the space (.claude/herdr-session of the worktree), the
+// tab `orchestrator` of `⇶ <name>` the one its record names (orchestrator-chat.mjs).
 //
 // Outside herdr none of this runs, and a failing call never fails wt:new: the
 // worktree is the point, the space is comfort. herdr tells a pane which pane
@@ -219,12 +221,17 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
   }
 
   // The spaces of the orchestrations, in the group of the main space above their worktrees'.
+  // After a restart the orchestrator's conversation comes back in its tab, as an agent's does (#287).
   const orchestrations = new Set(
     spaces()
       .map(w => orchestrationOf(w.label))
       .filter(Boolean),
   );
-  for (const name of orchestrations) orchestratorSpace(name);
+  for (const name of orchestrations) {
+    orchestratorSpace(name);
+    const resumed = shouldResume ? restoreChat(name) : null;
+    if (resumed) report.push(`${orchestratorLabel(name)}: ${resumed}`);
+  }
 
   const known = new Map(spaces().map(w => [w.label, w]));
   for (const { dir } of trees) {
