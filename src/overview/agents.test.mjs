@@ -93,6 +93,21 @@ describe("agentRowsOf", () => {
     assert.equal(agentCountsOf(agents), "3 at work · 1 idle · 1 waiting");
   });
 
+  it("names a renamed agent's old name for a day, its announced handover too (#251)", () => {
+    const renamed = "2026-09-30T10:00:00.000Z";
+    const known = { c2: { name: "2-b", was: "1-old", renamed } };
+    const rowsAt = now =>
+      agentRowsOf(issues, of, status, {
+        known,
+        handovers: [{ number: 9, to: "1-old", after: [241] }],
+        now,
+      }).agents.find(row => row.name === "2-b");
+    const soon = rowsAt(Date.parse(renamed) + 60_000);
+    assert.equal(soon.was, "1-old");
+    assert.equal(soon.next, "next #9 after !241");
+    assert.equal(rowsAt(Date.parse(renamed) + 2 * 86_400_000).was, null);
+  });
+
   it("keeps herdr's state of each agent for its colour, a waiting one's too", () => {
     const { agents } = agentRowsOf(issues, of, status);
     assert.deepEqual(

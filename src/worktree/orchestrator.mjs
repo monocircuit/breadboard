@@ -308,6 +308,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
 1. Read the issue: \`glab issue view ${number} --comments\`, then the AGENTS.md files and skills it touches.
 2. Work as AGENTS.md says: commit and push per green step, the draft MR with the first commit (\`pnpm wt:mr\`), boxes ticked with \`pnpm wt:tick\`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
    A change requested for your MR (by the user or the orchestrator): \`pnpm wt:action change "<what>"\` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
+   Your MR's pipeline failed: the overview types \`[overview] the pipeline of !N failed: job …, <url>: …\` into this tab by itself. Read the job's log (the url, or \`glab ci trace <job id>\`), fix what is your MR's doing and push. When the line says develop fails the same job, it isn't yours: say so in the MR (\`glab mr note\`) and go on, don't chase it.
    Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run \`pnpm wt:wait !N … --then "<what next>"\` with \`run_in_background\` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
 3. **The overview shows your work, you don't report it.** Its AGENTS shows herdr's state of your agent and what you wait for, its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline: no note, no status message.
    \`SendMessage\` to the orchestrator only for what needs it, one short message:
@@ -324,7 +325,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
    - \`pnpm wt:action look "<what>"\` for anything else the user has to do.
    The user's click arrives typed into this tab as one line, \`[overview] #<id> <kind> "<text>" → <answer>\`: go on with it, don't wait or poll for it. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), \`pnpm wt:action --done <id>\` (\`--list\` shows them). While you are working, leave none.
 5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as one line, \`[overview] next issue #<n>: EnterWorktree(path: "<dir>"), then read .claude/brief.md\`: do just that, the brief there is your task from then on.
+6. Your next issue may come as one line, \`[overview] next issue #<n>, your name is <n-feature> now: EnterWorktree(path: "<dir>"), then read .claude/brief.md\`: do just that, the brief there is your task from then on. The \`/rename\` typed before it gave your tab and conversation that name: the orchestrator and the other agents reach you under it, a message to your old name is about your old issue.
 ${before ? `\n## Before this issue\n\n${before}\n` : ""}${extra ? `\n## From the orchestrator\n\n${extra.trim()}\n` : ""}`;
 /**
  * The claude of an orchestrated worktree: its brief written, its conversation
