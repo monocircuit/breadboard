@@ -27,7 +27,8 @@ import {
   renameLine,
   workersOf,
 } from "../workers.mjs";
-import { announceHandover, dropHandover } from "../handovers.mjs";
+import { announceHandover, dropHandover, handoversOf } from "../handovers.mjs";
+import { recordFailure, recordStart } from "../history.mjs";
 import { worktrees } from "../worktrees.mjs";
 
 /**
@@ -38,6 +39,7 @@ import { worktrees } from "../worktrees.mjs";
  * issue's feature (#251) and is told in one line.
  * Refused while the agent works, waits for an answer or has used more of its
  * context than the limit. A worktree an earlier try made is taken as it is.
+ * Its history (#264) learns the issue, or why the handover failed.
  */
 export default function handOverCommand(
   name,
@@ -60,15 +62,21 @@ export default function handOverCommand(
     fail(
       `${label} has no agent ${who}; its agents: ${workers.map(w => w.name).join(", ") || "none"}`,
     );
+  const share = contextShareOf(worker.id);
   const refusal = refusalOf({
     pane: paneOfConversation(worker.id),
-    share: contextShareOf(worker.id),
+    share,
     limit,
   });
-  if (refusal) fail(`${worker.name} gets no next issue: ${refusal}`);
-
   const item = readIssue(arg);
   if (!item) fail(`issue #${arg.match(/^\d+/)[0]} could not be read`);
+  const number = Number(item.number);
+  /** The handover fails: in the agent's history (not on a dry run), then said. */
+  const failed = reason => {
+    if (!isDry) recordFailure(name, worker.id, number, reason);
+    fail(`${worker.name} gets no next issue: ${reason}`);
+  };
+  if (refusal) failed(refusal);
   // A worktree of this orchestration without an agent: an earlier try made it.
   const isMade =
     worktrees().some(({ dir }) => dir === item.dir) &&
@@ -98,6 +106,12 @@ export default function handOverCommand(
       writeRecord(name, [
         recordEntry(item, `failed: ${made.failed ?? "no worktree"}`),
       ]);
+      recordFailure(
+        name,
+        worker.id,
+        number,
+        `its worktree failed: ${made.failed ?? "no worktree"}`,
+      );
       fail(`#${item.number} ${item.feature}: ${made.failed ?? "no worktree"}`);
     }
   }
@@ -105,14 +119,24 @@ export default function handOverCommand(
   // Again: the setup took minutes, and the agent may have started on something meanwhile.
   const pane = paneOfConversation(worker.id);
   const now = refusalOf({ pane, share: null });
-  if (now)
+  if (now) {
+    recordFailure(name, worker.id, number, `after the setup, ${now}`);
     fail(
       `the worktree of #${item.number} is ready, but ${worker.name} ${now.replace(/^it /, "")} now: run the same command again once it is idle`,
     );
+  }
   const { isMoved, isTold } = moveWorker(worker, pane, item.number, item.dir);
-  recordHandover(name, worker, Number(item.number), item.dir);
+  recordHandover(name, worker, number, item.dir);
   // Announced before (--after): done now, by the overview or by hand.
-  dropHandover(name, Number(item.number));
+  const isAnnounced = handoversOf(recordOf(name)).some(
+    handover => handover.number === number,
+  );
+  recordStart(name, worker.id, {
+    number,
+    how: isAnnounced ? "announced" : "handover",
+    context: share,
+  });
+  dropHandover(name, number);
   step(
     isMoved
       ? `herdr: the tab of ${worker.name} moved into the space ${item.feature}`

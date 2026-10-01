@@ -11,6 +11,7 @@ import {
   tabsOf,
 } from "../lib/herdr.mjs";
 import {
+  CHANGELOG,
   EDITOR,
   OVERVIEW,
   ROOT,
@@ -45,7 +46,8 @@ import { mainDir, worktrees } from "./worktrees.mjs";
 // ---------------------------------------------------------------------------
 // herdr: a space per purpose.
 //
-//   Monocircuit/Platform   root (the main checkout) · overview (pnpm overview, live) · stack tabs
+//   Monocircuit/Platform   root (the main checkout) · overview (pnpm overview, live)
+//                          · changelog (pnpm changelog, live) · stack tabs
 //   └─ <feature>           root (a shell in the worktree) · overview (this worktree only)
 //                          · <feature> (the agent's tab) · stack tabs
 //
@@ -181,7 +183,7 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
   const panes = panesOf(main);
   const current = currentPane();
   for (const tab of tabs) {
-    if (tab.label === OVERVIEW || tab.label === ROOT) continue;
+    if ([OVERVIEW, ROOT, CHANGELOG].includes(tab.label)) continue;
     const tree = trees.find(
       ({ dir }) =>
         tab.label === featureOf(dir) ||

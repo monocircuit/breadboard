@@ -24,7 +24,7 @@ export const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const SPACE = "Monocircuit/Platform";
 /** The tab of the live overview, in the main space and in each worktree's space. */
 export const OVERVIEW = "overview";
-/** The tab of an orchestration's space that shows its changelog, live (changelog.mjs). */
+/** The tab of the main space and of an orchestration's that shows its changelog, live (changelog-view.mjs). */
 export const CHANGELOG = "changelog";
 /** The tab of an orchestration's space with nvim on what its MRs changed in the code (nvim/orchestration.lua). */
 export const CHANGES = "changes";

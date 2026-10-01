@@ -1,6 +1,7 @@
 // The commands of worktree.mjs, one file each: `pnpm wt:<name>`, and
 // `pnpm stack:*` through `control`.
 import actionCommand from "./action.mjs";
+import changelogCommand from "./changelog.mjs";
 import controlCommand from "./control.mjs";
 import herdrCommand from "./herdr.mjs";
 import issuesCommand from "./issues.mjs";
@@ -32,4 +33,5 @@ export const commands = {
   list: listCommand,
   control: controlCommand,
   remove: removeCommand,
+  changelog: changelogCommand,
 };

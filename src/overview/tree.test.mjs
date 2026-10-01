@@ -192,13 +192,38 @@ describe("treeOf", () => {
     const entry = issue(1, { tree: tree({ name: "1-feature" }) });
     const factsOf = (known, now = Date.parse(renamed) + 60_000) =>
       plain(treeOf([entry], () => ({}), { known, now }).live[0].facts);
-    assert.doesNotMatch(factsOf({ c1: { name: "1-feature" } }), /agent/);
+    assert.doesNotMatch(factsOf({ c1: { name: "1-feature" } }), /agent \S/);
     assert.doesNotMatch(factsOf({}), /agent /);
     const known = { c1: { name: "2-other", was: "1-feature", renamed } };
     assert.match(factsOf(known), /agent 2-other was 1-feature/);
     const later = factsOf(known, Date.parse(renamed) + 2 * 86_400_000);
     assert.match(later, /agent 2-other/);
     assert.doesNotMatch(later, /was 1-feature/);
+  });
+
+  it("says which issue of its agent a node is, a reused one with its chain (#264)", () => {
+    const factsOf = (issues, known) =>
+      treeOf(issues, () => ({}), { known }).live.map(row => plain(row.facts));
+    const fresh = issue(1, { tree: tree({ name: "1-feature" }) });
+    assert.match(factsOf([fresh], {})[0], /agent: 1st issue/);
+    const known = {
+      c1: {
+        name: "3-third",
+        history: [
+          { number: 1, how: "fresh", at: null, context: 0 },
+          { number: 3, how: "handover", at: null, context: 0.31 },
+        ],
+      },
+    };
+    const [first, third] = factsOf(
+      [
+        issue(1, { tree: tree({ name: "1-feature", claude: null }) }),
+        issue(3, { tree: tree({ name: "3-third" }) }),
+      ],
+      known,
+    );
+    assert.match(first, /agent: 1st issue \(#1 → #3 at 31%\)/);
+    assert.match(third, /agent: 2nd issue \(#1 → #3 at 31%\)/);
   });
 
   it("puts the gone ones under removed, the last removed first", () => {
@@ -369,6 +394,10 @@ describe("pushWorktrees", () => {
   it("draws the orchestration at the root and a branch per worktree", () => {
     const text = draw([issue(1), issue(2)]);
     assert.match(text, /⇶ orch/);
+    assert.match(
+      text,
+      /│  agents 2 · issues 2 · reused 0 · handovers failed 0/,
+    );
     assert.match(text, /├─ 1\. 1-feature/);
     assert.match(text, /└─ 2\. 2-feature/);
   });
@@ -385,7 +414,10 @@ describe("pushWorktrees", () => {
     assert.match(lines[at + 2], /^│ {5}the title of 1\s*$/);
     // The last node: no `│` below it.
     assert.match(lines[at + 3], /└─ 2\. 2-feature +idle/);
-    assert.match(lines[at + 4], /^ {6}#2 open · no MR yet · no answer yet/);
+    assert.match(
+      lines[at + 4],
+      /^ {6}#2 open · no MR yet · agent: 1st issue · no answer yet/,
+    );
     assert.match(lines[at + 5], /^ {6}the title of 2/);
   });
 

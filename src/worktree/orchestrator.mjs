@@ -361,7 +361,7 @@ ${before ? `\n## Before this issue\n\n${before}\n` : ""}${extra ? `\n## From the
  * resumes it like any other. Inside herdr it starts in the `<feature>` tab —
  * the pane's shell has no CLAUDE* variables (pnpm herdr), so it keeps its own
  * transcript and ListAgents finds it by its name, the feature. Returns what
- * happened, or the command to run by hand.
+ * happened (`id`, its conversation), or the command to run by hand.
  */
 export const startAgent = (dir, brief) => {
   const feature = featureOf(dir);
@@ -376,5 +376,5 @@ export const startAgent = (dir, brief) => {
     spawnSync("herdr", ["pane", "run", pane, command], { stdio: "ignore" })
       .status === 0;
   if (isStarted) fs.writeFileSync(sessionFile(dir), `${id}\n`);
-  return { isStarted, command };
+  return { isStarted, command, id };
 };
