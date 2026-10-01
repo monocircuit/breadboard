@@ -72,10 +72,12 @@ const placeCell = (count, number) =>
  * - `working`: its agent is at work; `ready`: the MR is ready, pipeline passed
  * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
+ * - `setup`: no agent yet, a start sets it up for one (`setup`,
+ *   worktree/setups.mjs, #272): wt:new takes minutes
  */
 export const lifecycleOf = (
   issue,
-  { mr, status, hold, removal, merged } = {},
+  { mr, status, hold, removal, merged, setup } = {},
 ) => {
   const { tree } = issue;
   if (!tree)
@@ -84,6 +86,13 @@ export const lifecycleOf = (
       : issue.why
         ? { key: "skipped", text: yellow(issue.why) }
         : { key: "removed", text: dim("removed") };
+  if (!tree.claude && setup?.dir === tree.dir)
+    return {
+      key: "setup",
+      text: cyan(
+        `being set up for ${setup.to ?? "a fresh agent"} (wt:new) …, leave it`,
+      ),
+    };
   const cleanUp = cleanUpOf(issue, { mr, status, hold });
   if (cleanUp?.key === "kept")
     return { key: "kept", text: yellow(`kept: ${cleanUp.why}`) };
@@ -225,9 +234,20 @@ const takenText = ({ to, open, after }) => {
  * (and after which MRs), the free one UP NEXT suggests (`→ 3-x (free, 18 %)`),
  * else what its fresh start does (`fresh`, #265).
  */
-const queuedText = (issue, announced, suggested, fresh) => {
+const queuedText = (issue, announced, suggested, fresh, merged) => {
   const handover = announced.find(({ number }) => number === issue.number);
   if (handover) return cyan(takenText(handover));
+  // `--queue --after` (#272): nothing starts before those MRs are merged.
+  const open = (issue.after ?? []).filter(iid => !merged.has(iid));
+  if (open.length)
+    return cyan(
+      `waits for ${open.map(iid => `!${iid}`).join(", ")} to be merged`,
+    );
+  // Its start failed once its worktree was made: why it is back.
+  if (issue.requeued && !suggested.has(issue.number))
+    return cyan(
+      `back in the queue: ${issue.requeued}; ${fresh.get(issue.number) ?? "waits for an agent"}`,
+    );
   const worker = suggested.get(issue.number)?.worker;
   if (worker)
     return cyan(
@@ -269,6 +289,7 @@ export const treeOf = (
     hasRemote = true,
     known = {},
     merged = new Set(),
+    setups = [],
     now = Date.now(),
   } = {},
 ) => {
@@ -285,10 +306,14 @@ export const treeOf = (
       hold: tree && holds.get(tree.dir),
       removal: tree && removalOf(tree.dir),
       merged,
+      setup: tree && setups.find(setup => setup.dir === tree.dir),
     });
     const state =
       lifecycle.key === "queued"
-        ? { ...lifecycle, text: queuedText(issue, announced, suggested, fresh) }
+        ? {
+            ...lifecycle,
+            text: queuedText(issue, announced, suggested, fresh, merged),
+          }
         : lifecycle.key === "removed" && issue.removedAt
           ? {
               ...lifecycle,
@@ -436,6 +461,7 @@ export const pushWorktrees = (
     holds,
     suggested,
     fresh,
+    setups,
     hasRemote,
     known,
     free,
@@ -444,6 +470,7 @@ export const pushWorktrees = (
 ) => {
   const { live, queued, removed } = treeOf(issues, of, {
     merged,
+    setups,
     agents,
     work,
     merge,

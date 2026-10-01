@@ -37,6 +37,7 @@ import {
 } from "./origins.mjs";
 import { featureOf } from "./tabs.mjs";
 import { mainDir, worktrees } from "./worktrees.mjs";
+import { setupsDir } from "./setups.mjs";
 
 /** The worktrees of the orchestration `name` that are still there, by feature: while one is, it can't end. */
 export const worktreesLeft = name =>
@@ -117,6 +118,8 @@ export const endOrchestration = name => {
       `removed the record ${path.relative(mainDir(), recordFile(name))}`,
     );
   }
+  // Its setups' claims (setups.mjs): none runs once its worktrees are gone.
+  fs.rmSync(setupsDir(name), { recursive: true, force: true });
   if (orchestratorCheckouts().includes(checkoutOf(name))) {
     const kept = removeOrchestratorCheckout(name);
     done.push(kept ?? `removed the checkout of ${orchestratorLabel(name)}`);
