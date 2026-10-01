@@ -82,6 +82,7 @@ export { isChangelogBehind, writeChangelog } from "./worktree/changelog.mjs";
 export { endInBackground, endLog } from "./worktree/end.mjs";
 export { boxesOf } from "./worktree/issues.mjs";
 export { layout, startStorybook, syncStackTabs } from "./worktree/layout.mjs";
+export { sortSpaces } from "./worktree/order.mjs";
 export {
   ORCHESTRATOR,
   ORCHESTRATOR_TAB,
