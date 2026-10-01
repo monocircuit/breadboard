@@ -10,6 +10,7 @@
 //
 // The MR and its merge come from the issue's entry and GitLab. An agent of
 // before has only `issues`: its history is read from that (historyOf).
+import { displayNameOf } from "./display-names.mjs";
 import { recordOf, writeWorker } from "./origins.mjs";
 
 /** How an agent came to an issue: started for it, handed it, handed it as announced (#227). */
@@ -64,7 +65,8 @@ export const withFailure = (entry, { number, reason, at }) => {
 /**
  * The record of `name` learns that the agent `id` started on the issue
  * `number`: `how` (HOW), `context` its share used then (null unknown).
- * `fields` go with it: the name a fresh one starts with.
+ * `fields` go with it: the name a fresh one starts with. Its display name
+ * (#292) is picked on its first start and kept on every one after.
  */
 export const recordStart = (
   name,
@@ -72,8 +74,10 @@ export const recordStart = (
   { number, how, context },
   fields = {},
 ) => {
-  const entry = recordOf(name)?.workers?.[id];
+  const known = recordOf(name)?.workers ?? {};
+  const entry = known[id];
   writeWorker(name, id, {
+    displayName: displayNameOf(known, id),
     ...fields,
     ...withStart(entry, {
       number,
