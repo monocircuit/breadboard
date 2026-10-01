@@ -185,11 +185,12 @@ export default async function orchestrateCommand(name, flags) {
     brief: extraFile ? extra : undefined,
   });
   // After the space, which keeps it from being pruned; the overview in there reads it from now on.
+  const queuedAt = new Date().toISOString();
   writeRecord(
     name,
     plan.map(item =>
       queued.includes(item)
-        ? { ...recordEntry(item), queued: true }
+        ? { ...recordEntry(item), queued: true, queuedAt }
         : recordEntry(item),
     ),
   );

@@ -6,11 +6,15 @@ import { describe, it } from "node:test";
 
 import { briefOf } from "./orchestrator.mjs";
 import {
+  WAS_FOR,
   beforeLine,
   findWorker,
+  handedOver,
   moveWorker,
   nextIssueLine,
   refusalOf,
+  renameLine,
+  wasOf,
 } from "./workers.mjs";
 
 describe("refusalOf", () => {
@@ -50,6 +54,7 @@ describe("findWorker", () => {
   const workers = [
     { name: "187-overview-button", feature: "217-agents-workers" },
     { name: "183-feed", feature: "183-feed" },
+    { name: "240-herdr-colours", feature: "240-herdr-colours", was: "235-x" },
   ];
 
   it("finds an agent by the name it was started with, else by its worktree", () => {
@@ -57,6 +62,10 @@ describe("findWorker", () => {
     assert.equal(findWorker(workers, "217-agents-workers"), workers[0]);
     assert.equal(findWorker(workers, "183-feed"), workers[1]);
     assert.equal(findWorker(workers, "999-none"), undefined);
+  });
+
+  it("finds a renamed agent by its name before the handover too", () => {
+    assert.equal(findWorker(workers, "235-x"), workers[2]);
   });
 });
 
@@ -92,9 +101,72 @@ describe("the brief of a reused agent", () => {
   it("says how the next issue comes, in the line the handover types", () => {
     assert.equal(
       nextIssueLine("218", "/repo/platform-218-x"),
-      '[overview] next issue #218: EnterWorktree(path: "/repo/platform-218-x"), then read .claude/brief.md',
+      '[overview] next issue #218, your name is 218-x now: EnterWorktree(path: "/repo/platform-218-x"), then read .claude/brief.md',
     );
-    assert.match(briefOf(item), /\[overview\] next issue #<n>: EnterWorktree/);
+    assert.equal(renameLine("/repo/platform-218-x"), "/rename 218-x");
+    assert.match(
+      briefOf(item),
+      /\[overview\] next issue #<n>, your name is <n-feature> now: EnterWorktree/,
+    );
+  });
+});
+
+describe("the record of a handover", () => {
+  const at = "2026-09-30T10:00:00.000Z";
+  const first = handedOver(
+    { name: "235-overview-actions", was: null },
+    {
+      number: 240,
+      dir: "/repo/platform-240-herdr-colours",
+      before: [235],
+      files: ["a.mjs"],
+      at,
+    },
+  );
+
+  it("renames the agent after the feature of its new issue", () => {
+    assert.deepEqual(first, {
+      name: "240-herdr-colours",
+      was: "235-overview-actions",
+      renamed: at,
+      issues: [235, 240],
+      files: ["a.mjs"],
+    });
+  });
+
+  it("renames it again on its next handover, the name before that as was", () => {
+    const later = "2026-10-01T09:00:00.000Z";
+    const second = handedOver(first, {
+      number: 246,
+      dir: "/repo/platform-246-resolve",
+      before: first.issues,
+      files: ["a.mjs", "b.mjs"],
+      at: later,
+    });
+    assert.equal(second.name, "246-resolve");
+    assert.equal(second.was, "240-herdr-colours");
+    assert.equal(second.renamed, later);
+    assert.deepEqual(second.issues, [235, 240, 246]);
+  });
+
+  it("keeps was and when for a handover into a worktree of its own name", () => {
+    const same = handedOver(first, {
+      number: 240,
+      dir: "/repo/platform-240-herdr-colours",
+      before: first.issues,
+      files: [],
+      at: "2026-10-01T09:00:00.000Z",
+    });
+    assert.equal(same.was, "235-overview-actions");
+    assert.equal(same.renamed, at);
+  });
+
+  it("names the old name in AGENTS for a day", () => {
+    const now = Date.parse(at);
+    assert.equal(wasOf(first, now + 1000), "235-overview-actions");
+    assert.equal(wasOf(first, now + WAS_FOR + 1), null);
+    assert.equal(wasOf({ name: "x" }, now), null);
+    assert.equal(wasOf(undefined, now), null);
   });
 });
 
@@ -123,6 +195,8 @@ if (what === "agent" && verb === "prompt") {
   if (rest[0] !== "wNew:p1") process.exit(1);
   fs.appendFileSync(${JSON.stringify(typed)}, rest[1] + "\\n");
 }
+if (what === "pane" && verb === "rename")
+  fs.appendFileSync(${JSON.stringify(typed)}, "label " + rest.join(" ") + "\\n");
 console.log(JSON.stringify({ result: results[\`\${what} \${verb}\`] ?? null }));
 `;
     fs.writeFileSync(path.join(bin, "herdr"), script, { mode: 0o755 });
@@ -143,12 +217,12 @@ console.log(JSON.stringify({ result: results[\`\${what} \${verb}\`] ?? null }));
     }
   };
 
-  it("tells an idle agent in its moved pane, its binding moved along", () => {
+  it("renames and tells an idle agent in its moved pane, its binding moved along", () => {
     withFakeHerdr(true, (result, { from, to, typed }) => {
       assert.deepEqual(result, { isMoved: true, isTold: true });
       assert.equal(
         fs.readFileSync(typed, "utf-8"),
-        `${nextIssueLine(222, to)}\n`,
+        `/rename 222-next\nlabel wNew:p1 222-next\n${nextIssueLine(222, to)}\n`,
       );
       assert.equal(
         fs.readFileSync(path.join(to, ".claude", "herdr-session"), "utf-8"),
@@ -166,7 +240,7 @@ console.log(JSON.stringify({ result: results[\`\${what} \${verb}\`] ?? null }));
       assert.deepEqual(result, { isMoved: true, isTold: true });
       assert.equal(
         fs.readFileSync(typed, "utf-8"),
-        `${nextIssueLine(222, to)}\n`,
+        `/rename 222-next\nlabel wNew:p1 222-next\n${nextIssueLine(222, to)}\n`,
       );
     });
   });

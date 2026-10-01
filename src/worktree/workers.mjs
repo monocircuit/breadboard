@@ -16,11 +16,14 @@ import { worktrees } from "./worktrees.mjs";
 
 /** The share of its context above which an agent gets no next issue: it would run out in the middle of it. */
 export const CONTEXT_LIMIT = 0.5;
+/** How long AGENTS names an agent's name before its last handover (`was <old>`): messages to that one can be explained. */
+export const WAS_FOR = 24 * 60 * 60 * 1000;
 
 /**
  * The agents of the orchestration `name`, one per worktree of it with a
- * conversation bound: `{ dir, feature, id, name }`, `name` the one it was
- * started with (the record's, else the feature of the worktree it is in).
+ * conversation bound: `{ dir, feature, id, name, was }`, `name` the one it
+ * goes by (the record's, set by its last handover, else the feature of the
+ * worktree it is in), `was` the one before that handover, or null.
  */
 export const workersOf = name => {
   const known = recordOf(name)?.workers ?? {};
@@ -32,12 +35,18 @@ export const workersOf = name => {
     .map(worker => ({
       ...worker,
       name: known[worker.id]?.name ?? worker.feature,
+      was: known[worker.id]?.was ?? null,
     }));
 };
-/** The worker `who` names (its name, or the feature of the worktree it is in) among `workers`, or undefined. */
+/**
+ * The worker `who` names among `workers`, or undefined: its name, else the
+ * feature of the worktree it is in, else its name before the last handover
+ * (a handover announced under that one still finds it).
+ */
 export const findWorker = (workers, who) =>
   workers.find(worker => worker.name === who) ??
-  workers.find(worker => worker.feature === who);
+  workers.find(worker => worker.feature === who) ??
+  workers.find(worker => worker.was === who);
 
 /** The pane herdr runs the conversation `id` in, or null. */
 export const paneOfConversation = id =>
@@ -66,9 +75,14 @@ export const refusalOf = ({ pane, share, limit = CONTEXT_LIMIT }) => {
   return null;
 };
 
-/** The line an agent gets its next issue with, typed into its prompt. */
+/**
+ * The line an agent gets its next issue with, typed into its prompt: its
+ * new name (#251), the feature of the worktree, comes with it.
+ */
 export const nextIssueLine = (number, dir) =>
-  `[overview] next issue #${number}: EnterWorktree(path: "${dir}"), then read .claude/brief.md`;
+  `[overview] next issue #${number}, your name is ${featureOf(dir)} now: EnterWorktree(path: "${dir}"), then read .claude/brief.md`;
+/** The line typed before it: Claude Code's own name of the conversation, which ListAgents and SendMessage go by. */
+export const renameLine = dir => `/rename ${featureOf(dir)}`;
 /**
  * What the brief of a reused agent says about its issues before, in one
  * line, so it carries no assumptions over. `issues`: `[{ number, title }]`.
@@ -93,9 +107,10 @@ export const issuesBefore = (name, worker) => {
  * The agent `worker` moves to the worktree `dir` (made, its brief written):
  * its pane into the worktree's space as the tab `<feature>` (the spare one
  * wt:new left there closes), the conversation bound to the new worktree
- * instead of the old one, the line of its next issue typed into its prompt.
- * Its old worktree keeps its space until the clean-up. Returns what happened,
- * `{ isMoved, isTold }`.
+ * instead of the old one, and it is renamed after the feature (#251): the
+ * pane's label, and `/rename <feature>` typed into its prompt before the
+ * line of its next issue. Its old worktree keeps its space until the
+ * clean-up. Returns what happened, `{ isMoved, isTold }`.
  */
 export const moveWorker = (worker, pane, number, dir) => {
   const feature = featureOf(dir);
@@ -124,9 +139,13 @@ export const moveWorker = (worker, pane, number, dir) => {
   // The binding follows the conversation: a restart resumes it in its new space, answers go there.
   fs.writeFileSync(sessionFile(dir), `${worker.id}\n`);
   fs.rmSync(sessionFile(worker.dir), { force: true });
-  const tell = paneId =>
-    Boolean(paneId) &&
-    herdrDid(["agent", "prompt", paneId, nextIssueLine(number, dir)]);
+  // The rename first: a stale pane id refuses it, and the next one is tried.
+  const tell = paneId => {
+    if (!paneId || !herdrDid(["agent", "prompt", paneId, renameLine(dir)]))
+      return false;
+    herdrDid(["pane", "rename", paneId, feature]);
+    return herdrDid(["agent", "prompt", paneId, nextIssueLine(number, dir)]);
+  };
   // Without the new id in herdr's answer: the pane that runs the conversation now.
   let isTold = tell(target);
   if (!isTold) {
@@ -135,17 +154,47 @@ export const moveWorker = (worker, pane, number, dir) => {
   }
   return { isMoved, isTold };
 };
-/** The record of `name` learns that `worker` works on `number` now. */
-export const recordHandover = (name, worker, number) => {
-  const before = issuesBefore(name, worker).map(issue => issue.number);
-  const known = recordOf(name)?.workers?.[worker.id]?.files ?? [];
-  writeWorker(name, worker.id, {
-    name: worker.name,
+/**
+ * The record's entry of `worker` after its handover to the issue `number`
+ * in the worktree `dir`: named after its feature, `was` its name before
+ * (kept through a handover that doesn't rename it) with `renamed`, when.
+ * `before`: the numbers of its issues before, `files` what it knows.
+ */
+export const handedOver = (worker, { number, dir, before, files, at }) => {
+  const name = featureOf(dir);
+  const isRenamed = name !== worker.name;
+  return {
+    name,
+    was: isRenamed ? worker.name : (worker.was ?? null),
+    renamed: isRenamed ? at : (worker.renamed ?? null),
     issues: [...before.filter(n => n !== number), number],
-    // What it knows from the worktree it leaves: that one goes with its clean-up.
-    files: [...new Set([...known, ...filesOf(worker.dir)])],
-  });
+    files,
+  };
 };
+/** The record of `name` learns that `worker` works on `number` in `dir` now, under the name of its feature. */
+export const recordHandover = (name, worker, number, dir) => {
+  const known = recordOf(name)?.workers?.[worker.id] ?? {};
+  writeWorker(
+    name,
+    worker.id,
+    handedOver(
+      { ...worker, renamed: known.renamed },
+      {
+        number,
+        dir,
+        before: issuesBefore(name, worker).map(issue => issue.number),
+        // What it knows from the worktree it leaves: that one goes with its clean-up.
+        files: [...new Set([...(known.files ?? []), ...filesOf(worker.dir)])],
+        at: new Date().toISOString(),
+      },
+    ),
+  );
+};
+/** Its name before the last handover, for AGENTS, while that was less than WAS_FOR ago; else null. */
+export const wasOf = (known, now = Date.now()) =>
+  known?.was && now - Date.parse(known.renamed ?? "") < WAS_FOR
+    ? known.was
+    : null;
 
 /**
  * The agents of the orchestration `name` free for a next issue now, for

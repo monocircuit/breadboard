@@ -24,6 +24,7 @@ import {
   paneOfConversation,
   recordHandover,
   refusalOf,
+  renameLine,
   workersOf,
 } from "../workers.mjs";
 import { announceHandover, dropHandover } from "../handovers.mjs";
@@ -33,7 +34,8 @@ import { worktrees } from "../worktrees.mjs";
  * `pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]`: the
  * issue goes to an idle agent of the orchestration instead of a fresh one
  * (workers.mjs). Its worktree is made as for any issue, the brief says what
- * the agent had before, then the agent moves in and is told in one line.
+ * the agent had before, then the agent moves in, is renamed after the
+ * issue's feature (#251) and is told in one line.
  * Refused while the agent works, waits for an answer or has used more of its
  * context than the limit. A worktree an earlier try made is taken as it is.
  */
@@ -108,7 +110,7 @@ export default function handOverCommand(
       `the worktree of #${item.number} is ready, but ${worker.name} ${now.replace(/^it /, "")} now: run the same command again once it is idle`,
     );
   const { isMoved, isTold } = moveWorker(worker, pane, item.number, item.dir);
-  recordHandover(name, worker, Number(item.number));
+  recordHandover(name, worker, Number(item.number), item.dir);
   // Announced before (--after): done now, by the overview or by hand.
   dropHandover(name, Number(item.number));
   step(
@@ -116,10 +118,12 @@ export default function handOverCommand(
       ? `herdr: the tab of ${worker.name} moved into the space ${item.feature}`
       : `herdr: the tab of ${worker.name} stayed where it is (no space ${item.feature})`,
   );
+  const renamed =
+    worker.name === item.feature ? "" : `, renamed from ${worker.name}`;
   console.log(
     isTold
-      ? `\n✓ #${item.number} ${item.feature} went to ${worker.name}, told in its prompt`
-      : `\n✓ #${item.number} ${item.feature} is ready for ${worker.name}, but herdr took no line: type it into its tab\n    ${nextIssueLine(item.number, item.dir)}`,
+      ? `\n✓ #${item.number} went to the agent ${item.feature}${renamed}, told in its prompt; SendMessage(to: "${item.feature}")`
+      : `\n✓ #${item.number} ${item.feature} is ready for ${worker.name}, but herdr took no line: type these into its tab\n    ${renameLine(item.dir)}\n    ${nextIssueLine(item.number, item.dir)}`,
   );
 }
 
@@ -152,7 +156,14 @@ export function announceCommand(name, arg, { after, isDry }) {
     );
     return;
   }
-  writeRecord(name, [{ ...recordEntry(item), queued: true }]);
+  writeRecord(name, [
+    {
+      ...recordEntry(item),
+      queued: true,
+      // Its place in WORKTREES' queue (#250): a queued one keeps it.
+      queuedAt: known?.queuedAt ?? new Date().toISOString(),
+    },
+  ]);
   announceHandover(name, { number, to: worker.name, after });
   console.log(
     `\n✓ #${number} ${item.feature} goes to ${worker.name} once ${mrs} ${after.length > 1 ? "are" : "is"} merged: the overview of ${label} hands it over then (its worktree is kept until), shown on ${worker.name}'s node as → next #${number}`,

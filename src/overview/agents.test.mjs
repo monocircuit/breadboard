@@ -93,6 +93,21 @@ describe("agentRowsOf", () => {
     assert.equal(agentCountsOf(agents), "3 at work · 1 idle · 1 waiting");
   });
 
+  it("names a renamed agent's old name for a day, its announced handover too (#251)", () => {
+    const renamed = "2026-09-30T10:00:00.000Z";
+    const known = { c2: { name: "2-b", was: "1-old", renamed } };
+    const rowsAt = now =>
+      agentRowsOf(issues, of, status, {
+        known,
+        handovers: [{ number: 9, to: "1-old", after: [241] }],
+        now,
+      }).agents.find(row => row.name === "2-b");
+    const soon = rowsAt(Date.parse(renamed) + 60_000);
+    assert.equal(soon.was, "1-old");
+    assert.equal(soon.next, "next #9 after !241");
+    assert.equal(rowsAt(Date.parse(renamed) + 2 * 86_400_000).was, null);
+  });
+
   it("keeps herdr's state of each agent for its colour, a waiting one's too", () => {
     const { agents } = agentRowsOf(issues, of, status);
     assert.deepEqual(
@@ -108,19 +123,12 @@ describe("agentRowsOf", () => {
     );
   });
 
-  it("says why each issue without an agent waits", () => {
+  it("leaves the queued issues to WORKTREES' queue", () => {
     const { waiting } = agentRowsOf(issues, of, status, {
       handovers: [{ number: 8, to: "4-d", after: [240] }],
       suggested: new Map([[6, { worker }]]),
     });
-    assert.deepEqual(
-      waiting.map(row => [row.issue.number, row.text]),
-      [
-        [6, "goes to 3-c once its MR is merged"],
-        [8, "goes to 4-d after !240"],
-        [9, "queued (--queue): a click on its start in UP NEXT"],
-      ],
-    );
+    assert.deepEqual(waiting, []);
   });
 
   it("names a worktree whose agent never started", () => {
