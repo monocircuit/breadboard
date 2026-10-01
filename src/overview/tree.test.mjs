@@ -9,6 +9,7 @@ import {
   foldLine,
   headOf,
   lifecycleOf,
+  nodeLines,
   pushWorktrees,
   toggleQueue,
   treeOf,
@@ -561,5 +562,29 @@ describe("withRemoved", () => {
     const next = withRemoved({ issues: [] }, entry);
     assert.equal(next.issues[0].number, 5);
     assert.equal(next.issues[0].feature, "5-x");
+  });
+});
+
+describe("nodeLines", () => {
+  const row = {
+    place: "4. ",
+    name: "194-shared-vita-core-without-dom",
+    state: {
+      text: "→ 191-move-vita-into-products-vita once its MR is merged",
+    },
+    facts: "#194 open",
+    title: "",
+  };
+
+  it("puts a state too long for beside the name under it, whole, at the right end", () => {
+    const lines = nodeLines(row, { branch: "├─ ", stem: "│  ", width: 80 }).map(
+      plain,
+    );
+    assert.equal(lines[0], "├─ 4. 194-shared-vita-core-without-dom");
+    assert.ok(lines[1].endsWith(row.state.text), lines[1]);
+    assert.equal([...lines[1]].length, 80);
+    assert.ok(lines.every(line => !line.includes("…")));
+    const wide = nodeLines(row, { branch: "├─ ", stem: "│  ", width: 120 });
+    assert.ok(plain(wide[0]).endsWith(row.state.text));
   });
 });

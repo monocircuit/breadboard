@@ -4,6 +4,7 @@ import {
   ESCAPES,
   dim,
   fit,
+  fitParts,
   green,
   isColor,
   link,
@@ -47,7 +48,10 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
       const line = isIndented ? lines[i].replace(/^ {2}/, "") : lines[i];
       lines[i] = onIsland(` ${pad(fit(line, inner), inner)} `);
     }
-    lines[start] = onIsland(` ${pad(fit(title, inner), inner)} `, ISLAND_HEAD);
+    lines[start] = onIsland(
+      ` ${pad(fitParts(title, inner), inner)} `,
+      ISLAND_HEAD,
+    );
     lines.push("");
     return;
   }
@@ -57,7 +61,7 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
     const line = isIndented ? lines[i].replace(/^ {2}/, "") : lines[i];
     lines[i] = `${dim("│")} ${pad(fit(line, inner), inner)} ${dim("│")}`;
   }
-  const head = ` ${fit(title, width - 5)} `;
+  const head = ` ${fitParts(title, width - 5)} `;
   lines[start] =
     `${dim("╭─")}${head}${dim(`${"─".repeat(Math.max(0, width - 3 - visible(head)))}╮`)}`;
   lines.push(dim(`╰${"─".repeat(width - 2)}╯`));

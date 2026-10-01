@@ -420,7 +420,8 @@ const pushUpNext = (lines, upNext, of) => {
       text: actionText(item, of),
     })),
     upNext.map(item => () => item.go()),
-    { under: 1 },
+    // Its text whole, never cut with `…` at the edge (#273).
+    { under: 1, maxLines: 8 },
   );
   closeBox(
     lines,

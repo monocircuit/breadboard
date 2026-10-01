@@ -32,8 +32,11 @@ export const ESCAPES = new RegExp(ESCAPE, "g");
 export const visible = text => [...text.replace(ESCAPES, "")].length;
 export const pad = (text, width) =>
   text + " ".repeat(Math.max(0, width - visible(text)));
-/** Cut a painted line to `width` visible characters, keeping its colours. */
-export const fit = (line, width) => {
+/**
+ * Cut a painted line to `width` visible characters, keeping its colours,
+ * `mark` (`…`) at the end of a cut one.
+ */
+export const fit = (line, width, mark = "…") => {
   if (visible(line) <= width) return line;
   let out = "";
   let shown = 0;
@@ -42,14 +45,25 @@ export const fit = (line, width) => {
       out += token;
       continue;
     }
-    const room = width - 1 - shown;
+    const room = width - visible(mark) - shown;
     if (room <= 0) break;
     const characters = [...token];
     out += characters.slice(0, room).join("");
     shown += Math.min(characters.length, room);
   }
   // A cut can end inside a colour or a link: close both.
-  return `${out}…${isColor ? "\x1b[0m\x1b]8;;\x1b\\" : ""}`;
+  return `${out}${mark}${isColor ? "\x1b[0m\x1b]8;;\x1b\\" : ""}`;
+};
+/**
+ * A painted line of parts joined by `separator` (` · `) cut to `width`
+ * before the first part that doesn't fit whole, no `…`: a heading's counts.
+ * Cut with `…` only when its first part alone is too wide.
+ */
+export const fitParts = (line, width, separator = " · ") => {
+  if (visible(line) <= width) return line;
+  const plain = line.replace(ESCAPES, "");
+  const at = plain.lastIndexOf(separator, width);
+  return at > 0 ? fit(line, at, "") : fit(line, width);
 };
 /** The most lines a wrapped text takes; past them it ends in `…`. */
 export const MAX_LINES = 6;

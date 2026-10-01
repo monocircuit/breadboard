@@ -3,7 +3,7 @@
 // who acts on it, on the lines below its title. Every reason once: the draft
 // behind open boxes, a `wt:wait` behind the merge order's `after` say nothing
 // new.
-import { dim, fit, underRows, visible, yellow } from "../lib/tty.mjs";
+import { dim, fit, pad, underRows, visible, yellow } from "../lib/tty.mjs";
 import { isChangeOpen } from "../worktree.mjs";
 import { isWork, mergeStatusText, wordsOf } from "./merge.mjs";
 
@@ -113,8 +113,8 @@ export const blockersText = reasons =>
 const MIN_TITLE = 24;
 /** The column of MERGE REQUESTS the reasons start under: the title's. */
 const TITLE_COLUMN = 4;
-/** How many lines the reasons of a row take at most, the first line apart. */
-const REASON_LINES = 2;
+/** How many lines the reasons of a row take at most: all of them in practice, no `…` at the edge (#273). */
+const REASON_LINES = 6;
 
 /**
  * The rows of MERGE REQUESTS as the lines of each: on the first the order
@@ -144,16 +144,19 @@ export const mrRowLines = (rows, { width } = {}) => {
     MIN_TITLE,
     (width ?? Infinity) - start - (status ? status + 2 : 0),
   );
+  // The titles' column as wide as the longest needs, the statuses after it;
+  // a row without a status takes their room too, instead of a `…` (#273).
+  const column = Math.min(
+    room,
+    Math.max(0, ...rows.map(row => visible(row.title ?? ""))),
+  );
+  const titleOf = row =>
+    row.status
+      ? `${pad(fit(row.title ?? "", column), column)}  ${row.status}`
+      : fit(row.title ?? "", column + (status ? status + 2 : 0));
   const lines = underRows(
     rows.map((row, i) => ({
-      head: row.cells
-        ? [
-            ...leads[i],
-            fit(row.title ?? "", room),
-            // No status in any row: no column for it.
-            ...(status ? [row.status ?? ""] : []),
-          ]
-        : leads[i],
+      head: row.cells ? [...leads[i], titleOf(row)] : leads[i],
       text: row.text ?? "",
     })),
     { width, under: TITLE_COLUMN, maxLines: REASON_LINES },
