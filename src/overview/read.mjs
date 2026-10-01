@@ -6,12 +6,14 @@ import {
   VITA,
   boxesOf,
   isInside,
+  isOverallBehind,
   isPortFree,
   mainDir,
   offsetOf,
   originOf,
   readEnv,
   worktrees,
+  writeOverall,
 } from "../worktree.mjs";
 import { here, only, orchestration } from "./args.mjs";
 import { pathsOf } from "./workers.mjs";
@@ -70,8 +72,20 @@ export const readLocal = async () => {
     : [];
   return { trees, orphans, hasDocker: Boolean(projects) };
 };
+/** The head of develop the changelog of the repo was last started for: one that fails is not tried again and again. */
+let overallTried = null;
+/**
+ * The changelog of the repo (#261) rewritten in the background when the
+ * head of develop moved since it was written: a merge, by the overview's
+ * click or anywhere else.
+ */
+const keepOverall = develop => {
+  if (!develop || overallTried === develop || !isOverallBehind(develop)) return;
+  overallTried = develop;
+  writeOverall({ develop }).catch(() => (overallTried = null));
+};
 export const readRemote = async () => {
-  const [mrs, pipelines, issues, heads] = await Promise.all([
+  const [mrs, pipelines, issues, refs] = await Promise.all([
     glab("projects/:fullpath/merge_requests?state=opened&per_page=50"),
     glab("projects/:fullpath/pipelines?per_page=100"),
     glab(
@@ -81,10 +95,12 @@ export const readRemote = async () => {
       ({ stdout }) =>
         stdout
           .split("\n")
-          .map(line => line.split("refs/heads/")[1])
-          .filter(Boolean),
+          .map(line => line.split("\trefs/heads/"))
+          .filter(([, branch]) => branch),
     ),
   ]);
+  const heads = refs.map(([, branch]) => branch);
+  keepOverall(refs.find(([, branch]) => branch === "develop")?.[0]);
   // Newest first: the first pipeline of a ref is its state.
   const pipelineOf = new Map();
   for (const pipeline of pipelines)

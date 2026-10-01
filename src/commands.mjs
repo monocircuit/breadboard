@@ -34,6 +34,8 @@ const DESCRIPTIONS = {
       "the Chromium extension for a tab group per herdr space: install it, say how to load it",
     overview:
       "live: worktrees, stacks, merge requests and issues (q quits, --worktree <dir> for one, --orchestration <name> for its issues and MRs)",
+    changelog:
+      "what got into develop, by product and package: rewritten from GitLab and printed (--since 30d|2w|<date>, --watch: live, the tab changelog of the main space)",
     "stack:up":
       "start the vita stack — of the worktree on --port <p> / <feature>, else yours",
     "stack:down": "stop that stack, data stays",
@@ -42,9 +44,7 @@ const DESCRIPTIONS = {
     "wt:new":
       "<feature> a worktree on a new branch with its own stack (--shared, --fix, --origin <orchestration>)",
     "wt:orchestrate":
-      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --title " <
-      text >
-      " what it shows instead of its name; <name> --end ends it once its worktrees are gone",
+      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --title <text> what it shows instead of its name; <name> --end ends it once its worktrees are gone; <name> --changelog [--watch] its changelog",
     "wt:plan":
       "<name> [--work <n>…] [--merge <n>…] [--why <t>] the order of an orchestration's issues and merges, for its overview",
     "wt:stack": "give the worktree you are in its own stack",
