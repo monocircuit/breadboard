@@ -29,6 +29,7 @@ import {
   originMark,
 } from "./origins.mjs";
 import { exclusive } from "./lock.mjs";
+import { sortSpaces } from "./order.mjs";
 import { pruneSpaces } from "./prune.mjs";
 import { ensureEditor, mainSpace, spaceOf, worktreeSpace } from "./spaces.mjs";
 import { compose, isPortFree, offsetOf } from "./stack.mjs";
@@ -243,6 +244,8 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
   if (changed.length) report.push(`${SPACE}: ${changed.join(" ")}`);
   // Last, when every space is there: herdr forgets the marks on a restart.
   markOrigins();
+  const sorted = await sortSpaces();
+  if (sorted) report.push(sorted);
   return { main, report };
 });
 /**

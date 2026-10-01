@@ -86,7 +86,7 @@ export const originOf = dir => {
   }
 };
 /** Every worktree an orchestration started, with its origin. */
-const orchestrated = () =>
+export const orchestrated = () =>
   worktrees()
     .slice(1)
     .map(({ dir }) => ({ dir, origin: originOf(dir) }))

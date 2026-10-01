@@ -2,6 +2,7 @@
 // (or when herdr is old or unhappy) every call answers null, never throws: the
 // layout is comfort, the work goes on without it.
 import { spawnSync } from "node:child_process";
+import net from "node:net";
 
 export const isInHerdr = () => process.env.HERDR_ENV === "1";
 /** Claude Code sets it. An agent stays in its tab (EnterWorktree), a human gets a new one. */
@@ -26,3 +27,33 @@ export const panesOf = workspace =>
   herdr(["pane", "list", "--workspace", workspace])?.panes ?? [];
 export const currentPane = () =>
   herdr(["pane", "current", "--current"])?.pane ?? null;
+/**
+ * A method of herdr's socket API the CLI has no command for (`workspace.move_block`)
+ * → its `result`, or null: outside herdr, on an error, or after `timeout` ms.
+ */
+export const herdrApi = (method, params, { timeout = 2000 } = {}) =>
+  new Promise(resolve => {
+    const socket = process.env.HERDR_SOCKET_PATH;
+    if (!isInHerdr() || !socket) return resolve(null);
+    const client = net.createConnection(socket);
+    let answer = "";
+    const done = result => {
+      clearTimeout(timer);
+      client.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => done(null), timeout);
+    client.on("connect", () =>
+      client.write(`${JSON.stringify({ id: "breadboard", method, params })}\n`),
+    );
+    client.on("data", data => {
+      answer += data;
+      if (!answer.includes("\n")) return;
+      try {
+        done(JSON.parse(answer.slice(0, answer.indexOf("\n"))).result ?? null);
+      } catch {
+        done(null);
+      }
+    });
+    client.on("error", () => done(null));
+  });
