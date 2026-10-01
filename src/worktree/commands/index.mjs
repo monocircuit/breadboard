@@ -2,6 +2,7 @@
 // `pnpm stack:*` through `control`.
 import actionCommand from "./action.mjs";
 import changelogCommand from "./changelog.mjs";
+import checkCommand from "./check.mjs";
 import controlCommand from "./control.mjs";
 import herdrCommand from "./herdr.mjs";
 import issuesCommand from "./issues.mjs";
@@ -23,6 +24,7 @@ export const commands = {
   orchestrate: orchestrateCommand,
   plan: planCommand,
   mr: mrCommand,
+  check: checkCommand,
   note: noteCommand,
   tick: tickCommand,
   action: actionCommand,

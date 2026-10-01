@@ -20,7 +20,12 @@ import {
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
 import { actionBlock, kindChip } from "./action-block.mjs";
-import { answerWith, clickAction, deliversAnswers } from "./answers.mjs";
+import {
+  answerButtons,
+  answerWith,
+  deliversAnswers,
+  shownAction,
+} from "./answers.mjs";
 import { isOnce, orchestration } from "./args.mjs";
 import {
   autoActionsOf,
@@ -30,7 +35,6 @@ import {
   tellFailedPipelines,
 } from "./auto-actions.mjs";
 import {
-  CELL_START,
   boxInner,
   closeBox,
   openBox,
@@ -40,6 +44,7 @@ import {
 import { pushChatButton } from "./chat.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { announcedOf } from "./handovers.mjs";
+import { errorText, freshText, waitingText } from "./gitlab-status.mjs";
 import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
 import {
@@ -57,15 +62,16 @@ import {
   clickResolve,
   conflictStateOf,
   forgetResolved,
-  resolveColumns,
+  RESOLVE,
 } from "./resolve.mjs";
 import { ago } from "./render-worktree.mjs";
 import { pushFreeAgents } from "./free-agents.mjs";
 import { freeOnCleanUp, workerActionsOf } from "./workers.mjs";
-import { KEYS, pushUnder, screen } from "./screen.mjs";
+import { KEYS, onButtons, pushUnder, screen } from "./screen.mjs";
 import { foldLine, pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
 import { tryStateOf } from "./try-state.mjs";
+import { drawSection } from "./guard.mjs";
 
 /** The kinds whose click opens the spot to check; `browser-check` is stored before `try` came. */
 const TRY_KINDS = new Set(["try", "browser-check"]);
@@ -88,6 +94,7 @@ const isWaitingTry = item => item.tryState?.isReady === false;
 const actionsOf = (local, issues, of, remote, announced) => {
   const merge = local.order.numbers;
   const own = (local.ownActions ?? [])
+    .map(stored => shownAction(local.recordFile, stored))
     .map(action => {
       // A merge the orchestrator posted for an MR (`--mr !N`) is that MR's.
       const issue =
@@ -120,7 +127,8 @@ const actionsOf = (local, issues, of, remote, announced) => {
   const agents = issues
     .filter(issue => issue.tree?.actions?.length)
     .flatMap(issue =>
-      issue.tree.actions.map(action => {
+      issue.tree.actions.map(stored => {
+        const action = shownAction(actionsFile(issue.tree.dir), stored);
         const tryState = TRY_KINDS.has(action.kind)
           ? tryStateOf(action, {
               tree: issue.tree,
@@ -332,12 +340,6 @@ const actionText = ({ action, issue, file }, of) => {
   return action.text;
 };
 /**
- * What a click on a line of an action's block does (action-block.mjs `on`):
- * on its buttons line a button answers, past them it does the action (the
- * buttons from column `start`); on an option that option answers; anywhere
- * else it does the action.
- */
-/**
  * Whether a click on the body of `item` can do nothing (#290): a try that
  * isn't ready and has no page to show why (try-state.mjs), a hand-over or
  * start already under way. Its row says why; it takes no click.
@@ -347,16 +349,18 @@ export const isInert = item =>
     (item.tryState && !item.tryState.isReady && !item.tryState.url) ||
     item.action?.isRunning,
   );
-/** The click of a line of `item`'s block; none on the body of an inert one. */
-const clickOf = (item, on, start = CELL_START) =>
-  on !== "buttons" && typeof on !== "number" && isInert(item)
-    ? undefined
-    : column => {
-        const redraw = () => screen.redraw({ isReread: true });
-        if (on === "buttons") return clickAction(item, column, redraw, start);
-        if (typeof on === "number") return answerWith(item, on, redraw);
-        return item.go();
-      };
+/**
+ * What a click on a line of an action's block does (action-block.mjs `on`):
+ * on its buttons line a button answers, the rest of it does the action; on
+ * an option that option answers; anywhere else it does the action, nothing
+ * on the body of an inert one.
+ */
+const clickOf = (item, on) => {
+  const redraw = () => screen.redraw({ isReread: true });
+  if (on === "buttons") return answerButtons(item, redraw);
+  if (typeof on === "number") return () => answerWith(item, on, redraw);
+  return isInert(item) ? undefined : () => item.go();
+};
 
 /**
  * Each issue's state by its number, for the plan's staleness (next.mjs):
@@ -431,7 +435,7 @@ const pushNext = (
   const indent = " ".repeat(visible(label));
   if (next?.kind === "action") {
     blockOf(next.item, of, width - indent.length).forEach(({ line, on }, i) => {
-      screen.clicks[lines.length] = clickOf(next.item, on, indent.length + 1);
+      screen.clicks[lines.length] = clickOf(next.item, on);
       lines.push(`${i === 0 ? label : indent}${line}`);
     });
   } else if (next) {
@@ -456,7 +460,7 @@ const pushNext = (
               atWork: atWorkOf(issues, local.agents),
               merge,
             })
-          : "GitLab …",
+          : waitingText(),
       )}`,
     );
   }
@@ -555,8 +559,9 @@ export const renderOrchestration = (local, remote, error) => {
     );
     return lines.map(line => fit(line, width)).join("\n");
   }
-  if (error) lines.push("", red(`GitLab: ${error.split("\n")[0]}`));
-  const of = issue => remote?.of.get(issue.branch) ?? {};
+  if (error) lines.push("", red(errorText(error, remote)));
+  // A row of the graph alone has no issue (#306): nothing to look up.
+  const of = issue => (issue && remote?.of.get(issue.branch)) || {};
   // The merge order, computed on each read; the plan's alone until GitLab answers.
   // By number, only the issues with an MR: another entry with the same
   // number but none (#221) must not stand in for one in the graph or NEXT.
@@ -614,12 +619,17 @@ export const renderOrchestration = (local, remote, error) => {
       Boolean(remote),
     );
   lines.push("");
-  pushNext(lines, ordered, actions, issues, of, remote);
+  // Each section guarded (#306): one that throws names itself, the rest draw.
+  drawSection(lines, "NEXT", () =>
+    pushNext(lines, ordered, actions, issues, of, remote),
+  );
   lines.push("");
   // The answer to "what now?" is never scrolled away.
   screen.sticky = lines.length;
-  pushActions(lines, actions.actions, of);
-  pushUpNext(lines, actions.upNext, of);
+  drawSection(lines, "ACTIONS", () => {
+    pushActions(lines, actions.actions, of);
+    pushUpNext(lines, actions.upNext, of);
+  });
   // The MRs a wait may name that are over already: the orchestration's own
   // and the awaited ones (#262).
   const overMrs = [
@@ -630,142 +640,152 @@ export const renderOrchestration = (local, remote, error) => {
   const mergedIids = new Set(
     overMrs.filter(mr => mr.state === "merged").map(mr => mr.iid),
   );
-  pushWorktrees(lines, {
-    name: orchestration,
-    issues,
-    of,
-    agents: local.agents,
-    work,
-    merge: order.open.map(item => item.number),
-    announced,
-    holds: actions.holds,
-    suggested: actions.suggested,
-    fresh: actions.fresh,
-    setups: actions.setups,
-    hasRemote: Boolean(remote),
-    known: local.workers,
-    free: local.free,
-    merged: mergedIids,
-  });
+  drawSection(lines, "WORKTREES", () =>
+    pushWorktrees(lines, {
+      name: orchestration,
+      issues,
+      of,
+      agents: local.agents,
+      work,
+      merge: order.open.map(item => item.number),
+      announced,
+      holds: actions.holds,
+      suggested: actions.suggested,
+      fresh: actions.fresh,
+      setups: actions.setups,
+      hasRemote: Boolean(remote),
+      known: local.workers,
+      free: local.free,
+      merged: mergedIids,
+    }),
+  );
   // The free agents, their worktree gone (#289).
-  pushFreeAgents(lines, orchestration, local.freeAgents ?? [], local.agents);
+  drawSection(lines, "FREE AGENTS", () =>
+    pushFreeAgents(lines, orchestration, local.freeAgents ?? [], local.agents),
+  );
 
   const byNumber = withMr;
   const afterOf = new Map(order.open.map(item => [item.number, item.after]));
   const doneMrs = order.merged.map(number => byNumber.get(number));
   const mrsBox = openBox(lines);
   if (!remote) {
-    lines.push(dim(error ? "  GitLab does not answer" : "  GitLab …"));
+    lines.push(
+      dim(`  ${error ? "GitLab does not answer yet" : waitingText()}`),
+    );
   } else if (order.open.length + doneMrs.length === 0) {
     lines.push(dim("  none yet"));
-  } else {
-    // The open ones as a graph (merge-order.mjs), then the merged: one
-    // table, so their columns line up across the divider.
-    const items = [
-      ...graphOf(order.open).map(row =>
-        row.number ? { ...row, issue: byNumber.get(row.number) } : row,
-      ),
-      { isDivider: true },
-      ...doneMrs.map(issue => ({ issue, isMerged: true })),
-    ];
-    forgetResolved(
-      issues.map(issue => of(issue).mr).filter(mr => mr?.state === "opened"),
-    );
-    const agents = local.agents ?? new Map();
-    // Once per row and frame: the state moves on as it is read.
-    const conflicts = new Map();
-    const conflictOf = item => {
-      if (!conflicts.has(item))
-        conflicts.set(
-          item,
-          conflictStateOf(of(item.issue).mr, {
-            tree: item.issue.tree,
-            agents,
-            behind: item.issue.tree?.behind ?? 0,
-          }),
-        );
-      return conflicts.get(item);
-    };
-    const rowOf = item => {
-      const { mr, jobs } = item.issue ? of(item.issue) : {};
-      // A line of the graph alone, or (never again, #221) a row without its MR.
-      if (!mr) return { graph: item.graph };
-      const reasons = item.isMerged
-        ? []
-        : rowBlockersOf({
-            mr,
-            boxes: of(item.issue).issue?.boxes ?? [],
-            behind: item.issue.tree?.behind ?? 0,
-            after: afterOf.get(item.issue.number) ?? [],
-            jobs,
-            tree: item.issue.tree,
-            done: doneIids,
-          });
-      return {
-        graph: item.graph,
-        below: item.below,
-        cells: [link(mr.url, `!${mr.iid}`), pipelineMark(mr.pipeline)],
-        title: mr.title,
-        // A merged one: when; an open one nothing holds up: that it is ready.
-        status: item.isMerged
-          ? dim(`merged ${mr.mergedAt ? ago(new Date(mr.mergedAt)) : ""}`)
-          : reasons.length
-            ? ""
-            : green("ready to merge"),
-        // An open one's conflict state leads what it lacks: the button
-        // that has its agent resolve them, the conflicts' reason in it.
-        text: item.isMerged
-          ? ""
-          : [
-              conflictOf(item).text,
-              blockersText(reasons.filter(reason => !reason.isConflict)),
-            ]
-              .filter(Boolean)
-              .join(dim(" · ")),
+  } else
+    drawSection(lines, "MERGE REQUESTS", () => {
+      // The open ones as a graph (merge-order.mjs), then the merged: one
+      // table, so their columns line up across the divider.
+      const items = [
+        ...graphOf(order.open).map(row =>
+          row.number ? { ...row, issue: byNumber.get(row.number) } : row,
+        ),
+        { isDivider: true },
+        ...doneMrs.map(issue => ({ issue, isMerged: true })),
+      ];
+      forgetResolved(
+        issues.map(issue => of(issue).mr).filter(mr => mr?.state === "opened"),
+      );
+      const agents = local.agents ?? new Map();
+      // Once per row and frame: the state moves on as it is read.
+      const conflicts = new Map();
+      const conflictOf = item => {
+        // A merged row or a line of the graph alone has no conflict state (#306).
+        if (!item.issue || item.isMerged) return {};
+        if (!conflicts.has(item))
+          conflicts.set(
+            item,
+            conflictStateOf(of(item.issue).mr, {
+              tree: item.issue.tree,
+              agents,
+              behind: item.issue.tree?.behind ?? 0,
+            }),
+          );
+        return conflicts.get(item);
       };
-    };
-    const shown = items.filter(item => !item.isDivider);
-    const rows = mrRowLines(shown.map(rowOf), { width: boxInner() });
-    const isMergedShown = isOnce || !isMergedFolded;
-    shown.forEach((item, i) => {
-      if (item.isMerged && shown[i - 1] && !shown[i - 1].isMerged) {
-        // The heading of the merged ones: a click folds them, another shows them again.
-        if (!isOnce)
-          screen.clicks[lines.length] = () => {
-            isMergedFolded = !isMergedFolded;
-            screen.redraw();
-          };
-        lines.push(
-          `  ${foldLine({
-            branch: "",
-            isOpen: isMergedShown,
-            text: `${doneMrs.length} merged`,
-            width: boxInner(),
-          })}`,
-        );
-      }
-      if (item.isMerged && !isMergedShown) return;
-      for (const text of rows[i]) {
-        // On the button its agent gets the order, anywhere else the MR opens;
-        // a grey one (or none) does nothing of its own.
-        const resolve =
-          item.isMerged || !conflictOf(item).canClick
-            ? null
-            : resolveColumns(text);
-        if (item.issue)
-          screen.clicks[lines.length] = column =>
-            resolve && column >= resolve.from && column <= resolve.to
-              ? clickResolve({
-                  mr: of(item.issue).mr,
-                  tree: item.issue.tree,
-                  agents,
-                  behind: item.issue.tree?.behind ?? 0,
-                })
-              : show(of(item.issue).mr.url, item.issue.tree?.dir);
-        lines.push(text);
-      }
+      const rowOf = item => {
+        const { mr, jobs } = item.issue ? of(item.issue) : {};
+        // A line of the graph alone, or (never again, #221) a row without its MR.
+        if (!mr) return { graph: item.graph };
+        const reasons = item.isMerged
+          ? []
+          : rowBlockersOf({
+              mr,
+              boxes: of(item.issue).issue?.boxes ?? [],
+              behind: item.issue.tree?.behind ?? 0,
+              after: afterOf.get(item.issue.number) ?? [],
+              jobs,
+              tree: item.issue.tree,
+              done: doneIids,
+            });
+        return {
+          graph: item.graph,
+          below: item.below,
+          cells: [link(mr.url, `!${mr.iid}`), pipelineMark(mr.pipeline)],
+          title: mr.title,
+          // A merged one: when; an open one nothing holds up: that it is ready.
+          status: item.isMerged
+            ? dim(`merged ${mr.mergedAt ? ago(new Date(mr.mergedAt)) : ""}`)
+            : reasons.length
+              ? ""
+              : green("ready to merge"),
+          // An open one's conflict state leads what it lacks: the button
+          // that has its agent resolve them, the conflicts' reason in it.
+          text: item.isMerged
+            ? ""
+            : [
+                conflictOf(item).text,
+                blockersText(reasons.filter(reason => !reason.isConflict)),
+              ]
+                .filter(Boolean)
+                .join(dim(" · ")),
+        };
+      };
+      const shown = items.filter(item => !item.isDivider);
+      const rows = mrRowLines(shown.map(rowOf), { width: boxInner() });
+      const isMergedShown = isOnce || !isMergedFolded;
+      shown.forEach((item, i) => {
+        if (item.isMerged && shown[i - 1] && !shown[i - 1].isMerged) {
+          // The heading of the merged ones: a click folds them, another shows them again.
+          if (!isOnce)
+            screen.clicks[lines.length] = () => {
+              isMergedFolded = !isMergedFolded;
+              screen.redraw();
+            };
+          lines.push(
+            `  ${foldLine({
+              branch: "",
+              isOpen: isMergedShown,
+              text: `${doneMrs.length} merged`,
+              width: boxInner(),
+            })}`,
+          );
+        }
+        if (item.isMerged && !isMergedShown) return;
+        for (const text of rows[i]) {
+          // On the button its agent gets the order, anywhere else the MR opens;
+          // a grey one (or none) does nothing of its own.
+          if (item.issue)
+            screen.clicks[lines.length] = onButtons(
+              conflictOf(item).canClick
+                ? {
+                    [RESOLVE]: () =>
+                      clickResolve({
+                        mr: of(item.issue).mr,
+                        tree: item.issue.tree,
+                        agents,
+                        behind: item.issue.tree?.behind ?? 0,
+                      }),
+                  }
+                : {},
+              () => show(of(item.issue).mr.url, item.issue.tree?.dir),
+            );
+          lines.push(text);
+        }
+      });
     });
-  }
   const waiting = issues.filter(
     issue => issue.tree && remote && !of(issue).mr,
   ).length;
@@ -778,6 +798,8 @@ export const renderOrchestration = (local, remote, error) => {
     waiting ? `${waiting} without one yet` : "",
     order.open.length ? "in merge order, side by side where independent" : "",
   ];
+  // How old what it shows is, and GitLab's minute of all the user's clients (#305).
+  if (freshText(remote)) lines.push(dim(`  ${freshText(remote)}`));
   closeBox(
     lines,
     mrsBox,

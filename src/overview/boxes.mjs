@@ -183,10 +183,13 @@ const LIT_OF = new Map(
 );
 /** A drawn line cut at its escapes: text at the even places, an escape at the odd ones. */
 const SPLIT = new RegExp(`(${ESCAPES.source})`);
+/** A button drawn without colours: `[ label ]` (a gray one is `( label )`, no button). */
+const PLAIN_BUTTON = /\[ (.+?) \]/g;
 /**
- * The buttons that can be clicked on a drawn `line`: `{ from, to, at }`
- * each, its columns (from 1) with the column of slack after it, as
- * answers.mjs buttonAt counts them, and the place of its escape in `parts`.
+ * The buttons that can be clicked on a drawn `line`: `{ from, to, label,
+ * at }` each, its columns (from 1) with the column of slack after it, its
+ * label, and the place of its escape in `parts` (none without colours,
+ * `[ label ]` there).
  */
 export const buttonsOn = line => {
   const parts = line.split(SPLIT);
@@ -194,15 +197,34 @@ export const buttonsOn = line => {
   let column = 1;
   let open = null;
   parts.forEach((part, at) => {
-    if (at % 2 === 0) column += [...part].length;
-    else if (LIT_OF.has(part)) open = { from: column, at };
+    if (at % 2 === 0) {
+      column += [...part].length;
+      if (open) open.label += part;
+    } else if (LIT_OF.has(part)) open = { from: column, at, label: "" };
     else if (open && part === "\x1b[0m") {
-      buttons.push({ ...open, to: column });
+      buttons.push({ ...open, to: column, label: open.label.trim() });
       open = null;
     }
   });
+  if (buttons.length || isColor) return { parts, buttons };
+  // Without colours: `[ label ]`. Characters, not UTF-16 units: `✓` is one column.
+  const text = line.replace(ESCAPES, "");
+  for (const match of text.matchAll(PLAIN_BUTTON)) {
+    const from = [...text.slice(0, match.index)].length + 1;
+    buttons.push({ from, to: from + [...match[0]].length, label: match[1] });
+  }
   return { parts, buttons };
 };
+/**
+ * The button of a drawn `line` at `column` (from 1), `{ from, to, label }`,
+ * its column of slack after it included; null off its buttons. What a click
+ * there hits (frame.mjs): the line as drawn decides, not where its drawing
+ * thought the buttons would be.
+ */
+export const buttonOn = (line, column) =>
+  buttonsOn(line).buttons.find(
+    ({ from, to }) => column >= from && column <= to,
+  ) ?? null;
 /** The ground of an island's title line under the pointer: a step lighter than its own. */
 const HOVER_HEAD = "\x1b[48;2;74;74;74m";
 /**
@@ -214,7 +236,7 @@ const HOVER_HEAD = "\x1b[48;2;74;74;74m";
 export const hovered = (line, column) => {
   const { parts, buttons } = buttonsOn(line);
   const on = buttons.find(({ from, to }) => column >= from && column <= to);
-  if (on) {
+  if (on && on.at !== undefined) {
     parts[on.at] = LIT_OF.get(parts[on.at]);
     return { key: `button ${on.from}`, line: parts.join("") };
   }

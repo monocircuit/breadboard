@@ -11,6 +11,7 @@ import {
   templateToFill,
   unfilled,
 } from "../issues.mjs";
+import { inapplicable } from "../mr-tests.mjs";
 import {
   fragmentFiles,
   issueOfName,
@@ -94,6 +95,14 @@ export default function mrCommand(issue, flags) {
   if (unwritten.length > 0) {
     fail(
       `${shown(top, given)} is still the template, ${unwritten.length} place${unwritten.length === 1 ? "" : "s"} unwritten:\n${unwritten.join("\n")}\n\n  Say per section what this branch changes and why, then run pnpm wt:mr again.`,
+    );
+  }
+  // A box that doesn't apply is deleted, not kept empty with "no browser
+  // change": an unticked box reads as open work (#302).
+  const notApplying = inapplicable(written);
+  if (notApplying.length > 0) {
+    fail(
+      `${shown(top, given)} keeps ${notApplying.length === 1 ? "a Tests box" : `${notApplying.length} Tests boxes`} that ${notApplying.length === 1 ? "says it doesn't" : "say they don't"} apply:\n${notApplying.join("\n")}\n\n  Delete ${notApplying.length === 1 ? "that line" : "those lines"}: Tests lists only what applies. Something that applies but didn't run goes into a sentence under the boxes. Then run pnpm wt:mr again.`,
     );
   }
   const body = /Closes #\d/.test(written)

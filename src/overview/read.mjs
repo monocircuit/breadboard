@@ -3,6 +3,7 @@
 import path from "node:path";
 
 import {
+  checkOf,
   envFileOf,
   boxesOf,
   isInside,
@@ -62,6 +63,8 @@ export const readLocal = async () => {
             dir,
           ).stdout.trim(),
         ) || 0,
+      // Whether wt:check passed on its HEAD (#298, worktree/check.mjs).
+      checked: checkOf(dir),
     });
   }
   const known = new Set(trees.map(tree => tree.project));
@@ -142,7 +145,51 @@ export const readRemote = async () => {
     at: new Date(),
   };
 };
-/** The merge request of one branch with its pipeline, and the issue the branch claims. */
+/**
+ * An MR as the views use it, from GitLab's (the list's or the single one's),
+ * with `pipeline` its head pipeline (the single one has it as
+ * `head_pipeline`). `deploy` is set by the reader for a merged one.
+ */
+export const mrOf = (found, pipeline = found.head_pipeline ?? null) => ({
+  iid: found.iid,
+  title: found.title.replace(/^Draft:\s*/, ""),
+  isDraft: found.draft,
+  state: found.state,
+  mergedAt: found.merged_at ?? null,
+  hasConflicts: Boolean(found.has_conflicts),
+  // GitLab's word on whether it can be merged: only `mergeable` can.
+  mergeStatus: found.detailed_merge_status ?? null,
+  // Whether GitLab's conflicts are settled (resolve.mjs): `checking` after a push.
+  mergeCheck: found.merge_status ?? null,
+  // The head GitLab has: one older than the pushed commit answers for older commits.
+  sha: found.sha ?? null,
+  url: found.web_url,
+  pipeline,
+  // Merged: the develop pipeline of the merge commit, what a try on the test instance waits for (try-state.mjs).
+  deploy: null,
+});
+/** The commit a merged MR put on develop. */
+export const mergeShaOf = found =>
+  found?.merge_commit_sha ?? found?.squash_commit_sha ?? null;
+/** An issue as the views use it, from GitLab's with its links. */
+export const issueOf = (issue, links = []) => ({
+  iid: issue.iid,
+  title: issue.title,
+  url: issue.web_url,
+  state: issue.state,
+  boxes: boxesOf(issue.description ?? ""),
+  // The issues it names as prerequisites, or is blocked by.
+  needs: [
+    ...new Set([
+      ...needsOf(issue.description),
+      ...links
+        .filter(link => link.link_type === "is_blocked_by")
+        .map(link => link.iid),
+    ]),
+  ],
+  // The files it names: the agent that knows them is suggested for it (workers.mjs).
+  paths: pathsOf(issue.description),
+});
 /**
  * One worktree's part of GitLab: its MR (open, else the latest) with the
  * pipeline's jobs, its issue, and with `dir` the open MRs it waits for
@@ -173,29 +220,12 @@ export const readRemoteOf = async (branch, dir = null) => {
   const found = latest
     ? await glab(`projects/:fullpath/merge_requests/${latest.iid}`)
     : null;
-  const mr = found && {
-    iid: found.iid,
-    title: found.title.replace(/^Draft:\s*/, ""),
-    isDraft: found.draft,
-    state: found.state,
-    mergedAt: found.merged_at ?? null,
-    hasConflicts: Boolean(found.has_conflicts),
-    // GitLab's word on whether it can be merged: only `mergeable` can.
-    mergeStatus: found.detailed_merge_status ?? null,
-    // Whether GitLab's conflicts are settled (resolve.mjs): `checking` after a push.
-    mergeCheck: found.merge_status ?? null,
-    // The head GitLab has: one older than the pushed commit answers for older commits.
-    sha: found.sha ?? null,
-    url: found.web_url,
-    pipeline: found.head_pipeline ?? null,
-    // Merged: the develop pipeline of the merge commit, what a try on the test instance waits for (try-state.mjs).
-    deploy: null,
-  };
-  const mergeSha = found?.merge_commit_sha ?? found?.squash_commit_sha;
+  const mr = found && mrOf(found);
+  const mergeSha = mergeShaOf(found);
   if (mr?.state === "merged" && mergeSha)
     mr.deploy = await deployOf(mergeSha).catch(() => null);
   // The jobs are extra: without them issue and MR still show.
-  const jobs = mr?.pipeline ? await jobsOf(mr.pipeline.id).catch(() => []) : [];
+  const jobs = mr?.pipeline ? await jobsOf(mr.pipeline).catch(() => []) : [];
   const pipelineOf = new Map();
   for (const pipeline of pipelines)
     if (!pipelineOf.has(pipeline.ref)) pipelineOf.set(pipeline.ref, pipeline);
@@ -221,24 +251,7 @@ export const readRemoteOf = async (branch, dir = null) => {
     mr,
     jobs,
     waiting,
-    issue: issue && {
-      iid: issue.iid,
-      title: issue.title,
-      url: issue.web_url,
-      state: issue.state,
-      boxes: boxesOf(issue.description ?? ""),
-      // The issues it names as prerequisites, or is blocked by.
-      needs: [
-        ...new Set([
-          ...needsOf(issue.description),
-          ...links
-            .filter(link => link.link_type === "is_blocked_by")
-            .map(link => link.iid),
-        ]),
-      ],
-      // The files it names: the agent that knows them is suggested for it (workers.mjs).
-      paths: pathsOf(issue.description),
-    },
+    issue: issue && issueOf(issue, links),
     at: new Date(),
   };
 };
