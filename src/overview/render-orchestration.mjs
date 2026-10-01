@@ -569,6 +569,7 @@ export const renderOrchestration = (local, remote, error) => {
     merge: order.open.map(item => item.number),
     announced,
     holds: actions.holds,
+    suggested: actions.suggested,
     hasRemote: Boolean(remote),
   });
 
