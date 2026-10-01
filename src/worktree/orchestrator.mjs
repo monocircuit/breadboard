@@ -23,6 +23,7 @@ import {
   slotOf,
   writeRecord,
 } from "./origins.mjs";
+import { ideFlag } from "./ide.mjs";
 import { editorCommand } from "./nvim.mjs";
 import { canEdit, mainSpace, spaceOf } from "./spaces.mjs";
 import {
@@ -398,7 +399,7 @@ export const startAgent = (dir, brief) => {
   const feature = featureOf(dir);
   writeBrief(dir, brief);
   const id = crypto.randomUUID();
-  const command = `cd ${quote(dir)} && claude --session-id ${id} --name ${feature} ${quote(BRIEF_PROMPT)}`;
+  const command = `cd ${quote(dir)} && claude --session-id ${id} --name ${feature}${ideFlag(dir)} ${quote(BRIEF_PROMPT)}`;
   const workspace = isInHerdr() ? spaceOf(dir) : null;
   const pane = workspace ? idlePaneOf(workspace, feature) : null;
   // `pane run` answers with nothing on success, so its exit code, not herdr()'s result.
