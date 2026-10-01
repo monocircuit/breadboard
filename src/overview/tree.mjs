@@ -222,14 +222,20 @@ const takenText = ({ to, open, after }) => {
 };
 /**
  * What a queued issue waits for (#250): the agent the orchestrator announced
- * (and after which MRs), the idle one UP NEXT suggests, else a start.
+ * (and after which MRs), the free one UP NEXT suggests (`→ 3-x (free, 18 %)`),
+ * else what its fresh start does (`fresh`, #265).
  */
-const queuedText = (issue, announced, suggested) => {
+const queuedText = (issue, announced, suggested, fresh) => {
   const handover = announced.find(({ number }) => number === issue.number);
   if (handover) return cyan(takenText(handover));
   const worker = suggested.get(issue.number)?.worker;
-  if (worker) return cyan(`→ ${worker.name} once its MR is merged`);
-  return cyan("start: waits for an agent");
+  if (worker)
+    return cyan(
+      worker.isMerged
+        ? `→ ${worker.name} (free, ${Math.round(worker.share * 100)} %)`
+        : `→ ${worker.name} once its MR is merged`,
+    );
+  return cyan(fresh.get(issue.number) ?? "start: waits for an agent");
 };
 
 /**
@@ -244,7 +250,8 @@ const queuedText = (issue, announced, suggested) => {
  * order of wt:plan; `merge`: the open MRs' issues in the computed merge order;
  * `announced`: the announced handovers (handovers.mjs); `holds`: dir → why
  * the clean-up of a worktree waits for a handover (workers.mjs);
- * `suggested`: number → `{ worker }` of UP NEXT (workers.mjs); `known`: the
+ * `suggested`: number → `{ worker }` of UP NEXT, `fresh`: number → what the
+ * fresh start of an issue no agent is free for does (workers.mjs); `known`: the
  * record's workers by agent id (their names, #217); `merged`: the iids known
  * merged, left out of a wait (#262).
  */
@@ -258,6 +265,7 @@ export const treeOf = (
     announced = [],
     holds = new Map(),
     suggested = new Map(),
+    fresh = new Map(),
     hasRemote = true,
     known = {},
     merged = new Set(),
@@ -280,7 +288,7 @@ export const treeOf = (
     });
     const state =
       lifecycle.key === "queued"
-        ? { ...lifecycle, text: queuedText(issue, announced, suggested) }
+        ? { ...lifecycle, text: queuedText(issue, announced, suggested, fresh) }
         : lifecycle.key === "removed" && issue.removedAt
           ? {
               ...lifecycle,
@@ -427,6 +435,7 @@ export const pushWorktrees = (
     announced,
     holds,
     suggested,
+    fresh,
     hasRemote,
     known,
     free,
@@ -441,6 +450,7 @@ export const pushWorktrees = (
     announced,
     holds,
     suggested,
+    fresh,
     hasRemote,
     known,
   });

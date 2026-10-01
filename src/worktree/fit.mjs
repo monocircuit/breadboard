@@ -1,5 +1,5 @@
 // Which idle agent fits an issue (#217): the one whose worktrees touched the
-// files the issue names. wt:orchestrate asks it before it starts a fresh
+// files the issue names, else the one with the most room (#265). wt:orchestrate asks it before it starts a fresh
 // agent (#229), the overview for the issues queued with --queue.
 import { costOf, stackFor } from "./memory.mjs";
 
@@ -15,26 +15,46 @@ export const sharedOf = (paths, files) =>
   );
 /**
  * For each issue (`{ number, paths }`, in the order they wait), the free
- * worker (`{ name, share, files }`) that shares the most of its paths, the
- * one with the most room in its context on a tie: `number → { worker,
- * shared }`. Each worker gets one issue; one sharing nothing gets none.
+ * worker (`{ name, share, files, isMerged }`) that shares the most of its
+ * paths, the one with the most room in its context on a tie: `number → {
+ * worker, shared }`. Each worker gets one issue. Shared files rank, but none
+ * is no reason to wait (#265): an issue nothing shares goes to the merged
+ * worker with the most room left, `shared` empty; a worker only ready, not
+ * merged, may still be needed for its own MR and waits for an issue it knows.
  */
 export const suggestionsOf = (issues, workers) => {
   const taken = new Set();
   const suggested = new Map();
-  for (const issue of issues) {
-    const [best] = workers
-      .filter(worker => !taken.has(worker))
-      .map(worker => ({ worker, shared: sharedOf(issue.paths, worker.files) }))
-      .filter(({ shared }) => shared.length > 0)
+  const assign = (issue, candidates) => {
+    const [best] = candidates
+      .filter(({ worker }) => !taken.has(worker))
       .toSorted(
         (a, b) =>
           b.shared.length - a.shared.length || a.worker.share - b.worker.share,
       );
-    if (!best) continue;
+    if (!best) return;
     taken.add(best.worker);
     suggested.set(issue.number, best);
-  }
+  };
+  // Those that share files first: an issue without any takes no worker another one knows.
+  for (const issue of issues)
+    assign(
+      issue,
+      workers
+        .map(worker => ({
+          worker,
+          shared: sharedOf(issue.paths, worker.files),
+        }))
+        .filter(({ shared }) => shared.length > 0),
+    );
+  for (const issue of issues)
+    if (!suggested.has(issue.number))
+      assign(
+        issue,
+        workers
+          .filter(worker => worker.isMerged)
+          .map(worker => ({ worker, shared: [] })),
+      );
   return suggested;
 };
 
