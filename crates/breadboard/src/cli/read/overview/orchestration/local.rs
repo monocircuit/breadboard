@@ -125,7 +125,7 @@ pub fn wait_of(dir: &Path) -> Option<Vec<i64>> {
 
 /// checkStateOf for the worktree `dir` (worktree/check.mjs `checkOf`):
 /// `.claude/checked.json` against HEAD's tree. `ahead`: its commits after develop.
-fn check_of(dir: &Path, ahead: u64) -> Check {
+pub fn check_of(dir: &Path, ahead: u64) -> Check {
     let Some(head) = git::head_of(dir) else {
         return Check::None;
     };

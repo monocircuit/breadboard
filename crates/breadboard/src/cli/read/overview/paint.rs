@@ -260,27 +260,8 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// `text` wrapped after `first` (its first line) at `width`, its other lines
-/// indented by `hang` columns.
-pub fn hanging(first: &str, text: &str, width: usize, hang: usize) -> Vec<String> {
-    let room = width.saturating_sub(visible(first)).max(1);
-    let mut lines = wrap(text, room).into_iter();
-    let Some(head) = lines.next() else {
-        return vec![first.to_string()];
-    };
-    let rest: Vec<String> = lines.collect();
-    let mut out = vec![format!("{first}{head}")];
-    if !rest.is_empty() {
-        // The rest again, at the room the hang leaves.
-        let tail = rest.join(" ");
-        out.extend(
-            wrap(&tail, width.saturating_sub(hang).max(1))
-                .into_iter()
-                .map(|line| format!("{}{line}", " ".repeat(hang))),
-        );
-    }
-    out
-}
+/// Below this many columns left for it, the last cell of a table row goes on its own lines.
+const MIN_ROOM: usize = 20;
 
 /// Columns of painted cells, each as wide as its widest cell, two spaces
 /// between; the last cell of a row wraps under where it starts when `width`
@@ -306,8 +287,20 @@ pub fn table_rows(rows: &[Vec<String>], width: usize) -> Vec<Vec<String>> {
                 .map(|(column, cell)| format!("{}  ", pad(cell, widths[column])))
                 .collect();
             let indent = visible(&head);
-            let room = width.saturating_sub(indent).max(16);
-            wrap(last, room)
+            let room = width.saturating_sub(indent);
+            if room < MIN_ROOM && visible(last) > room {
+                // Too little room after the columns: the cell on its own lines
+                // below, under the second column.
+                let under = widths.first().map_or(0, |first| first + 2);
+                let mut lines = vec![head.trim_end().to_string()];
+                lines.extend(
+                    wrap(last, width.saturating_sub(under).max(1))
+                        .into_iter()
+                        .map(|line| format!("{}{line}", " ".repeat(under))),
+                );
+                return lines;
+            }
+            wrap(last, room.max(1))
                 .into_iter()
                 .enumerate()
                 .map(|(at, line)| {
@@ -388,12 +381,9 @@ pub mod tests {
         let lines = table_rows(&rows, 30);
         assert_eq!(lines[0], vec!["!3    a long title here"]);
         assert_eq!(lines[1], vec!["!311  b"]);
-        let narrow = table_rows(&rows, 22);
-        assert_eq!(narrow[0], vec!["!3    a long title", "      here"]);
-    }
-
-    #[test]
-    fn hangs_the_lines_after_the_first() {
-        assert_eq!(hanging("1. ", "aa bb cc", 8, 3), vec!["1. aa bb", "   cc"]);
+        let narrow = table_rows(&rows, 30);
+        assert_eq!(narrow[1], vec!["!311  b"]);
+        let cramped = table_rows(&rows, 12);
+        assert_eq!(cramped[0], vec!["!3", "      a long", "      title", "      here"]);
     }
 }

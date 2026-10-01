@@ -4,6 +4,49 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-01 23:20 · CLI / overview --worktree --once · the worktree's view
+Chose: the printed view of one worktree ports render-worktree.mjs: WORK
+(origin, issue, MR with its URL, `tests untested: 1 commit pnpm wt:check
+before the push`, the delete button or why not yet), WAITING FOR, ISSUE
+with its boxes per heading, PIPELINE with every job and a failed one's
+log, DIFF against develop by area with its overlaps, DEVELOP since the
+branch started with `✓ merges cleanly` (`git merge-tree`), WHERE and STACK
+with containers. In the scenario world it equals Node's but for the
+PIPELINE line, which wraps instead of cutting the last job (#304). 9
+GitLab calls (Node 11 requests, 17 glab processes), 230 ms (Node 600 ms).
+Not yet: AGENT (the conversation, core's transcript reader), the try
+state of a merged MR's deploy, and STACK's migrations line (psql).
+`--worktree` takes the worktree the directory lies in, not only its root;
+one that isn't prints the directory (Node printed `null`).
+Why: rule 3, the critic's "a developer would rather use Node's here";
+rule 2 (#304) for the wrap.
+
+## 2026-10-01 23:15 · CLI / overview --once · the view of everything
+Chose: render.mjs ported: `platform  develop ◐ running` in the band,
+WORKTREES with app, stack (`no .env.local`), work and `untested: 1
+commit`, the MR and its pipeline; STACKS WITHOUT A WORKTREE; MERGE
+REQUESTS with branch and assignee; ISSUES claimed first, claimed meaning
+a branch on origin named for it (Node's rule; round one also counted an
+open MR's branch, which said claimed where Node said unclaimed). Every
+cell whole: an issue's title comes before its claim and labels and wraps
+under itself (one line for most of the 64 issues, Node cut them with
+`…`); a cell with too little room left goes on its own line under the
+name (`!303 draft ✓ passed` under its worktree). 83 ms, 3 GitLab calls
+and one `git ls-remote` (Node 365 ms).
+Why: rule 3; rule 2 (#304) over Node's cuts; rule 4: one table helper
+that wraps for all three views.
+
+## 2026-10-01 23:10 · CLI / wt:plan, wt:list, wt:issues · small deviations of round one
+Chose: outside a git checkout every read command says `✗ not in a git
+checkout of the platform repo: run it in the main checkout or one of its
+worktrees` (Node ran in its own source's repo); `wt:plan` refuses a name
+outside kebab-case (`../x` read a file outside the records) and writes
+the plan under `<record>.lock`, the lock `wt:action --orchestration`
+takes, so the two never lose each other's write (Node wrote unlocked).
+Why: rule 3 with the spec's bug list (§11): the same files and formats
+(rule 5), the lock directory is Node's own, so Node and Rust keep working
+side by side.
+
 ## 2026-10-01 23:05 · CLI / wt:list, wt:plan, wt:issues, overview --once · the command line
 Chose: the read commands check their command line as the write ones do:
 `--help` / `-h` prints what the command does and its usage (exit 0, no

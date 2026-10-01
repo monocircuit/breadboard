@@ -9,11 +9,12 @@
 //! full sections and will print this frame itself once it can.
 
 mod clock;
+mod everything;
 mod frame;
 mod orchestration;
 mod paint;
 mod theme;
-mod views;
+mod worktree;
 
 use super::args::{Takes, check, cwd, fail};
 use breadboard_core::git;
@@ -93,8 +94,8 @@ fn print_once(args: &[String]) -> ExitCode {
     let mut frame = Frame::new(columns());
     match view_of(args, &cwd) {
         View::Orchestration(name) => orchestration::orchestration(&mut frame, &main, &name),
-        View::Worktree(dir) => views::worktree(&mut frame, &main, &dir),
-        View::Everything => views::everything(&mut frame, &main, &here),
+        View::Worktree(dir) => worktree::worktree(&mut frame, &main, &dir),
+        View::Everything => everything::everything(&mut frame, &main, &here),
     }
     print!("{}", frame.text());
     ExitCode::SUCCESS

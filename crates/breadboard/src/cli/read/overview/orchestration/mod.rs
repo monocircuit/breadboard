@@ -19,12 +19,14 @@ use actions::{Item as ActionItem, action_text, actions_of, block_of, kind_chip};
 use breadboard_core::git;
 use breadboard_core::record::{ORCHESTRATOR, Record, is_name, record_of};
 use breadboard_core::time::{ago, now_ms, parse_iso};
+pub use local::{Check, check_of};
 use local::{Item, Tree, items_of, trees_of};
 use merge::{Entry, Order, blockers_text, conflict_text, graph_of, merge_order_of, row_blockers_of};
 use remote::{Found, Mr, Remote};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::thread;
+pub use tree::check_fact;
 
 /// What the view draws from: the record, its worktrees and issues, GitLab's part.
 pub struct View<'a> {

@@ -4,7 +4,7 @@
 //! cut with `…` (#304). A section is drawn on its own: one that breaks on bad
 //! data costs its box, not the view (#306).
 
-use super::paint::{self, RESET, bold, dim, is_colour, pad, red, visible, wrap};
+use super::paint::{self, RESET, dim, is_colour, pad, red, visible, wrap};
 use std::panic::{self, AssertUnwindSafe};
 
 /// The logo of the title band (logo.mjs), five columns by three lines.
@@ -16,54 +16,6 @@ const ISLAND_HEAD: &str = "\x1b[48;2;58;58;58m";
 /// The band's text, light on its grey; its time quieter.
 const BAND_TEXT: &str = "\x1b[38;2;235;235;235m";
 const BAND_QUIET: &str = "\x1b[38;2;170;170;170m";
-
-/// How a row reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Plain,
-    /// Secondary: details under a row, hints.
-    Dim,
-    /// What needs the reader: an open action, a failure.
-    Strong,
-}
-
-/// A row of a section: `text` from `indent`, wrapped lines from `hang`;
-/// `right` at the right edge when it fits next to the text, else on a line of
-/// its own.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Row {
-    pub indent: usize,
-    pub hang: usize,
-    pub text: String,
-    pub right: Option<String>,
-    pub tone: Tone,
-}
-
-impl Row {
-    pub fn new(indent: usize, text: impl Into<String>) -> Row {
-        Row {
-            indent,
-            hang: indent,
-            text: text.into(),
-            right: None,
-            tone: Tone::Plain,
-        }
-    }
-    pub fn dim(indent: usize, text: impl Into<String>) -> Row {
-        Row {
-            tone: Tone::Dim,
-            ..Row::new(indent, text)
-        }
-    }
-    pub fn strong(mut self) -> Row {
-        self.tone = Tone::Strong;
-        self
-    }
-    pub fn hang(mut self, hang: usize) -> Row {
-        self.hang = hang;
-        self
-    }
-}
 
 /// The text being drawn, `width` columns wide.
 pub struct Frame {
@@ -108,12 +60,6 @@ impl Frame {
         for line in wrap(text, self.width.saturating_sub(indent).max(1)) {
             self.lines.push(format!("{pad}{line}"));
         }
-    }
-
-    /// A row outside the boxes, wrapped to the whole width.
-    pub fn line(&mut self, row: Row) {
-        let lines = lay_out(&row, self.width);
-        self.lines.extend(lines);
     }
 
     /// The title band (boxes.mjs `titleLines`): the logo's height and a line
@@ -202,19 +148,6 @@ impl Frame {
         self.lines.push(dim(&format!("╰{}╯", "─".repeat(self.width - 2))));
     }
 
-    /// A section of rows (the views of a worktree and of everything): `name`
-    /// bold, `summary` dim after it.
-    pub fn section(&mut self, name: &str, summary: &str, rows: impl FnOnce() -> Vec<Row>) {
-        let title = if summary.is_empty() {
-            bold(name)
-        } else {
-            format!("{} {}", bold(name), dim(summary))
-        };
-        self.boxed(name, &title, |inner| {
-            rows().iter().flat_map(|row| lay_out(row, inner)).collect()
-        });
-    }
-
     pub fn text(&self) -> String {
         self.lines.iter().map(|line| format!("{line}\n")).collect()
     }
@@ -267,106 +200,17 @@ pub fn guarded<T>(run: impl FnOnce() -> T) -> Result<T, String> {
     })
 }
 
-/// The lines of a row `width` wide: its words wrapped, the lines after the
-/// first from `hang`, `right` flush right or on a line of its own.
-pub fn lay_out(row: &Row, width: usize) -> Vec<String> {
-    let text = match row.tone {
-        Tone::Plain => row.text.clone(),
-        Tone::Dim => dim(&row.text),
-        Tone::Strong => bold(&row.text),
-    };
-    let mut lines = paint::hanging(&" ".repeat(row.indent), &text, width, row.hang);
-    if let Some(right) = &row.right {
-        let last = lines.pop().unwrap_or_default();
-        let used = visible(&last);
-        if used + 2 + visible(right) <= width {
-            lines.push(format!("{last}{}{right}", " ".repeat(width - used - visible(right))));
-        } else {
-            lines.push(last);
-            lines.push(format!("{}{right}", " ".repeat(width.saturating_sub(visible(right)))));
-        }
-    }
-    lines.into_iter().map(|line| line.trim_end().to_string()).collect()
-}
-
-/// Rows of cells as a table: every column but the last padded to its widest,
-/// two spaces between; and where the last column starts, for wrapped lines.
-pub fn table(rows: &[Vec<String>]) -> (Vec<String>, usize) {
-    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..columns)
-        .map(|column| {
-            rows.iter()
-                .filter_map(|row| row.get(column))
-                .map(|cell| visible(cell))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    let lines = rows
-        .iter()
-        .map(|row| {
-            let cells: Vec<String> = row
-                .iter()
-                .enumerate()
-                .map(|(column, cell)| {
-                    if column + 1 == row.len() {
-                        cell.clone()
-                    } else {
-                        pad(cell, widths[column])
-                    }
-                })
-                .collect();
-            cells.join("  ")
-        })
-        .collect();
-    let hang = widths
-        .iter()
-        .take(columns.saturating_sub(1))
-        .map(|width| width + 2)
-        .sum();
-    (lines, hang)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::paint::bold;
     use super::super::paint::tests::coloured;
     use super::*;
 
     #[test]
-    fn wraps_at_words_with_its_hang_and_never_cuts() {
-        let row = Row::new(1, "one two three four five").hang(3);
-        assert_eq!(lay_out(&row, 10), vec![" one two", "   three", "   four", "   five"]);
-        let long = Row::new(0, "abcdefghijkl");
-        assert_eq!(lay_out(&long, 5), vec!["abcde", "fghij", "kl"]);
-    }
-
-    #[test]
-    fn lines_cells_up_in_columns() {
-        let rows = vec![
-            vec!["!3".to_string(), "draft".into(), "a".into()],
-            vec!["!311".into(), "ready".into(), "b".into()],
-        ];
-        assert_eq!(
-            table(&rows),
-            (vec!["!3    draft  a".to_string(), "!311  ready  b".into()], 13)
-        );
-    }
-
-    #[test]
-    fn puts_the_right_text_on_the_edge_or_below() {
-        let row = Row {
-            right: Some("right".into()),
-            ..Row::new(0, "left")
-        };
-        assert_eq!(lay_out(&row, 12), vec!["left   right"]);
-        assert_eq!(lay_out(&row, 9), vec!["left", "    right"]);
-    }
-
-    #[test]
     fn a_section_that_panics_costs_its_box_only() {
         let mut frame = Frame::new(40);
-        frame.section("ACTIONS", "", || panic!("no id"));
-        frame.section("WORKTREES", "2", || vec![Row::new(0, "a")]);
+        frame.boxed("ACTIONS", "ACTIONS", |_| panic!("no id"));
+        frame.boxed("WORKTREES", "WORKTREES 2", |_| vec!["a".to_string()]);
         let text = frame.text();
         assert!(text.contains("│ ACTIONS could not be shown: no id"), "{text}");
         assert!(text.contains("╭─ WORKTREES 2 ─"), "{text}");

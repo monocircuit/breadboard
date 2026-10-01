@@ -156,7 +156,7 @@ fn lifecycle_of(view: &View, item: &Item, mr: Option<&Mr>, merged: &HashSet<i64>
 }
 
 /// `✓ tested 1a2b3c4d` / `untested: 2 commits` / … (check.mjs `checkFact`).
-fn check_fact(check: &Check) -> String {
+pub fn check_fact(check: &Check) -> String {
     match check {
         Check::Tested { sha } => green(&format!("✓ tested {}", sha.get(..8).unwrap_or(sha))),
         Check::Checking => cyan("checking…"),

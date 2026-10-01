@@ -80,6 +80,21 @@ fn reason_of(stderr: &str) -> Option<String> {
     })
 }
 
+/// A GET whose answer is text (a job's log).
+pub fn text(main: &Path, endpoint: &str) -> Result<String, String> {
+    let output = Command::new("glab")
+        .args(["api", endpoint])
+        .current_dir(main)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("GitLab: glab did not start: {error} ({endpoint})"))?;
+    if !output.status.success() {
+        let reason = reason_of(&String::from_utf8_lossy(&output.stderr)).unwrap_or_else(|| "glab api failed".into());
+        return Err(format!("GitLab: {reason} ({endpoint})"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// A GET that must answer a list.
 pub fn list(main: &Path, endpoint: &str) -> Result<Vec<Value>, String> {
     match get(main, endpoint)? {
