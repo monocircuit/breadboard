@@ -1,0 +1,757 @@
+//! ACTIONS and UP NEXT of an orchestration (render-orchestration.mjs,
+//! action-block.mjs, answers.mjs): what the agents ask of the user, by what
+//! blocks most, each a block between rules; a button or an option answers,
+//! the rest of the block does the action. UP NEXT: the automatic follow-ups,
+//! a click each.
+//!
+//! An answer is stored in the actions file on the click and typed into the
+//! agent's pane on the actor's thread (`herdr agent prompt`), claimed in the
+//! file first so the Stop hook or a second overview never delivers it twice.
+//! A try's `broken` and a plan's `different` are drafts: written into the
+//! agent's input unsent, its tab in front, for the user to complete. The
+//! block shows the answer from the click on, before a read has it (#290,
+//! #303); the log under the band says where it went.
+
+use super::actor::{self, Actor, glab, herdr};
+use super::{Act, Ctx, Overview, look};
+use crate::tui::theme::{self, Tone};
+use crate::tui::{Flow, Page, Scene};
+use breadboard_core::actions::{self as stored, Action};
+use breadboard_core::herdr::Pane;
+use breadboard_core::model::Paint;
+use breadboard_core::model::orchestration::{ActionsSection, OrchestrationModel};
+use breadboard_core::model::order::{Item, MergeOffer, Target};
+use breadboard_core::reader::{Model, RemoteOf};
+use breadboard_core::time::{ago, parse_iso};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
+    let section = match &model.actions {
+        Ok(section) => section,
+        Err(why) => return page.failed("ACTIONS", why),
+    };
+    page.section("ACTIONS", |scene| actions(scene, section, ctx));
+    if !section.up_next.is_empty() {
+        page.section("UP NEXT", |scene| {
+            scene.note(format!(
+                "{} automatic · a click does it, each goes by itself",
+                section.up_next.len()
+            ));
+            for item in &section.up_next {
+                up_next_row(scene, item, ctx);
+            }
+        });
+    }
+}
+
+fn actions(scene: &mut Scene<Act>, section: &ActionsSection, ctx: &Ctx) {
+    let items = &section.actions;
+    if items.is_empty() {
+        scene.note("nothing waits for you");
+        scene.pad_to(1);
+        scene.text("none: an agent asks with pnpm wt:action <kind> <text>", theme::dim());
+        return;
+    }
+    let is_auto = items.iter().any(|item| item.is_auto);
+    scene.note(format!(
+        "{} for you · a button or an option answers, the rest of a block does it{}",
+        items.len(),
+        if is_auto { " · auto ones go by themselves" } else { "" }
+    ));
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            scene.rule();
+        }
+        action_block(scene, item, ctx);
+    }
+}
+
+/// What a click on the body of an item does: nothing for an inert one (#290).
+fn click_of(item: &Item) -> Option<Act> {
+    (!item.is_inert()).then(|| Act::Go(item.go.clone()))
+}
+
+/// `kind` chip, who in bold, how long ago, a try's state: the head of a block
+/// and of an UP NEXT row. A try that waits is grey but for its state.
+fn head(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_chip_auto: bool) {
+    let label = look::kind_label(&item.kind);
+    let label = if item.is_auto && is_chip_auto {
+        format!("{label} · auto")
+    } else {
+        label.to_string()
+    };
+    let is_grey = item.is_waiting();
+    let tone = if is_grey {
+        Tone::Gray
+    } else {
+        look::kind_tone(&item.kind)
+    };
+    scene.chip(&label, tone);
+    let who = if is_grey { theme::dim() } else { theme::bold() };
+    scene.atom_gap(vec![look::span(&item.who, who)], 2);
+    if let Some(at) = parse_iso(&item.at) {
+        scene.atom_gap(vec![look::dim(ago(at, ctx.now))], 2);
+        look::ticks(scene);
+    }
+    if let Some(state) = &item.try_state {
+        scene.atom_gap(vec![look::span(&state.label, look::try_tone(state.tone))], 2);
+    }
+    scene.end_line();
+}
+
+/// An action as its block (action-block.mjs): the head, its text, its answers.
+pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+    let draw = |scene: &mut Scene<Act>| {
+        head(scene, item, ctx, true);
+        text(scene, item, ctx);
+        answers(scene, item);
+    };
+    match click_of(item) {
+        Some(act) => scene.block(act, draw),
+        None => draw(scene),
+    }
+}
+
+/// A try's text and what a click on it opens, apart: core joins them with two spaces.
+fn spot_of(item: &Item) -> (&str, &str) {
+    match &item.action {
+        Some(action) if action.is_try() => match item.text.strip_prefix(action.text.as_str()) {
+            Some(spot) => (&action.text, spot.trim()),
+            None => (&item.text, ""),
+        },
+        _ => (&item.text, ""),
+    }
+}
+
+/// Words after the last atom, the first `gap` columns after it.
+fn flow_after(scene: &mut Scene<Act>, spans: &[Span<'static>], gap: u16) {
+    let mut words = look::words_of(spans).into_iter();
+    if let Some(first) = words.next() {
+        scene.atom_gap(first, gap);
+    }
+    for word in words {
+        scene.atom(word);
+    }
+}
+
+/// The text: a decide's question in bold, the rest dim; a try's spot dim
+/// after it; a merge's `!iid` and what its two clicks need; a waiting try all
+/// grey. Where a merge, a try, a removal or the end stands once clicked, the
+/// actor's word takes its place.
+fn text(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+    if item.kind == "decide" {
+        let (question, rest) = match item.text.find('?') {
+            Some(at) => item.text.split_at(at + 1),
+            None => (item.text.as_str(), ""),
+        };
+        look::say(scene, question, theme::bold());
+        if !rest.trim().is_empty() {
+            scene.end_line();
+            look::say(scene, rest.trim(), theme::dim());
+        }
+    } else if let Some(word) = actor::view::word(ctx, &item.key) {
+        look::flow(scene, &look::spans(word));
+    } else if let Some(offer) = &item.merge {
+        scene.atom(vec![look::span(format!("!{}", offer.iid), Style::new())]);
+        merge_text(scene, &item.text, offer);
+    } else {
+        let (text, spot) = spot_of(item);
+        let style = if item.is_waiting() { theme::dim() } else { Style::new() };
+        look::say(scene, text, style);
+        if !spot.is_empty() {
+            flow_after(scene, &[look::dim(spot)], 2);
+        }
+    }
+    scene.end_line();
+}
+
+/// What a merge's two clicks need (merge.mjs `mergeText`): its blockers, dim, or the clicks.
+fn merge_text(scene: &mut Scene<Act>, text: &str, offer: &MergeOffer) {
+    let verb = if offer.is_draft {
+        "mark ready and merge"
+    } else {
+        "merge"
+    };
+    if !offer.blockers.is_empty() {
+        let mut parts = vec![text.to_string()];
+        if offer.is_draft && offer.can_mark_ready {
+            parts.push("draft".into());
+        }
+        parts.extend(offer.blockers.iter().cloned());
+        look::say(scene, &parts.join(" · "), theme::dim());
+        return;
+    }
+    look::say(scene, text, Style::new());
+    let after = if offer.to_check > 0 {
+        format!(" · {} to check after merge", offer.to_check)
+    } else {
+        String::new()
+    };
+    look::say(scene, &format!("· two clicks {verb}{after}"), theme::dim());
+}
+
+/// Whether option `at` (from 0) is the one recommended: by its stored text, its label or its number.
+fn is_recommended(action: &Action, option: &stored::DecideOption, at: usize) -> bool {
+    action.recommend.as_deref().is_some_and(|recommend| {
+        let recommend = recommend.trim();
+        recommend == option.answer || recommend == option.label || recommend == (at + 1).to_string()
+    })
+}
+
+/// The answer area: none for an automatic item or a waiting try; the answer
+/// on its way; a decide's options, numbered like a menu, each answering on
+/// all of its lines; else a button per answer, a green ✓ alone.
+fn answers(scene: &mut Scene<Act>, item: &Item) {
+    let (Some(action), Some(file)) = (&item.action, &item.file) else {
+        return;
+    };
+    if item.is_auto || item.is_waiting() {
+        return;
+    }
+    if let Some((answer, waits)) = shown_answer(item) {
+        scene.atom(vec![look::span(format!("→ {answer}"), theme::tone(Tone::Yellow))]);
+        look::say(scene, &format!("· {waits}"), theme::dim());
+        scene.end_line();
+        return;
+    }
+    let answer = |answer: &str| Act::Answer {
+        file: file.clone(),
+        id: action.id,
+        answer: answer.to_string(),
+    };
+    let options = stored::options_of(action);
+    if action.kind == "decide" && !options.is_empty() {
+        for (at, option) in options.iter().enumerate() {
+            scene.block(answer(&option.answer), |scene| {
+                let number = format!("{}.", at + 1);
+                let style = theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD);
+                scene.atom(vec![look::span(&number, style)]);
+                // The label and its description hang under the label's start.
+                scene.indent(number.len() as u16 + 1);
+                look::say(scene, &option.label, theme::bold());
+                if is_recommended(action, option, at) {
+                    look::say(scene, "(Recommended)", theme::tone(Tone::Green));
+                }
+                if !option.description.is_empty() {
+                    scene.end_line();
+                    look::say(scene, &option.description, theme::dim());
+                }
+                scene.indent(0);
+            });
+        }
+        return;
+    }
+    let labels = stored::answers_of(action);
+    if labels.is_empty() {
+        scene.button("✓", Tone::Green, answer("✓"));
+    }
+    for label in &labels {
+        scene.button(label, Tone::Cyan, answer(label));
+    }
+    scene.end_line();
+}
+
+/// A row of UP NEXT in NEXT (next.mjs): kind and who, its text right after
+/// them, whole; a click anywhere on it does it.
+pub fn next_row(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+    let draw = |scene: &mut Scene<Act>| {
+        scene.chip(look::kind_label(&item.kind), look::kind_tone(&item.kind));
+        scene.atom(vec![look::bold(&item.who)]);
+        match actor::view::word(ctx, &item.key) {
+            Some(word) => flow_after(scene, &look::spans(word), 2),
+            None => flow_after(scene, &[look::span(&item.text, Style::new())], 2),
+        }
+        scene.end_line();
+    };
+    match click_of(item) {
+        Some(act) => scene.block(act, draw),
+        None => draw(scene),
+    }
+}
+
+/// A row of UP NEXT: kind, who, how long ago; its text below, whole (#273).
+pub fn up_next_row(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+    let draw = |scene: &mut Scene<Act>| {
+        head(scene, item, ctx, false);
+        scene.indent(2);
+        scene.pad_to(2);
+        if !actor::view::said(scene, ctx, &item.key) {
+            look::say(scene, &item.text, Style::new());
+        }
+        scene.indent(0);
+        scene.end_line();
+    };
+    match click_of(item) {
+        Some(act) => scene.block(act, draw),
+        None => draw(scene),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Answering (answers.mjs)
+
+/// An answer clicked here: shown until a read has it, at most CLICKED_FOR.
+struct Clicked {
+    answer: String,
+    waits: String,
+    at: Instant,
+}
+
+/// How long a clicked answer stands in for one a read doesn't show (a read takes seconds).
+const CLICKED_FOR: Duration = Duration::from_secs(60);
+
+/// What the block says between the click and the delivery.
+const TYPING: &str = "typing it into its agent's pane …";
+
+/// `file#id` → the answer clicked for it in this overview.
+static CLICKED: LazyLock<Mutex<HashMap<(PathBuf, i64), Clicked>>> = LazyLock::new(Mutex::default);
+
+/// actions file → the state of its agent's pane at the last delivery.
+static TRIED: LazyLock<Mutex<HashMap<PathBuf, Option<String>>>> = LazyLock::new(Mutex::default);
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The answer an item shows and why it waits: its own on its way, else one
+/// clicked here that a read hasn't caught up with (answers.mjs `shownAction`).
+fn shown_answer(item: &Item) -> Option<(String, String)> {
+    let action = item.action.as_ref()?;
+    let key = (item.file.clone()?, action.id);
+    let mut clicked = locked(&CLICKED);
+    if let Some(answer) = action.answer.as_deref().filter(|answer| !answer.is_empty()) {
+        // Still typing: the read came between the store and the delivery.
+        if let Some(own) = clicked.get(&key).filter(|own| own.waits == TYPING) {
+            return Some((own.answer.clone(), own.waits.clone()));
+        }
+        clicked.remove(&key);
+        let waits = action.waits.as_deref().unwrap_or("at its next stop");
+        return Some((answer.to_string(), waits.to_string()));
+    }
+    let own = clicked.get(&key)?;
+    if own.at.elapsed() > CLICKED_FOR {
+        clicked.remove(&key);
+        return None;
+    }
+    Some((own.answer.clone(), own.waits.clone()))
+}
+
+fn remember(file: &Path, id: i64, answer: &str, waits: &str) {
+    locked(&CLICKED).insert(
+        (file.to_path_buf(), id),
+        Clicked {
+            answer: answer.into(),
+            waits: waits.into(),
+            at: Instant::now(),
+        },
+    );
+}
+
+/// The item of ACTIONS the answer is for.
+fn item_of(app: &Overview, file: &Path, id: i64) -> Option<Item> {
+    let Some(Model::Orchestration(model)) = &app.model else {
+        return None;
+    };
+    let section = model.actions.as_ref().ok()?;
+    section
+        .actions
+        .iter()
+        .find(|item| item.file.as_deref() == Some(file) && item.action.as_ref().is_some_and(|a| a.id == id))
+        .cloned()
+}
+
+/// What an answer is about, for the log: `decide #2 of 307-x`.
+fn what_of(item: &Item, id: i64) -> String {
+    format!("{} #{id} of {}", look::kind_label(&item.kind), item.who)
+}
+
+/// A click on an answer (answers.mjs `answerWith`): ✓ ticks a kind without
+/// answers off; any other is stored at once and shown on its block, then
+/// typed into its agent's pane on the actor's thread (a draft written into
+/// its input, its tab in front). A try found `broken` puts its ready MR back
+/// to draft (#280). The log under the band says where it went.
+pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
+    let Some(item) = item_of(app, file, id) else {
+        return Flow::Same;
+    };
+    let Some(action) = item.action.clone() else {
+        return Flow::Same;
+    };
+    let what = what_of(&item, id);
+    if stored::answers_of(&action).is_empty() {
+        if stored::done_action(file, id).unwrap_or(false) {
+            remember(file, id, "✓", "ticked off");
+            app.actor.log(Paint::Green, format!("{what} ticked off"));
+        }
+        return Flow::Redraw;
+    }
+    if !stored::answer_action(file, id, answer).unwrap_or(false) {
+        return Flow::Same;
+    }
+    remember(file, id, answer, TYPING);
+    let is_draft = stored::is_draft(&Action {
+        answer: Some(answer.to_string()),
+        ..action.clone()
+    });
+    let redraft = redraft_of(app, &item, &action, answer);
+    let main = app.actor.main.clone();
+    let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
+    app.actor.queue(move || {
+        if let Some(to) = &to {
+            if is_draft {
+                focus_agent(&main, to);
+            }
+            deliver_answers(&main, &file, to);
+        }
+        let left = stored::actions_of(&file).into_iter().find(|left| left.id == id);
+        let is_in = left.is_none();
+        let waits = match left {
+            Some(left) => left.waits.unwrap_or_else(|| "at its next stop".into()),
+            None if is_draft => "written into its agent's input: say what's wrong there and send it".into(),
+            None => "typed into its agent's pane".into(),
+        };
+        let redrafted = redraft.map(|mr| redraft_mr(&main, &file, mr));
+        Some(Box::new(move |app: &mut Overview| {
+            remember(&file, id, &answer, &waits);
+            let paint = if is_in { Paint::Green } else { Paint::Yellow };
+            app.actor.log(paint, format!("{what} → {answer} · {waits}"));
+            match redrafted {
+                Some(Ok(iid)) => {
+                    app.actor
+                        .log(Paint::Green, format!("!{iid} back to draft until the fix is tried"));
+                    app.refresh_gitlab();
+                }
+                Some(Err(why)) => app.actor.log(Paint::Red, format!("the MR stays ready: {why}")),
+                None => {}
+            }
+            app.redraw();
+        }))
+    });
+    Flow::Redraw
+}
+
+/// The MR a try answered `broken` puts back to draft (merge.mjs
+/// `shouldRedraft`): not one on the test instance, only while its MR is
+/// open and ready. Its iid and title.
+fn redraft_of(app: &Overview, item: &Item, action: &Action, answer: &str) -> Option<(i64, String)> {
+    if !action.is_try() || action.on.as_deref() == Some("test") || answer != "broken" {
+        return None;
+    }
+    let (Some(branch), Some(RemoteOf::Orchestration(remote))) = (&item.branch, &app.remote) else {
+        return None;
+    };
+    let mr = remote.of(branch).mr.as_ref()?;
+    (mr.state == "opened" && !mr.is_draft).then(|| (mr.iid, mr.title.clone()))
+}
+
+/// The MR back to draft (merge.mjs `redraftOnBroken`): the merges its agent
+/// posted withdrawn from `file`, the title `Draft: …`. A failure only costs
+/// the step: its agent puts it back to draft too (the brief).
+fn redraft_mr(main: &Path, file: &Path, (iid, title): (i64, String)) -> Result<i64, String> {
+    for merge in stored::actions_of(file).iter().filter(|other| other.kind == "merge") {
+        let _ = stored::done_action(file, merge.id);
+    }
+    let title = format!("Draft: {}", glab::ready_title(&title));
+    glab::write(main, "PUT", &glab::mr_endpoint(iid), &[("title", title)]).map(|_| iid)
+}
+
+/// The prompt mark of Claude Code at the start of its input line.
+const PROMPT: char = '❯';
+
+/// What `screen` (the last lines of an agent's pane) has in Claude Code's
+/// input: the text after the last `❯` up to the rule below it; "" when
+/// empty, None without an input line.
+pub fn input_in(screen: &str) -> Option<String> {
+    let lines: Vec<&str> = screen.split('\n').collect();
+    let start = lines.iter().rposition(|line| line.trim_start().starts_with(PROMPT))?;
+    let is_rule = |line: &str| line.trim_start().starts_with("───");
+    let end = (start + 1..lines.len())
+        .find(|at| is_rule(lines[*at]))
+        .unwrap_or(lines.len());
+    let text = lines[start..end].join("\n");
+    let text = text.trim_start();
+    Some(text.strip_prefix(PROMPT).unwrap_or(text).trim().to_string())
+}
+
+/// Whether the user typed into the input of `pane` (an unreadable one counts as empty).
+fn has_input(pane: &Pane) -> bool {
+    let read = ["pane", "read", &pane.id, "--source", "visible", "--lines", "30"];
+    let Ok(output) = Command::new("herdr")
+        .args(read)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    output.status.success() && input_in(&String::from_utf8_lossy(&output.stdout)).is_some_and(|input| !input.is_empty())
+}
+
+/// The agent's tab `to` addresses in front, its space first (answers.mjs `focusAgent`).
+fn focus_agent(main: &Path, to: &Target) -> bool {
+    herdr::agent_pane_of(main, to).is_some_and(|pane| {
+        herdr::did(&["workspace", "focus", &pane.workspace]) && herdr::did(&["tab", "focus", &pane.tab])
+    })
+}
+
+/// The draft of `action` written into the input of `pane`, unsent. One that
+/// waited for a blocked pane is dropped when the user typed meanwhile: they
+/// said it themselves. True when it is done with.
+fn write_draft(pane: &Pane, action: &Action) -> bool {
+    (action.waits.is_some() && has_input(pane))
+        || herdr::did(&["pane", "send-text", &pane.id, &stored::draft_line(action)])
+}
+
+/// Why a draft waits, on its row.
+fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
+    match pane {
+        Some(_) => "the agent is at a question: the draft follows once it's answered",
+        None => "no agent in its tab: the draft follows once there is one",
+    }
+}
+
+/// The answers of `file` delivered to `to` (answers.mjs `deliverAnswers`):
+/// each claimed in the file before it is typed and taken out once it got in.
+/// A draft is written, not submitted. A pane at a question gets nothing: the
+/// drafts say why they wait.
+fn deliver_answers(main: &Path, file: &Path, to: &Target) {
+    let pane = herdr::agent_pane_of(main, to);
+    locked(&TRIED).insert(file.to_path_buf(), pane.as_ref().and_then(|pane| pane.status.clone()));
+    let answered: Vec<Action> = stored::actions_of(file)
+        .into_iter()
+        .filter(|action| action.answer.as_deref().is_some_and(|answer| !answer.is_empty()))
+        .collect();
+    let pane = match pane {
+        Some(pane) if herdr::can_type(Some(&pane)) => pane,
+        pane => {
+            // Text written now would land in the question's dialog.
+            let waits = draft_waits_for(pane.as_ref());
+            for action in answered.iter().filter(|action| stored::is_draft(action)) {
+                if action.waits.as_deref() != Some(waits) {
+                    let _ = stored::draft_waits(file, action.id, Some(waits));
+                }
+            }
+            return;
+        }
+    };
+    for id in answered.iter().map(|action| action.id) {
+        let Ok(Some(action)) = stored::claim_answer(file, id) else {
+            continue;
+        };
+        let is_in = if stored::is_draft(&action) {
+            write_draft(&pane, &action)
+        } else {
+            herdr::type_into(Some(&pane), &stored::answer_line(&action))
+        };
+        let _ = if is_in {
+            stored::done_action(file, id).map(|_| ())
+        } else {
+            stored::release_answer(file, id)
+        };
+    }
+}
+
+/// After a read: answers that didn't get in are tried again on the actor's
+/// thread once their agent's pane changed state, not on every read; after a
+/// start once (answers.mjs `retryAnswers`). Only the overview that delivers
+/// calls it (the actor's pid file), never a print.
+pub fn retry_answers(actor: &Actor, model: &OrchestrationModel) {
+    let Ok(section) = &model.actions else { return };
+    let mut targets: Vec<(PathBuf, Target)> = Vec::new();
+    for item in &section.actions {
+        if let (Some(file), Some(to)) = (&item.file, &item.to)
+            && item.answer().is_some()
+            && !targets.iter().any(|(known, _)| known == file)
+        {
+            targets.push((file.clone(), to.clone()));
+        }
+    }
+    if targets.is_empty() {
+        locked(&TRIED).clear();
+        return;
+    }
+    let main = actor.main.clone();
+    actor.queue(move || {
+        for (file, to) in targets {
+            let state = herdr::agent_pane_of(&main, &to).and_then(|pane| pane.status);
+            if locked(&TRIED).get(&file) == Some(&state) {
+                continue;
+            }
+            deliver_answers(&main, &file, &to);
+        }
+        None
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use breadboard_core::model::try_state::{TryState, TryTone};
+
+    fn decide() -> Action {
+        Action {
+            id: 2,
+            kind: "decide".into(),
+            text: "Which stack? The numbers favour one".into(),
+            options: vec!["Rust + ratatui".into(), "Bun: flexbox".into()],
+            descriptions: vec!["one binary".into()],
+            recommend: Some("Rust + ratatui".into()),
+            ..Default::default()
+        }
+    }
+
+    fn item_with(action: Action) -> Item {
+        Item {
+            key: format!("k#{}", action.id),
+            kind: action.kind.clone(),
+            text: action.text.clone(),
+            who: "307-x".into(),
+            file: Some(PathBuf::from(format!("/nowhere/{}/actions.json", action.id))),
+            action: Some(action),
+            ..Default::default()
+        }
+    }
+
+    fn drawn(item: &Item, width: u16) -> (Vec<String>, Scene<Act>) {
+        let gitlab = super::super::GitlabState::default();
+        let ctx = Ctx {
+            is_once: false,
+            folds: Default::default(),
+            gitlab: &gitlab,
+            now: 0,
+            main_name: "platform",
+            actor: actor::idle(),
+            words: actor::view::no_words(),
+        };
+        let mut scene = Scene::new(width);
+        action_block(&mut scene, item, &ctx);
+        scene.finish();
+        let text = scene
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .collect();
+        (text, scene)
+    }
+
+    fn answered_at(scene: &Scene<Act>, x: u16, y: u16) -> Option<String> {
+        scene
+            .regions
+            .iter()
+            .filter(|region| region.contains(x, y))
+            .min_by_key(|region| (!region.is_button(), region.area.height))
+            .and_then(|region| match region.action() {
+                Act::Answer { answer, .. } => Some(answer.clone()),
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn a_decide_is_a_menu_whose_every_line_answers_its_option() {
+        let (text, scene) = drawn(&item_with(decide()), 40);
+        assert_eq!(
+            text[1..],
+            [
+                "Which stack?",
+                "The numbers favour one",
+                "1. Rust + ratatui (Recommended)",
+                "   one binary",
+                "2. Bun",
+                "   flexbox",
+            ]
+        );
+        assert_eq!(answered_at(&scene, 30, 3).as_deref(), Some("Rust + ratatui"));
+        assert_eq!(answered_at(&scene, 39, 4).as_deref(), Some("Rust + ratatui"));
+        // The stored option is the answer, not the label shown.
+        assert_eq!(answered_at(&scene, 0, 6).as_deref(), Some("Bun: flexbox"));
+        assert_eq!(answered_at(&scene, 0, 1), None);
+    }
+
+    #[test]
+    fn a_try_has_its_buttons_and_its_spot_dim_after_its_text() {
+        let action = Action {
+            id: 1,
+            kind: "try".into(),
+            text: "the spike".into(),
+            run: Some("cargo run".into()),
+            ..Default::default()
+        };
+        let mut item = item_with(action);
+        item.text = "the spike  opens a terminal: cargo run".into();
+        let (text, scene) = drawn(&item, 60);
+        assert_eq!(
+            text[1..],
+            ["the spike  opens a terminal: cargo run", " looks good   broken "]
+        );
+        assert_eq!(answered_at(&scene, 1, 2).as_deref(), Some("looks good"));
+        assert_eq!(answered_at(&scene, 18, 2).as_deref(), Some("broken"));
+    }
+
+    #[test]
+    fn a_kind_without_answers_gets_a_tick_and_a_waiting_try_none() {
+        let merge = Action {
+            id: 3,
+            kind: "merge".into(),
+            text: "ready".into(),
+            ..Default::default()
+        };
+        let (text, _) = drawn(&item_with(merge), 40);
+        assert_eq!(text.last().map(String::as_str), Some(" ✓ "));
+        let mut waiting = item_with(Action {
+            id: 4,
+            kind: "try".into(),
+            text: "later".into(),
+            ..Default::default()
+        });
+        waiting.try_state = Some(TryState {
+            label: "not pushed".into(),
+            tone: TryTone::Waits,
+            is_ready: false,
+            url: None,
+        });
+        let (text, scene) = drawn(&waiting, 40);
+        assert_eq!(text.len(), 2);
+        assert!(scene.regions.is_empty(), "inert: no click, no answer");
+    }
+
+    #[test]
+    fn a_clicked_answer_shows_until_a_read_has_it() {
+        let mut action = decide();
+        action.id = 77;
+        let item = item_with(action.clone());
+        let file = item.file.clone().unwrap();
+        remember(&file, 77, "Rust + ratatui", TYPING);
+        let typing = "→ Rust + ratatui · typing it into its agent's pane …";
+        let (text, scene) = drawn(&item, 60);
+        assert_eq!(text.last().unwrap(), typing);
+        assert!(
+            scene
+                .regions
+                .iter()
+                .all(|region| !matches!(region.action(), Act::Answer { .. }))
+        );
+        // A read between the store and the delivery keeps saying it types.
+        action.answer = Some("Rust + ratatui".into());
+        let (text, _) = drawn(&item_with(action.clone()), 60);
+        assert_eq!(text.last().unwrap(), typing);
+        // Once the delivery is done with, a read that has the answer takes over, with why it waits.
+        remember(&file, 77, "Rust + ratatui", "at its next stop");
+        let (text, _) = drawn(&item_with(action), 60);
+        assert_eq!(text.last().unwrap(), "→ Rust + ratatui · at its next stop");
+        assert!(!locked(&CLICKED).contains_key(&(file, 77)));
+    }
+
+    #[test]
+    fn reads_what_the_user_typed_into_claude_codes_input() {
+        let screen = "output\n────\n❯ half a sentence\n────\n  ? for shortcuts";
+        assert_eq!(input_in(screen).as_deref(), Some("half a sentence"));
+        assert_eq!(input_in("────\n❯ \n────").as_deref(), Some(""));
+        assert_eq!(input_in("no prompt here"), None);
+    }
+}

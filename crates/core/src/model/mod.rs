@@ -9,6 +9,7 @@ pub mod change;
 pub mod clean_up;
 pub mod develop;
 pub mod diff;
+pub mod display_names;
 pub mod everything;
 pub mod files;
 pub mod free_agents;

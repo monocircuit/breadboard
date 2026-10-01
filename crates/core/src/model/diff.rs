@@ -45,6 +45,18 @@ pub fn area_of(file: &str) -> String {
     }
 }
 
+/// A file of the work: how it changed, its lines.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Change {
+    pub file: String,
+    /// git's letter: `A` added, `M` modified, `D` deleted, `R` renamed, `T` type, `?` untracked.
+    pub status: char,
+    pub added: u64,
+    pub removed: u64,
+    /// Not committed yet: in `git status`.
+    pub is_uncommitted: bool,
+}
+
 /// An area of the work: its lines, its files, the one most changed (a click opens it).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Area {
@@ -54,6 +66,8 @@ pub struct Area {
     pub files: usize,
     pub top: String,
     top_changed: u64,
+    /// Its files, the most lines changed first.
+    pub changes: Vec<Change>,
 }
 
 /// Another worktree whose work touches files of this one.
@@ -83,7 +97,8 @@ fn lines(text: &str) -> impl Iterator<Item = &str> {
     text.split('\n').filter(|line| !line.is_empty())
 }
 
-fn add_to(areas: &mut Vec<Area>, file: &str, added: u64, removed: u64) {
+fn add_to(areas: &mut Vec<Area>, change: Change) {
+    let (file, added, removed) = (change.file.as_str(), change.added, change.removed);
     let name = area_of(file);
     let at = match areas.iter().position(|area| area.name == name) {
         Some(at) => at,
@@ -104,6 +119,18 @@ fn add_to(areas: &mut Vec<Area>, file: &str, added: u64, removed: u64) {
         area.top = file.to_string();
         area.top_changed = added + removed;
     }
+    area.changes.push(change);
+}
+
+/// `git diff --name-status` of the work: each file's letter by its (new) name.
+fn statuses(dir: &Path, base: &str) -> HashMap<String, char> {
+    lines(&git(dir, &["diff", "--name-status", base]).stdout)
+        .filter_map(|line| {
+            let letter = line.chars().next()?;
+            let (_, file) = line.rsplit_once('\t')?;
+            Some((file.to_string(), letter))
+        })
+        .collect()
 }
 
 /// The diff of `dir` against develop, without the overlaps with other worktrees; None without a merge base.
@@ -118,6 +145,8 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
     let mut areas = Vec::new();
     let (mut added, mut removed) = (0, 0);
     let mut files: Vec<String> = Vec::new();
+    let letters = statuses(dir, &base);
+    let uncommitted: BTreeSet<String> = lines(&status).map(path_of_status).collect();
     // Against the working tree: the uncommitted changes are part of the work.
     for line in lines(&git(dir, &["diff", "--numstat", &base]).stdout) {
         let mut parts = line.splitn(3, '\t');
@@ -131,7 +160,16 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         let name = renamed(file);
         added += file_added;
         removed += file_removed;
-        add_to(&mut areas, &name, file_added, file_removed);
+        add_to(
+            &mut areas,
+            Change {
+                status: letters.get(&name).copied().unwrap_or('M'),
+                is_uncommitted: uncommitted.contains(&name),
+                file: name.clone(),
+                added: file_added,
+                removed: file_removed,
+            },
+        );
         files.push(name);
     }
     // New files git doesn't track yet: counted as files, their lines as added.
@@ -146,13 +184,26 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
             .and_then(|count| count.trim().parse().ok())
             .unwrap_or(0);
         added += file_added;
-        add_to(&mut areas, &file, file_added, 0);
+        add_to(
+            &mut areas,
+            Change {
+                file: file.clone(),
+                status: '?',
+                added: file_added,
+                removed: 0,
+                is_uncommitted: true,
+            },
+        );
         files.push(file);
     }
     let on_develop: BTreeSet<String> = lines(&git(dir, &["diff", "--name-only", &base, "origin/develop"]).stdout)
         .map(String::from)
         .collect();
     areas.sort_by_key(|area| std::cmp::Reverse(area.added + area.removed));
+    for area in &mut areas {
+        area.changes
+            .sort_by_key(|change| std::cmp::Reverse(change.added + change.removed));
+    }
     let mut with_develop: Vec<String> = files
         .iter()
         .filter(|file| on_develop.contains(*file))
@@ -277,6 +328,13 @@ mod tests {
             ["new.md", "work"]
         );
         assert!(diff.with_worktrees.is_empty());
+        let changes: Vec<(&str, char, u64, bool)> = diff
+            .areas
+            .iter()
+            .flat_map(|area| &area.changes)
+            .map(|change| (change.file.as_str(), change.status, change.added, change.is_uncommitted))
+            .collect();
+        assert_eq!(changes, [("new.md", '?', 2, true), ("work/1-one.md", 'A', 1, false)]);
         assert_eq!(bar_of(3, 1, 4, 24), (18, 6));
         assert_eq!(bar_of(1, 0, 1000, 24), (1, 0));
         assert_eq!(renamed("a/{b => c}/d.md"), "a/c/d.md");

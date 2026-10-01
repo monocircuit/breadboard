@@ -95,10 +95,31 @@ pub struct Row {
     pub ground: Ground,
 }
 
-#[derive(Default)]
+/// Where a section sits on the page: its title line(s) from `from`, its
+/// lines up to `to` (the blank line after it not counted).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub name: String,
+    pub from: u16,
+    /// Rows of its title line: 0 for a plain section.
+    pub head: u16,
+    pub to: u16,
+}
+
 struct Part<A> {
     rows: Vec<Row>,
     regions: Vec<Region<A>>,
+    sections: Vec<Placed>,
+}
+
+impl<A> Part<A> {
+    fn new() -> Self {
+        Self {
+            rows: vec![],
+            regions: vec![],
+            sections: vec![],
+        }
+    }
 }
 
 /// The page while an app adds its sections, in the order they are shown.
@@ -115,6 +136,7 @@ pub struct Sheet<A> {
     pub width: u16,
     pub rows: Vec<Row>,
     pub regions: Vec<Region<A>>,
+    pub sections: Vec<Placed>,
     pub sticky: u16,
     pub redraw_in: Option<Duration>,
 }
@@ -123,14 +145,8 @@ impl<A: Clone> Page<A> {
     pub fn new(width: u16) -> Self {
         Self {
             width,
-            top: Part {
-                rows: vec![],
-                regions: vec![],
-            },
-            rest: Part {
-                rows: vec![],
-                regions: vec![],
-            },
+            top: Part::new(),
+            rest: Part::new(),
             redraw_in: None,
         }
     }
@@ -179,6 +195,7 @@ impl<A: Clone> Page<A> {
         } else {
             &mut self.rest
         };
+        let from = part.rows.len() as u16;
         if !is_plain {
             let mut head = Scene::<A>::new(inner);
             scene::heading(&mut head, &section.name, scene.note.as_deref());
@@ -199,6 +216,12 @@ impl<A: Clone> Page<A> {
             }
             region
         }));
+        part.sections.push(Placed {
+            name: section.name.clone(),
+            from,
+            head: top - from,
+            to: part.rows.len() as u16,
+        });
         part.rows.push(Row {
             line: Line::default(),
             ground: Ground::Plain,
@@ -209,15 +232,22 @@ impl<A: Clone> Page<A> {
         let sticky = self.top.rows.len() as u16;
         let mut rows = self.top.rows;
         let mut regions = self.top.regions;
+        let mut sections = self.top.sections;
         rows.extend(self.rest.rows);
         regions.extend(self.rest.regions.into_iter().map(|mut region| {
             region.area.y += sticky;
             region
         }));
+        sections.extend(self.rest.sections.into_iter().map(|mut placed| {
+            placed.from += sticky;
+            placed.to += sticky;
+            placed
+        }));
         Sheet {
             width: self.width,
             rows,
             regions,
+            sections,
             sticky,
             redraw_in: self.redraw_in,
         }
@@ -315,6 +345,13 @@ mod tests {
         assert_eq!(sheet.text()[..4], [" next", "", " REST", " rest"]);
         assert_eq!(sheet.sticky, 2);
         assert_eq!(sheet.regions[0].area, Rect::new(0, 3, 40, 1));
+        let placed = |name: &str, from, head, to| Placed {
+            name: name.into(),
+            from,
+            head,
+            to,
+        };
+        assert_eq!(sheet.sections, [placed("NEXT", 0, 0, 1), placed("REST", 2, 1, 4)]);
     }
 
     #[test]

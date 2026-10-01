@@ -2,6 +2,11 @@
 //! once per change of its data or width and kept; scrolling and hover only
 //! cut a new window out of it and light what the pointer is on. A click
 //! resolves against the frame the user sees, not the next one.
+//!
+//! Two things the Node overview didn't do, so a long view reads like a
+//! lazygit panel: the title of the section under the scroll stays on top
+//! (`Pin`), and a page built anew (new data, a resize) keeps the block the
+//! reader was looking at on top (`Anchor`) instead of the row number.
 
 use super::App;
 use super::band::{self, Header};
@@ -22,7 +27,16 @@ struct Lit {
     button: Option<usize>,
 }
 
-/// Where the page sits on screen.
+/// A section's title kept on top of the rows that scroll while the section
+/// is under them, as lazygit's panels never lose their title: page rows
+/// `from..from + rows` drawn over the first scrolling rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pin {
+    from: u16,
+    rows: u16,
+}
+
+/// Where the page sits on screen, scrolled by `scroll`.
 #[derive(Clone, Copy, Debug)]
 struct Window {
     /// The first row under the band.
@@ -35,31 +49,92 @@ struct Window {
     room: u16,
     rows: u16,
     max_scroll: u16,
+    scroll: u16,
+    pin: Option<Pin>,
 }
 
 impl Window {
-    /// The page row on screen row `y`, scrolled by `scroll`.
-    fn page_row(&self, y: u16, scroll: u16) -> Option<u16> {
+    /// The page row on screen row `y`.
+    fn page_row(&self, y: u16) -> Option<u16> {
         if y < self.top || y >= self.top + self.height {
             return None;
         }
         let at = y - self.top;
-        let row = if at < self.sticky {
-            at
-        } else {
-            self.sticky + scroll + (at - self.sticky)
+        let row = match at.checked_sub(self.sticky) {
+            None => at,
+            Some(off) => match self.pin {
+                Some(pin) if off < pin.rows => pin.from + off,
+                _ => self.sticky + self.scroll + off,
+            },
         };
         (row < self.rows).then_some(row)
     }
 
-    /// The screen row of page row `row`, scrolled by `scroll`, if shown.
-    fn screen_y(&self, row: u16, scroll: u16) -> Option<u16> {
+    /// The screen row of page row `row`, if shown.
+    fn screen_y(&self, row: u16) -> Option<u16> {
         if row < self.sticky {
             return Some(self.top + row);
         }
-        let at = row.checked_sub(self.sticky + scroll)?;
-        (at < self.room).then_some(self.top + self.sticky + at)
+        let pinned = self.pin.map_or(0, |pin| pin.rows);
+        if let Some(pin) = self.pin
+            && row >= pin.from
+            && row < pin.from + pin.rows
+        {
+            return Some(self.top + self.sticky + row - pin.from);
+        }
+        let at = row.checked_sub(self.sticky + self.scroll)?;
+        (at >= pinned && at < self.room).then_some(self.top + self.sticky + at)
     }
+
+    /// The first page row the scroll puts on top, under the pin if there is one.
+    fn first(&self) -> u16 {
+        self.sticky + self.scroll
+    }
+
+    /// The first page row the reader sees under the sticky rows and the pin.
+    fn first_seen(&self) -> u16 {
+        self.first() + self.pin.map_or(0, |pin| pin.rows)
+    }
+}
+
+/// The section whose title has scrolled off while its lines still show:
+/// the first line of its title, pinned. Not in a pane too short to spare it.
+fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pin> {
+    let first = sticky + scroll;
+    let placed = sheet
+        .sections
+        .iter()
+        .find(|placed| placed.head > 0 && placed.from >= sticky && placed.from < first && first < placed.to)?;
+    (room >= 4).then_some(Pin {
+        from: placed.from,
+        rows: 1,
+    })
+}
+
+/// Row `into` of `was` rows, in the same thing now `now` rows long: as far
+/// into it, in proportion (another width wraps it into more or fewer rows).
+fn within(into: u16, was: u16, now: u16) -> u16 {
+    let into = if was == now {
+        into
+    } else {
+        (u32::from(into) * u32::from(now) / u32::from(was.max(1))) as u16
+    };
+    into.min(now.saturating_sub(1))
+}
+
+/// What the top of the scrolling rows shows, found again in the page built
+/// anew (new data, another width) so the view stays where the reader is:
+/// the block there and how far into it, else the section; the end stays
+/// the end, the top the top.
+#[derive(Clone, Debug)]
+struct Anchor<A> {
+    /// The scroll it was found at: kept when it still shows the same row.
+    scroll: u16,
+    is_end: bool,
+    /// The block's action, which of the blocks with that action, rows into it, its height.
+    block: Option<(A, usize, u16, u16)>,
+    /// The section's name, which of that name, rows into it, its rows with the blank after it.
+    section: Option<(String, usize, u16, u16)>,
 }
 
 pub struct View<A> {
@@ -94,7 +169,7 @@ impl<A: Clone> Default for View<A> {
     }
 }
 
-impl<A: Clone> View<A> {
+impl<A: Clone + PartialEq> View<A> {
     /// The data changed: the next frame builds the page again.
     pub fn stale(&mut self) {
         self.is_stale = true;
@@ -119,14 +194,13 @@ impl<A: Clone> View<A> {
         self.is_stale = false;
     }
 
-    fn window(&self) -> Window {
-        let rows = self
-            .sheet
-            .as_ref()
-            .map_or(0, |sheet| sheet.rows.len().min(u16::MAX as usize) as u16);
+    /// The window scrolled by `scroll`, as far as the page goes.
+    fn window(&self, scroll: u16) -> Window {
+        let sheet = self.sheet.as_ref();
+        let rows = sheet.map_or(0, |sheet| sheet.rows.len().min(u16::MAX as usize) as u16);
         let top = self.band_height.min(self.area.height);
         let height = self.area.height - top;
-        let sticky = self.sheet.as_ref().map_or(0, |sheet| sheet.sticky);
+        let sticky = sheet.map_or(0, |sheet| sheet.sticky);
         // Sticky only while it leaves half the pane to the rest.
         let sticky = if u32::from(sticky) * 2 <= u32::from(height) {
             sticky
@@ -135,6 +209,7 @@ impl<A: Clone> View<A> {
         };
         let room = height - sticky;
         let max_scroll = rows.saturating_sub(sticky).saturating_sub(room);
+        let scroll = scroll.min(max_scroll);
         Window {
             top,
             height,
@@ -142,14 +217,21 @@ impl<A: Clone> View<A> {
             room,
             rows,
             max_scroll,
+            scroll,
+            pin: sheet.and_then(|sheet| pin_of(sheet, sticky, room, scroll)),
         }
     }
 
-    fn lit_at(&self, window: &Window, scroll: u16) -> Lit {
+    /// The window of the frame on screen.
+    fn shown(&self) -> Window {
+        self.window(self.shown_scroll)
+    }
+
+    fn lit_at(&self, window: &Window) -> Lit {
         let (Some(sheet), Some((x, y))) = (&self.sheet, self.mouse) else {
             return Lit::default();
         };
-        let Some(row) = window.page_row(y, scroll) else {
+        let Some(row) = window.page_row(y) else {
             return Lit::default();
         };
         Lit {
@@ -161,17 +243,105 @@ impl<A: Clone> View<A> {
         }
     }
 
-    /// Draws the frame: the page built again if stale or another width.
+    /// Where the scroll is in the page on screen, to find it again in the next.
+    fn anchor(&self) -> Option<Anchor<A>> {
+        let sheet = self.sheet.as_ref()?;
+        let window = self.window(self.scroll);
+        if window.scroll == 0 {
+            return None;
+        }
+        let row = window.first_seen();
+        let mut anchor = Anchor {
+            scroll: window.scroll,
+            is_end: window.scroll >= window.max_scroll,
+            block: None,
+            section: None,
+        };
+        let blocks = || {
+            sheet
+                .regions
+                .iter()
+                .filter(|region| !region.is_button() && region.area.y >= window.sticky)
+        };
+        if let Some(block) = blocks()
+            .filter(|region| region.area.y <= row && row < region.area.bottom())
+            .min_by_key(|region| region.area.height)
+        {
+            let nth = blocks()
+                .take_while(|region| !std::ptr::eq(*region, block))
+                .filter(|region| region.action() == block.action())
+                .count();
+            anchor.block = Some((block.action().clone(), nth, row - block.area.y, block.area.height));
+        }
+        let mut seen = std::collections::HashMap::<&str, usize>::new();
+        for placed in &sheet.sections {
+            let nth = seen.entry(placed.name.as_str()).or_default();
+            if placed.from <= row && row <= placed.to {
+                anchor.section = Some((
+                    placed.name.clone(),
+                    *nth,
+                    row - placed.from,
+                    placed.to - placed.from + 1,
+                ));
+                break;
+            }
+            *nth += 1;
+        }
+        Some(anchor)
+    }
+
+    /// The scroll that shows `anchor` on top in the page built anew.
+    fn place(&self, anchor: &Anchor<A>) -> Option<u16> {
+        let sheet = self.sheet.as_ref()?;
+        let window = self.window(0);
+        if anchor.is_end {
+            return Some(window.max_scroll);
+        }
+        let block = anchor.block.as_ref().and_then(|(action, nth, into, height)| {
+            let region = sheet
+                .regions
+                .iter()
+                .filter(|region| !region.is_button() && region.area.y >= window.sticky && region.action() == action)
+                .nth(*nth)?;
+            Some(region.area.y + within(*into, *height, region.area.height))
+        });
+        let section = || {
+            let (name, nth, into, len) = anchor.section.as_ref()?;
+            let placed = sheet.sections.iter().filter(|placed| &placed.name == name).nth(*nth)?;
+            Some(placed.from + within(*into, *len, placed.to - placed.from + 1))
+        };
+        let row = block.or_else(section)?;
+        // The row right under the pin of its section, if it gets one; the
+        // scroll as it was when that still shows it, so nothing creeps.
+        let scroll = row.saturating_sub(window.sticky);
+        let candidates = [anchor.scroll, scroll.saturating_sub(1), scroll];
+        let scroll = candidates
+            .into_iter()
+            .find(|&scroll| {
+                let window = self.window(scroll);
+                window.scroll == scroll && window.first_seen() == row
+            })
+            .unwrap_or(scroll);
+        Some(scroll.min(window.max_scroll))
+    }
+
+    /// Draws the frame: the page built again if stale or another width, the
+    /// scroll kept on what the reader was looking at.
     pub fn draw<P: App<Action = A>>(&mut self, frame: &mut Frame, app: &P) {
         let area = frame.area();
         if self.is_stale || self.sheet.as_ref().is_none_or(|sheet| sheet.width != area.width) {
+            let anchor = self.anchor();
+            self.area = area;
             self.build(app, area.width);
+            if let Some(scroll) = anchor.and_then(|anchor| self.place(&anchor)) {
+                self.scroll = scroll;
+            }
         }
         self.area = area;
-        let window = self.window();
-        self.scroll = self.scroll.min(window.max_scroll);
-        let scroll = self.scroll;
-        let lit = self.lit_at(&window, scroll);
+        let window = self.window(self.scroll);
+        self.scroll = window.scroll;
+        let scroll = window.scroll;
+        let lit = self.lit_at(&window);
         let Some(sheet) = &self.sheet else { return };
         let buffer = frame.buffer_mut();
 
@@ -188,7 +358,7 @@ impl<A: Clone> View<A> {
 
         let lit_block = lit.block.map(|i| sheet.regions[i].area);
         for y in window.top..window.top + window.height {
-            let Some(row) = window.page_row(y, scroll) else {
+            let Some(row) = window.page_row(y) else {
                 continue;
             };
             let drawn = &sheet.rows[row as usize];
@@ -211,7 +381,7 @@ impl<A: Clone> View<A> {
             && let Target::Button { tone, .. } = region.target
         {
             for row in region.area.y..region.area.y + region.area.height {
-                if let Some(y) = window.screen_y(row, scroll) {
+                if let Some(y) = window.screen_y(row) {
                     let cells = Rect::new(region.area.x, y, region.area.width, 1).intersection(buffer.area);
                     buffer.set_style(cells, tone.lit());
                 }
@@ -237,12 +407,12 @@ impl<A: Clone> View<A> {
     /// then a frame is drawn, not on every move.
     pub fn hover(&mut self, at: Option<(u16, u16)>) -> bool {
         self.mouse = at;
-        self.lit_at(&self.window(), self.shown_scroll) != self.lit
+        self.lit_at(&self.shown()) != self.lit
     }
 
     /// What a click at screen cell (x, y) runs, in the frame on screen.
     pub fn click(&self, x: u16, y: u16) -> Option<A> {
-        let row = self.window().page_row(y, self.shown_scroll)?;
+        let row = self.shown().page_row(y)?;
         let (_, region) = self.sheet.as_ref()?.hit(x, row)?;
         Some(region.action().clone())
     }
@@ -255,7 +425,7 @@ impl<A: Clone> View<A> {
             ran: "nothing".into(),
             ..clicks::Entry::default()
         };
-        let (Some(sheet), Some(row)) = (&self.sheet, self.window().page_row(y, self.shown_scroll)) else {
+        let (Some(sheet), Some(row)) = (&self.sheet, self.shown().page_row(y)) else {
             return entry;
         };
         entry.view_row = Some(row);
@@ -271,7 +441,7 @@ impl<A: Clone> View<A> {
 
     /// Scrolls by `by` lines, within the page. Whether it moved.
     pub fn scroll_by(&mut self, by: i32) -> bool {
-        let max = self.window().max_scroll;
+        let max = self.window(0).max_scroll;
         let to = (i32::from(self.scroll) + by).clamp(0, i32::from(max)) as u16;
         let has_moved = to != self.scroll;
         self.scroll = to;
@@ -280,8 +450,14 @@ impl<A: Clone> View<A> {
 
     /// Scrolls by `pages`: what the pane shows under the sticky rows, less one to keep the context.
     pub fn page_by(&mut self, pages: i32) -> bool {
-        let page = i32::from(self.window().room.saturating_sub(1).max(1));
+        let page = i32::from(self.window(0).room.saturating_sub(1).max(1));
         self.scroll_by(pages * page)
+    }
+
+    /// Scrolls by `halves` of a page: Ctrl-D and Ctrl-U, as in less and vim.
+    pub fn half_by(&mut self, halves: i32) -> bool {
+        let half = i32::from((self.window(0).room / 2).max(1));
+        self.scroll_by(halves * half)
     }
 
     pub fn scroll_top(&mut self) -> bool {
@@ -305,12 +481,18 @@ impl<A: Clone> View<A> {
     /// The screen row of page row `row` in the frame on screen.
     #[cfg(test)]
     pub fn screen_y(&self, row: u16) -> Option<u16> {
-        self.window().screen_y(row, self.shown_scroll)
+        self.shown().screen_y(row)
+    }
+
+    /// The page row on screen row `y` in the frame on screen.
+    #[cfg(test)]
+    pub fn page_row(&self, y: u16) -> Option<u16> {
+        self.shown().page_row(y)
     }
 
     #[cfg(test)]
     pub fn body(&self) -> (u16, u16) {
-        let window = self.window();
+        let window = self.window(0);
         (window.top, window.height)
     }
 }
@@ -368,7 +550,8 @@ mod tests {
             self.terminal.backend().buffer()[(x, y)].bg.into()
         }
 
-        /// Scrolls so page row `row` is on screen, and where it is.
+        /// Scrolls so page row `row` is on screen, as high as it goes (a
+        /// pinned title may cover the top row), and where it is.
         fn show(&mut self, row: u16) -> u16 {
             self.view.scroll_top();
             let sticky = self.view.sheet().sticky;
@@ -376,6 +559,9 @@ mod tests {
                 self.view.scroll_by(i32::from(row - sticky));
             }
             self.draw();
+            while self.view.screen_y(row).is_none() && self.view.scroll_by(-1) {
+                self.draw();
+            }
             self.view.screen_y(row).expect("row on screen")
         }
 
@@ -543,7 +729,7 @@ mod tests {
         // The block moves up under the pointer: what is under it now lights.
         screen.view.scroll_by(1);
         screen.draw();
-        let row = screen.view.window().page_row(y, screen.view.scroll()).unwrap();
+        let row = screen.view.page_row(y).unwrap();
         let under = screen.view.sheet().block_at(60, row).map(|(_, region)| region.area);
         assert_eq!(screen.bg(60, y) == Some(theme::HOVER), under.is_some(), "{under:?}");
     }
@@ -573,7 +759,7 @@ mod tests {
     #[test]
     fn scrolling_stays_within_the_page() {
         let mut screen = Screen::new(120, 40);
-        let window = screen.view.window();
+        let window = screen.view.window(0);
         assert!(window.max_scroll > 0);
         assert!(!screen.view.scroll_by(-1), "above the top");
         assert!(!screen.view.page_by(-1));
@@ -599,7 +785,7 @@ mod tests {
         let was = screen.view.scroll();
         screen.click(Action::Fold);
         assert!(screen.view.scroll() < was);
-        assert_eq!(screen.view.scroll(), screen.view.window().max_scroll);
+        assert_eq!(screen.view.scroll(), screen.view.window(0).max_scroll);
     }
 
     #[test]
@@ -653,6 +839,173 @@ mod tests {
         screen.draw();
         assert!(!screen.view.hover(Some((51, y))), "same block");
         assert!(screen.view.hover(None));
+    }
+
+    /// The block whose rows start the scrolling part (under a pinned title).
+    fn block_on_top(screen: &Screen) -> Option<Action> {
+        let window = screen.view.shown();
+        let first = window.first() + window.pin.map_or(0, |pin| pin.rows);
+        screen
+            .view
+            .sheet()
+            .block_at(0, first)
+            .map(|(_, region)| region.action().clone())
+    }
+
+    #[test]
+    fn a_title_scrolled_off_stays_on_top_while_its_section_shows() {
+        let mut screen = Screen::new(120, 40);
+        let placed = screen
+            .view
+            .sheet()
+            .sections
+            .iter()
+            .find(|placed| placed.name == "WORKTREES")
+            .cloned()
+            .unwrap();
+        let sticky = screen.view.shown().sticky;
+        screen.view.scroll_by(i32::from(placed.from + placed.head + 3 - sticky));
+        screen.draw();
+        let (top, _) = screen.view.body();
+        let y = top + sticky;
+        let row: String = (0..120)
+            .map(|x| screen.terminal.backend().buffer()[(x, y)].symbol().to_string())
+            .collect();
+        assert!(row.starts_with(" WORKTREES 6 wait for GitLab"), "{row}");
+        assert_eq!(screen.bg(60, y), Some(theme::HEAD));
+        // The title does nothing on a click and doesn't light.
+        assert_eq!(screen.view.click(60, y), None);
+        screen.view.hover(Some((60, y)));
+        screen.draw();
+        assert_eq!(screen.bg(60, y), Some(theme::HEAD));
+        // The row it covers is not on screen; the one after it is, right under it.
+        let first = screen.view.shown().first();
+        assert_eq!(screen.view.screen_y(first), None);
+        assert_eq!(screen.view.screen_y(first + 1), Some(y + 1));
+        // Past the section's end the next title takes over: none while a title shows by itself.
+        screen.view.scroll_by(i32::from(placed.to - first));
+        screen.draw();
+        assert!(screen.view.shown().pin.is_none());
+        // At the top nothing is pinned.
+        screen.view.scroll_top();
+        screen.draw();
+        assert!(screen.view.shown().pin.is_none());
+    }
+
+    #[test]
+    fn another_width_keeps_the_block_on_top() {
+        let mut screen = Screen::new(120, 40);
+        let block = screen
+            .regions()
+            .into_iter()
+            .find(|region| region.target == Target::Block(Action::Open("#296".into())))
+            .unwrap();
+        screen.show(block.area.y + 1);
+        assert_eq!(block_on_top(&screen), Some(Action::Open("#296".into())));
+        for width in [80, 200, 120] {
+            screen.terminal.backend_mut().resize(width, 40);
+            screen.draw();
+            assert_eq!(block_on_top(&screen), Some(Action::Open("#296".into())), "{width}");
+        }
+    }
+
+    /// A list of 60 blocks of two lines under `above` lines that come and go.
+    struct List {
+        above: u16,
+    }
+
+    impl App for List {
+        type Action = u16;
+        type Model = ();
+        fn header(&self) -> Header {
+            Header::new("list")
+        }
+        fn build(&self, page: &mut Page<u16>) {
+            page.section("ABOVE", |scene| {
+                for i in 0..self.above {
+                    scene.text(&format!("line {i}"), Style::new());
+                    scene.newline();
+                }
+            });
+            page.section("LIST", |scene| {
+                for i in 0..60 {
+                    scene.block(i, |scene| {
+                        scene.text(&format!("item {i}"), Style::new());
+                        scene.newline();
+                        scene.text("its second line", Style::new());
+                    });
+                }
+            });
+        }
+        fn update(&mut self, _: ()) {}
+        fn act(&mut self, _: Input<u16>) -> Flow {
+            Flow::Same
+        }
+    }
+
+    #[test]
+    fn rows_above_that_come_and_go_keep_the_reader_where_they_were() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        let mut view = View::<u16>::default();
+        let mut app = List { above: 2 };
+        let mut draw = |view: &mut View<u16>, app: &List| {
+            terminal.draw(|frame| view.draw(frame, app)).unwrap();
+        };
+        draw(&mut view, &app);
+        let on_top = |view: &View<u16>| {
+            let first = view.shown().first_seen();
+            view.sheet().block_at(0, first).map(|(_, region)| *region.action())
+        };
+        view.scroll_by(30);
+        draw(&mut view, &app);
+        let was = on_top(&view).expect("a block on top");
+        let scroll = view.scroll();
+        for above in [40, 0, 2] {
+            app.above = above;
+            view.stale();
+            draw(&mut view, &app);
+            assert_eq!(on_top(&view), Some(was), "{above} above");
+        }
+        assert_eq!(view.scroll(), scroll);
+        // The end stays the end, the top the top.
+        view.scroll_bottom();
+        draw(&mut view, &app);
+        app.above = 40;
+        view.stale();
+        draw(&mut view, &app);
+        assert_eq!(view.scroll(), view.window(0).max_scroll);
+        view.scroll_top();
+        draw(&mut view, &app);
+        app.above = 2;
+        view.stale();
+        draw(&mut view, &app);
+        assert_eq!(view.scroll(), 0);
+    }
+
+    #[test]
+    fn a_rebuild_of_the_same_page_never_moves_the_scroll() {
+        for width in [80, 120] {
+            let mut screen = Screen::new(width, 30);
+            let max = screen.view.window(0).max_scroll;
+            for scroll in 0..=max {
+                screen.view.scroll_top();
+                screen.view.scroll_by(i32::from(scroll));
+                screen.draw();
+                screen.view.stale();
+                screen.draw();
+                assert_eq!(screen.view.scroll(), scroll, "{width}");
+            }
+        }
+    }
+
+    #[test]
+    fn half_a_page_and_back() {
+        let mut screen = Screen::new(120, 40);
+        let room = screen.view.shown().room;
+        assert!(screen.view.half_by(1));
+        assert_eq!(screen.view.scroll(), room / 2);
+        assert!(screen.view.half_by(-1));
+        assert_eq!(screen.view.scroll(), 0);
     }
 
     #[test]

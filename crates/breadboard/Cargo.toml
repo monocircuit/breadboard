@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+breadboard-core.workspace = true
 crossterm.workspace = true
 futures-util.workspace = true
 libc.workspace = true

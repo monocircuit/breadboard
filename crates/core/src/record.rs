@@ -193,6 +193,8 @@ pub struct Freed {
 pub struct Worker {
     pub id: String,
     pub name: Option<String>,
+    /// The person's name it is shown by (#292): `Mira Albrecht`.
+    pub display_name: Option<String>,
     pub issues: Vec<i64>,
     pub files: Vec<String>,
     /// Its name before the last handover (#251), and when it was renamed.
@@ -243,6 +245,7 @@ impl Worker {
         Worker {
             id: id.to_string(),
             name: str_of(value, "name").map(String::from),
+            display_name: str_of(value, "displayName").map(String::from),
             issues: ints_of(value, "issues"),
             files: strs_of(value, "files"),
             was: str_of(value, "was").map(String::from),

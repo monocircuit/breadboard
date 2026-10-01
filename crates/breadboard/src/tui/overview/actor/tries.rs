@@ -1,0 +1,499 @@
+//! What a click on a try opens (try.mjs, #295): `--run` a terminal, the tab
+//! `try` of the worktree's space running the command; `--url` the page on
+//! the worktree's app, its stack and `pnpm dev` started first when the app
+//! is down; `--on test` the path on the test instance once it is deployed.
+//! A newer click takes the place of an older one. And `stack:up` for a try
+//! or the view of everything (the worktree view has its own buttons).
+
+use super::spawn::{self, Background, Run, error_of};
+use super::{Actor, Effect, browser, herdr};
+use crate::tui::overview::Overview;
+use breadboard_core::actions::{Action, actions_file, actions_of};
+use breadboard_core::git::feature_of;
+use breadboard_core::herdr::{is_in_herdr, tabs_of};
+use breadboard_core::local::is_port_taken;
+use breadboard_core::model::try_state::{TryState, app_origin, page_of, short_page};
+use breadboard_core::model::{Paint, Span, Tree};
+use serde_json::json;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// The tab of a worktree's space a terminal try runs in.
+const TRY_TAB: &str = "try";
+/// How long a click waits for `pnpm dev` to answer after the stack is up.
+const APP_WAIT: Duration = Duration::from_secs(120);
+const APP_POLL: Duration = Duration::from_millis(1000);
+
+/// Where a click on its way to a page stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Stack,
+    App,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Trying {
+    pub stage: Stage,
+    pub error: Option<String>,
+    pub page: String,
+    pub id: i64,
+    pub replaced: Option<i64>,
+}
+
+/// The tries' state, by worktree.
+#[derive(Debug, Default)]
+pub struct Tries {
+    pub trying: HashMap<PathBuf, Trying>,
+    /// Worktrees whose try terminal a click couldn't open (no herdr, no space).
+    pub unopened: HashSet<PathBuf>,
+    /// What the last click on a try of a worktree did: (its id, the text).
+    pub clicked: HashMap<PathBuf, (i64, String)>,
+}
+
+/// Whether `page` is on the worktree's own app, the one a click starts when it is down.
+pub fn is_on_app(page: &str, offset: i64) -> bool {
+    let origin = app_origin(offset);
+    page == origin || page.starts_with(&format!("{origin}/"))
+}
+
+/// The action of a try, from its file (a worktree's) or the record (the orchestrator's).
+fn action_of(app: &Overview, dir: Option<&Path>, id: i64) -> Option<Action> {
+    match dir {
+        Some(dir) => actions_of(&actions_file(dir))
+            .into_iter()
+            .find(|action| action.id == id),
+        None => {
+            let (record, _) = app.record_and_name();
+            actions_of(record.as_deref()?)
+                .into_iter()
+                .find(|action| action.id == id)
+        }
+    }
+}
+
+/// A url into the browser, in the tab group of the space of `dir` (`open`).
+pub fn open(actor: &Actor, url: &str, dir: Option<&Path>) {
+    let label = herdr::space_label(&actor.main, dir.unwrap_or(&actor.main));
+    browser::open_in_group(&actor.main, url, &label);
+}
+
+/// A click on a try (`clickTry`): one that isn't ready opens why (a failed
+/// deployment's job) or does nothing; else its spot.
+pub fn click(app: &mut Overview, dir: Option<PathBuf>, id: i64, state: Option<TryState>) {
+    let Some(action) = action_of(app, dir.as_deref(), id) else {
+        app.actor.log(Paint::Dim, format!("try #{id} is answered already"));
+        return;
+    };
+    if let Some(state) = state.filter(|state| !state.is_ready) {
+        if let Some(url) = &state.url {
+            open(&app.actor, url, None);
+            app.actor
+                .log(Paint::Dim, format!("try #{id}: {}, opened {url}", state.label));
+        }
+        return;
+    }
+    let tree = dir.as_deref().and_then(|dir| app.tree_of(dir));
+    if action.on.as_deref() == Some("test") {
+        let origin = app
+            .orchestration_local()
+            .and_then(|local| local.test_origin.clone())
+            .or_else(|| breadboard_core::local::test_origin(&app.actor.main));
+        if let (Some(origin), Some(url)) = (origin, &action.url) {
+            let page = format!("{origin}{url}");
+            open(&app.actor, &page, dir.as_deref());
+            app.actor.log(Paint::Green, format!("try #{id}: opened {page}"));
+        }
+        return;
+    }
+    match (&action.run, &action.url, tree) {
+        (Some(run), _, Some(tree)) => open_terminal(app, &tree.dir, id, run.clone()),
+        (None, Some(_), Some(tree)) => open_page(app, &tree, &action),
+        (None, Some(url), None) => {
+            let page = page_of(url, 0);
+            open(&app.actor, &page, None);
+            app.actor.log(Paint::Green, format!("try #{id}: opened {page}"));
+        }
+        _ => {
+            if let Some(dir) = dir {
+                let main = app.actor.main.clone();
+                app.actor.queue(move || {
+                    herdr::focus_space(&main, &dir);
+                    None
+                });
+            }
+        }
+    }
+}
+
+/// The try's command in the tab `try` of the worktree's space (`openTerminal`):
+/// the same try again runs again in its tab, another replaces what ran there.
+fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
+    let main = app.actor.main.clone();
+    let dir = dir.to_path_buf();
+    app.actor.queue(move || {
+        let text = terminal(&main, &dir, id, &run);
+        Some(Box::new(move |app: &mut Overview| {
+            match &text {
+                Some(text) => {
+                    app.actor.tries.unopened.remove(&dir);
+                    app.actor.tries.clicked.insert(dir.clone(), (id, text.clone()));
+                    app.actor.log(Paint::Green, format!("try #{id}: {text}: {run}"));
+                }
+                None => {
+                    app.actor.tries.unopened.insert(dir.clone());
+                    app.actor.log(
+                        Paint::Red,
+                        format!("try #{id}: no space of its worktree in herdr: run {run} there yourself"),
+                    );
+                }
+            }
+            app.redraw();
+        }) as Effect)
+    });
+}
+
+/// The terminal of a try opened: what happened, None without herdr or the worktree's space.
+fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Option<String> {
+    if !is_in_herdr() {
+        return None;
+    }
+    let workspace = herdr::space_of(main, dir)?;
+    let tabs = tabs_of(&workspace);
+    let old: Vec<_> = tabs.iter().filter(|tab| tab.label == TRY_TAB).collect();
+    let file = dir.join(".claude").join("try-tab.json");
+    let known = breadboard_core::json::read(&file);
+    let known_tab = known
+        .as_ref()
+        .and_then(|known| known.get("tab"))
+        .and_then(|tab| tab.as_str())
+        .map(String::from);
+    let known_id = known
+        .as_ref()
+        .and_then(|known| known.get("id"))
+        .and_then(|id| id.as_i64());
+    let known_run = known
+        .as_ref()
+        .and_then(|known| known.get("run"))
+        .and_then(|run| run.as_str())
+        .map(String::from);
+    let mut closed = Vec::new();
+    let text = if old.len() == 1
+        && known_tab.as_deref() == Some(old[0].id.as_str())
+        && known_id == Some(id)
+        && known_run.as_deref() == Some(run)
+    {
+        let is_idle = herdr::idle_pane_of(&workspace, TRY_TAB, &tabs).is_some();
+        herdr::ensure_tab(&workspace, TRY_TAB, dir, Some(run), &tabs);
+        if is_idle {
+            "runs again in the tab try".to_string()
+        } else {
+            "focused, runs in the tab try".to_string()
+        }
+    } else {
+        for tab in &old {
+            herdr::did(&["tab", "close", &tab.id]);
+            closed.push(tab.id.clone());
+        }
+        herdr::ensure_tab(&workspace, TRY_TAB, dir, Some(run), &[]);
+        if old.is_empty() {
+            "runs in the tab try".to_string()
+        } else if known_tab
+            .as_ref()
+            .is_some_and(|known| old.iter().any(|tab| &tab.id == known))
+        {
+            format!("replaced the try of #{}, runs in the tab try", known_id.unwrap_or(0))
+        } else {
+            "replaced what ran in the tab try".to_string()
+        }
+    };
+    let tab = tabs_of(&workspace)
+        .into_iter()
+        .find(|tab| tab.label == TRY_TAB && !closed.contains(&tab.id))?;
+    let _ = std::fs::create_dir_all(dir.join(".claude"));
+    let _ = std::fs::write(&file, format!("{}\n", json!({ "tab": tab.id, "id": id, "run": run })));
+    herdr::did(&["workspace", "focus", &workspace]);
+    herdr::did(&["tab", "focus", &tab.id]).then_some(text)
+}
+
+/// The page of a try (`openPage`): on the worktree's own app that is down,
+/// its stack starts first, then the page waits for `pnpm dev`; a click while
+/// one waits takes its place.
+fn open_page(app: &mut Overview, tree: &Tree, action: &Action) {
+    let dir = tree.dir.clone();
+    let offset = tree.offset;
+    let page = page_of(action.url.as_deref().unwrap_or_default(), offset);
+    let stack_error = app.actor.stacks.get(&dir).and_then(|run| run.error.clone());
+    if let Some(state) = app.actor.tries.trying.get_mut(&dir)
+        && state.error.is_none()
+        && stack_error.is_none()
+    {
+        if state.id != action.id {
+            state.replaced = Some(state.id);
+            state.id = action.id;
+            state.page = page;
+        }
+        return;
+    }
+    let is_own = tree.has_own_port && tree.has_env && is_on_app(&page, offset);
+    let is_starting = app.actor.stacks.get(&dir).is_some_and(|run| run.is_running);
+    if !is_own || is_starting || is_port_taken(3000 + offset) {
+        app.actor.tries.trying.remove(&dir);
+        app.actor
+            .tries
+            .clicked
+            .insert(dir.clone(), (action.id, "opened".into()));
+        open(&app.actor, &page, Some(&dir));
+        app.actor
+            .log(Paint::Green, format!("try #{}: opened {page}", action.id));
+        return;
+    }
+    app.actor.tries.trying.insert(
+        dir.clone(),
+        Trying {
+            stage: Stage::Stack,
+            error: None,
+            page,
+            id: action.id,
+            replaced: None,
+        },
+    );
+    start_stack(app, &dir, Some(offset));
+}
+
+/// The stack is up for a waiting try: the page once `pnpm dev` answers.
+fn app_up(app: &mut Overview, dir: &Path, offset: i64) {
+    let Some(state) = app.actor.tries.trying.get_mut(dir) else {
+        return;
+    };
+    state.stage = Stage::App;
+    let poster = app.actor.poster();
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        let until = Instant::now() + APP_WAIT;
+        let is_up = loop {
+            if is_port_taken(3000 + offset) {
+                break true;
+            }
+            if Instant::now() >= until {
+                break false;
+            }
+            std::thread::sleep(APP_POLL);
+        };
+        poster.post(move |app: &mut Overview| {
+            let Some(state) = app.actor.tries.trying.get(&dir).cloned() else {
+                return;
+            };
+            if is_up {
+                app.actor.tries.trying.remove(&dir);
+                let text = match state.replaced {
+                    Some(id) => format!("opened, replaced the try of #{id}"),
+                    None => "opened".into(),
+                };
+                app.actor.tries.clicked.insert(dir.clone(), (state.id, text));
+                open(&app.actor, &state.page, Some(&dir));
+                app.actor
+                    .log(Paint::Green, format!("try #{}: opened {}", state.id, state.page));
+            } else {
+                let why = format!(
+                    "the app on {} didn't answer: see the tab dev",
+                    short_page(&app_origin(offset))
+                );
+                app.actor.log(Paint::Red, format!("try #{}: {why}", state.id));
+                if let Some(trying) = app.actor.tries.trying.get_mut(&dir) {
+                    trying.error = Some(why);
+                }
+            }
+            app.redraw();
+        });
+    });
+}
+
+/// What a try's row says after its text while its click is under way or done
+/// (`trySpot`); None: the row as the model has it.
+pub fn spot(actor: &Actor, action: &Action, tree: Option<&Tree>) -> Option<Vec<Span>> {
+    let tree = tree?;
+    let dir = &tree.dir;
+    if action.on.as_deref() == Some("test") {
+        return None;
+    }
+    let clicked = actor
+        .tries
+        .clicked
+        .get(dir)
+        .filter(|(id, _)| *id == action.id)
+        .map(|(_, text)| text.clone());
+    if let Some(run) = &action.run {
+        if actor.tries.unopened.contains(dir) {
+            return Some(vec![Span::new(
+                format!("no space of its worktree in herdr: run {run} there yourself"),
+                Paint::Red,
+            )]);
+        }
+        return clicked.map(|done| vec![Span::new(done, Paint::Green), Span::dim(format!(" {run}"))]);
+    }
+    let page = page_of(action.url.as_deref()?, tree.offset);
+    let state = actor.tries.trying.get(dir).filter(|state| state.id == action.id);
+    let stack = actor.stacks.get(dir);
+    let error = state.and_then(|state| state.error.clone()).or_else(|| {
+        state
+            .filter(|state| state.stage == Stage::Stack)
+            .and_then(|_| stack.and_then(|run| run.error.clone()))
+    });
+    if let Some(error) = error {
+        return Some(vec![Span::new(error, Paint::Red)]);
+    }
+    let replacing = state
+        .and_then(|state| state.replaced)
+        .map(|id| format!(", replaced the try of #{id}"))
+        .unwrap_or_default();
+    match state.map(|state| state.stage) {
+        Some(Stage::Stack) => {
+            return Some(vec![
+                Span::new(format!("◐ starting the stack …{replacing}"), Paint::Yellow),
+                Span::dim(format!(" {}", stack.map(Run::last_line).unwrap_or_default())),
+            ]);
+        }
+        Some(Stage::App) => {
+            return Some(vec![
+                Span::new(format!("◐ waiting for pnpm dev …{replacing}"), Paint::Yellow),
+                Span::dim(format!(" {}", short_page(&page))),
+            ]);
+        }
+        None => {}
+    }
+    clicked.map(|done| {
+        vec![
+            Span::new(done, Paint::Green),
+            Span::dim(format!(" {}", short_page(&page))),
+        ]
+    })
+}
+
+/// `stack:up` of a checkout, detached (`startStack`, `▶ start the stack`, `u`);
+/// `offset`: a try waits for its page once it is up.
+pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
+    if app.actor.stacks.get(dir).is_some_and(|run| run.is_running) {
+        return;
+    }
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let log = spawn::log_file(&format!("overview-stack-{base}.log"));
+    let program = spawn::breadboard();
+    let poster = app.actor.poster();
+    let done = dir.to_path_buf();
+    let started = spawn::start(
+        Background {
+            program: &program,
+            args: vec!["stack:up".into()],
+            cwd: dir,
+            log: &log,
+            env: vec![("INIT_CWD", dir.to_string_lossy().into_owned())],
+            is_paneless: false,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                let error = error_of(code, &last, "stack:up ");
+                let who = feature_of(&app.actor.main, &done);
+                match &error {
+                    None => {
+                        app.actor.stacks.remove(&done);
+                        app.actor.log(Paint::Green, format!("the stack of {who} is up"));
+                        if let Some(offset) = offset {
+                            app_up(app, &done, offset);
+                        }
+                    }
+                    Some(why) => {
+                        if let Some(run) = app.actor.stacks.get_mut(&done) {
+                            run.is_running = false;
+                            run.error = Some(why.clone());
+                        }
+                        app.actor
+                            .log(Paint::Red, format!("the stack of {who} didn't start: {why}"));
+                    }
+                }
+                app.redraw();
+            });
+        },
+    );
+    let who = feature_of(&app.actor.main, dir);
+    match started {
+        Ok(()) => {
+            app.actor.stacks.insert(dir.to_path_buf(), Run::running(&log));
+            app.actor
+                .log(Paint::Yellow, format!("starting the stack of {who}: pnpm stack:up"));
+        }
+        Err(why) => {
+            app.actor.stacks.insert(
+                dir.to_path_buf(),
+                Run {
+                    error: Some(why.clone()),
+                    ..Run::default()
+                },
+            );
+            app.actor
+                .log(Paint::Red, format!("the stack of {who} didn't start: {why}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn knows_the_pages_of_the_worktrees_app() {
+        assert!(is_on_app("http://localhost:3002/atlas", 2));
+        assert!(is_on_app("http://localhost:3002", 2));
+        assert!(!is_on_app("http://localhost:30021", 2));
+        assert!(!is_on_app("https://example.org/", 2));
+    }
+
+    #[test]
+    fn a_try_row_says_what_its_click_did() {
+        let mut actor = Actor::new(
+            &breadboard_core::reader::View::Everything,
+            Path::new("/r"),
+            false,
+            false,
+        );
+        let tree = Tree {
+            dir: "/r-7".into(),
+            offset: 2,
+            ..Default::default()
+        };
+        let run = Action {
+            id: 1,
+            kind: "try".into(),
+            run: Some("cargo run".into()),
+            ..Default::default()
+        };
+        assert_eq!(spot(&actor, &run, Some(&tree)), None);
+        actor
+            .tries
+            .clicked
+            .insert("/r-7".into(), (1, "runs in the tab try".into()));
+        let text = breadboard_core::model::text_of(&spot(&actor, &run, Some(&tree)).unwrap());
+        assert_eq!(text, "runs in the tab try cargo run");
+        let page = Action {
+            id: 2,
+            kind: "try".into(),
+            url: Some("/atlas".into()),
+            ..Default::default()
+        };
+        actor.tries.trying.insert(
+            "/r-7".into(),
+            Trying {
+                stage: Stage::App,
+                error: None,
+                page: "http://localhost:3002/atlas".into(),
+                id: 2,
+                replaced: Some(1),
+            },
+        );
+        let text = breadboard_core::model::text_of(&spot(&actor, &page, Some(&tree)).unwrap());
+        assert_eq!(text, "◐ waiting for pnpm dev …, replaced the try of #1 :3002/atlas");
+    }
+}

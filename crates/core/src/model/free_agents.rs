@@ -3,6 +3,7 @@
 //! (#288), its context and where it came from; two clicks on a row dismiss it.
 
 use super::agent_state::{AgentState, Facts, agent_state_of};
+use super::display_names::Names;
 use super::{Paint, Span, Tree, counted};
 use crate::herdr::Agent;
 use crate::record::Worker;
@@ -15,13 +16,17 @@ use std::collections::HashMap;
 pub struct FreeRow {
     pub id: String,
     pub name: String,
+    /// The person's name it is shown by (#292).
+    pub display: String,
     pub state: AgentState,
     pub text: String,
     /// Its tab, which its dismiss closes.
     pub tab: Option<String>,
 }
 
-pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>) -> Vec<FreeRow> {
+/// `names`: the orchestration's (display_names.rs `names_of`), so a free
+/// agent goes by the name its worktree's node showed.
+pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>, names: &Names) -> Vec<FreeRow> {
     free.iter()
         .map(|(worker, share)| {
             let agent = agents.get(&worker.id);
@@ -48,6 +53,12 @@ pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>) -> 
             FreeRow {
                 id: worker.id.clone(),
                 name: worker.name.clone().unwrap_or_default(),
+                display: names
+                    .by_id
+                    .get(&worker.id)
+                    .cloned()
+                    .or_else(|| worker.display_name.clone())
+                    .unwrap_or_else(|| super::display_names::pick_name(&worker.id, [])),
                 state,
                 text: parts.join(" · "),
                 tab: agent.map(|agent| agent.tab.clone()),
@@ -96,9 +107,14 @@ mod tests {
             },
             0.18,
         )];
-        let rows = free_rows_of(&free, &idle("f1", "idle"));
+        let names = super::super::display_names::names_of(&[], &[free[0].0.clone()]);
+        let rows = free_rows_of(&free, &idle("f1", "idle"), &names);
         assert_eq!(rows[0].state.text, "free");
+        assert_eq!(rows[0].display, "Priya Virtanen");
         assert_eq!(rows[0].text, "18 % · from 272-orchestration (!289) · 1 issue");
-        assert_eq!(free_rows_of(&free, &idle("f1", "working"))[0].state.text, "at work");
+        assert_eq!(
+            free_rows_of(&free, &idle("f1", "working"), &names)[0].state.text,
+            "at work"
+        );
     }
 }

@@ -9,8 +9,9 @@ use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
+use super::display_names::{Names, counts_of, names_of};
 use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
-use super::history::{history_text, reuse_of, reuse_text};
+use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
 use super::numbering::numbers_of;
@@ -242,11 +243,37 @@ pub struct Node {
     /// Its feature, bold while its worktree is there.
     pub name: String,
     pub has_tree: bool,
+    /// Who works in it (#292), on the line under its name.
+    pub agent: Option<AgentLine>,
     /// Its facts, parted by ` · `.
     pub facts: Vec<Fact>,
     pub title: String,
     /// A click: its space, else its issue's page.
     pub go: Go,
+}
+
+/// The agent of a node (#292, tree.mjs `agentLine`): `● Mira Albrecht · 3
+/// issues · 2 MRs merged`, the dot in the colour of whom it waits for, else
+/// of herdr's state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentLine {
+    pub name: String,
+    pub dot: Paint,
+    /// The issues it worked on, this one included.
+    pub issues: usize,
+    /// How many of their MRs are merged.
+    pub merged: usize,
+}
+
+impl AgentLine {
+    /// `· 3 issues · 2 MRs merged`.
+    pub fn counts(&self) -> String {
+        format!(
+            "· {} · {} merged",
+            super::counted(self.issues as u64, "issue"),
+            super::counted(self.merged as u64, "MR")
+        )
+    }
 }
 
 /// What treeOf knows besides the issues.
@@ -420,14 +447,6 @@ fn facts_of(
             all.push(agent);
         }
     }
-    let history = history_text(
-        facts.known,
-        issue.number,
-        tree.is_some_and(|tree| tree.claude.is_some()),
-    );
-    if !history.is_empty() {
-        all.push(vec![Span::dim(history)]);
-    }
     if let Some(tree) = tree {
         if let Some(claude) = &tree.claude {
             all.push(agent_fact(claude, now));
@@ -464,12 +483,59 @@ fn handover_of(tree: Option<&Tree>, announced: &[Announced]) -> Option<NextIssue
     })
 }
 
+/// The line of a node's agent, None without one.
+fn agent_line(
+    issue: &Entry,
+    state: &Lifecycle,
+    status: Option<&str>,
+    names: &Names,
+    known: &Known,
+    is_merged: &dyn Fn(i64) -> bool,
+) -> Option<AgentLine> {
+    let tree = issue.tree.as_ref()?;
+    // Without its conversation (not read yet, or gone), the record's worker
+    // whose latest issue this is, unless it went free (#289): it is still
+    // the one in this worktree.
+    let id = match &tree.claude {
+        Some(claude) => &claude.id,
+        None => {
+            let number = issue.number?;
+            &known
+                .iter()
+                .filter(|worker| worker.free.is_none())
+                .find(|worker| history_of(worker).last().is_some_and(|start| start.number == number))?
+                .id
+        }
+    };
+    let name = names.by_id.get(id)?.clone();
+    let (issues, merged) = counts_of(known, id, issue.number, is_merged);
+    let dot = match state.tone {
+        Some(tone) => Paint::Wait(tone),
+        None => status.map_or(Paint::Dim, |status| Paint::State(status.into())),
+    };
+    Some(AgentLine {
+        name,
+        dot,
+        issues,
+        merged,
+    })
+}
+
 /// treeOf: each issue a node, numbered; `remote` its part of GitLab.
 pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> TreeOf {
     let of = |issue: &Entry| remote.map(|remote| remote.of(&issue.branch));
     let numbers = numbers_of(issues, facts.work, facts.merge, |issue| {
         of(issue).and_then(|part| part.mr.as_ref())
     });
+    let names = names_of(issues, facts.known);
+    let is_merged = |number: i64| {
+        issues
+            .iter()
+            .find(|issue| issue.number == Some(number))
+            .is_some_and(|issue| {
+                issue.merged_at.is_some() || of(issue).and_then(|part| part.mr.as_ref()).is_some_and(Mr::is_merged)
+            })
+    };
     let mut rows: Vec<Node> = issues
         .iter()
         .enumerate()
@@ -534,9 +600,11 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 },
                 (None, None) => Go::Nothing,
             };
+            let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged);
             Node {
                 index,
                 number: issue.number,
+                agent,
                 facts: facts_of(issue, found, mr, &state, handover.as_ref(), facts),
                 state,
                 place: numbers[index],
@@ -653,6 +721,7 @@ mod tests {
     use super::*;
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
+    use crate::model::display_names::pick_name;
     use crate::model::handovers::tests::claude_of;
     use crate::record::{Start, Worker};
     use crate::wait::Wait;
@@ -1035,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn says_which_issue_of_its_agent_a_node_is() {
+    fn names_the_agent_of_a_node_with_its_issues_and_merged_mrs() {
         let fresh = Entry {
             tree: Some(Tree {
                 name: "1-feature".into(),
@@ -1044,7 +1113,10 @@ mod tests {
             ..issue(1)
         };
         let found = tree_of(&[fresh], None, &TreeFacts::default());
-        assert!(facts_text(&found.live[0].facts).contains("agent: 1st issue"));
+        let agent = found.live[0].agent.clone().unwrap();
+        assert_eq!(agent.name, pick_name("c1", []));
+        assert_eq!(agent.counts(), "· 1 issue · 0 MRs merged");
+        assert!(!facts_text(&found.live[0].facts).contains("agent: "));
         let known = [Worker {
             id: "c1".into(),
             name: Some("3-third".into()),
@@ -1070,6 +1142,7 @@ mod tests {
                 claude: None,
                 ..tree()
             }),
+            merged_at: Some("2026-09-30T10:00:00Z".into()),
             ..issue(1)
         };
         let third = Entry {
@@ -1087,8 +1160,30 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(facts_text(&found.live[0].facts).contains("agent: 1st issue (#1 → #3 at 31%)"));
-        assert!(facts_text(&found.live[1].facts).contains("agent: 2nd issue (#1 → #3 at 31%)"));
+        let of = |number| found.live.iter().find(|node| node.number == Some(number)).unwrap();
+        // Its agent moved on to #3: #1's worktree has none.
+        assert_eq!(of(1).agent, None);
+        let agent = of(3).agent.clone().unwrap();
+        assert_eq!(agent.counts(), "· 2 issues · 1 MR merged");
+        assert_eq!(agent.dot, Paint::Wait(Tone::Free));
+        // No conversation read for #3's worktree: the record's worker still names it.
+        let third = Entry {
+            tree: Some(Tree {
+                name: "3-third".into(),
+                claude: None,
+                ..tree()
+            }),
+            ..issue(3)
+        };
+        let found = tree_of(
+            &[third],
+            None,
+            &TreeFacts {
+                known: &known,
+                ..Default::default()
+            },
+        );
+        assert_eq!(found.live[0].agent.as_ref().map(|agent| agent.issues), Some(2));
     }
 
     #[test]
@@ -1292,6 +1387,7 @@ mod tests {
             place: 0,
             name: String::new(),
             has_tree: true,
+            agent: None,
             facts: vec![],
             title: String::new(),
             go: Go::Nothing,
@@ -1388,7 +1484,7 @@ mod tests {
             ("no agent", "#1 open · no MR yet · 2 ahead", "the title of 1")
         );
         assert_eq!(two.state.text, "free");
-        assert!(facts_text(&two.facts).starts_with("#2 open · no MR yet · agent: 1st issue · no answer yet"));
+        assert!(facts_text(&two.facts).starts_with("#2 open · no MR yet · no answer yet"));
         assert!(!found.is_removed_folded);
     }
 

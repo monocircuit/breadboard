@@ -6,7 +6,7 @@
 use super::Tree;
 use super::agent_state::RUNNING;
 use super::change::is_change_open;
-use super::merge::{checks_of, is_work, merge_status_text, words_of};
+use super::merge::{checks_of, is_acceptance, is_work, merge_status_text, words_of};
 use super::merge_order::After;
 use super::resolve::is_conflict_settled;
 use crate::gitlab::{IssueBox, Job, Mr};
@@ -166,6 +166,34 @@ pub fn row_blockers_of(
         }
     }
     reasons
+}
+
+/// How far an MR is by its issue's boxes (#294, mr-blockers.mjs `progressOf`):
+/// ticked of all, and `(ticked, all)` of the Work and the acceptance boxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Progress {
+    pub ticked: usize,
+    pub total: usize,
+    pub work: (usize, usize),
+    pub acceptance: (usize, usize),
+}
+
+/// None for an issue without boxes: its row shows no bar.
+pub fn progress_of(boxes: &[IssueBox]) -> Option<Progress> {
+    if boxes.is_empty() {
+        return None;
+    }
+    let count = |is: fn(&IssueBox) -> bool| {
+        let all: Vec<&IssueBox> = boxes.iter().filter(|issue_box| is(issue_box)).collect();
+        (all.iter().filter(|issue_box| issue_box.is_ticked).count(), all.len())
+    };
+    let (ticked, total) = count(|_| true);
+    Some(Progress {
+        ticked,
+        total,
+        work: count(is_work),
+        acceptance: count(is_acceptance),
+    })
 }
 
 #[cfg(test)]
@@ -410,6 +438,21 @@ mod tests {
         assert_eq!(
             reasons(&with("checking"), &[], None),
             ["GitLab checks for conflicts → GitLab"]
+        );
+    }
+
+    #[test]
+    fn progress_counts_the_boxes_by_section() {
+        assert_eq!(progress_of(&[]), None);
+        let boxes = [work("a", true), work("b", false), acceptance("c")];
+        assert_eq!(
+            progress_of(&boxes),
+            Some(Progress {
+                ticked: 1,
+                total: 3,
+                work: (1, 2),
+                acceptance: (0, 1),
+            })
         );
     }
 }

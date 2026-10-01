@@ -5,11 +5,12 @@
 //! section is derived on its own (#306): one that fails says so in its place.
 
 use super::auto_actions::{AutoFacts, Removal, Tell, auto_actions_of, conflicts_of, failed_pipelines_of};
+use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
 use super::merge::{blockers_of, checks_of, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
-use super::mr_blockers::{Reason, row_blockers_of};
+use super::mr_blockers::{Progress, Reason, progress_of, row_blockers_of};
 use super::next::{IssueState, Next, NextMerge, next_of, nothing_text, stale_of, updated_plan, why_of};
 use super::order::{Go, Item, MergeOffer, Target, order_actions, place_in};
 use super::resolve::{Conflict, Resolves};
@@ -151,6 +152,8 @@ pub struct MrFacts {
     pub conflict: Option<Conflict>,
     /// What it still lacks, who acts on it; its conflicts said by `conflict`.
     pub reasons: Vec<Reason>,
+    /// Its issue's boxes, ticked of all (#294); None for a merged one or an issue without boxes.
+    pub progress: Option<Progress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -185,6 +188,8 @@ pub struct OrchestrationModel {
     pub orders: Vec<Go>,
     /// The lines it sends by itself: conflicts, failed pipelines (auto_actions.rs).
     pub tells: Vec<Tell>,
+    /// Worktrees whose agent a hand-over takes now, and why: not removed meanwhile.
+    pub holds: HashMap<PathBuf, String>,
     /// Why the plan is stale.
     pub stale: Vec<String>,
 }
@@ -590,6 +595,11 @@ fn merge_requests_of(
             status,
             conflict: (!is_merged).then(|| resolves.state_of(mr, tree, agents, behind, now)),
             reasons: reasons.into_iter().filter(|reason| !reason.is_conflict).collect(),
+            progress: if is_merged {
+                None
+            } else {
+                part.issue.as_ref().and_then(|found| progress_of(&found.boxes))
+            },
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)
@@ -684,6 +694,7 @@ pub fn orchestration_of(
         left,
         orders: Vec::new(),
         tells: Vec::new(),
+        holds: HashMap::new(),
         stale: Vec::new(),
     };
     if issues.is_empty() {
@@ -764,6 +775,7 @@ pub fn orchestration_of(
     })
     .unwrap_or_default();
     model.orders = workers.orders.clone();
+    model.holds = workers.holds.clone();
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &workers, state, now)
     });
@@ -846,7 +858,9 @@ pub fn orchestration_of(
             local.free_memory,
         )
     });
-    model.free_agents = section("FREE AGENTS", || free_rows_of(&local.free, &local.agents));
+    model.free_agents = section("FREE AGENTS", || {
+        free_rows_of(&local.free, &local.agents, &names_of(&issues, known))
+    });
     if let Some(remote) = remote {
         let resolves = &mut state.resolves;
         model.merge_requests = section("MERGE REQUESTS", || {

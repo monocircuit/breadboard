@@ -11,6 +11,7 @@ mod band;
 mod clicks;
 mod demo;
 mod input;
+mod overview;
 mod page;
 mod run;
 mod scene;
@@ -30,8 +31,9 @@ use tokio::sync::mpsc;
 
 /// A view the frame runs.
 pub trait App {
-    /// What a click on a button or a block runs: the app's own.
-    type Action: Clone;
+    /// What a click on a button or a block runs: the app's own. Equal
+    /// actions are the same block, so the scroll stays on it over a rebuild.
+    type Action: Clone + PartialEq;
     /// What the app's readers send while it runs.
     type Model;
 
@@ -67,8 +69,7 @@ pub enum Flow {
 
 pub fn main(args: &[String]) -> ExitCode {
     if !args.iter().any(|arg| arg == "--demo") {
-        eprintln!("overview: not built yet (`breadboard overview --demo` shows the frame)");
-        return ExitCode::FAILURE;
+        return overview::main(args);
     }
     if args.iter().any(|arg| arg == "--once") {
         print!("{}", view::once(&demo::Demo::new(None), columns()));
@@ -76,19 +77,27 @@ pub fn main(args: &[String]) -> ExitCode {
     }
     let (sender, models) = mpsc::unbounded_channel();
     let mut app = demo::Demo::new(Some(sender));
-    // The view draws on this thread; the readers run on the workers.
-    let runtime = match tokio::runtime::Builder::new_multi_thread()
+    match runtime() {
+        Ok(runtime) => serve(runtime, &mut app, models),
+        Err(error) => {
+            eprintln!("overview: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The runtime of a live view: it draws on this thread, the readers run on the workers.
+fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("overview: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let result = runtime.block_on(run::run(&mut app, models));
+}
+
+/// Runs `app` live on `runtime` until it ends.
+fn serve<P: App>(runtime: tokio::runtime::Runtime, app: &mut P, models: mpsc::UnboundedReceiver<P::Model>) -> ExitCode {
+    let result = runtime.block_on(run::run(app, models));
+    // The readers may sit in a call: the view doesn't wait for them.
     runtime.shutdown_timeout(Duration::from_millis(100));
     match result {
         Ok(()) => ExitCode::SUCCESS,

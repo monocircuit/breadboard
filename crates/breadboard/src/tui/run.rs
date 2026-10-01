@@ -76,6 +76,10 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             is_dirty |= view.page_by(by);
                             continue;
                         }
+                        Command::Half(by) => {
+                            is_dirty |= view.half_by(by);
+                            continue;
+                        }
                         Command::Top => {
                             is_dirty |= view.scroll_top();
                             continue;

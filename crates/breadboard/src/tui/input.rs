@@ -16,6 +16,8 @@ pub enum Command {
     Scroll(i32),
     /// By pages.
     Page(i32),
+    /// By half pages: Ctrl-D, Ctrl-U.
+    Half(i32),
     Top,
     Bottom,
     /// The pointer moved there; None: it left the pane (the focus went).
@@ -42,6 +44,8 @@ fn key_command(key: &KeyEvent) -> Command {
     let is_plain = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => Command::Quit,
+        KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => Command::Half(1),
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => Command::Half(-1),
         _ if !is_plain => Command::Key(*key),
         KeyCode::Char('q') => Command::Quit,
         KeyCode::Char('r') => Command::Refresh,
@@ -278,6 +282,11 @@ mod tests {
         assert_eq!(command_of(&ctrl_c), Some(Command::Quit));
         let ctrl_r = Event::Key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert!(matches!(command_of(&ctrl_r), Some(Command::Key(_))));
+        let ctrl = |ch| command_of(&Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL)));
+        assert_eq!(ctrl('d'), Some(Command::Half(1)));
+        assert_eq!(ctrl('u'), Some(Command::Half(-1)));
+        assert_eq!(command(KeyCode::Down), Some(Command::Scroll(1)));
+        assert_eq!(command(KeyCode::Home), Some(Command::Top));
         assert!(matches!(command(KeyCode::Char('u')), Some(Command::Key(_))));
     }
 
