@@ -151,7 +151,7 @@ export default async function orchestrateCommand(name, flags) {
       "nothing to start: every issue is closed, claimed or has its worktree already",
     );
   // No count holds one back (#229): each to an idle agent that knows its
-  // files, else to a fresh one at once, on the shared stack when memory is
+  // files, else to the idle one with the most room (#265), else to a fresh one at once, on the shared stack when memory is
   // short (memory.mjs). `--queue` queues all of them for the overview,
   // `--now` (the overview's own start) looks for no idle one: it looked already.
   const toStart = plan.filter(item => !item.isSkipped);
@@ -170,7 +170,7 @@ export default async function orchestrateCommand(name, flags) {
     console.log(
       `  #${item.number.padEnd(4)} ${
         item.worker
-          ? `→ ${item.worker.name} (idle, shares ${item.shared.join(", ")})`
+          ? `→ ${item.worker.name} (idle${item.shared.length ? `, shares ${item.shared.join(", ")}` : ""}, ${Math.round(item.worker.share * 100)} %)`
           : `→ a fresh agent${item.stack.why ? `: ${item.stack.why}` : item.stack.isShared ? " on the shared stack" : ""}`
       }`,
     );

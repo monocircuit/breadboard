@@ -290,6 +290,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
     ]),
     // For WORKTREES' queue: which agent gets which queued issue next.
     suggested: handovers.suggested,
+    fresh: handovers.fresh,
   };
 };
 /** Whether the merged MRs are folded under their divider, over redraws. */
@@ -566,6 +567,7 @@ export const renderOrchestration = (local, remote, error) => {
     announced,
     holds: actions.holds,
     suggested: actions.suggested,
+    fresh: actions.fresh,
     hasRemote: Boolean(remote),
     known: local.workers,
     free: local.free,

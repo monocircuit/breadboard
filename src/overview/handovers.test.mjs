@@ -158,7 +158,7 @@ describe("a due announced handover (#244)", () => {
 
   it("is handed over on the next refresh of the live overview", () => {
     assert.deepEqual(refresh({ shouldHandOut: true }).runs, [
-      ["orch", 226, ["--to", "224-x"]],
+      ["orch", 226, ["--to", "224-x"], { dir: "/w/224" }],
     ]);
     // A --once print or a second overview hands nothing over.
     assert.deepEqual(refresh().runs, []);
