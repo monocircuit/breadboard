@@ -6,7 +6,10 @@ import {
   mergeText,
   nextAfter,
   blockersOf,
+  checksOf,
+  openTriesOf,
   sharedFiles,
+  shouldRedraft,
   toCheckOf,
   isNotYet,
   mergeStatusText,
@@ -46,23 +49,120 @@ describe("merge", () => {
     ]);
   });
 
-  it("marks a posted draft ready once every Work box is ticked", () => {
+  it("marks a posted draft ready once every Work and acceptance box is ticked", () => {
     const draft = { ...ready, isDraft: true };
     const posted = { canMarkReady: true };
-    // The acceptance criteria don't block.
     assert.deepEqual(
       blockersOf(
         draft,
-        boxes.filter(found => found.isTicked || found.heading !== "Work"),
+        boxes.map(found => ({ ...found, isTicked: true })),
         posted,
       ),
       [],
     );
     assert.deepEqual(
       blockersOf({ ...draft, pipeline: { status: "running" } }, boxes, posted),
-      ["1 work box open: After the merge: the …", "pipeline running"],
+      [
+        "1 work box open: After the merge: the …",
+        "1 acceptance box open: Two clicks merge a …",
+        "pipeline running",
+      ],
     );
-    assert.equal(toCheckOf(boxes), 1);
+    // A ready MR too: the boxes block whoever marked it ready.
+    assert.deepEqual(blockersOf(ready, boxes.slice(2)), [
+      "1 acceptance box open: Two clicks merge a …",
+    ]);
+  });
+
+  describe("the human's checks (#280)", () => {
+    const tryOf = (id, more = {}) => ({
+      id,
+      kind: "try",
+      text: `t${id}`,
+      ...more,
+    });
+
+    it("an open try blocks, `looks good` unblocks", () => {
+      assert.deepEqual(
+        blockersOf(ready, [], { tree: { actions: [tryOf(1)] } }),
+        ["try #1 open"],
+      );
+      assert.deepEqual(
+        blockersOf(ready, [], {
+          tree: { actions: [tryOf(1, { answer: "looks good" })] },
+        }),
+        [],
+      );
+      assert.deepEqual(
+        blockersOf(ready, [], {
+          tree: { answered: [tryOf(1, { answer: "looks good" })] },
+        }),
+        [],
+      );
+      // A browser-check is a try too.
+      assert.deepEqual(
+        openTriesOf({ actions: [tryOf(2, { kind: "browser-check" })] }).map(
+          found => found.id,
+        ),
+        [2],
+      );
+    });
+
+    it("a `broken` blocks until a later try looks good", () => {
+      const broken = tryOf(1, { answer: "broken" });
+      assert.deepEqual(blockersOf(ready, [], { tree: { actions: [broken] } }), [
+        "try #1 broken",
+      ]);
+      assert.deepEqual(
+        blockersOf(ready, [], { tree: { answered: [broken] } }),
+        ["try #1 broken"],
+      );
+      assert.deepEqual(
+        blockersOf(ready, [], {
+          tree: { answered: [broken], actions: [tryOf(2)] },
+        }),
+        ["try #1 broken", "try #2 open"],
+      );
+      assert.deepEqual(
+        blockersOf(ready, [], {
+          tree: {
+            answered: [broken, tryOf(2, { answer: "looks good" })],
+          },
+        }),
+        [],
+      );
+    });
+
+    it("a try on the test instance and a box after deploy don't block, they count after the merge", () => {
+      const tree = { actions: [tryOf(1, { on: "test" })] };
+      const afterDeploy = {
+        heading: "Acceptance criteria",
+        text: "It shows on test (after deploy, try #1)",
+        isTicked: false,
+      };
+      assert.deepEqual(checksOf([afterDeploy], tree), []);
+      assert.deepEqual(blockersOf(ready, [afterDeploy], { tree }), []);
+      assert.equal(toCheckOf([afterDeploy], tree), 2);
+      assert.equal(toCheckOf(boxes), 0);
+    });
+
+    it("a `broken` puts a ready MR back to draft", () => {
+      const open = { ...ready, title: "feat: x" };
+      assert.equal(shouldRedraft(tryOf(1), "broken", open), true);
+      assert.equal(shouldRedraft(tryOf(1), "looks good", open), false);
+      assert.equal(
+        shouldRedraft(tryOf(1), "broken", { ...open, isDraft: true }),
+        false,
+      );
+      assert.equal(
+        shouldRedraft(tryOf(1, { on: "test" }), "broken", open),
+        false,
+      );
+      assert.equal(
+        shouldRedraft({ id: 1, kind: "plan" }, "different", open),
+        false,
+      );
+    });
   });
 
   it("names what GitLab refuses", () => {
@@ -164,15 +264,25 @@ describe("merge", () => {
       }),
       /ready · draft · 1 work box open: After the merge: the …/,
     );
-    const done = boxes.map(found => ({
-      ...found,
-      isTicked: found.heading === "Work",
-    }));
+    const done = [
+      ...boxes.map(found => ({ ...found, isTicked: true })),
+      {
+        heading: "Acceptance criteria",
+        text: "On test (after deploy, try #2)",
+        isTicked: false,
+      },
+    ];
     assert.match(
       mergeText({ ...ready, iid: 10, isDraft: true }, "ready", done, {
         canMarkReady: true,
       }),
       /two clicks mark ready and merge · 1 to check after merge/,
+    );
+    assert.match(
+      mergeText({ ...ready, iid: 11 }, "ready", done, {
+        tree: { actions: [{ id: 1, kind: "try", text: "the row" }] },
+      }),
+      /ready · try #1 open/,
     );
   });
 });

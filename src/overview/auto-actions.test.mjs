@@ -166,13 +166,34 @@ describe("autoActionsOf", () => {
       [
         [
           "merge",
-          "pipeline passed, every Work box ticked, still a draft",
+          "pipeline passed, every box and try done, still a draft",
           true,
         ],
       ],
     );
     // Not next in the merge order, or boxes open: none.
     assert.deepEqual(kinds([only], draft), []);
+  });
+
+  it("leaves the merge out while a try or an acceptance box is open (#280)", () => {
+    const tried = issue();
+    tried.tree.actions = [{ id: 1, kind: "try", text: "the row" }];
+    assert.deepEqual(
+      kinds([tried], () => ({ mr: mr() })),
+      [],
+    );
+    tried.tree.actions = [{ id: 1, kind: "try", text: "on test", on: "test" }];
+    assert.deepEqual(
+      kinds([tried], () => ({ mr: mr() })),
+      [["merge", "ready, pipeline passed"]],
+    );
+    const boxes = [
+      { heading: "Acceptance criteria", text: "Checked", isTicked: false },
+    ];
+    assert.deepEqual(
+      kinds([issue()], () => ({ mr: mr(), issue: { boxes } })),
+      [],
+    );
   });
 
   it("leaves the merge out while a requested change blocks it", () => {

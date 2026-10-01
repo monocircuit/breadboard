@@ -13,6 +13,7 @@ import { featureOf, focusSpace, isChangeOpen, mainDir } from "../worktree.mjs";
 import { deliverTo } from "./answers.mjs";
 import { unpushedActionOf } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
+import { checksOf } from "./merge.mjs";
 import { isConflictSettled, noteTold } from "./resolve.mjs";
 import { show } from "./io.mjs";
 import { screen } from "./screen.mjs";
@@ -406,10 +407,11 @@ export const tellFailedPipelines = (issues, of, agents, develop = null) => {
  * them: `{ key, kind, text, at, issue, go }`, `key` the same for as long as
  * the cause lasts. `of(issue)`: its part of GitLab (`{ mr, jobs, issue }`);
  * `agents`: agentsOf(); `develop`: develop's last finished pipeline.
- * - `merge`: the MR is ready and its pipeline passed, unless the agent posted
+ * - `merge`: the MR is ready and its pipeline passed, every try and
+ *   acceptance box done (checksOf), unless the agent posted
  *   one or a requested change still blocks it (change.mjs); a draft of
  *   `readyDrafts` too (issue numbers: next in the merge order, green, every
- *   Work box ticked), whose agent could not mark it ready: its merge does;
+ *   box ticked, every try looks good), whose agent could not mark it ready: its merge does;
  * - `push`: its worktree holds commits origin doesn't have for long;
  * - `pipeline`: the pipeline of the open MR failed and its line didn't get
  *   in to the agent yet (tellFailedPipelines sends it by itself), with why;
@@ -452,12 +454,14 @@ export const autoActionsOf = (
       // GitLab's word, not ours: conflicts, a check still running, … block.
       (mr.mergeStatus === "mergeable" || isReadyDraft) &&
       !tree?.actions?.some(action => action.kind === "merge") &&
-      !isChangeOpen(tree, mr)
+      !isChangeOpen(tree, mr) &&
+      // Not before the human's checks are done: tries, acceptance boxes (#280).
+      checksOf(found?.boxes ?? [], tree).length === 0
     )
       add(
         "merge",
         isReadyDraft
-          ? "pipeline passed, every Work box ticked, still a draft"
+          ? "pipeline passed, every box and try done, still a draft"
           : "ready, pipeline passed",
         pipelineAt,
         () => show(mr.url, tree?.dir),

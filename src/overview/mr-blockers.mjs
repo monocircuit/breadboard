@@ -5,7 +5,7 @@
 // new.
 import { dim, fit, pad, underRows, visible, yellow } from "../lib/tty.mjs";
 import { isChangeOpen } from "../worktree.mjs";
-import { isWork, mergeStatusText, wordsOf } from "./merge.mjs";
+import { checksOf, isWork, mergeStatusText, wordsOf } from "./merge.mjs";
 import { isConflictSettled } from "./resolve.mjs";
 
 /** Who acts on a reason; an MR it waits for is named by its `!N`. */
@@ -24,8 +24,9 @@ const NAMED_BOXES = 2;
 
 /**
  * The reasons an open MR can't be merged yet, `{ text, who }`, in the order
- * they have to be done: pipeline, open Work boxes, the draft, conflicts, the
- * MRs it waits for, a requested change, unpushed commits. None when it is
+ * they have to be done: pipeline, open Work boxes, the human's checks (open
+ * tries, open acceptance boxes, checksOf), the draft, conflicts, the MRs it
+ * waits for, a requested change, unpushed commits. None when it is
  * ready to merge. `mr` as the overview reads it, `boxes` its issue's
  * (boxesOf), `behind` how many commits of develop its branch lacks, `after`
  * the MRs it comes directly after (merge-order.mjs, `{ iid, why }`), `jobs`
@@ -61,8 +62,13 @@ export const rowBlockersOf = ({
       `${open.length} Work box${open.length === 1 ? "" : "es"} open: ${named}${more > 0 ? ` +${more}` : ""}`,
       WHO.agent,
     );
-  } else if (mr.isDraft) {
-    // All ticked: the merge action marks it ready, the agent's or the
+  }
+  // A try waits for you, an acceptance box for its agent to tick it (#280).
+  const checks = checksOf(boxes, tree);
+  for (const check of checks)
+    add(check, check.startsWith("try ") ? WHO.you : WHO.agent);
+  if (!open.length && !checks.length && mr.isDraft) {
+    // All done: the merge action marks it ready, the agent's or the
     // overview's own once the pipeline passed.
     const isPosted = tree?.actions?.some(action => action.kind === "merge");
     add(

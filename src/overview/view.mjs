@@ -11,6 +11,7 @@ import {
   STUDIO_PORT,
   actionsFile,
   actionsOf,
+  answeredOf,
   changeOf,
   handoversOf,
   hasOwnCommits,
@@ -57,6 +58,8 @@ export const readView = async () => {
       // A handed-over agent that hasn't entered its next worktree: the clean-up waits for it (#252).
       left: leftIn(tree.dir, claudes),
       actions: actionsOf(actionsFile(tree.dir)),
+      // The tries answered and delivered: a `broken` holds the merge until tried again (#280).
+      answered: answeredOf(actionsFile(tree.dir)),
       // For the merge order (order.mjs): which MRs share files.
       files: filesOf(tree.dir),
       // How far develop moved on: with conflicts, how much there is to merge in.
