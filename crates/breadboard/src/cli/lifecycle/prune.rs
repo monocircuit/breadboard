@@ -7,6 +7,7 @@
 
 use super::args::{Args, Takes};
 use super::claude::{bound_session, left_in, left_text, running_claudes, session_file};
+use super::plugin;
 use super::proc::{Done, fail, git, step, text};
 use super::remove::{self, Options};
 use super::repo::Repo;
@@ -287,6 +288,11 @@ pub fn command(args: &Args) -> Done {
             }
         };
         report.push((name.clone(), what));
+    }
+    // After the removals (the plugin may have been linked from one of them,
+    // #230); a dry run asks herdr nothing.
+    if !is_dry {
+        plugin::heal(&repo.main);
     }
 
     println!(

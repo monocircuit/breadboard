@@ -19,7 +19,8 @@ pub mod tabs;
 use super::args::{Args, Takes};
 use super::claude::share_conversations;
 use super::herdr::{self, call, s};
-use super::proc::{Done, fail};
+use super::plugin;
+use super::proc::{Done, fail, step};
 use super::repo::{Repo, VITA, compose_args, env_file_of, offset_of};
 use breadboard_core::record::SPACE;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
@@ -50,6 +51,13 @@ pub fn command(args: &Args) -> Done {
         return fail("this runs inside herdr (HERDR_ENV is not set)");
     }
     let repo = Repo::here()?;
+    plugin::heal(&repo.main);
+    // Said first: the layout takes seconds, today's was silent until its end.
+    let count = repo.trees().len();
+    step(&format!(
+        "herdr: the layout of {SPACE} and its {count} worktree{}",
+        if count == 1 { "" } else { "s" }
+    ));
     let Some((main, report)) = exclusive(|| layout(&repo, true)) else {
         return fail("herdr did not answer, is its server running? (herdr status)");
     };

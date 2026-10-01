@@ -16,6 +16,7 @@ use super::gitlab;
 use super::herdr::{self, call, did, id_at, s};
 use super::layout::spaces::space_of;
 use super::layout::tabs::{EDITOR, OVERVIEW, ROOT, drop_duplicates, keep_order};
+use super::plugin;
 use super::proc::{Done, Fail, exe, fail, git, step, text};
 use super::repo::Repo;
 use super::setups::{Claim, claim_setup, setup_text};
@@ -496,8 +497,9 @@ fn record_failure(repo: &Repo, name: &str, id: &str, number: i64, reason: &str) 
     let _ = record::write_worker(&repo.main, name, id, fields);
 }
 
-/// The record learns that `worker` works on `number` in `dir` now, under its feature's name.
-fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue) {
+/// The record learns that `worker` works on `number` in `dir` now, under its
+/// feature's name; `renamed` (when) only once its `/rename` took (#313).
+fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue, has_rename_taken: bool) {
     let raw = raw_record(repo, name);
     let known = worker_entry(&raw, &worker.id);
     let at = to_iso(now_ms());
@@ -516,7 +518,7 @@ fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue) {
         .filter(|n| *n != issue.number)
         .collect();
     issues.push(issue.number);
-    let renamed = if is_renamed {
+    let renamed = if is_renamed && has_rename_taken {
         json!(at)
     } else {
         known.get("renamed").cloned().unwrap_or(Value::Null)
@@ -563,6 +565,7 @@ fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Mad
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped())
         .output();
+    let is_ok = made.as_ref().is_ok_and(|made| made.status.success());
     let errors = made
         .map(|made| String::from_utf8_lossy(&made.stderr).into_owned())
         .unwrap_or_default();
@@ -575,7 +578,8 @@ fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Mad
         failed: errors
             .lines()
             .find_map(|line| line.strip_prefix("✗ "))
-            .map(String::from),
+            .map(String::from)
+            .or_else(|| (!is_ok).then(|| "wt:new failed".to_string())),
     }
 }
 
@@ -656,8 +660,16 @@ fn tell(pane: &str, worker: &Worker, issue: &Issue) -> Told {
         return Told::No;
     }
     let name_now = || session_name(&worker.id);
+    // Said at once: the wait may take its whole 2 × RENAME_WAIT.
+    if name_now().is_some_and(|now| now != issue.feature) {
+        step(&format!("{rename} typed, waiting for its session to show the name"));
+    }
     let mut renamed = wait_renamed(&issue.feature, RENAME_WAIT, name_now);
-    if let Renamed::No(_) = renamed {
+    if let Renamed::No(now) = &renamed {
+        step(&format!(
+            "its session still shows {}: {rename} typed again",
+            if now.is_empty() { "no name" } else { now }
+        ));
         did(&["agent", "prompt", pane, &rename]);
         renamed = wait_renamed(&issue.feature, RENAME_WAIT, name_now);
     }
@@ -794,6 +806,9 @@ pub fn command(args: &Args) -> Done {
     }
     let repo = Repo::here()?;
     let is_dry = args.has("--dry-run");
+    if !is_dry {
+        plugin::heal(&repo.main);
+    }
     // A --brief applies to the issues of the run that passes it only (#247).
     let extra = match brief_file {
         Some(file) => {
@@ -952,10 +967,15 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         return Ok(());
     }
 
+    // wt:new may fail after its setup (#130): the handover goes on, its ✓ says so.
+    let mut setup_note = "";
     if !is_made {
         let _ = record::write_record(&repo.main, name, &[start_entry(&issue, known.as_ref(), None)]);
         step(&format!("pnpm wt:new {} --origin {name}", issue.feature));
         let made = make_worktree(repo, &issue, name, request.is_shared);
+        if made.is_there && made.failed.is_some() {
+            setup_note = " (wt:new failed after the setup, see above)";
+        }
         if !made.is_there {
             let reason = made.failed.unwrap_or_else(|| "no worktree".into());
             let why = format!("its worktree failed: {reason}");
@@ -991,7 +1011,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
     let (is_moved, told) = move_worker(repo, &worker, &pane, &issue);
-    record_handover(repo, name, &worker, &issue);
+    record_handover(repo, name, &worker, &issue, !matches!(told, Told::NotRenamed(_)));
     let _ = record::write_record(&repo.main, name, &[record_entry(&issue, None)]);
     claim.release();
     let is_announced = record::record_of(&repo.main, name)
@@ -1038,13 +1058,13 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     match told {
         Told::Yes => {
             println!(
-                "\n✓ #{number} went to the agent {feature}{renamed}, told in its prompt; SendMessage(to: \"{feature}\")"
+                "\n✓ #{number} went to the agent {feature}{renamed}, told in its prompt{setup_note}; SendMessage(to: \"{feature}\")"
             );
             Ok(())
         }
         Told::No => {
             println!(
-                "\n✓ #{number} {feature} is ready for {}, but herdr took no line: type these into its tab\n{typed}",
+                "\n✓ #{number} {feature} is ready for {}{setup_note}, but herdr took no line: type these into its tab\n{typed}",
                 worker.name
             );
             Ok(())

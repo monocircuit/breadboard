@@ -9,11 +9,12 @@ use super::claude::{bound_session, left_in, left_text, running_claudes, session_
 use super::gitlab;
 use super::herdr;
 use super::layout::{orchestrations::prune_orchestrators, release_space};
+use super::plugin;
 use super::proc::{Done, exe, fail, git, run_inherit, step, text};
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
 use super::setups::{setup_at, setup_text, setups_of};
-use breadboard_core::git::is_inside;
+use breadboard_core::git::{is_inside, own_commits};
 use breadboard_core::json::str_of;
 use breadboard_core::record::{self, origin_of};
 use breadboard_core::time::{now_ms, to_iso};
@@ -59,7 +60,10 @@ pub fn command(args: &Args) -> Done {
         is_closing_space: args.has("--close-space"),
         is_fetched: false,
     };
-    remove(&repo, feature, &options)
+    let done = remove(&repo, feature, &options);
+    // A refused removal checks the plugin too (#230: any wt:* in herdr); once a run.
+    plugin::heal(&repo.main);
+    done
 }
 
 /// The feature `given` names: itself, or the folder of a worktree as a path
@@ -101,6 +105,37 @@ fn mrs_of(repo: &Repo, branch: &str) -> Option<Vec<Value>> {
         gitlab::encode(branch)
     );
     gitlab::api(&repo.main, &endpoint)?.as_array().cloned()
+}
+
+/// The uncommitted files a refusal lists.
+const SHOWN: usize = 10;
+
+/// Why a branch with `own` commits develop lacks stays, and what to do,
+/// by its MRs (None: GitLab didn't answer).
+fn not_in_develop(branch: &str, own: usize, mrs: Option<&[Value]>) -> String {
+    let commits = if own == 1 {
+        "1 commit that is".to_string()
+    } else {
+        format!("{own} commits that are")
+    };
+    let iid = |mr: &Value| mr.get("iid").and_then(Value::as_i64).unwrap_or_default();
+    let open = mrs.and_then(|mrs| mrs.iter().find(|mr| str_of(mr, "state") == Some("opened")));
+    let merged = mrs.and_then(|mrs| mrs.iter().find(|mr| str_of(mr, "state") == Some("merged")));
+    let keep = "or keep the branch with --keep-branch";
+    match (mrs, open, merged) {
+        (_, Some(mr), _) => format!(
+            "{branch} has {commits} not in develop, its MR !{} is open. Merge its MR first, {keep}",
+            iid(mr)
+        ),
+        (_, None, Some(mr)) => format!(
+            "{branch} has {commits} not in develop, its MR !{} is merged without them. An MR of their own (pnpm wt:mr), {keep}",
+            iid(mr)
+        ),
+        (Some(_), None, None) => {
+            format!("{branch} has {commits} not in develop and no MR. pnpm wt:mr, {keep}")
+        }
+        (None, ..) => format!("{branch} has {commits} not in develop. Merge its MR first, {keep}"),
+    }
 }
 
 /// How many of `mrs` are open.
@@ -169,7 +204,17 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
             return fail(format!("{} {what} {feature}: again once it is done", setup_text(setup)));
         }
     }
-    if !git(&dir, &["status", "--porcelain"], None).out().is_empty() {
+    let status = git(&dir, &["status", "--porcelain"], None);
+    if !status.out().is_empty() {
+        // Which ones, above the ✗ (that stays the last line, other processes read it).
+        let lines: Vec<&str> = status.stdout.lines().filter(|line| !line.is_empty()).collect();
+        step(&format!("uncommitted in {feature}:"));
+        for line in lines.iter().take(SHOWN) {
+            println!("  {line}");
+        }
+        if lines.len() > SHOWN {
+            println!("  and {} more (git status)", lines.len() - SHOWN);
+        }
         return fail(format!(
             "{feature} has uncommitted changes, commit or discard them first"
         ));
@@ -181,11 +226,10 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
         if !options.is_fetched {
             git(&repo.main, &["fetch", "--prune"], None);
         }
-        is_merged = !has_own_commits(branch, &dir);
+        let own = own_commits(&dir, branch);
+        is_merged = own == 0;
         if !is_merged && !options.is_keeping_branch {
-            return fail(format!(
-                "{branch} has commits that are not in develop. Merge its MR first, or keep the branch with --keep-branch"
-            ));
+            return fail(not_in_develop(branch, own, mrs_of(repo, branch).as_deref()));
         }
     }
 
@@ -278,6 +322,11 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
             step(&format!("herdr: {line}"));
         }
     }
+    // The plugin may have been linked from the tree that just went (#230);
+    // wt:prune (is_fetched) checks once after all its removals.
+    if !options.is_fetched {
+        plugin::heal(&repo.main);
+    }
     let kept = match &branch {
         Some(branch) if !is_merged || options.is_keeping_branch => format!(", {branch} kept"),
         _ => String::new(),
@@ -300,6 +349,26 @@ mod tests {
         assert_eq!(open_count(&mrs), 1);
         assert_eq!(merged_at(&mrs).as_deref(), Some("2026-10-01T10:00:00Z"));
         assert_eq!(merged_at(&mrs[..1]), None);
+    }
+
+    #[test]
+    fn says_why_the_commits_keep_the_branch() {
+        let mr = |iid: i64, state: &str| serde_json::json!({ "iid": iid, "state": state });
+        let b = "feature/4-x";
+        assert_eq!(
+            not_in_develop(b, 2, Some(&[mr(9, "opened"), mr(7, "merged")])),
+            "feature/4-x has 2 commits that are not in develop, its MR !9 is open. Merge its MR first, or keep the branch with --keep-branch"
+        );
+        assert!(
+            not_in_develop(b, 1, Some(&[mr(7, "merged")]))
+                .contains("1 commit that is not in develop, its MR !7 is merged without them")
+        );
+        assert!(not_in_develop(b, 1, Some(&[])).contains("and no MR. pnpm wt:mr"));
+        assert!(
+            not_in_develop(b, 3, None).ends_with(
+                "3 commits that are not in develop. Merge its MR first, or keep the branch with --keep-branch"
+            )
+        );
     }
 
     #[test]

@@ -4,6 +4,70 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 00:20 · CLI / wt:remove, wt:prune, wt:herdr, handover · the plugin after a move (#230)
+Chose: once per run inside herdr, `wt:remove`, `wt:prune`, `wt:herdr` and
+the handover ask `herdr plugin list`; when `monocircuit.platform` is linked
+from a path that is gone, they `plugin unlink` + `plugin link` the
+package's current `herdr/` (the main checkout's, else the one next to the
+binary, as session.mjs `pluginDir`) and say `▸ plugin monocircuit.platform
+linked again from <dir>: <old> is gone`. The repo's `.herdr/config.toml`
+gets every gone `…/herdr` (the listed one, and any `<dir>/run.mjs` whose
+dir is gone) replaced, `server reload-config` only when this herdr runs
+with that file (the session `platform`). `~/.config/herdr/config.toml` is
+only read: a gone path there gets one line naming it and what to do
+(`pnpm herdr:install writes the plugin's block again; a line of your own
+there needs <dir>`). wt:remove checks after the removal (the plugin may
+have been linked from the tree that just went), wt:prune after all its
+removals; `wt:prune --dry-run` and a handover `--dry-run` ask herdr nothing.
+herdr's `plugin list` format is read loosely (JSON: the entry naming the
+plugin; text: its line and the indented ones under it); a listing that
+names no path changes nothing.
+Against: editing `~/.config` (the user's memory ask-before-global-config:
+a change under ~ gets a question first, and the loop asks none; the plugin
+piece's `herdr:install` owns that block); relinking a path that exists
+(a plugin linked from a worktree on purpose stays).
+Why: rule 2 (#230's criteria beat parity); rule 6 (herdr writes only when
+the link is broken: one read a run otherwise). Note for the suite: the fake
+herdr counts `plugin list` as a write (it is not in its READS); it is a read.
+
+## 2026-10-02 00:15 · CLI / internal names · remove, prune, orchestrate
+Chose: `breadboard remove|prune <…>` and `breadboard orchestrate <name>
+<issue> --to <agent>` are `wt:remove`, `wt:prune` and the handover, as
+today's `worktree.mjs remove|prune|orchestrate` (spec §0.1, the overview's
+✕ and the tabs spawn them). `breadboard herdr` is not taken for wt:herdr:
+it is the name `pnpm herdr` (setup/plugin piece) wants, and the plugin's
+`restore` calls `breadboard wt:herdr --no-focus` at the cut-over.
+Why: rule 5 (today's names keep working), rule 4 (one name per command
+where two pieces want the same word).
+
+## 2026-10-02 00:10 · CLI / wt:herdr · whose conversations are merged
+Chose: the layout merges only the claude projects of worktree roots
+(`<main>-<feature>`, there or gone) into the main checkout's project, told
+by the `cwd` its transcripts started in; a project of a session started in
+a subdirectory (`platform/packages/breadboard`, `platform-314-x/.claude/…`)
+stays its own. Against: today's prefix match on the project's name, which
+merged and symlinked those too (seen on the live machine).
+Why: rule 3 says decide it; the name can't tell `/` from `-`, the
+transcript can, and a merge is not undone (rule 5's spirit: no lost work).
+
+## 2026-10-02 00:05 · CLI / wt:remove, wt:herdr, handover · what they say
+Chose: `wt:remove` refused for uncommitted changes lists them first
+(`▸ uncommitted in <feature>:`, the porcelain lines, at most 10), the ✗
+line stays today's and last; refused for commits develop lacks it says
+how many and its MR (`…has 2 commits that are not in develop, its MR !308
+is open. Merge its MR first, or keep the branch with --keep-branch`;
+merged without them → `An MR of their own (pnpm wt:mr)`; none → `pnpm
+wt:mr`; GitLab silent → today's sentence), one glab read on that path.
+`wt:herdr` says `▸ herdr: the layout of Monocircuit/Platform and its <n>
+worktrees` before its seconds of work. A handover whose `/rename` doesn't
+show at once says `▸ /rename <feature> typed, waiting for its session to
+show the name` (and again when typed a second time); the record's
+`renamed` is set only once the rename took (#313). A handover whose
+wt:new failed after the worktree existed ends `✓ … told in its prompt (wt:new
+failed after the setup, see above)`, as fresh starts do.
+Why: rule 3 + the bar (lazygit names the files; a silent 20 s wait reads as
+hung); the ✗ line other processes parse is unchanged.
+
 ## 2026-10-01 23:40 · CLI / wt:orchestrate --to · one handover
 Chose: `wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…]`, the
 call people and the overview make, runs the lifecycle group's handover

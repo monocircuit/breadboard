@@ -230,8 +230,12 @@ fn merge_into(from: &Path, to: &Path, suffix: &str) -> std::io::Result<bool> {
 /// Every conversation of the repo kept in the main checkout's project, so
 /// `/resume` there lists them all: a worktree's project is a relative link
 /// to it, an older project directory is merged in and replaced by the link
-/// once none of its transcripts was written lately. Never fails (comfort);
-/// returns the suffixes of the projects that moved.
+/// once none of its transcripts was written lately. Only the projects of
+/// worktree roots (`<main>-<feature>`, gone ones too) are merged: a session
+/// started in a subdirectory (`platform/packages/breadboard`,
+/// `platform-314-x/.claude/…`) has a project named like one and stays its
+/// own, where today's merged it too. Never fails (comfort); returns the
+/// suffixes of the projects that moved.
 pub fn share_conversations(main: &Path, trees: &[PathBuf]) -> Vec<String> {
     link_projects(main, trees).unwrap_or_default()
 }
@@ -263,6 +267,9 @@ fn link_projects(main: &Path, trees: &[PathBuf]) -> std::io::Result<Vec<String>>
             continue;
         }
         let project = entry.path();
+        if !is_tree_project(&project, main) {
+            continue;
+        }
         let is_live = fs::read_dir(&project)?.flatten().any(|file| {
             file.file_name().to_string_lossy().ends_with(".jsonl")
                 && file
@@ -278,6 +285,44 @@ fn link_projects(main: &Path, trees: &[PathBuf]) -> std::io::Result<Vec<String>>
         merged.push(suffix.to_string());
     }
     Ok(merged)
+}
+
+/// Whether `project` holds the conversations of a worktree root of `main`
+/// (`<main>-<feature>`, there or gone): the `cwd` its transcripts started in
+/// says so, the name alone can't (`/` and `-` both become `-`).
+fn is_tree_project(project: &Path, main: &Path) -> bool {
+    let Some(cwd) = cwd_of(project) else {
+        return false;
+    };
+    let prefix = format!("{}-", main.file_name().unwrap_or_default().to_string_lossy());
+    cwd.parent() == main.parent()
+        && cwd
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        && project_of(&cwd).file_name() == project.file_name()
+}
+
+/// The `cwd` of the first transcript line in `project` that has one.
+fn cwd_of(project: &Path) -> Option<PathBuf> {
+    let mut files: Vec<_> = fs::read_dir(project)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|file| file.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort();
+    files.iter().find_map(|file| {
+        let mut head = String::new();
+        fs::File::open(file)
+            .ok()?
+            .take(256 * 1024)
+            .read_to_string(&mut head)
+            .ok();
+        head.lines().find_map(|line| {
+            let value: Value = serde_json::from_str(line).ok()?;
+            Some(PathBuf::from(value.get("cwd")?.as_str()?))
+        })
+    })
 }
 
 #[cfg(test)]
@@ -308,6 +353,30 @@ mod tests {
         let left = left_in(Path::new("/r/p-4"), &claudes, Some("a"));
         assert_eq!(left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
         assert_eq!(left_text(&left), "claude 1");
+    }
+
+    #[test]
+    fn merges_only_the_projects_of_worktree_roots() {
+        let root = std::env::temp_dir().join(format!("lifecycle-projects-{}", std::process::id()));
+        let main = root.join("platform");
+        let project = |cwd: &Path| {
+            let dir = root.join("projects").join(project_of(cwd).file_name().unwrap());
+            fs::create_dir_all(&dir).unwrap();
+            let line = serde_json::json!({ "type": "user", "cwd": cwd }).to_string();
+            fs::write(dir.join("a.jsonl"), format!("{{\"type\":\"summary\"}}\n{line}\n")).unwrap();
+            dir
+        };
+        assert!(is_tree_project(&project(&root.join("platform-303-x")), &main));
+        assert!(!is_tree_project(&project(&main.join("packages/breadboard")), &main));
+        assert!(!is_tree_project(
+            &project(&root.join("platform-314-x/.claude/gauntlet/clones/cli")),
+            &main
+        ));
+        assert!(!is_tree_project(&project(&root.join("other-1")), &main));
+        let empty = root.join("projects/-x-platform-9");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(!is_tree_project(&empty, &main));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
