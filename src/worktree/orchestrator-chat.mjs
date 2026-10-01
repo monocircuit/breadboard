@@ -72,12 +72,14 @@ const isSpare = (tab, panes, idle) => {
 };
 /**
  * Whether `⇶ <name>` has an orchestrator already: a tab `orchestrator` that
- * holds more than a spare shell (a claude, or anything else running). Such a
- * tab is never closed or replaced from a script.
+ * holds more than a spare shell (a claude, or anything else running), or,
+ * without that tab, the one claude of the space (chatPaneOf). Such a tab is
+ * never closed or replaced from a script.
  */
 export const hasChat = ({ tabs, panes, isIdle: idle = isIdle }) => {
   const tab = chatTabOf(tabs);
-  return Boolean(tab) && !isSpare(tab, panes, idle);
+  if (!tab) return Boolean(chatPaneOf({ tabs, panes }));
+  return !isSpare(tab, panes, idle);
 };
 /**
  * Why wt:orchestrate leaves the tab running it where it is, or null when it
@@ -105,7 +107,8 @@ export const isWorktreeSpace = label =>
  * `all` the panes of every space and the recorded `sessionId`:
  * `{ state, pane, tab }`, `state` one of
  * - `alive`: the recorded conversation runs in a pane (anywhere), or a claude
- *   runs in the tab `orchestrator` (a fresh chat);
+ *   runs in the tab `orchestrator` (a fresh chat), or, without that tab, the
+ *   one claude of the space runs in a tab of its own (`isLone`, chatPaneOf);
  * - `idle`: the tab is there, a shell alone idles in it (its claude died);
  * - `busy`: the tab is there, something else runs in it;
  * - `missing`: no tab `orchestrator`.
@@ -122,7 +125,12 @@ export const chatStateOf = ({
     : null;
   if (running) return { state: "alive", pane: running, tab: null };
   const tab = chatTabOf(tabs);
-  if (!tab) return { state: "missing", pane: null, tab: null };
+  if (!tab) {
+    const lone = chatPaneOf({ tabs, panes });
+    return lone
+      ? { state: "alive", pane: lone, tab: null, isLone: true }
+      : { state: "missing", pane: null, tab: null };
+  }
   const own = panes.filter(pane => pane.tab_id === tab.tab_id);
   const claude = own.find(pane => pane.agent);
   if (claude) return { state: "alive", pane: claude, tab };
@@ -182,12 +190,14 @@ const focus = (workspace, tab) =>
  * `open orchestrator chat`): the space is made if it is gone, without a
  * recorded conversation a fresh claude starts, and the tab gets the focus.
  * Without it (the layout after a herdr restart) only an idle tab with a
- * recorded conversation is acted on, like resumeSession. `chat`: the
+ * recorded conversation is acted on, like resumeSession. A lone claude in
+ * the space (a fresh chat in a tab of its own) is the orchestrator: its tab
+ * is named so and its conversation recorded (`remember`). `chat`: the
  * recorded one (chatOf). Returns what happened.
  */
 export const restoreChat = (
   name,
-  { isClick = false, chat = chatOf(name) } = {},
+  { isClick = false, chat = chatOf(name), remember = recordChat } = {},
 ) => {
   if (!isInHerdr()) return null;
   const label = orchestratorLabel(name);
@@ -196,12 +206,16 @@ export const restoreChat = (
     (isClick ? orchestratorSpace(name) : null);
   if (!workspace) return null;
   const tabs = tabsOf(workspace);
-  const { state, pane } = chatStateOf({
+  const { state, pane, isLone } = chatStateOf({
     tabs,
     panes: panesOf(workspace),
     all: herdr(["pane", "list"])?.panes ?? [],
     sessionId: chat?.sessionId,
   });
+  if (isLone) {
+    herdr(["tab", "rename", pane.tab_id, ORCHESTRATOR_TAB]);
+    remember(name, chatOfPane(pane));
+  }
   if (state === "alive" || state === "busy") {
     if (!isClick || !pane) return null;
     focus(pane.workspace_id ?? workspace, pane.tab_id);

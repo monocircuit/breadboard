@@ -93,6 +93,23 @@ describe("hasChat (one orchestrator tab per space)", () => {
     );
   });
 
+  it("counts the one claude of a space without the tab", () => {
+    assert.equal(
+      hasChat({
+        tabs: [{ tab_id: "t3", label: "5" }],
+        panes: [
+          {
+            tab_id: "t3",
+            pane_id: "p3",
+            agent: "claude",
+            agent_session: { value: ID },
+          },
+        ],
+      }),
+      true,
+    );
+  });
+
   it("does not count a space without the tab", () => {
     assert.equal(
       hasChat({ tabs: tabs.slice(0, 1), panes: [], isIdle: () => true }),
@@ -350,6 +367,35 @@ else if (what === "pane" && verb === "process-info") {
     );
     assert.equal(restore({ isClick: true }), "focused the orchestrator");
     assert.deepEqual(callsMade(), [
+      ["workspace", "focus", "w1"],
+      ["tab", "focus", "w1:t3"],
+    ]);
+  });
+
+  it("takes a lone claude in a tab of its own as the orchestrator: renamed, recorded, focused", () => {
+    setUp(
+      [...base, tab("w1:t3", "5")],
+      [
+        {
+          pane_id: "w1:p3",
+          tab_id: "w1:t3",
+          agent: "claude",
+          agent_session: { value: OTHER },
+          cwd: "/repo",
+        },
+      ],
+    );
+    const remembered = [];
+    assert.equal(
+      restore({
+        isClick: true,
+        remember: (name, found) => remembered.push([name, found.sessionId]),
+      }),
+      "focused the orchestrator",
+    );
+    assert.deepEqual(remembered, [["zz-chat", OTHER]]);
+    assert.deepEqual(callsMade(), [
+      ["tab", "rename", "w1:t3", "orchestrator"],
       ["workspace", "focus", "w1"],
       ["tab", "focus", "w1:t3"],
     ]);
