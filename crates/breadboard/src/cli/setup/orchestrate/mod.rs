@@ -13,7 +13,6 @@ mod workers;
 use crate::cli::setup::herdr;
 use crate::cli::setup::proc::{self, Args, fail, quote, step};
 use crate::cli::setup::repo;
-use breadboard_core::json::str_of;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
 use issue::{
@@ -22,7 +21,7 @@ use issue::{
 use serde_json::{Value, json};
 use std::fs;
 use std::process::{Command, ExitCode, Stdio};
-use workers::{Start, WorkerInfo};
+use workers::Start;
 
 pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
@@ -182,15 +181,6 @@ pub fn command(args: &Args) -> ExitCode {
         .map(|(values, _)| parse_after(values).unwrap_or_else(|error| fail(&error)));
     if after.is_some() && !args.has("--to") && !args.has("--queue") {
         fail("--after needs --queue (the issues wait in the queue for the MRs) or --to (a handover announced)");
-    }
-    if args.has("--to") {
-        if wanted.len() != 1 {
-            fail("--to hands over one issue at a time");
-        }
-        if let Some(after) = parsed_after {
-            return announce(&name, &wanted[0], args, &after, is_dry);
-        }
-        return hand_over(&name, &wanted[0], args, peer.as_deref(), given.as_deref(), is_dry);
     }
 
     let mut plan: Vec<Item> = wanted.iter().map(|arg| read_or_fail(arg)).collect();
@@ -548,249 +538,6 @@ fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
         } else {
             ""
         }
-    );
-    ExitCode::SUCCESS
-}
-
-fn no_agent(name: &str, who: &str, workers: &[WorkerInfo]) -> ! {
-    let label = record::orchestrator_label(&repo::main_dir(), name);
-    let names: Vec<&str> = workers.iter().map(|worker| worker.name.as_str()).collect();
-    fail(&format!(
-        "{label} has no agent {who}; its agents: {}",
-        if names.is_empty() {
-            "none".into()
-        } else {
-            names.join(", ")
-        }
-    ))
-}
-
-/// `--to <agent> [--limit <percent>]`: the issue to an idle agent of it (handover.mjs).
-fn hand_over(name: &str, arg: &str, args: &Args, peer: Option<&str>, given: Option<&str>, is_dry: bool) -> ExitCode {
-    if !herdr::is_in_herdr() {
-        fail("--to works inside herdr only: the agents are found through it");
-    }
-    let who = args.value("--to");
-    let limit = match args.value("--limit") {
-        None => Some(workers::CONTEXT_LIMIT),
-        Some(percent) => percent.trim().parse::<f64>().ok().map(|percent| percent / 100.0),
-    };
-    let (Some(who), Some(limit)) = (who, limit.filter(|limit| *limit > 0.0 && *limit <= 1.0)) else {
-        fail("usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]")
-    };
-    let all = workers::workers_of(name);
-    let Some(worker) = workers::find_worker(&all, &who).cloned() else {
-        no_agent(name, &who, &all)
-    };
-    let share = crate::cli::setup::conversations::context_share_of(&worker.id);
-    let refusal = workers::refusal_of(workers::pane_of_conversation(&worker.id).as_ref(), share, limit);
-    let item = read_or_fail(arg);
-    let number = item.number();
-    let failed = |reason: &str| -> ! {
-        if !is_dry {
-            workers::record_failure(name, &worker.id, number, reason);
-        }
-        fail(&format!("{} gets no next issue: {reason}", worker.name))
-    };
-    if let Some(refusal) = refusal {
-        failed(&refusal);
-    }
-    let dir = item.dir.to_string_lossy().into_owned();
-    let from = worker.dir.to_string_lossy().into_owned();
-    let claim = if is_dry {
-        None
-    } else {
-        match setups::claim_setup(name, number, &dir, Some(&worker.name), Some(&from)) {
-            Ok(claim) => Some(claim),
-            Err(holder) => fail(&format!("#{number} is set up already: {}", setups::setup_text(&holder))),
-        }
-    };
-    let known = known_entry(name, number);
-    let is_made = repo::worktrees().iter().any(|tree| tree.dir == item.dir)
-        && record::origin_of(&item.dir).is_some_and(|origin| origin.name == name)
-        && crate::cli::setup::conversations::bound_session(&item.dir).is_none();
-    if let Some(why) = item.why.as_ref().filter(|_| !is_made) {
-        fail(&format!("#{}: {why}", item.number));
-    }
-    let extra = extra_for(name, number, given);
-    let before = workers::before_line(&workers::issues_before(name, &worker));
-    let brief = brief_of(&Brief {
-        item: &item,
-        name,
-        peer,
-        extra: &extra,
-        before,
-    });
-    if is_dry {
-        println!(
-            "\n▸ nothing was done (--dry-run). {} would get\n  {}\n  with the brief\n",
-            worker.name,
-            workers::next_issue_line(&item.number, &item.dir)
-        );
-        println!("{brief}");
-        return ExitCode::SUCCESS;
-    }
-    let main = repo::main_dir();
-    if !is_made {
-        let _ = record::write_record(&main, name, &[issue::start_entry(&item, known.as_ref(), None)]);
-        step(&format!("pnpm wt:new {} --origin {name}", item.feature));
-        let made = make_worktree(&item, name, args.has("--shared"));
-        if !made.is_there {
-            let failed = made.failed.unwrap_or_else(|| "no worktree".into());
-            let why = format!("its worktree failed: {failed}");
-            issue::undo_start(name, &item, known.as_ref(), &why, claim.as_ref());
-            workers::record_failure(name, &worker.id, number, &why);
-            fail(&format!("#{} {}: {failed}", item.number, item.feature));
-        }
-    }
-    let pane = workers::pane_of_conversation(&worker.id);
-    if let Some(now) = workers::refusal_of(pane.as_ref(), None, limit) {
-        let why = format!(
-            "after the setup, {} {}",
-            worker.name,
-            now.strip_prefix("it ").unwrap_or(&now)
-        );
-        issue::undo_start(name, &item, known.as_ref(), &why, claim.as_ref());
-        workers::record_failure(name, &worker.id, number, &format!("after the setup, {now}"));
-        let queued = if known
-            .as_ref()
-            .is_some_and(|known| breadboard_core::json::is_truthy(known.get("queued")))
-        {
-            ", the issue is back in the queue"
-        } else {
-            ""
-        };
-        fail(&format!(
-            "{why}: the worktree of #{} is removed again{queued}; run the same command again once it is idle",
-            item.number
-        ));
-    }
-    let pane = pane.expect("a pane: refusal_of refuses none");
-    let _ = record::write_brief(&item.dir, &brief);
-    let moved = workers::move_worker(&worker, &pane, &item.number, &item.dir);
-    if !moved.is_renamed {
-        // #313: a rename that didn't take is no handover; its line waits until it did.
-        workers::record_failure(name, &worker.id, number, "its /rename did not take");
-        if let Some(claim) = &claim {
-            claim.release();
-        }
-        step(&if moved.is_moved {
-            format!(
-                "herdr: the tab of {} moved into the space {}",
-                worker.name, item.feature
-            )
-        } else {
-            format!(
-                "herdr: the tab of {} stayed where it is (no space {})",
-                worker.name, item.feature
-            )
-        });
-        fail(&format!(
-            "#{} {}: /rename {} did not take in the tab of {}, so its next issue was not typed. Type these into its tab once it is idle:\n    {}\n    {}",
-            item.number,
-            item.feature,
-            item.feature,
-            worker.name,
-            workers::rename_line(&item.dir),
-            workers::next_issue_line(&item.number, &item.dir)
-        ));
-    }
-    workers::record_handover(name, &worker, number, &item.dir);
-    let _ = record::write_record(&main, name, &[record_entry(&item, None)]);
-    if let Some(claim) = &claim {
-        claim.release();
-    }
-    let is_announced =
-        record::record_of(&main, name).is_some_and(|found| found.handovers.iter().any(|h| h.number == number));
-    workers::record_start(
-        name,
-        &worker.id,
-        number,
-        if is_announced { "announced" } else { "handover" },
-        share,
-        Default::default(),
-    );
-    let _ = record::drop_handover(&main, name, number);
-    step(&if moved.is_moved {
-        format!(
-            "herdr: the tab of {} moved into the space {}",
-            worker.name, item.feature
-        )
-    } else {
-        format!(
-            "herdr: the tab of {} stayed where it is (no space {})",
-            worker.name, item.feature
-        )
-    });
-    let renamed = if worker.name == item.feature {
-        String::new()
-    } else {
-        format!(", renamed from {}", worker.name)
-    };
-    if moved.is_told {
-        println!(
-            "\n✓ #{} went to the agent {}{renamed}, told in its prompt; SendMessage(to: \"{}\")",
-            item.number, item.feature, item.feature
-        );
-    } else {
-        println!(
-            "\n✓ #{} {} is ready for {}, but herdr took no line: type these into its tab\n    {}\n    {}",
-            item.number,
-            item.feature,
-            worker.name,
-            workers::rename_line(&item.dir),
-            workers::next_issue_line(&item.number, &item.dir)
-        );
-    }
-    ExitCode::SUCCESS
-}
-
-/// `--to <agent> --after !<mr>…`: the handover announced, done by the overview once the MRs are merged.
-fn announce(name: &str, arg: &str, args: &Args, after: &[i64], is_dry: bool) -> ExitCode {
-    let main = repo::main_dir();
-    let label = record::orchestrator_label(&main, name);
-    let who = args.value("--to").unwrap_or_default();
-    let all = workers::workers_of(name);
-    let Some(worker) = workers::find_worker(&all, &who).cloned() else {
-        no_agent(name, &who, &all)
-    };
-    let item = read_or_fail(arg);
-    let number = item.number();
-    let known = known_entry(name, number);
-    let is_queued = known
-        .as_ref()
-        .is_some_and(|known| breadboard_core::json::is_truthy(known.get("queued")));
-    if let Some(why) = item.why.as_ref().filter(|_| !is_queued) {
-        fail(&format!("#{number}: {why}"));
-    }
-    let mrs: Vec<String> = after.iter().map(|iid| format!("!{iid}")).collect();
-    let verb = if after.len() > 1 { "are" } else { "is" };
-    if is_dry {
-        println!(
-            "\n▸ nothing was done (--dry-run). {} would take #{number} once {} {verb} merged.",
-            worker.name,
-            mrs.join(", ")
-        );
-        return ExitCode::SUCCESS;
-    }
-    let mut entry = record_entry(&item, item.why.as_deref());
-    let queued_at = known
-        .as_ref()
-        .and_then(|known| str_of(known, "queuedAt"))
-        .map(String::from)
-        .unwrap_or_else(|| to_iso(now_ms()));
-    if let Some(fields) = entry.as_object_mut() {
-        fields.insert("queued".into(), json!(true));
-        fields.insert("queuedAt".into(), json!(queued_at));
-    }
-    let _ = record::write_record(&main, name, &[entry]);
-    let _ = record::announce_handover(&main, name, number, &worker.name, after, &to_iso(now_ms()));
-    println!(
-        "\n✓ #{number} {} goes to {} once {} {verb} merged: the overview of {label} hands it over then (its worktree is kept until), shown on {}'s node as → next #{number}",
-        item.feature,
-        worker.name,
-        mrs.join(", "),
-        worker.name
     );
     ExitCode::SUCCESS
 }

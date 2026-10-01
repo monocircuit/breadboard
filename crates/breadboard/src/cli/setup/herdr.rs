@@ -318,15 +318,6 @@ pub fn created_tab(moved: &Option<Value>) -> Option<String> {
         .map(|tab| field(tab, "tab_id").to_string())
 }
 
-/// The id a moved pane has now.
-pub fn moved_pane(moved: &Option<Value>) -> Option<String> {
-    moved
-        .as_ref()?
-        .get("move_result")?
-        .get("pane")
-        .map(|pane| field(pane, "pane_id").to_string())
-}
-
 /// The branch of a worktree as the sidebar token `$wt_branch`, only on a change (herdrdev/herdr#2952).
 pub fn mark_branch(workspace: &str, dir: &Path) {
     let Some(branch) = repo::worktrees()

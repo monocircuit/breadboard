@@ -2,9 +2,9 @@
 //! the next issue goes to an idle agent that knows its files, else to the one
 //! with the most room, else to a fresh one on a stack the memory allows.
 
-use crate::cli::setup::conversations::{self, bound_session, context_share_of, session_file};
+use crate::cli::setup::conversations::{bound_session, context_share_of};
 use crate::cli::setup::gitlab;
-use crate::cli::setup::herdr::{self, field, herdr_did};
+use crate::cli::setup::herdr;
 use crate::cli::setup::repo;
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record::{self, Record};
@@ -14,7 +14,6 @@ use serde_json::{Map, Value, json};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
 
 /// The share of its context above which an agent gets no next issue.
 pub const CONTEXT_LIMIT: f64 = 0.5;
@@ -23,10 +22,8 @@ pub const CONTEXT_LIMIT: f64 = 0.5;
 #[derive(Debug, Clone)]
 pub struct WorkerInfo {
     pub dir: PathBuf,
-    pub feature: Option<String>,
     pub id: String,
     pub name: String,
-    pub was: Option<String>,
     pub is_free: bool,
 }
 
@@ -53,9 +50,7 @@ pub fn workers_of(name: &str) -> Vec<WorkerInfo> {
                     .as_ref()
                     .and_then(|worker| worker.name.clone())
                     .unwrap_or_else(|| feature.clone()),
-                was: worker.and_then(|worker| worker.was),
                 dir: tree.dir,
-                feature: Some(feature),
                 id,
                 is_free: false,
             })
@@ -70,25 +65,14 @@ pub fn workers_of(name: &str) -> Vec<WorkerInfo> {
                 .filter(|worker| !bound.iter().any(|known| known.id == worker.id))
                 .map(|worker| WorkerInfo {
                     dir: checkout_of(name),
-                    feature: None,
                     id: worker.id.clone(),
                     name: worker.name.clone().unwrap_or_default(),
-                    was: worker.was.clone(),
                     is_free: true,
                 })
                 .collect()
         })
         .unwrap_or_default();
     bound.into_iter().chain(free).collect()
-}
-
-/// The worker `who` names: its name, else its worktree's feature, else its name before the last handover.
-pub fn find_worker<'a>(workers: &'a [WorkerInfo], who: &str) -> Option<&'a WorkerInfo> {
-    workers
-        .iter()
-        .find(|worker| worker.name == who)
-        .or_else(|| workers.iter().find(|worker| worker.feature.as_deref() == Some(who)))
-        .or_else(|| workers.iter().find(|worker| worker.was.as_deref() == Some(who)))
 }
 
 /// The pane herdr runs the conversation `id` in.
@@ -119,156 +103,6 @@ pub fn refusal_of(pane: Option<&Value>, share: Option<f64>, limit: f64) -> Optio
     })
 }
 
-pub fn next_issue_line(number: &str, dir: &std::path::Path) -> String {
-    format!(
-        "[overview] next issue #{number}, your name is {} now: EnterWorktree(path: \"{}\"), then read .claude/brief.md",
-        repo::feature_of(dir),
-        dir.display()
-    )
-}
-
-pub fn rename_line(dir: &std::path::Path) -> String {
-    format!("/rename {}", repo::feature_of(dir))
-}
-
-/// What the brief of a reused agent says about its issues before.
-pub fn before_line(issues: &[(i64, Option<String>)]) -> Option<String> {
-    if issues.is_empty() {
-        return None;
-    }
-    let list: Vec<String> = issues
-        .iter()
-        .map(|(number, title)| match title {
-            Some(title) => format!("#{number} ({title})"),
-            None => format!("#{number}"),
-        })
-        .collect();
-    Some(format!(
-        "You are a reused agent: you worked on {} before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged.",
-        list.join(", ")
-    ))
-}
-
-/// The issues `worker` worked on, as the record knows them.
-pub fn issues_before(name: &str, worker: &WorkerInfo) -> Vec<(i64, Option<String>)> {
-    let Some(found) = record::record_of(&repo::main_dir(), name) else {
-        return Vec::new();
-    };
-    let numbers: Vec<i64> = match found.worker(&worker.id) {
-        Some(known)
-            if found
-                .raw
-                .get("workers")
-                .and_then(|w| w.get(&worker.id))
-                .and_then(|w| w.get("issues"))
-                .is_some() =>
-        {
-            known.issues.clone()
-        }
-        _ => found
-            .issues
-            .iter()
-            .find(|issue| issue.feature.is_some() && issue.feature == worker.feature)
-            .and_then(|issue| issue.number)
-            .into_iter()
-            .collect(),
-    };
-    numbers
-        .into_iter()
-        .filter(|number| *number != 0)
-        .map(|number| {
-            let title = found
-                .issues
-                .iter()
-                .find(|issue| issue.number == Some(number))
-                .and_then(|issue| issue.title.clone());
-            (number, title)
-        })
-        .collect()
-}
-
-/// Whether the conversation `id` goes by `name` now (its session file); None when no running claude says.
-fn is_named(id: &str, name: &str) -> Option<bool> {
-    let claudes = conversations::running_claudes();
-    let found = claudes.iter().find(|(_, running, _, _)| running == id)?;
-    Some(found.2.as_deref() == Some(name))
-}
-
-/// `/rename <feature>` typed and waited for until the conversation goes by it (#313), once again if not.
-fn rename(pane: &str, id: &str, dir: &std::path::Path) -> bool {
-    let feature = repo::feature_of(dir);
-    for _ in 0..2 {
-        if !herdr_did(&["agent", "prompt", pane, &rename_line(dir)]) {
-            return false;
-        }
-        let until = Instant::now() + Duration::from_secs(10);
-        loop {
-            match is_named(id, &feature) {
-                Some(true) => return true,
-                // No running claude tells its name: as far as can be known, it took.
-                None => return true,
-                Some(false) if Instant::now() >= until => break,
-                Some(false) => std::thread::sleep(Duration::from_millis(250)),
-            }
-        }
-    }
-    false
-}
-
-/// What a move did: the tab moved, the rename took, the next issue told.
-pub struct Moved {
-    pub is_moved: bool,
-    pub is_renamed: bool,
-    pub is_told: bool,
-}
-
-/// The agent moves to the worktree `dir`: its pane into the worktree's space
-/// as `<feature>`, the conversation bound there, renamed (#251, waited for: #313) and told.
-pub fn move_worker(worker: &WorkerInfo, pane: &Value, number: &str, dir: &std::path::Path) -> Moved {
-    let feature = repo::feature_of(dir);
-    let workspace = herdr::space_of(dir);
-    let mut is_moved = false;
-    let mut target = field(pane, "pane_id").to_string();
-    if let Some(workspace) = &workspace {
-        let moved = herdr::herdr(&["pane", "move", &target, "--workspace", workspace, "--new-tab"]);
-        if let Some(pane) = herdr::moved_pane(&moved).filter(|pane| !pane.is_empty()) {
-            target = pane;
-        }
-        if let Some(created) = herdr::created_tab(&moved) {
-            herdr::herdr(&["tab", "rename", &created, &feature]);
-            herdr::drop_duplicates(workspace, &feature);
-            herdr::keep_order(workspace, &[herdr::ROOT, herdr::OVERVIEW, &feature, herdr::EDITOR]);
-            is_moved = true;
-        }
-    }
-    let _ = fs::write(session_file(dir), format!("{}\n", worker.id));
-    if !worker.is_free {
-        let _ = fs::remove_file(session_file(&worker.dir));
-    }
-    let tell = |pane: &str| -> (bool, bool) {
-        if !rename(pane, &worker.id, dir) {
-            return (false, false);
-        }
-        herdr_did(&["pane", "rename", pane, &feature]);
-        (
-            true,
-            herdr_did(&["agent", "prompt", pane, &next_issue_line(number, dir)]),
-        )
-    };
-    let (mut is_renamed, mut is_told) = tell(&target);
-    if !is_renamed {
-        let now = pane_of_conversation(&worker.id).map(|pane| field(&pane, "pane_id").to_string());
-        if let Some(now) = now.filter(|now| *now != target) {
-            (is_renamed, is_told) = tell(&now);
-        }
-    }
-    Moved {
-        is_moved,
-        is_renamed,
-        is_told,
-    }
-}
-
 /// The files a worktree's branch touched (workers.mjs `filesOf`).
 pub fn files_of(dir: &std::path::Path) -> Vec<String> {
     breadboard_core::git::branch_files(dir)
@@ -282,39 +116,6 @@ fn unique(list: impl IntoIterator<Item = String>) -> Vec<String> {
         }
     }
     seen
-}
-
-/// The record learns that `worker` works on `number` in `dir` now, under the name of its feature.
-pub fn record_handover(name: &str, worker: &WorkerInfo, number: i64, dir: &std::path::Path) {
-    let main = repo::main_dir();
-    let found = record::record_of(&main, name);
-    let known = found
-        .as_ref()
-        .and_then(|found| found.worker(&worker.id).cloned())
-        .unwrap_or_default();
-    let feature = repo::feature_of(dir);
-    let at = to_iso(now_ms());
-    let is_renamed = feature != worker.name;
-    let before: Vec<i64> = issues_before(name, worker)
-        .into_iter()
-        .map(|(number, _)| number)
-        .collect();
-    let mut issues: Vec<i64> = before.into_iter().filter(|known| *known != number).collect();
-    issues.push(number);
-    let files = unique(known.files.iter().cloned().chain(if worker.is_free {
-        Vec::new()
-    } else {
-        files_of(&worker.dir)
-    }));
-    let fields = json!({
-        "free": null,
-        "name": feature,
-        "was": if is_renamed { Some(worker.name.clone()) } else { worker.was.clone() },
-        "renamed": if is_renamed { Some(at) } else { known.renamed },
-        "issues": issues,
-        "files": files,
-    });
-    let _ = record::write_worker(&main, name, &worker.id, super::issue::object(fields));
 }
 
 fn history_of(entry: Option<&Value>) -> Vec<Value> {
@@ -374,37 +175,6 @@ pub fn record_start(name: &str, id: &str, number: i64, how: &str, context: Optio
     merged.insert("history".into(), Value::Array(all));
     merged.insert("issues".into(), Value::Array(issues));
     let _ = record::write_worker(&repo::main_dir(), name, id, merged);
-}
-
-/// The record learns that a handover of `number` to `id` failed, and why; the same again counts its `times`.
-pub fn record_failure(name: &str, id: &str, number: i64, reason: &str) {
-    if record::record_of(&repo::main_dir(), name).is_none() {
-        return;
-    }
-    let entry = worker_entry(name, id);
-    let mut failed: Vec<Value> = entry
-        .as_ref()
-        .and_then(|e| e.get("failed"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let at = to_iso(now_ms());
-    match failed
-        .iter_mut()
-        .find(|known| int_of(known, "number") == Some(number) && str_of(known, "reason") == Some(reason))
-    {
-        Some(same) => {
-            let times = int_of(same, "times").unwrap_or(1) + 1;
-            if let Some(object) = same.as_object_mut() {
-                object.insert("at".into(), json!(at));
-                object.insert("times".into(), json!(times));
-            }
-        }
-        None => failed.push(json!({ "number": number, "reason": reason, "at": at, "times": 1 })),
-    }
-    let mut fields = Map::new();
-    fields.insert("failed".into(), Value::Array(failed));
-    let _ = record::write_worker(&repo::main_dir(), name, id, fields);
 }
 
 // ---------------------------------------------------------------------------
@@ -665,11 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn says_what_a_reused_agent_did_before() {
-        assert_eq!(
-            before_line(&[(1, Some("a".into())), (2, None)]).unwrap(),
-            "You are a reused agent: you worked on #1 (a), #2 before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged."
-        );
+    fn finds_the_paths_a_text_names() {
         assert_eq!(paths_of("see src/a.ts and a.ts, src/a.ts"), vec!["src/a.ts", "a.ts"]);
     }
 }
