@@ -46,6 +46,7 @@ import {
   isSyncing,
   only,
 } from "./overview/args.mjs";
+import { dim } from "./lib/tty.mjs";
 import { guarded } from "./overview/guard.mjs";
 import { notifyChanges } from "./overview/notify.mjs";
 import { screen } from "./overview/screen.mjs";
@@ -67,12 +68,19 @@ import {
   syncStackTabs,
 } from "./worktree.mjs";
 
-// --once: one print, no screen of its own.
+// --once: one print, no screen of its own. In a terminal it says it reads
+// first: git, herdr and GitLab take half a minute, an empty screen looked hung.
 if (isOnce) {
+  const isTerminal = Boolean(process.stderr.isTTY);
+  if (isTerminal)
+    process.stderr.write(
+      dim("reading git, herdr and GitLab, about half a minute …"),
+    );
   const [local, { remote, error }] = await Promise.all([
     readView(),
     readRemoteSafely(),
   ]);
+  if (isTerminal) process.stderr.write("\r\x1b[2K");
   console.log(view(local, remote, error));
   process.exit(0);
 }
