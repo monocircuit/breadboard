@@ -19,6 +19,7 @@ import { ENTRY, VITA, featureOf, mainDir } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { button, closeBox, openBox, pipelineMark } from "./boxes.mjs";
 import { toneOf } from "./herdr-tones.mjs";
+import { fileLine, logTargets, openFile, pushFiles } from "./files.mjs";
 import { show } from "./io.mjs";
 import { claudeLine, home, plural, someFiles } from "./render-worktree.mjs";
 import { pushRows, screen } from "./screen.mjs";
@@ -214,7 +215,7 @@ export const pushIssue = (lines, issue) => {
   );
 };
 /** PIPELINE: every job with its mark on one line; a failed one with the last lines of its log. */
-export const pushPipeline = (lines, mr, jobs) => {
+export const pushPipeline = (lines, mr, jobs, dir) => {
   if (!mr?.pipeline || jobs.length === 0) return;
   const start = openBox(lines);
   const short = status =>
@@ -236,7 +237,15 @@ export const pushPipeline = (lines, mr, jobs) => {
       [["", red("✗"), bold(job.name), dim("click to open the job")]],
       [() => show(job.url)],
     );
-    for (const line of job.log) lines.push(`      ${dim(line)}`);
+    // A `file:line` in it opens in the worktree's nvim.
+    const targets = logTargets(job.log);
+    job.log.forEach((line, i) => {
+      const target = targets[i];
+      if (target)
+        screen.clicks[lines.length] = () =>
+          openFile(dir, target.file, target.line, { isLogged: true });
+      lines.push(`      ${target ? line : dim(line)}`);
+    });
   }
   closeBox(lines, start, `${bold("PIPELINE")} ${pipelineMark(mr.pipeline)}`);
 };
@@ -246,7 +255,7 @@ const MAX_MERGES = 6;
  * DEVELOP: what came in since the branch started, and whether merging it now
  * would conflict. `base`: the project's URL, for the links to the MRs.
  */
-export const pushDevelop = (lines, develop, base) => {
+export const pushDevelop = (lines, dir, develop, base) => {
   if (!develop || (develop.merges.length === 0 && develop.direct === 0)) return;
   const start = openBox(lines);
   const { conflicts } = develop;
@@ -259,7 +268,11 @@ export const pushDevelop = (lines, develop, base) => {
       `  ${green("✓")} merges cleanly: ${dim("git fetch && git merge origin/develop")}`,
     );
   else
-    lines.push(`  ${red("✗")} a merge conflicts in ${someFiles(conflicts, 4)}`);
+    pushFiles(
+      lines,
+      fileLine(`  ${red("✗")} a merge conflicts in `, conflicts, { count: 4 }),
+      dir,
+    );
   const merges = develop.merges.slice(0, MAX_MERGES);
   const url = mr => base && mr && `${base}/-/merge_requests/${mr}`;
   pushRows(

@@ -15,7 +15,9 @@
 //                                   (overview/diff.mjs); AGENT, ISSUE (its boxes),
 //                                   PIPELINE (its jobs), DEVELOP (what came in, would a merge
 //                                   conflict) and the migrations the stack lacks
-//                                   (overview/develop.mjs);
+//                                   (overview/develop.mjs); a click on a file there (DIFF, a
+//                                   conflict, a file:line of a failed job) opens it in the
+//                                   worktree's nvim tab at the change (overview/files.mjs);
 //                                   ✕ (two clicks) removes it once nothing would be lost
 //   pnpm overview --orchestration <name>
 //                                   only that orchestration (pnpm wt:orchestrate): its issues, the

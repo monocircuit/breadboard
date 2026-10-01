@@ -35,6 +35,8 @@ const ISLAND_HEAD = "\x1b[48;2;58;58;58m";
 const onIsland = (line, background = ISLAND) =>
   `${background}${line.replaceAll("\x1b[0m", `\x1b[0m${background}`)}\x1b[0m`;
 /** How wide a line inside a box can be before closeBox cuts it. */
+/** Where a box's cell starts on screen (from 1): after the island's margin, or the border and a blank. */
+export const CELL_START = isColor ? 2 : 3;
 export const boxInner = () => boxWidth() - (isColor ? 2 : 4);
 export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
   const width = boxWidth();
