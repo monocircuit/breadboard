@@ -7,9 +7,12 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+libc.workspace = true
+regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# The files keep their keys in the order Node wrote them (rewrite rule 5).
+serde_json = { workspace = true, features = ["preserve_order"] }
 tokio.workspace = true
 
 [lints]
