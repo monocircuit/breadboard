@@ -34,9 +34,13 @@ export function testLines({ packages, files }) {
   return lines;
 }
 
+/** A template box the pre-fill decides on: package checks, test:int, the browser. */
+export const PREFILLED = /pnpm --filter|test:int|browser/;
+
 /**
  * `text` (the template) with its Tests section replaced by `lines` under a
- * comment that says what to do with them. Nothing applies: an empty bullet,
+ * comment that says what to do with them. The template's other boxes (the
+ * changelog entry) apply to every MR and stay. Nothing applies: an empty bullet,
  * which wt:mr refuses until someone says why.
  */
 export function withTests(text, lines) {
@@ -46,13 +50,17 @@ export function withTests(text, lines) {
   let to = from + 1;
   while (to < all.length && !/^(?:#{1,6}\s|Refs #|Closes #)/.test(all[to]))
     to++;
+  const kept = all
+    .slice(from + 1, to)
+    .filter(line => /^\s*[-*+]\s+\[ \]/.test(line) && !PREFILLED.test(line));
+  const boxes = [...lines, ...kept];
   const section = [
     all[from],
     "",
     "<!-- Pre-filled from the branch's changes: only what applies. Tick what ran,",
     "     with its result; delete a line that doesn't apply. Something that",
     "     applies but didn't run goes into a sentence below, not an empty box. -->",
-    ...(lines.length > 0 ? lines : ["-"]),
+    ...(boxes.length > 0 ? boxes : ["-"]),
     "",
   ];
   return [...all.slice(0, from), ...section, ...all.slice(to)].join("\n");

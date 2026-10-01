@@ -106,12 +106,16 @@ describe("withTests", () => {
     const tests = text.slice(text.indexOf("## Tests"));
     assert.doesNotMatch(tests, /browser|test:int/);
     assert.match(tests, /@monocircuit\/breadboard lint/);
+    assert.match(tests, /changelog entry/);
     assert.match(text, /## Changes/);
     assert.match(text, /\nRefs #\s*$/);
   });
 
   it("leaves an empty bullet when nothing applies, so wt:mr asks why", () => {
-    const text = withTests(template, []);
+    const text = withTests(
+      "## Tests\n\n- [ ] clicked through in the browser\n",
+      [],
+    );
     assert.ok(unfilled(text).some(line => line.includes("(empty bullet)")));
   });
 });
