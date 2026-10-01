@@ -12,7 +12,7 @@ ships; the package is private.
 | Path | What it is |
 | ---- | ---------- |
 | `src/worktree.mjs` | `pnpm wt:*` and `pnpm stack:*`: the entry, its exports are what the rest imports |
-| `src/worktree/` | its parts: `commands/` (one file per command), `layout`, `spaces`, `tabs`, `lock`, `conversations`, `origins` and `orchestrator` (orchestrations), `changelog` and `overall-changelog` with their view `changelog-view`, `prune`, `stack`, `worktrees`, `issues`, `constants` |
+| `src/worktree/` | its parts: `commands/` (one file per command), `layout`, `spaces`, `tabs`, `lock`, `conversations`, `origins` and `orchestrator` (orchestrations), `changelog` and `overall-changelog` with their view `changelog-view`, `platform-changelog` (CHANGELOG.md), `prune`, `stack`, `worktrees`, `issues`, `constants` |
 | `src/overview.mjs` | `pnpm overview`: the loop of the live view; `--herdr` keeps herdr in step |
 | `src/overview/` | its parts: reading (`read`, `claude`, `gitlab`, `diff`, `develop`), drawing (`render*`, `boxes`, `agents`), `actions` (clicks and keys), `screen`, `view`, `args` |
 | `src/lib/` | what both use: `proc` (`run`, `git`, `sh`, `lines`, `step`, `fail`), `glab`, `herdr`, `tty` (colours, widths, tables) |
@@ -69,6 +69,12 @@ for its nvim for 30 s after it starts: one started earlier, or a claude that
 came into the worktree with EnterWorktree, connects with `/ide`.
 
 ## Changelogs
+
+The platform's `CHANGELOG.md` (Keep a Changelog, a section per vita release)
+is written by people: fragments in `.changelog/`, folded in at the release by
+`src/worktree/platform-changelog.mjs` (`pnpm changelog:*`,
+[`.changelog/README.md`](../../.changelog/README.md)). The two below are live
+views for working, not a record:
 
 Two, both written in node from GitLab (no model asked) into the ignored
 `.claude/` of the main checkout, both shown live in a tab `changelog`

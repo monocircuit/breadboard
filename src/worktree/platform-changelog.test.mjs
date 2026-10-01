@@ -15,6 +15,7 @@ const {
   problemsOf,
   readFragments,
   sectionBody,
+  verdictOf,
   versionsOf,
 } = await import("./platform-changelog.mjs");
 
@@ -256,5 +257,41 @@ describe("readFragments", () => {
       fragment("new", "breadboard", "x"),
     );
     assert.throws(() => readFragments(root), /292-y\.md: type "new"/);
+  });
+});
+
+describe("verdictOf", () => {
+  it("passes an MR that adds a fragment, is labelled, or is a release", () => {
+    assert.equal(
+      verdictOf(
+        [
+          ["A", ".changelog/291-x.md"],
+          ["M", "a.mjs"],
+        ],
+        [],
+      ).isOk,
+      true,
+    );
+    assert.equal(
+      verdictOf([["M", "a.mjs"]], ["enhancement", "no-changelog"]).isOk,
+      true,
+    );
+    assert.equal(
+      verdictOf(
+        [
+          ["M", "CHANGELOG.md"],
+          ["D", ".changelog/291-x.md"],
+        ],
+        [],
+      ).isOk,
+      true,
+    );
+  });
+
+  it("fails one without; the README and a bare edit of CHANGELOG.md don't count", () => {
+    assert.equal(verdictOf([["M", "a.mjs"]], [""]).isOk, false);
+    assert.equal(verdictOf([["A", ".changelog/README.md"]], []).isOk, false);
+    assert.equal(verdictOf([["M", "CHANGELOG.md"]], []).isOk, false);
+    assert.equal(verdictOf([["M", ".changelog/291-x.md"]], []).isOk, false);
   });
 });

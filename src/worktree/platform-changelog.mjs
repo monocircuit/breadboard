@@ -319,3 +319,32 @@ export const today = () => {
   const two = n => String(n).padStart(2, "0");
   return `${now.getFullYear()}-${two(now.getMonth() + 1)}-${two(now.getDate())}`;
 };
+
+const isFragment = file =>
+  file.startsWith(`${FRAGMENTS}/`) &&
+  file.endsWith(".md") &&
+  file !== `${FRAGMENTS}/README.md`;
+/**
+ * Whether an MR may go without a new fragment, from its changes
+ * (`[status, path]` of `git diff --name-status`) and labels: it adds one, it
+ * is labelled no-changelog, or it is a release (it changes CHANGELOG.md and
+ * deletes the fragments it folded in). `{ isOk, reason }`.
+ */
+export const verdictOf = (changed, labels) => {
+  const added = changed.filter(
+    ([status, file]) => status === "A" && isFragment(file),
+  );
+  if (added.length > 0)
+    return {
+      isOk: true,
+      reason: `adds ${added.map(([, file]) => file).join(", ")}`,
+    };
+  if (labels.includes(NO_CHANGELOG))
+    return { isOk: true, reason: `labelled ${NO_CHANGELOG}: no entry needed` };
+  const isRelease =
+    changed.some(([, file]) => file === CHANGELOG) &&
+    changed.some(([status, file]) => status === "D" && isFragment(file));
+  if (isRelease)
+    return { isOk: true, reason: `folds the fragments into ${CHANGELOG}` };
+  return { isOk: false, reason: `this MR adds no ${FRAGMENTS}/*.md` };
+};
