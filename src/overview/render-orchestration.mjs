@@ -556,7 +556,8 @@ export const renderOrchestration = (local, remote, error) => {
     return lines.map(line => fit(line, width)).join("\n");
   }
   if (error) lines.push("", red(`GitLab: ${error.split("\n")[0]}`));
-  const of = issue => remote?.of.get(issue.branch) ?? {};
+  // A row of the graph alone has no issue (#306): nothing to look up.
+  const of = issue => (issue && remote?.of.get(issue.branch)) || {};
   // The merge order, computed on each read; the plan's alone until GitLab answers.
   // By number, only the issues with an MR: another entry with the same
   // number but none (#221) must not stand in for one in the graph or NEXT.
@@ -675,6 +676,8 @@ export const renderOrchestration = (local, remote, error) => {
     // Once per row and frame: the state moves on as it is read.
     const conflicts = new Map();
     const conflictOf = item => {
+      // A merged row or a line of the graph alone has no conflict state (#306).
+      if (!item.issue || item.isMerged) return {};
       if (!conflicts.has(item))
         conflicts.set(
           item,
@@ -748,8 +751,7 @@ export const renderOrchestration = (local, remote, error) => {
       for (const text of rows[i]) {
         // On the button its agent gets the order, anywhere else the MR opens;
         // a grey one (or none) does nothing of its own.
-        const resolve =
-          item.isMerged || !conflictOf(item).canClick
+        const resolve = !conflictOf(item).canClick
             ? null
             : resolveColumns(text);
         if (item.issue)
