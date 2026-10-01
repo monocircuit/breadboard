@@ -59,6 +59,12 @@ nothing more; it installs no plugin and names a missing one in the tab.
 | `:ChangesInline` | the marked lines and the removed ones off and on again (the signs stay) |
 | `<leader>e` | neo-tree closed and open again |
 
+A tab reads `nvim/changes.lua` of the main checkout once, when it starts:
+one started before an update of it keeps the old view (#297) and says so
+(`changes.lua was updated since this tab started`). Quit nvim (`:qa`); a
+click on a file in the overview or the next layout starts it again. A tree
+that doesn't open is asked for once more, then named in the tab.
+
 The colours come from `nvim/colours.lua`, not the theme's `DiffAdd`: some
 themes draw it barely apart from the background. The orchestration's
 `changes` tab keeps its own list (`nvim/orchestration.lua`): it shows what
