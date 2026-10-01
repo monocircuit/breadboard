@@ -214,7 +214,8 @@ export const buttonAt = (action, column, start = CELL_START) => {
 };
 /**
  * The answer `at` (its index in answersOf) to the action of `item`: `{
- * action, file, to }`; stored, typed into the agent's pane at once, ✓ (no
+ * action, file, to, onAnswer }`; stored, typed into the agent's pane at
+ * once, then `onAnswer(answer)` (a `broken` re-drafts the MR); ✓ (no
  * answers) ticks it off.
  */
 export const answerWith = (item, at, redraw) => {
@@ -225,6 +226,7 @@ export const answerWith = (item, at, redraw) => {
     answerAction(file, action.id, answers[at]);
     if (isDraft({ ...action, answer: answers[at] })) focusAgent(to);
     deliverAnswers(file, to);
+    item.onAnswer?.(answers[at]);
   }
   redraw();
 };

@@ -68,6 +68,7 @@ export {
   actionsOf,
   answerAction,
   answerLine,
+  answeredOf,
   answersOf,
   changeOf,
   claimAnswer,
