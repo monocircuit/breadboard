@@ -353,7 +353,7 @@ const statesOf = (issues, of) =>
 
 /**
  * The MR next in the merge order (merge-order.mjs): the first nothing holds
- * up (`isReady`: pipeline passed, work boxes ticked, its turn), else the
+ * up (`isReady`: pipeline passed, boxes ticked, tries good, its turn), else the
  * first and what holds it up; null without an open one. Its click opens it.
  */
 const nextMerge = (local, issues, of) => {

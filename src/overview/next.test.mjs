@@ -63,6 +63,18 @@ describe("nextOf", () => {
 });
 
 describe("nothingText", () => {
+  it("waits for the tries and acceptance boxes of the next MR (#280)", () => {
+    assert.equal(onceText(["try #1 open"]), "its tries look good");
+    assert.equal(
+      onceText(["try #2 broken", "try #3 open"]),
+      "its fix is tried again",
+    );
+    assert.equal(
+      onceText(["1 acceptance box open: a"]),
+      "its acceptance boxes are ticked",
+    );
+  });
+
   it("says nothing is for the user, who is at work and what the next merge waits for", () => {
     assert.equal(
       nothingText({ atWork: 2, merge: held }),

@@ -14,8 +14,8 @@ export const isClickable = item =>
  * What NEXT shows, in this order: the first action not answered yet (an
  * answered one waits for its agent) and, a try, ready (`isWaiting` says
  * which isn't); else the first clickable row of UP NEXT; else the merge
- * that is ready (`merge.isReady`: pipeline passed, work boxes ticked, its
- * turn). `{ kind: "action" | "up next", item }`, `{ kind: "merge", merge }`,
+ * that is ready (`merge.isReady`: pipeline passed, every box ticked, every
+ * try looks good, its turn). `{ kind: "action" | "up next", item }`, `{ kind: "merge", merge }`,
  * or null: nothing for the user.
  */
 export const nextOf = ({ actions, upNext, merge, isWaiting = () => false }) => {
@@ -37,6 +37,9 @@ const ONCE = [
   [/^pipeline/, "its pipeline passes"],
   [/^after (!\d+)/, (_, iid) => `${iid} is merged`],
   [/work box/, "its work boxes are ticked"],
+  [/acceptance box/, "its acceptance boxes are ticked"],
+  [/^try #\d+ broken/, "its fix is tried again"],
+  [/^try #/, "its tries look good"],
   [/^draft/, "its agent posts the merge"],
 ];
 export const onceText = holdUp => {
