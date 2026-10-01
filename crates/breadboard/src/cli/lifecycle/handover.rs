@@ -53,6 +53,9 @@ const NOT_WITH_TO: [&str; 5] = ["--title", "--queue", "--now", "--cap", "--watch
 
 /// The values of `--after` and where they stand: `--after=!232,!233` one,
 /// `--after !232 !233` the `!` words behind it (handovers.mjs `afterArgs`).
+/// The word right behind it is its value even without the `!` (`--after
+/// 232`, a typo `x308`): parse_after says what is wrong with it, where
+/// today's took it for a second issue.
 pub fn after_args(words: &[String]) -> Option<(Vec<String>, Vec<usize>)> {
     let at = words
         .iter()
@@ -61,7 +64,7 @@ pub fn after_args(words: &[String]) -> Option<(Vec<String>, Vec<usize>)> {
         return Some((vec![inline.to_string()], vec![at]));
     }
     let behind: Vec<usize> = (at + 1..words.len())
-        .take_while(|&i| words[i].starts_with('!'))
+        .take_while(|&i| words[i].starts_with('!') || (i == at + 1 && !words[i].starts_with("--")))
         .collect();
     let mut places = vec![at];
     places.extend(&behind);
@@ -675,9 +678,8 @@ fn tell(pane: &str, worker: &Worker, issue: &Issue) -> Told {
     }
     match renamed {
         Renamed::No(now) => return Told::NotRenamed(now),
-        // Without a session file to read it can't be checked: a moment for the prompt to settle.
-        Renamed::Unknown => std::thread::sleep(Duration::from_secs(1)),
-        Renamed::Yes => {}
+        // Without a session file to read it can't be checked: the line follows at once, as today's did.
+        Renamed::Unknown | Renamed::Yes => {}
     }
     did(&["pane", "rename", pane, &issue.feature]);
     if did(&[
@@ -1173,6 +1175,19 @@ mod tests {
         let inline: Vec<String> = ["--after=!7"].iter().map(|w| w.to_string()).collect();
         assert_eq!(parse_after(&after_args(&inline).unwrap().0).unwrap(), vec![7]);
         assert_eq!(parse_after(&["x".to_string()]).unwrap_err().0, "x is no MR (!232)");
+        // The word right behind it is its value, a typo too; a flag is not.
+        let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let (values, at) = after_args(&words(&["o", "12", "--after", "x308", "13"])).unwrap();
+        assert_eq!((values.clone(), at), (vec!["x308".to_string()], vec![2, 3]));
+        assert_eq!(parse_after(&values).unwrap_err().0, "x308 is no MR (!232)");
+        let (values, _) = after_args(&words(&["o", "12", "--after", "308", "!309"])).unwrap();
+        assert_eq!(parse_after(&values).unwrap(), vec![308, 309]);
+        assert!(
+            after_args(&words(&["o", "12", "--after", "--dry-run"]))
+                .unwrap()
+                .0
+                .is_empty()
+        );
         assert_eq!(
             parse_after(&[]).unwrap_err().0,
             "--after names the MRs to wait for: --after !232"

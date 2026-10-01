@@ -24,12 +24,14 @@ impl Args {
         }
     }
 
-    /// The first word, unless it is a flag (worktree.mjs: `feature`).
-    pub fn first(&self) -> Option<&str> {
+    /// The first word that is no flag: the feature, in any place, for a
+    /// command whose flags all stand alone (worktree.mjs took only the first
+    /// word, `--keep-branch 303-x` was refused).
+    pub fn word(&self) -> Option<&str> {
         self.words
-            .first()
+            .iter()
             .map(String::as_str)
-            .filter(|word| !word.starts_with("--"))
+            .find(|word| !word.starts_with("--"))
     }
 
     /// Whether the flag is given, exactly as written (`flags.has`).
@@ -136,9 +138,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_first_word_is_the_feature_unless_a_flag() {
-        assert_eq!(Args::of(&["12-x", "--fix"]).first(), Some("12-x"));
-        assert_eq!(Args::of(&["--fix", "12-x"]).first(), None);
+    fn the_feature_is_the_first_word_that_is_no_flag() {
+        assert_eq!(Args::of(&["12-x", "--fix"]).word(), Some("12-x"));
+        assert_eq!(Args::of(&["--fix", "12-x"]).word(), Some("12-x"));
+        assert_eq!(Args::of(&["--fix"]).word(), None);
     }
 
     #[test]

@@ -243,6 +243,8 @@ pub fn command(args: &Args) -> Done {
     } = prunable(&repo, &here);
     let mut report = Vec::new();
     let mut failed = 0;
+    // The orchestrations whose changelog lists a removed merge: each rewritten once, at the end.
+    let mut changelogs: Vec<String> = Vec::new();
     for Entry { name, why, .. } in &trees {
         let what = match why {
             Some(why) => format!("kept, {why}"),
@@ -259,7 +261,10 @@ pub fn command(args: &Args) -> Done {
                         ..Options::default()
                     },
                 ) {
-                    Ok(()) => "removed".into(),
+                    Ok(changelog) => {
+                        changelogs.extend(changelog.filter(|name| !changelogs.contains(name)));
+                        "removed".into()
+                    }
                     Err(refused) => {
                         failed += 1;
                         format!("kept, wt:remove failed: {}", refused.0)
@@ -293,6 +298,9 @@ pub fn command(args: &Args) -> Done {
     // #230); a dry run asks herdr nothing.
     if !is_dry {
         plugin::heal(&repo.main);
+    }
+    for name in &changelogs {
+        remove::write_changelog(&repo, name);
     }
 
     println!(

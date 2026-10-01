@@ -82,6 +82,7 @@ const STALE: Duration = Duration::from_secs(60);
 /// `run` as one change of the layout at a time, across every process of the
 /// user (lock.mjs `exclusive`): the directory `$TMPDIR/platform-herdr-layout-
 /// <uid>.lock`, shared with today's Node. Re-entrant; outside herdr no lock.
+/// Inside, herdr's reads are remembered (herdr::remembering).
 pub fn exclusive<T>(run: impl FnOnce() -> T) -> T {
     if DEPTH.get() > 0 || !herdr::is_in() {
         return run();
@@ -99,7 +100,9 @@ pub fn exclusive<T>(run: impl FnOnce() -> T) -> T {
         std::thread::sleep(Duration::from_millis(100));
     }
     DEPTH.set(DEPTH.get() + 1);
-    let result = run();
+    // Under the lock no other layout changes herdr: its reads are remembered
+    // until a write, and forgotten when the lock goes.
+    let result = herdr::remembering(run);
     DEPTH.set(DEPTH.get() - 1);
     let _ = fs::remove_dir_all(&lock);
     result

@@ -2,21 +2,43 @@
 //! Outside herdr, or when herdr is old or unhappy, every call answers None,
 //! never fails: the layout is comfort, the work goes on without it.
 //!
-//! Reads are remembered until the next write: a layout asks the same
-//! `workspace list` and `tab list` dozens of times between two changes
-//! (~240 reads a run in Node, rewrite rule 7), and a write makes every later
-//! read ask herdr again, so nothing stale is ever acted on.
+//! Reads are remembered only inside `remembering` (a layout, under its lock),
+//! and there only until the next write: a layout asks the same `workspace
+//! list` and `tab list` dozens of times between two changes (~240 reads a run
+//! in Node, rewrite rule 7). Outside it every read asks herdr: an agent's
+//! state changes on its own, during a wt:new of minutes or a wait (#272), and
+//! a cache cleared only by this process's writes would act on a stale answer.
 
 use serde_json::{Value, json};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::Duration;
 
-/// The answers of reads since the last write, by their arguments.
-static READS: Mutex<Option<HashMap<String, Option<Value>>>> = Mutex::new(None);
+thread_local! {
+    /// How deep this thread is in `remembering`.
+    static REMEMBERING: Cell<u32> = const { Cell::new(0) };
+    /// The answers of reads since the last write inside `remembering`, by their arguments.
+    static READS: RefCell<HashMap<String, Option<Value>>> = RefCell::new(HashMap::new());
+}
+
+/// `run` with herdr's reads remembered until a write: for a stretch of
+/// herdr calls that no child process and no wait interrupts (a layout under
+/// its lock). Its first read asks herdr, its end forgets.
+pub fn remembering<T>(run: impl FnOnce() -> T) -> T {
+    if REMEMBERING.get() == 0 {
+        forget();
+    }
+    REMEMBERING.set(REMEMBERING.get() + 1);
+    let result = run();
+    REMEMBERING.set(REMEMBERING.get() - 1);
+    if REMEMBERING.get() == 0 {
+        forget();
+    }
+    result
+}
 
 /// Whether this runs inside herdr (`HERDR_ENV=1`).
 pub fn is_in() -> bool {
@@ -34,6 +56,7 @@ fn is_read(args: &[&str]) -> bool {
         ["pane", "read"],
         ["worktree", "list"],
         ["agent", "list"],
+        ["plugin", "list"],
     ];
     reads
         .iter()
@@ -53,22 +76,31 @@ fn spawn(args: &[&str]) -> Option<std::process::Output> {
 /// `herdr <args>` → its `result`, None when herdr is missing, failed or
 /// answered no JSON.
 pub fn call(args: &[&str]) -> Option<Value> {
+    answer(args, || {
+        spawn(args)
+            .filter(|output| output.status.success())
+            .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
+            .and_then(|answer| answer.get("result").cloned())
+            .filter(|result| !result.is_null())
+    })
+}
+
+/// The answer to `args` from `ask`, or the remembered one of the same read
+/// inside `remembering`; a write forgets every read.
+fn answer(args: &[&str], ask: impl FnOnce() -> Option<Value>) -> Option<Value> {
+    if !is_read(args) {
+        forget();
+        return ask();
+    }
+    if REMEMBERING.get() == 0 {
+        return ask();
+    }
     let key = args.join("\u{1f}");
-    let is_read = is_read(args);
-    if is_read && let Some(known) = READS.lock().ok().and_then(|reads| reads.as_ref()?.get(&key).cloned()) {
+    if let Some(known) = READS.with_borrow(|reads| reads.get(&key).cloned()) {
         return known;
     }
-    if !is_read {
-        forget();
-    }
-    let output = spawn(args).filter(|output| output.status.success());
-    let result = output
-        .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
-        .and_then(|answer| answer.get("result").cloned())
-        .filter(|result| !result.is_null());
-    if is_read && let Ok(mut reads) = READS.lock() {
-        reads.get_or_insert_with(HashMap::new).insert(key, result.clone());
-    }
+    let result = ask();
+    READS.with_borrow_mut(|reads| reads.insert(key, result.clone()));
     result
 }
 
@@ -80,9 +112,7 @@ pub fn did(args: &[&str]) -> bool {
 
 /// Every read asks herdr again.
 pub fn forget() {
-    if let Ok(mut reads) = READS.lock() {
-        *reads = None;
-    }
+    READS.with_borrow_mut(HashMap::clear);
 }
 
 /// A string field of herdr's JSON, "" without one.
@@ -225,6 +255,41 @@ mod tests {
         assert!(is_read(&["pane", "process-info", "--pane", "p"]));
         assert!(!is_read(&["tab", "close", "t"]));
         assert!(!is_read(&["pane", "run", "p", "x"]));
+    }
+
+    /// An answer that counts up: each time herdr is really asked, a new one.
+    fn counter() -> (Cell<i64>, impl Fn(&Cell<i64>) -> Option<Value>) {
+        (Cell::new(0), |asked: &Cell<i64>| {
+            asked.set(asked.get() + 1);
+            Some(json!(asked.get()))
+        })
+    }
+
+    #[test]
+    fn a_read_after_a_setup_sees_what_changed_meanwhile() {
+        // #272: the agent was idle before wt:new and works after it; the
+        // re-check must not get the answer from before.
+        let (asked, ask) = counter();
+        let panes = ["pane", "list"];
+        assert_eq!(answer(&panes, || ask(&asked)), Some(json!(1)));
+        assert_eq!(answer(&panes, || ask(&asked)), Some(json!(2)));
+    }
+
+    #[test]
+    fn remembering_keeps_a_read_until_a_write() {
+        let (asked, ask) = counter();
+        let tabs = ["tab", "list", "--workspace", "w1"];
+        remembering(|| {
+            assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(1)));
+            assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(1)));
+            answer(&["tab", "rename", "t1", "root"], || None);
+            assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(2)));
+            // Nested: still the same stretch.
+            remembering(|| assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(2))));
+            assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(2)));
+        });
+        assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(3)));
+        remembering(|| assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(4))));
     }
 
     #[test]

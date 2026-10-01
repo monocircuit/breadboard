@@ -4,6 +4,49 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:15 · CLI / lifecycle group · herdr's reads remembered only inside a layout
+Chose: `cli/lifecycle/herdr.rs` remembers a read only inside
+`herdr::remembering` (wt:herdr under its layout lock, wt:remove's release
+of its tab and space), there until the next write, per thread; everywhere
+else every read asks herdr. Against: round three's process-wide cache,
+cleared only by this process's own writes: the handover's #272 re-check
+after wt:new got the agent's state from before the setup, typed `/rename`
+and the next issue into a working agent and said ✓ (Node refuses and
+removes the worktree again). Now as Node: refused, worktree and claim gone.
+Why: rule 3 (#272's refusal), rule 6 (no prompt into a working agent),
+rule 7 (wt:herdr keeps its ~70 reads against Node's ~240: the repeats are
+all inside the layout). Suite: `the handover` check (a fake pnpm sets the
+agent working during wt:new) fails on round three's binary, passes on
+Node and ours.
+
+## 2026-10-02 01:15 · CLI / wt:remove, wt:prune · the changelog is waited for, once per prune
+Chose: a removal of merged work rewrites its orchestration's changelog
+(`wt:orchestrate <name> --changelog`) before its ✓ and waits for it, quiet
+unless it fails (`▸ the changelog of <name> is not rewritten: <reason>;
+pnpm wt:orchestrate <name> --changelog tries again`); wt:prune rewrites
+each orchestration's once after all its removals. Against: round three's
+detached process per removal, which outlived the command, dropped its
+errors, and in a prune of N merged worktrees ran N rewrites of the same
+file at once (~200 GitLab calls each).
+Why: rule 3 (Node's wt:remove awaited the rewrite before exiting), rule 4
+(one rewrite, no orphan process), rule 7 (a prune asks GitLab once per
+orchestration, not per worktree). The same changelog as Node's in a world.
+
+## 2026-10-02 01:15 · CLI / wt:remove, handover · small deviations of round four
+Chose: wt:remove takes the feature in any place (`--keep-branch 303-x`,
+its flags all stand alone; both tools refused it with the usage). The
+word right behind `--after` is its value even without `!`: `--after x308`
+says `✗ x308 is no MR (!232)` (today's took it for a second issue).
+A handover whose session can't be read (no running claude shows it)
+types the next-issue line at once, as Node did, instead of waiting a
+second (handover in a world: 0.8 s, Node 1.3 s). Kept: the commands run
+from a checkout of the repo (`✗ <dir> is in no checkout …: run it from
+the main checkout or one of its worktrees`); Node found the repo from its
+script's path, the binary's place (a target dir, later CI's prebuilt) says
+nothing about which checkout is meant, and pnpm, the overview and the
+plugin all start it in one.
+Why: rule 3 + the bar (flags in any order, the exact error), rule 4.
+
 ## 2026-10-02 01:05 · CLI / wt:tick, wt:mr, wt:note · every text to GitLab through a file
 Chose: descriptions and comments reach glab as `--field <key>=@<file>`
 of `glab api` (a temp file, removed after): `PUT issues/<n>` (wt:tick),

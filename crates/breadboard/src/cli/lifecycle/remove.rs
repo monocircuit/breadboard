@@ -10,7 +10,7 @@ use super::gitlab;
 use super::herdr;
 use super::layout::{orchestrations::prune_orchestrators, release_space};
 use super::plugin;
-use super::proc::{Done, exe, fail, git, run_inherit, step, text};
+use super::proc::{Done, Fail, exe, fail, git, output, run_inherit, step, text};
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
 use super::setups::{setup_at, setup_text, setups_of};
@@ -21,9 +21,7 @@ use breadboard_core::time::{now_ms, to_iso};
 use serde_json::Value;
 use std::cell::OnceCell;
 use std::fs;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const USAGE: &str = "usage: pnpm wt:remove <feature> [--keep-branch] [--close-space]";
@@ -50,7 +48,8 @@ pub fn command(args: &Args) -> Done {
     if args.check(&TAKES)? {
         return Ok(());
     }
-    let Some(given) = args.first() else {
+    // The feature in any place: its flags all stand alone (`--keep-branch 303-x` too).
+    let Some(given) = args.word() else {
         return fail(USAGE);
     };
     let repo = Repo::here()?;
@@ -60,7 +59,7 @@ pub fn command(args: &Args) -> Done {
         is_closing_space: args.has("--close-space"),
         is_fetched: false,
     };
-    let done = remove(&repo, feature, &options);
+    let done = remove(&repo, feature, &options).map(|_| ());
     // A refused removal checks the plugin too (#230: any wt:* in herdr); once a run.
     plugin::heal(&repo.main);
     done
@@ -150,22 +149,29 @@ fn merged_at(mrs: &[Value]) -> Option<String> {
         .find_map(|mr| str_of(mr, "merged_at").filter(|at| !at.is_empty()).map(String::from))
 }
 
-/// Rewrites the orchestration's changelog in the background (it asks GitLab
-/// per issue): a process of its own that outlives this one, so nothing waits
-/// for it and nothing cuts it off. Its errors go nowhere, as today's.
-fn changelog_in_background(repo: &Repo, name: &str) {
-    let _ = Command::new(exe())
-        .args(["wt:orchestrate", name, "--changelog"])
-        .current_dir(&repo.main)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn();
+/// Rewrites the orchestration's changelog (it asks GitLab per issue), and
+/// waits for it as today's did: a process left running would outlive the
+/// command, race the next removal's rewrite of the same file and drop its
+/// errors. Quiet when it worked; a failure is said with the way to retry.
+pub fn write_changelog(repo: &Repo, name: &str) {
+    let written = output(&exe(), &["wt:orchestrate", name, "--changelog"], &repo.main, None);
+    if !written.is_ok {
+        let reason = written
+            .stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("✗ "))
+            .unwrap_or("it failed")
+            .to_string();
+        step(&format!(
+            "the changelog of {name} is not rewritten: {reason}; pnpm wt:orchestrate {name} --changelog tries again"
+        ));
+    }
 }
 
-/// Removes the worktree of `feature` (remove.mjs), its steps said as they run.
-pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
+/// Removes the worktree of `feature` (remove.mjs), its steps said as they
+/// run. The orchestration whose changelog lists the merge: written here,
+/// or by wt:prune (is_fetched) once per orchestration after all removals.
+pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<String>, Fail> {
     let dir = repo.dir_of(feature);
     let dir_text = text(&dir);
     let trees = repo.trees();
@@ -309,30 +315,34 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
             merged_at.as_deref(),
         );
     }
-    // Its changelog lists the merge: GitLab takes a moment per issue.
-    if let Some(origin) = origin.as_ref().filter(|_| is_merged) {
-        changelog_in_background(repo, &origin.name);
-    }
-    if let Some(line) = release_space(feature, options.is_closing_space) {
-        step(&format!("herdr: {line}"));
-    }
-    // Its origin went with the directory; the orchestration's space goes with its last worktree.
-    if herdr::is_in() {
-        for line in prune_orchestrators(repo) {
+    // One stretch of herdr calls, no child process in between: its reads are remembered.
+    herdr::remembering(|| {
+        if let Some(line) = release_space(feature, options.is_closing_space) {
             step(&format!("herdr: {line}"));
         }
-    }
+        // Its origin went with the directory; the orchestration's space goes with its last worktree.
+        if herdr::is_in() {
+            for line in prune_orchestrators(repo) {
+                step(&format!("herdr: {line}"));
+            }
+        }
+    });
     // The plugin may have been linked from the tree that just went (#230);
     // wt:prune (is_fetched) checks once after all its removals.
     if !options.is_fetched {
         plugin::heal(&repo.main);
+    }
+    // Its changelog lists the merge, last: GitLab takes a moment per issue.
+    let changelog = origin.as_ref().filter(|_| is_merged).map(|origin| origin.name.clone());
+    if let Some(name) = changelog.as_deref().filter(|_| !options.is_fetched) {
+        write_changelog(repo, name);
     }
     let kept = match &branch {
         Some(branch) if !is_merged || options.is_keeping_branch => format!(", {branch} kept"),
         _ => String::new(),
     };
     println!("\n✓ {feature} removed{kept}");
-    Ok(())
+    Ok(changelog.filter(|_| options.is_fetched))
 }
 
 #[cfg(test)]
