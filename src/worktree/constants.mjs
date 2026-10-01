@@ -24,6 +24,8 @@ export const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const SPACE = "Monocircuit/Platform";
 /** The tab of the live overview, in the main space and in each worktree's space. */
 export const OVERVIEW = "overview";
+/** The tab of an orchestration's space that shows its changelog, live (changelog.mjs). */
+export const CHANGELOG = "changelog";
 /** A shell in the checkout of its space, the leftmost tab of every space: the main one's is where the next `claude` starts. */
 export const ROOT = "root";
 /** The tab of a worktree's space with nvim open in the worktree, after the conversation's tab. */

@@ -3,10 +3,12 @@
 import {
   compose,
   handoversOf,
+  isChangelogBehind,
   mainDir,
   originOf,
   recordOf,
   worktrees,
+  writeChangelog,
 } from "../worktree.mjs";
 import { exec, glab } from "./io.mjs";
 import { readRemoteOf } from "./read.mjs";
@@ -112,15 +114,42 @@ const branchesOf = name =>
         .map(({ branch }) => branch),
     ]),
   ].filter(Boolean);
+/** What a rewrite of the changelog was last started for, by orchestration: one that lists it still not is not tried again and again. */
+const changelogTried = new Map();
+/**
+ * The changelog of `name` (#248) rewritten in the background when a merged
+ * MR or an issue closed without one isn't in it yet: a merge by the
+ * overview's click (its read follows at once) or anywhere else.
+ */
+const keepChangelog = (name, found) => {
+  const remotes = found.map(([, remote]) => remote).filter(Boolean);
+  const done = {
+    mrs: remotes
+      .filter(remote => remote.mr?.state === "merged")
+      .map(remote => remote.mr.iid),
+    closed: remotes
+      .filter(
+        remote =>
+          remote.mr?.state !== "merged" && remote.issue?.state === "closed",
+      )
+      .map(remote => remote.issue.iid),
+  };
+  const key = JSON.stringify(done);
+  if (changelogTried.get(name) === key || !isChangelogBehind(name, done))
+    return;
+  changelogTried.set(name, key);
+  writeChangelog(name).catch(() => changelogTried.delete(name));
+};
 /**
  * Of every branch of an orchestration: its merge request (merged ones too)
  * with its pipeline, and its issue. Delivers the lines of the waits that
- * ended without their command.
+ * ended without their command, and keeps its changelog up to date.
  */
 export const readRemoteOfOrchestration = async name => {
   const found = await Promise.all(
     branchesOf(name).map(async branch => [branch, await readRemoteOf(branch)]),
   );
+  keepChangelog(name, found);
   // With GitLab read anyway: the waits whose command is gone (waits.mjs).
   await deliverWaits(
     name,

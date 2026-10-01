@@ -1,7 +1,8 @@
 // The end of an orchestration (`wt:orchestrate <name> --end`, the ✕ of its
 // overview): its space closes, the orchestrator's claude with it, and its
 // record and checkout go. The conversation stays resumable from the main
-// checkout. Only once none of its worktrees is left.
+// checkout, and its changelog stays where it is (changelog.mjs). Only once
+// none of its worktrees is left.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +16,7 @@ import {
   spaces,
 } from "../lib/herdr.mjs";
 import { fail, step } from "../lib/proc.mjs";
+import { changelogFile } from "./changelog.mjs";
 import { ENTRY } from "./constants.mjs";
 import {
   isConversationRunning,
@@ -87,7 +89,8 @@ export const keepConversation = (id, waitMs = 5000) => {
 /**
  * Ends the orchestration `name`: its space closes (the orchestrator's claude
  * and the overview with it), each claude that ran in it is kept for
- * `/resume` in the main checkout, then its record and its checkout go — what
+ * `/resume` in the main checkout, then its record and its checkout go (its
+ * changelog stays, the log names where) — what
  * pruneOrchestrators does, without waiting for the orchestrator to end.
  * Returns `{ error }` when it can't, else `{ done }`, the lines of what it did.
  */
@@ -118,6 +121,8 @@ export const endOrchestration = name => {
     const kept = removeOrchestratorCheckout(name);
     done.push(kept ?? `removed the checkout of ${orchestratorLabel(name)}`);
   }
+  if (fs.existsSync(changelogFile(name)))
+    done.push(`kept the changelog ${changelogFile(name)}`);
   return { done };
 };
 /**

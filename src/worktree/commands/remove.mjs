@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { isInHerdr } from "../../lib/herdr.mjs";
 import { fail, git, run, step } from "../../lib/proc.mjs";
+import { writeChangelog } from "../changelog.mjs";
 import { leftIn, leftText, sessionFile } from "../conversations.mjs";
 import { releaseSpace } from "../layout.mjs";
 import { markRemoved, originOf, pruneOrchestrators } from "../origins.mjs";
@@ -97,6 +98,11 @@ export default function removeCommand(feature, flags) {
       removedAt: new Date().toISOString(),
       mergedAt: isMerged ? mergedAtOf(branch) : null,
     });
+  // Its changelog lists the merge, in the background: GitLab takes a moment per issue.
+  const changelog =
+    origin && isMerged
+      ? writeChangelog(origin.name).catch(() => null)
+      : Promise.resolve(null);
   const tab = releaseSpace(feature, { isWhole: flags.has("--close-space") });
   if (tab) step(`herdr: ${tab}`);
   // Its origin went with the directory; the orchestration's space goes with its last worktree.
@@ -105,4 +111,5 @@ export default function removeCommand(feature, flags) {
   console.log(
     `\n✓ ${feature} removed${branch && !isMerged ? `, ${branch} kept` : ""}`,
   );
+  return changelog;
 }
