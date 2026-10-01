@@ -13,6 +13,7 @@ import { featureOf, focusSpace, isChangeOpen, mainDir } from "../worktree.mjs";
 import { deliverTo } from "./answers.mjs";
 import { unpushedActionOf } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
+import { isConflictSettled, noteTold } from "./resolve.mjs";
 import { show } from "./io.mjs";
 import { screen } from "./screen.mjs";
 
@@ -260,11 +261,16 @@ export const conflictsOf = (issues, of, sentOf) =>
     if (!dir || mr?.state !== "opened") return [];
     const key = `conflicts:${mr.iid}`;
     const isSent = sentOf(dir).has(key);
-    if (mr.hasConflicts && !isSent)
+    // Only conflicts GitLab settled for the pushed head (resolve.mjs): a
+    // stale answer, or one about commits not pushed yet, tells nobody.
+    if (!isConflictSettled(mr, issue.tree)) return [];
+    if (mr.hasConflicts && !isSent && !issue.tree.unpushed)
       return [
         {
           dir,
           key,
+          mr,
+          tree: issue.tree,
           line: `[overview] !${mr.iid} has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)`,
         },
       ];
@@ -277,9 +283,14 @@ export const conflictsOf = (issues, of, sentOf) =>
  * (the agent is at a question) is tried again at the next read.
  */
 export const tellConflicts = (issues, of) => {
-  for (const { dir, key, line, isGone } of conflictsOf(issues, of, sentOf)) {
+  for (const { dir, key, line, isGone, mr, tree } of conflictsOf(
+    issues,
+    of,
+    sentOf,
+  )) {
     if (isGone) forgetSent(dir, key);
-    else sendOnce(dir, key, line);
+    // Its row shows where the order stands instead of the button (resolve.mjs).
+    else if (sendOnce(dir, key, line)) noteTold(mr, tree);
   }
 };
 /** `line` to the agent of `dir`; once it got in, the row of `key` goes. True when it got in. */

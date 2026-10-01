@@ -6,6 +6,7 @@
 import { dim, fit, pad, underRows, visible, yellow } from "../lib/tty.mjs";
 import { isChangeOpen } from "../worktree.mjs";
 import { isWork, mergeStatusText, wordsOf } from "./merge.mjs";
+import { isConflictSettled } from "./resolve.mjs";
 
 /** Who acts on a reason; an MR it waits for is named by its `!N`. */
 export const WHO = { agent: "agent", you: "you", gitlab: "GitLab" };
@@ -70,7 +71,10 @@ export const rowBlockersOf = ({
     );
   }
 
-  if (mr.hasConflicts)
+  if (!isConflictSettled(mr, tree))
+    // The row's conflict cell says it (resolve.mjs); it still holds the merge.
+    add("GitLab checks for conflicts", WHO.gitlab, { isConflict: true });
+  else if (mr.hasConflicts)
     add(
       `conflicts with develop${behind ? ` (${behind} behind)` : ""}: merge develop in`,
       WHO.agent,

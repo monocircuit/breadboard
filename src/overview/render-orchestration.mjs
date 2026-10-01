@@ -48,7 +48,7 @@ import { nextOf, nothingText, staleOf, updatedPlan, whyOf } from "./next.mjs";
 import { orderActions, placeIn } from "./order.mjs";
 import {
   clickResolve,
-  conflictCell,
+  conflictStateOf,
   forgetResolved,
   resolveColumns,
 } from "./resolve.mjs";
@@ -618,6 +618,21 @@ export const renderOrchestration = (local, remote, error) => {
     forgetResolved(
       issues.map(issue => of(issue).mr).filter(mr => mr?.state === "opened"),
     );
+    const agents = local.agents ?? new Map();
+    // Once per row and frame: the state moves on as it is read.
+    const conflicts = new Map();
+    const conflictOf = item => {
+      if (!conflicts.has(item))
+        conflicts.set(
+          item,
+          conflictStateOf(of(item.issue).mr, {
+            tree: item.issue.tree,
+            agents,
+            behind: item.issue.tree?.behind ?? 0,
+          }),
+        );
+      return conflicts.get(item);
+    };
     const rowOf = item => {
       const { mr, jobs } = item.issue ? of(item.issue) : {};
       // A line of the graph alone, or (never again, #221) a row without its MR.
@@ -649,7 +664,7 @@ export const renderOrchestration = (local, remote, error) => {
         text: item.isMerged
           ? ""
           : [
-              conflictCell(mr, { behind: item.issue.tree?.behind ?? 0 }),
+              conflictOf(item).text,
               blockersText(reasons.filter(reason => !reason.isConflict)),
             ]
               .filter(Boolean)
@@ -678,15 +693,20 @@ export const renderOrchestration = (local, remote, error) => {
       }
       if (item.isMerged && !isMergedShown) return;
       for (const text of rows[i]) {
-        // On the button its agent gets the order, anywhere else the MR opens.
-        const resolve = item.isMerged ? null : resolveColumns(text);
+        // On the button its agent gets the order, anywhere else the MR opens;
+        // a grey one (or none) does nothing of its own.
+        const resolve =
+          item.isMerged || !conflictOf(item).canClick
+            ? null
+            : resolveColumns(text);
         if (item.issue)
           screen.clicks[lines.length] = column =>
             resolve && column >= resolve.from && column <= resolve.to
               ? clickResolve({
                   mr: of(item.issue).mr,
                   tree: item.issue.tree,
-                  agents: local.agents ?? new Map(),
+                  agents,
+                  behind: item.issue.tree?.behind ?? 0,
                 })
               : show(of(item.issue).mr.url, item.issue.tree?.dir);
         lines.push(text);
