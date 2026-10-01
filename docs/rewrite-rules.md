@@ -4,8 +4,11 @@ The rewrite of breadboard runs as a gauntlet loop (user, 2026-10-01): a
 builder and a separate harsh critic per piece, a blind comparison against
 **lazygit**, looping until ours wins and
 [the black-box suite](../../breadboard-gauntlet/README.md) is green. It is
-not steered by questions. When the loop has to choose, it chooses by these
-rules, in this order, and writes the choice to its decision log.
+not steered by questions. **The stack is set: Rust with ratatui**
+(crossterm, tokio), for all of breadboard (user, 2026-10-01; the evidence:
+[`stack-evidence.md`](stack-evidence.md), the plan:
+[`rewrite-plan.md`](rewrite-plan.md)). Everything else the loop chooses by
+these rules, in this order, and writes the choice to its decision log.
 
 ## Deciding
 
@@ -35,8 +38,12 @@ rules, in this order, and writes the choice to its decision log.
 7. **Measured beats argued.** Budgets of the suite: start < 300 ms, a
    GitLab refresh of the breadboard record < 5 s and within its call
    budget (#305), idle CPU near 0, scrolling smooth at 40 wheel reports/s.
-   The stack is chosen by these numbers, the suite and the critic, and the
-   reasons go into the log ([evidence so far](stack-evidence.md)).
+   A crate, a design, a layout is chosen by these numbers, the suite and
+   the critic, and the reasons go into the log.
+8. **Rust only, no way around it**: no Node, Bun or Python at run time in
+   what breadboard ships; a crate before hand-rolling, when it is
+   maintained and the simpler (rule 4). What stays outside Rust is named in
+   the plan, nothing else.
 
 ## Working
 
@@ -53,10 +60,9 @@ rules, in this order, and writes the choice to its decision log.
 - **Commit per green step**, push at once, Conventional Commits with the
   scope `breadboard`; the decision log is committed with the code it
   explains.
-- **What stays in Node / Lua / shell**: the Claude Code hooks
-  (`.claude/hooks/*.mjs`, run by Claude Code), the nvim Lua (`nvim/*.lua`,
-  run by nvim), the Chromium extension (JavaScript, run by the browser).
-  They talk to breadboard through files and its CLI; a rewrite keeps those.
+- **What stays outside Rust** and why: [`rewrite-plan.md`](rewrite-plan.md)
+  (the nvim Lua, the Chromium extension, the hooks' thin entry). They talk
+  to breadboard through files and its CLI; the rewrite keeps those.
 
 ## The decision log
 
@@ -64,13 +70,40 @@ rules, in this order, and writes the choice to its decision log.
 decision, for example:
 
 ```md
-## 2026-10-02 14:10 · overview / MERGE REQUESTS · stack
-Chose: Rust + ratatui. Against: OpenTUI on Bun.
-Why: rule 7: idle 0.1 % vs 0.5 %, 9 vs 81 MiB, tests 0.5 s vs 92 s; the
-critic picked it blind 3 of 3 against lazygit's status panel.
-Suite: 212/240 green (was 180).
+## 2026-10-02 14:10 · overview / MERGE REQUESTS · GitLab read
+Chose: one GraphQL query for open MRs, pipelines and jobs. Against: REST
+with iids[] batches.
+Why: rule 7: 1 call vs 4 a refresh, 0.6 s vs 1.4 s; rule 4: one parser.
+Suite: 212/240 green (was 180). Critic: ours blind 3 of 3 against
+lazygit's status panel.
 ```
 
 The user reads it instead of answering questions. A `try` for the user
 comes only at the end, when every check is green and the critic picked
 ours blind for every piece.
+
+## The loop
+
+Started once the suite is merged, in a worktree of its own, with this
+prompt (the user's, 2026-10-01, the stack set since):
+
+```
+Rebuild breadboard (packages/breadboard: the overview TUI, the wt: and stack: CLI, the herdr plugin) as the best developer tool it can be, in Rust with ratatui.
+
+The bar is lazygit. Install it, run it in a herdr pane the same size as the overview and compare against it directly, not against a description of it. The measurable half is the black-box suite of #307: every check green, a GitLab refresh under 5 s, start under 300 ms, idle CPU near zero.
+
+Break this into the smallest pieces that can be improved and judged on their own: each overview section, buttons and hover, scrolling, the data daemon, each CLI command. For each piece, fan out a builder and a separate critic with fresh context. The critic runs ours and lazygit side by side, screenshots and interaction blind with the labels stripped, says which one a developer would rather work in, and names the single biggest remaining gap. Then it goes back to the builder.
+
+The critic should be a harsh critic. Praise is not useful. If ours does not win, it keeps going.
+
+/loop on each piece until the critic picks ours blind and the suite is green. Do not stop before that. Work in a worktree, never against the live herdr or overview.
+
+Keep a live progress page updating as the work evolves so I can watch it.
+
+Fan out subagents and ultracode.
+```
+
+How it runs the suite against the rewrite: `BREADBOARD_SUBJECT=<its binary>
+pnpm --filter @monocircuit/breadboard-gauntlet gauntlet`; known bugs count
+there. The next piece is the first failing check, in the order of
+[`rewrite-plan.md`](rewrite-plan.md).

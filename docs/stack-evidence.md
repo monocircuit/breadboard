@@ -1,10 +1,13 @@
-# The stack for breadboard: evidence for the rewrite loop (#307)
+# The stack for breadboard: why Rust and ratatui (#307)
 
-The rewrite of breadboard runs as a gauntlet loop that **chooses the stack
-itself** (user, 2026-10-01, #307). This file is its input: the candidates,
-what comparable tools use, and two prototypes of the same slice, measured.
-It decides nothing; the loop's log does. The rules the loop decides by:
-[`rewrite-rules.md`](rewrite-rules.md). The suite it must pass:
+**Decided by the user (2026-10-01): "drop OpenTUI and move completely to
+Rust."** breadboard is rewritten in Rust with ratatui (crossterm, tokio),
+the stack of herdr itself: the overview, the CLI and the herdr plugin. This
+file is the evidence the decision rests on: the candidates, what comparable
+tools use, and two prototypes of the same slice, measured. The OpenTUI
+prototype is gone from the branch; its numbers stay here. How the rewrite
+goes: [`rewrite-plan.md`](rewrite-plan.md); the rules its loop decides the
+rest by: [`rewrite-rules.md`](rewrite-rules.md); the suite it must pass:
 [`packages/breadboard-gauntlet`](../../breadboard-gauntlet/README.md).
 
 ## What today's breadboard costs (2026-10-01)
@@ -37,7 +40,7 @@ framework. The stack is not what makes it good.
 
 ## The prototypes
 
-The same slice in both (`packages/breadboard/spikes/README.md`): MERGE
+The same slice in both (the ratatui one: `packages/breadboard/spikes/`; the OpenTUI one ran on Bun as a local devDependency and was removed after the decision): MERGE
 REQUESTS from live GitLab in one GraphQL request with glab's token,
 per-element buttons, block hover, wrapping, a section that throws, and a
 headless test that clicks every cell of every button.
