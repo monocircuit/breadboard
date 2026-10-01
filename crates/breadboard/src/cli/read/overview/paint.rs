@@ -215,11 +215,62 @@ pub fn pad(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(width.saturating_sub(visible(text))))
 }
 
+/// Which characters of a painted text hold together: a button or a chip,
+/// painted on a ground of its own (`[ label ]` / `( label )` without colours),
+/// is never split over two lines while it fits on one.
+fn glue_of(text: &str) -> Vec<bool> {
+    let mut glued = Vec::new();
+    let mut is_on_ground = false;
+    for piece in pieces(text) {
+        match piece {
+            Piece::Escape(escape) if escape.starts_with("\x1b[") => {
+                let params: Vec<u16> = escape[2..escape.len() - 1]
+                    .split(';')
+                    .map(|param| param.parse().unwrap_or(0))
+                    .collect();
+                if params.iter().any(|param| matches!(param, 40..=48 | 100..=107)) {
+                    is_on_ground = true;
+                } else if params.iter().all(|param| *param == 0) || params.contains(&49) {
+                    is_on_ground = false;
+                }
+            }
+            Piece::Escape(_) => {}
+            Piece::Text(text) => glued.extend(text.chars().map(|_| is_on_ground)),
+        }
+    }
+    // Without colours: from `[ ` or `( ` to the next ` ]` or ` )`.
+    let plain: Vec<char> = strip(text).chars().collect();
+    let mut at = 0;
+    while at + 1 < plain.len() {
+        let close = match (plain[at], plain[at + 1]) {
+            ('[', ' ') => ']',
+            ('(', ' ') => ')',
+            _ => {
+                at += 1;
+                continue;
+            }
+        };
+        let end = (at + 2..plain.len()).find(|end| plain[*end] == close && plain[*end - 1] == ' ');
+        match end {
+            Some(end) => {
+                glued[at..=end].iter_mut().for_each(|is_glued| *is_glued = true);
+                at = end + 1;
+            }
+            None => at += 1,
+        }
+    }
+    glued
+}
+
 /// Where the lines of `plain` start and end, in characters, at `width`
-/// columns: a break at the last space that fits, a hard cut in a word longer
-/// than a line; spaces at a break are dropped (tty.mjs `breaks`).
-fn breaks(plain: &[char], width: usize) -> Vec<(usize, usize)> {
+/// columns: a break at the last space that fits outside a button, else after
+/// the last `-` or `/` of a word longer than a line (a branch, a path, a
+/// URL), else at
+/// any space, else a hard cut; spaces at a break are dropped (tty.mjs
+/// `breaks`, which cut buttons and names anywhere).
+fn breaks(plain: &[char], glued: &[bool], width: usize) -> Vec<(usize, usize)> {
     let width = width.max(1);
+    let is_glued = |at: usize| glued.get(at).copied().unwrap_or(false);
     let mut ranges = Vec::new();
     let mut from = 0;
     loop {
@@ -234,11 +285,21 @@ fn breaks(plain: &[char], width: usize) -> Vec<(usize, usize)> {
             return ranges;
         }
         // A space right at the edge breaks there too.
-        let space = (from + 1..=end).rev().find(|at| plain[*at] == ' ');
-        let to = space.unwrap_or_else(|| end.max(from + 1));
+        let spaces = || (from + 1..=end).rev().filter(|at| plain[*at] == ' ');
+        let to = spaces()
+            .find(|at| !is_glued(*at))
+            .or_else(|| {
+                (from + 1..=end)
+                    .rev()
+                    .find(|at| matches!(plain[*at - 1], '-' | '/') && plain[*at] != ' ' && !is_glued(*at))
+            })
+            .or_else(|| spaces().next())
+            .unwrap_or_else(|| end.max(from + 1));
         ranges.push((from, to));
+        // A button's own padding stays with it, unless it breaks inside, too wide for a line.
+        let is_inside = is_glued(to) && is_glued(to - 1);
         from = to;
-        while from < plain.len() && plain[from] == ' ' {
+        while from < plain.len() && plain[from] == ' ' && (is_inside || !is_glued(from)) {
             from += 1;
         }
         if from >= plain.len() {
@@ -257,7 +318,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     if plain.iter().copied().map(char_width).sum::<usize>() <= width {
         return vec![text.to_string()];
     }
-    let ranges = breaks(&plain, width);
+    let ranges = breaks(&plain, &glue_of(text), width);
     let mut lines = vec![String::new()];
     let mut colours: Vec<&str> = Vec::new();
     let mut open_link = "";
@@ -304,8 +365,11 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 const MIN_ROOM: usize = 20;
 
 /// Columns of painted cells, each as wide as its widest cell, two spaces
-/// between; the last cell of a row wraps under where it starts when `width`
-/// leaves it too little room (tty.mjs `tableRows`, never cut).
+/// between; the last cell of a row wraps under where it starts (tty.mjs
+/// `tableRows`, never cut). Where `width` leaves it too little room the
+/// row is stacked instead: its first two cells on the first line, the rest
+/// on the lines below, a step in, so a row still reads as one and nothing
+/// wraps back to the edge.
 pub fn table_rows(rows: &[Vec<String>], width: usize) -> Vec<Vec<String>> {
     let mut widths: Vec<usize> = Vec::new();
     for row in rows {
@@ -316,6 +380,19 @@ pub fn table_rows(rows: &[Vec<String>], width: usize) -> Vec<Vec<String>> {
             widths[column] = widths[column].max(visible(cell));
         }
     }
+    // Under the second column where that leaves room, else a step in from the edge.
+    let first = widths.first().map_or(0, |first| first + 2);
+    let under = if width.saturating_sub(first) >= MIN_ROOM.min(width / 2) {
+        first
+    } else {
+        2
+    };
+    let below = |text: &str, indent: usize| -> Vec<String> {
+        wrap(text, width.saturating_sub(indent).max(1))
+            .into_iter()
+            .map(|line| format!("{}{line}", " ".repeat(indent)))
+            .collect()
+    };
     rows.iter()
         .map(|row| {
             let Some((last, head)) = row.split_last() else {
@@ -328,16 +405,33 @@ pub fn table_rows(rows: &[Vec<String>], width: usize) -> Vec<Vec<String>> {
                 .collect();
             let indent = visible(&head);
             let room = width.saturating_sub(indent);
+            if row.len() > 2 && indent > width {
+                // The columns alone are wider than the line: the row stacked.
+                let mut lines = match row.first() {
+                    Some(mark) if row.len() > 1 => {
+                        let mut lines = wrap(&row[1], width.saturating_sub(first).max(1));
+                        for (at, line) in lines.iter_mut().enumerate() {
+                            let lead = if at == 0 { pad(mark, first) } else { " ".repeat(first) };
+                            *line = format!("{lead}{line}");
+                        }
+                        lines
+                    }
+                    _ => Vec::new(),
+                };
+                let rest: Vec<&str> = row[2..]
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|cell| !strip(cell).trim().is_empty())
+                    .collect();
+                if !rest.is_empty() {
+                    lines.extend(below(&rest.join("  "), (first + 2).min(width / 2)));
+                }
+                return lines;
+            }
             if room < MIN_ROOM && visible(last) > room {
-                // Too little room after the columns: the cell on its own lines
-                // below, under the second column.
-                let under = widths.first().map_or(0, |first| first + 2);
+                // Too little room after the columns: the cell on its own lines below.
                 let mut lines = vec![head.trim_end().to_string()];
-                lines.extend(
-                    wrap(last, width.saturating_sub(under).max(1))
-                        .into_iter()
-                        .map(|line| format!("{}{line}", " ".repeat(under))),
-                );
+                lines.extend(below(last, under));
                 return lines;
             }
             wrap(last, room.max(1))
@@ -412,6 +506,28 @@ pub mod tests {
         assert_eq!(wrap("short", 10), vec!["short"]);
         // A glued space never breaks: who acts stays with its reason.
         assert_eq!(wrap("a b\u{a0}→\u{a0}c", 5), vec!["a", "b\u{a0}→\u{a0}c"]);
+        // A name longer than a line breaks after a `-`.
+        assert_eq!(
+            wrap("from 306-overview-merge-requests-crash-row (!315)", 19),
+            vec!["from", "306-overview-merge-", "requests-crash-row", "(!315)"]
+        );
+        assert_eq!(
+            wrap("https://gitlab.com/monocircuit/platform/-/merge_requests/316", 45),
+            vec!["https://gitlab.com/monocircuit/platform/-/", "merge_requests/316"]
+        );
+    }
+
+    #[test]
+    fn a_button_moves_to_the_next_line_whole() {
+        let line = format!("1 issue {}", button("✕ dismiss", "red"));
+        assert_eq!(wrap(&line, 15), vec!["1 issue", "[ ✕ dismiss ]"]);
+        assert_eq!(wrap("( ✕ end ) a", 6), vec!["( ✕", "end )", "a"]);
+        coloured(|| {
+            let line = format!("1 issue {}", button("✕ dismiss", "red"));
+            let lines = wrap(&line, 15);
+            assert_eq!(lines.len(), 2);
+            assert_eq!(strip(&lines[1]), " ✕ dismiss ");
+        });
     }
 
     #[test]
@@ -438,5 +554,34 @@ pub mod tests {
         assert_eq!(narrow[1], vec!["!311  b"]);
         let cramped = table_rows(&rows, 12);
         assert_eq!(cramped[0], vec!["!3", "      a long", "      title", "      here"]);
+        // A wide first column: the cell a step in from the edge, not under it.
+        let rows = vec![vec![
+            "free 298-breadboard-no-push".to_string(),
+            "0 % · 1 issue [ ✕ dismiss ]".into(),
+        ]];
+        assert_eq!(
+            table_rows(&rows, 40)[0],
+            vec!["free 298-breadboard-no-push", "  0 % · 1 issue [ ✕ dismiss ]"]
+        );
+    }
+
+    #[test]
+    fn stacks_a_row_whose_columns_are_wider_than_the_line() {
+        let rows = vec![vec![
+            "→".to_string(),
+            "292-overview-every-agent-has-name ⇶ breadboard".into(),
+            "—".into(),
+            "no .env.local".into(),
+            "1 ahead".into(),
+            String::new(),
+        ]];
+        assert_eq!(
+            table_rows(&rows, 40)[0],
+            vec![
+                "→  292-overview-every-agent-has-name ⇶",
+                "   breadboard",
+                "     —  no .env.local  1 ahead",
+            ]
+        );
     }
 }

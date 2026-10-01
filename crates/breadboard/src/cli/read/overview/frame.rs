@@ -65,16 +65,26 @@ impl Frame {
     /// The title band (boxes.mjs `titleLines`): the logo's height and a line
     /// above and below it, the logo at the right end, the name on the left of
     /// its middle line, `right` (the time) on the right of its first. Without
-    /// room for name and logo it drops the logo.
+    /// room for name and logo it drops the logo; a name wider than the band
+    /// goes on over the lines below, never cut (#304).
     pub fn band(&mut self, left: &str, right: &str) {
         let art_width = visible(LOGO[0]);
         let logo_room = art_width + 3;
         let name = paint::strip(left);
         let has_logo = self.width.saturating_sub(2 + logo_room) >= visible(&name);
-        let inner = self.width - 2 - if has_logo { logo_room } else { 0 };
-        let rows = [("", ""), ("", right), (name.as_str(), ""), ("", "")];
-        for at in 0..LOGO.len() + 2 {
-            let (left, right) = rows.get(at).copied().unwrap_or(("", ""));
+        let inner = self
+            .width
+            .saturating_sub(2 + if has_logo { logo_room } else { 0 })
+            .max(1);
+        let names = wrap(&name, inner);
+        let mut rows = vec![(String::new(), ""), (String::new(), right)];
+        rows.extend(names.into_iter().map(|name| (name, "")));
+        rows.push((String::new(), ""));
+        for at in 0..rows.len().max(LOGO.len() + 2) {
+            let (left, right) = rows
+                .get(at)
+                .map(|(left, right)| (left.as_str(), *right))
+                .unwrap_or(("", ""));
             let (left, gap, right) = spread(left, right, inner);
             let mark = if has_logo {
                 let art = at
@@ -177,13 +187,10 @@ fn title_lines(title: &str, rest: usize, first: usize) -> Vec<String> {
 /// `left` on the left and `right` on the right of `width` columns, plain;
 /// what doesn't fit is cut from the right one first (boxes.mjs `spread`).
 fn spread(left: &str, right: &str, width: usize) -> (String, String, String) {
-    let lefts: Vec<char> = left.chars().collect();
-    let rights: Vec<char> = right.chars().collect();
-    let room = width.saturating_sub(lefts.len() + if !left.is_empty() && !right.is_empty() { 2 } else { 0 });
-    let shown_right: String = rights.iter().take(room).collect();
-    let right_count = shown_right.chars().count();
-    let shown_left: String = lefts.iter().take(width.saturating_sub(right_count)).collect();
-    let gap = " ".repeat(width.saturating_sub(shown_left.chars().count() + right_count));
+    let room = width.saturating_sub(visible(left) + if !left.is_empty() && !right.is_empty() { 2 } else { 0 });
+    let shown_right = paint::cut(right, room);
+    let shown_left = paint::cut(left, width.saturating_sub(visible(&shown_right)));
+    let gap = " ".repeat(width.saturating_sub(visible(&shown_left) + visible(&shown_right)));
     (shown_left, gap, shown_right)
 }
 
@@ -246,6 +253,23 @@ mod tests {
         assert!(lines[2].starts_with(" ⇶ x "), "{lines:?}");
         assert!(lines[3].ends_with("  ▀ 🭭 ▀  "), "{lines:?}");
         assert!(lines.iter().all(|line| visible(line) == 40), "{lines:?}");
+    }
+
+    #[test]
+    fn a_band_name_too_wide_goes_on_below_uncut() {
+        let mut frame = Frame::new(40);
+        frame.band(
+            "307-breadboard-best-stack  feature/307-breadboard-best-stack",
+            "1:02:03 AM",
+        );
+        let text = frame.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.iter().all(|line| visible(line) == 40), "{lines:?}");
+        let words: String = lines.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
+        assert!(
+            words.contains("307-breadboard-best-stack feature/307-breadboard-best-stack"),
+            "{lines:?}"
+        );
     }
 
     #[test]

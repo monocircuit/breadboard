@@ -774,7 +774,7 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) -> Result<(), String
     };
 
     frame.band(&format!("{name}  {branch}"), &band_time(now));
-    frame.push(dim(&format!(" {}", tree_dir.display())));
+    frame.text_at(1, &dim(&tree_dir.display().to_string()));
 
     let origin = if is_main {
         None
@@ -1308,6 +1308,10 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) -> Result<(), String
                 ));
             }
         }
+        // The database of the stack, own or shared, against the migrations of this checkout.
+        if is_up || is_shared {
+            lines.extend(migration_lines(migrations_of(&tree_dir).as_ref()));
+        }
         lines
     });
     frame.blank();
@@ -1317,9 +1321,138 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) -> Result<(), String
     Ok(())
 }
 
+/// Where the database of a stack stands against the migrations of a checkout.
+#[derive(Debug, Clone, PartialEq)]
+enum Migrations {
+    /// The database answered: the journal's tags it hasn't applied, how many it has.
+    Known { pending: Vec<String>, applied: usize },
+    /// It didn't, in psql's first line.
+    Unanswered(String),
+}
+
+/// The migrations of `dir` the database of its stack hasn't applied, as
+/// drizzle decides it (develop.mjs `migrationsOf`): one counts as applied
+/// when the newest in `drizzle.__drizzle_migrations` is at least as new as
+/// its `when`. None without the journal, `.env.local`, its
+/// `MIGRATION_DATABASE_URL` or psql.
+fn migrations_of(dir: &Path) -> Option<Migrations> {
+    let vita = dir.join(VITA);
+    let journal = std::fs::read_to_string(vita.join("src/server/db/migrations/meta/_journal.json")).ok()?;
+    let env = std::fs::read_to_string(vita.join(".env.local")).ok()?;
+    let url = env
+        .lines()
+        .find_map(|line| line.strip_prefix("MIGRATION_DATABASE_URL="))
+        .map(str::trim)
+        .filter(|url| !url.is_empty())?;
+    let answer = Command::new("psql")
+        .args([
+            url,
+            "--no-psqlrc",
+            "-tAc",
+            "select coalesce(max(created_at), 0) from drizzle.__drizzle_migrations",
+        ])
+        // A database that is gone answers in seconds, not after the kernel's minutes.
+        .env("PGCONNECT_TIMEOUT", "3")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let stderr = String::from_utf8_lossy(&answer.stderr);
+    let newest = if answer.status.success() {
+        String::from_utf8_lossy(&answer.stdout).trim().parse().unwrap_or(0)
+    } else if stderr.contains("does not exist") {
+        // A fresh database has no drizzle schema yet: everything is pending.
+        0
+    } else {
+        let first = stderr.lines().map(str::trim).find(|line| !line.is_empty());
+        return Some(Migrations::Unanswered(first.unwrap_or("no answer").to_string()));
+    };
+    Some(pending_since(&journal, newest))
+}
+
+fn pending_since(journal: &str, newest: i64) -> Migrations {
+    let entries: Vec<Value> = serde_json::from_str::<Value>(journal)
+        .ok()
+        .and_then(|journal| journal.get("entries")?.as_array().cloned())
+        .unwrap_or_default();
+    let pending: Vec<String> = entries
+        .iter()
+        .filter(|entry| int_of(entry, "when").unwrap_or(0) > newest)
+        .map(|entry| str_of(entry, "tag").unwrap_or_default().to_string())
+        .collect();
+    Migrations::Known {
+        applied: entries.len() - pending.len(),
+        pending,
+    }
+}
+
+/// STACK's migrations line (actions.mjs `pushMigrations`), with the command
+/// that applies what is missing.
+fn migration_lines(migrations: Option<&Migrations>) -> Vec<String> {
+    let label = dim("migrations");
+    match migrations {
+        None => Vec::new(),
+        Some(Migrations::Unanswered(error)) => vec![format!(
+            "{label}  {}",
+            yellow(&format!("the database doesn't answer: {error}"))
+        )],
+        Some(Migrations::Known { pending, applied }) if pending.is_empty() => {
+            vec![format!(
+                "{label}  {} {}",
+                green("✓"),
+                dim(&format!("all {applied} applied"))
+            )]
+        }
+        Some(Migrations::Known { pending, .. }) => {
+            let count = pending.len();
+            let mut files = pending.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            if count > 3 {
+                files += &dim(&format!(" +{} more", count - 3));
+            }
+            vec![
+                format!(
+                    "{label}  {} {files}",
+                    yellow(&format!(
+                        "⚠ {count} migration{} not applied:",
+                        if count == 1 { "" } else { "s" }
+                    ))
+                ),
+                format!("    {}", button("▶ pnpm pg:migrate", "cyan")),
+            ]
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migration_is_pending_until_the_database_has_one_as_new() {
+        let journal =
+            r#"{"entries":[{"when":10,"tag":"0000_a"},{"when":20,"tag":"0001_b"},{"when":30,"tag":"0002_c"}]}"#;
+        assert_eq!(
+            pending_since(journal, 20),
+            Migrations::Known {
+                pending: vec!["0002_c".into()],
+                applied: 2
+            }
+        );
+        let lines = migration_lines(Some(&pending_since(journal, 0)));
+        assert_eq!(
+            lines[0],
+            "migrations  ⚠ 3 migrations not applied: 0000_a, 0001_b, 0002_c"
+        );
+        assert_eq!(lines[1], "    [ ▶ pnpm pg:migrate ]");
+        assert_eq!(
+            migration_lines(Some(&pending_since(journal, 30))),
+            vec!["migrations  ✓ all 3 applied"]
+        );
+        assert_eq!(
+            migration_lines(Some(&Migrations::Unanswered("no answer".into()))),
+            vec!["migrations  the database doesn't answer: no answer"]
+        );
+        assert!(migration_lines(None).is_empty());
+    }
 
     #[test]
     fn an_area_is_where_in_the_repo_a_file_is() {

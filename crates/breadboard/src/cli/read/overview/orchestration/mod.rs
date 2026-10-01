@@ -870,8 +870,10 @@ fn mr_row_lines(rows: &[MrRow], width: usize) -> Vec<Vec<String>> {
     }
     let start: usize = widths.iter().take(3).map(|width| width + 2).sum();
     let status = rows.iter().map(|row| visible(&row.status)).max().unwrap_or(0);
+    // Too narrow for the status beside the title: it goes on the line below it.
+    let is_beside = status == 0 || width >= start + MIN_TITLE + status + 2;
     let room = width
-        .saturating_sub(start + if status > 0 { status + 2 } else { 0 })
+        .saturating_sub(start + if is_beside && status > 0 { status + 2 } else { 0 })
         .max(MIN_TITLE);
     let column = room.min(rows.iter().map(|row| visible(&row.title)).max().unwrap_or(0));
     let indent = if width.saturating_sub(start) >= MIN_TEXT {
@@ -892,8 +894,8 @@ fn mr_row_lines(rows: &[MrRow], width: usize) -> Vec<Vec<String>> {
             if row.cells.is_empty() {
                 return vec![lead[0].clone()];
             }
-            let title_room = if row.status.is_empty() {
-                column + if status > 0 { status + 2 } else { 0 }
+            let title_room = if row.status.is_empty() && is_beside && status > 0 {
+                column + status + 2
             } else {
                 column
             };
@@ -901,11 +903,14 @@ fn mr_row_lines(rows: &[MrRow], width: usize) -> Vec<Vec<String>> {
             let mut lines: Vec<String> = Vec::new();
             for (at, title) in titles.iter().enumerate() {
                 let lead = if at == 0 { head.clone() } else { " ".repeat(start) };
-                if at == 0 && !row.status.is_empty() {
+                if at == 0 && !row.status.is_empty() && is_beside {
                     lines.push(format!("{lead}{}  {}", pad(title, column), row.status));
                 } else {
                     lines.push(format!("{lead}{title}"));
                 }
+            }
+            if !is_beside && !row.status.is_empty() {
+                lines.push(format!("{}{}", " ".repeat(start), row.status));
             }
             if !row.text.is_empty() {
                 lines.extend(
@@ -994,6 +999,13 @@ mod tests {
                 .filter(|word| *word == "title")
                 .count(),
             1
+        );
+        // Too narrow for the status beside the title: below it, never past the edge.
+        let lines = mr_row_lines(&rows, 56);
+        assert!(lines.iter().flatten().all(|line| visible(line) <= 56), "{lines:?}");
+        assert_eq!(
+            lines[1].last().map(String::as_str),
+            Some("                    merged 29 h ago")
         );
     }
 }

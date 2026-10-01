@@ -4,6 +4,38 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:05 · CLI / overview --once · a button never splits, narrow widths read as rows
+Chose: wrapping keeps a button or chip whole (`[ ✕ dismiss ]` moves to
+the next line, with colour too, where it is the coloured ground that
+holds it); a word longer than its line breaks after its last `-` or `/`
+that fits (`306-overview-merge-requests-` / `crash-row`, a URL after a
+`/`), a hard cut only without either. A table row whose columns are wider
+than the line is stacked: its first two cells on the first line, the rest
+below a step further in (WORKTREES at 60 columns no longer wraps back to
+the marker column); a last cell with too little room beside a wide first
+column goes a step in from the edge instead of under it (AGENTS at 60: 11
+columns of one-word lines before). An MR's status (`merged 14 h ago`)
+goes on the line below its title where both don't fit, instead of past
+the edge. The title band wraps a name too wide for it over its lines
+(`--worktree` at 60 cut the branch to `feature/307-bre`, #304); the
+worktree's path wraps under itself. STACK's migrations line is built
+(develop.mjs `migrationsOf`, actions.mjs `pushMigrations`: `psql` with
+`MIGRATION_DATABASE_URL`, the journal's `when` against drizzle's newest,
+`✓ all N applied` / `⚠ N migrations not applied: …` and `[ ▶ pnpm
+pg:migrate ]` / `the database doesn't answer: …`), with
+`PGCONNECT_TIMEOUT=3` so a gone database costs seconds, not minutes.
+Kept: ACTIONS' empty line ` none: …` and the `GitLab HH:MM` line have no
+extra indent with FORCE_COLOR. Node's coloured print shows them two
+columns further in only because its `dim()` puts an escape before the
+box's two-space prefix, which its plain print strips; every other line
+of the box agrees, so ours aligns them in both modes. Measured against
+Node with FORCE_COLOR at 120, escapes stripped: the remaining
+differences are these two lines, the dismiss buttons, and the titles
+Node cuts with `…` (#304). At 120 and 200 columns plain, every view is
+byte-identical to before but for the dismiss buttons.
+Why: rule 3 + the bar (lazygit never splits a button), rule 2 (#304,
+nothing cut), rule 3 for the migrations line (a parity loss until now).
+
 ## 2026-10-02 01:15 · CLI / lifecycle group · herdr's reads remembered only inside a layout
 Chose: `cli/lifecycle/herdr.rs` remembers a read only inside
 `herdr::remembering` (wt:herdr under its layout lock, wt:remove's release
