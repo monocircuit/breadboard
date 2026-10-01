@@ -37,6 +37,29 @@ const merged = { state: "merged", iid: 1, url: "u", mergedAt: null };
 const stateOf = (entry, facts) => lifecycleOf(entry, facts).key;
 
 describe("lifecycleOf", () => {
+  it("waits for your merge only once no try or acceptance box is open (#280)", () => {
+    const green = {
+      iid: 9,
+      state: "opened",
+      isDraft: false,
+      pipeline: { status: "success" },
+    };
+    assert.equal(
+      plain(lifecycleOf(issue(1), { mr: green, status: "idle" }).text),
+      "waits for you: merge",
+    );
+    assert.equal(
+      plain(
+        lifecycleOf(issue(1), {
+          mr: green,
+          status: "idle",
+          checks: ["try #1 broken"],
+        }).text,
+      ),
+      "checks open: try #1 broken",
+    );
+  });
+
   it("tells a merged worktree the clean-up takes from one it keeps", () => {
     assert.equal(stateOf(issue(1), { mr: merged }), "removable");
     const kept = lifecycleOf(issue(1, { tree: tree({ changed: 2 }) }), {

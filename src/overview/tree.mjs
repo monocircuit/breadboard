@@ -30,6 +30,7 @@ import { paintOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
+import { checksOf } from "./merge.mjs";
 import { nextText } from "./handovers.mjs";
 import { pink } from "./names.mjs";
 import { numbersOf } from "./numbering.mjs";
@@ -58,7 +59,8 @@ const placeCell = (count, number) =>
  * `status` herdr's state of its agent, `hold` why a handover holds the
  * agent, `removal` the automatic wt:remove's `{ isRunning, error }`
  * (auto-actions.mjs), `merged` the iids known merged (a wait names only the
- * others, #262), `handover` the one announced for its agent. Merged comes
+ * others, #262), `handover` the one announced for its agent, `checks` the
+ * tries and acceptance boxes still open (merge.mjs checksOf). Merged comes
  * first: what is left then is the clean-up (clean-up.mjs).
  * - `removable`: merged, nothing left in it: the overview removes it
  * - `kept`: merged, but changes or commits not in develop keep it
@@ -74,7 +76,7 @@ const placeCell = (count, number) =>
  */
 export const lifecycleOf = (
   issue,
-  { mr, status, hold, removal, merged, setup, handover } = {},
+  { mr, status, hold, removal, merged, setup, handover, checks = [] } = {},
 ) => {
   const { tree } = issue;
   if (!tree)
@@ -107,7 +109,7 @@ export const lifecycleOf = (
           ),
         };
   // What its agent waits for, in the colour of whom (herdr-tones.mjs, #288).
-  const agent = agentStateOf(tree, { mr, status, merged, handover });
+  const agent = agentStateOf(tree, { mr, status, merged, handover, checks });
   if (agent.key === "free" && !tree.claude && !status)
     return { key: "none", text: dim("no agent"), tone: null };
   return { ...agent, text: paintOf(agent.tone)(agent.text) };
@@ -282,6 +284,7 @@ export const treeOf = (
       merged,
       setup: tree && setups.find(setup => setup.dir === tree.dir),
       handover: handoverOf(tree),
+      checks: checksOf(found?.boxes ?? [], tree),
     });
     const state =
       lifecycle.key === "queued"

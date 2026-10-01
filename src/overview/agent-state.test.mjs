@@ -77,6 +77,23 @@ describe("agentStateOf (#288)", () => {
     );
   });
 
+  it("offers no merge while a try or acceptance box is open (#280)", () => {
+    const checks = ["try #2 broken", "1 acceptance box open: free shows"];
+    assert.deepEqual(at({}, { status: "idle", mr: mr(), checks }), {
+      key: "checks",
+      text: "checks open: try #2 broken, 1 acceptance box open: free shows",
+      tone: "you",
+    });
+    const actions = [{ id: 3, kind: "try" }];
+    assert.equal(
+      textOf(
+        { actions },
+        { status: "idle", mr: mr(), checks: ["try #3 open"] },
+      ),
+      "waits for you: try #3",
+    );
+  });
+
   it("names the open actions of the user's, a try by its number", () => {
     const actions = [
       { id: 3, kind: "decide" },

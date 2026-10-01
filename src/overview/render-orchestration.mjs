@@ -41,7 +41,13 @@ import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { announcedOf } from "./handovers.mjs";
 import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
-import { clickMerge, mergeText, openAfter } from "./merge.mjs";
+import {
+  checksOf,
+  clickMerge,
+  mergeText,
+  openAfter,
+  redraftOnBroken,
+} from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
 import { blockersText, mrRowLines, rowBlockersOf } from "./mr-blockers.mjs";
 import { nextOf, nothingText, staleOf, updatedPlan, whyOf } from "./next.mjs";
@@ -108,7 +114,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
             : action.url && open(pageOf(action.url, 0)),
       };
     })
-    .filter(({ issue }) => !issue || of(issue).mr?.state !== "merged");
+    .filter(({ issue }) => !issue || isMergeOffered(issue, of));
   const agents = issues
     .filter(issue => issue.tree?.actions?.length)
     .flatMap(issue =>
@@ -129,6 +135,14 @@ const actionsOf = (local, issues, of, remote, announced) => {
           file: actionsFile(issue.tree.dir),
           to: { dir: issue.tree.dir },
           rank: placeIn(merge, issue.number),
+          // A `broken` puts a ready MR back to draft (#280).
+          onAnswer: answer =>
+            redraftOnBroken({
+              action,
+              answer,
+              mr: of(issue).mr,
+              file: actionsFile(issue.tree.dir),
+            }),
           go: () => {
             const { dir } = issue.tree;
             const { mr } = of(issue);
@@ -150,7 +164,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
     )
     .filter(
       ({ action, issue }) =>
-        action.kind !== "merge" || of(issue).mr?.state !== "merged",
+        action.kind !== "merge" || isMergeOffered(issue, of),
     );
   // The next issue to an idle agent that knows its code (workers.mjs): first
   // of UP NEXT, and the clean-up of its worktree waits, it would close the agent.
@@ -280,6 +294,14 @@ const actionsOf = (local, issues, of, remote, announced) => {
     setups: handovers.setups,
   };
 };
+/**
+ * Whether a posted merge of `issue` shows in ACTIONS: not once its MR is
+ * merged, nor while a try or an acceptance box is open (#280); the MR row
+ * names those.
+ */
+const isMergeOffered = (issue, of) =>
+  of(issue).mr?.state !== "merged" &&
+  checksOf(of(issue).issue?.boxes ?? [], issue.tree).length === 0;
 /** Whether the merged MRs are folded under their divider, over redraws. */
 let isMergedFolded = false;
 /**
@@ -291,7 +313,7 @@ let isMergedFolded = false;
 const actionText = ({ action, issue, file }, of) => {
   const mr = issue && of(issue).mr;
   if (action.kind === "merge" && mr)
-    return `${link(mr.url, `!${mr.iid}`)} ${mergeText(mr, action.text, of(issue).issue?.boxes ?? [], { canMarkReady: Boolean(file) || Boolean(action.canMarkReady) })}`;
+    return `${link(mr.url, `!${mr.iid}`)} ${mergeText(mr, action.text, of(issue).issue?.boxes ?? [], { canMarkReady: Boolean(file) || Boolean(action.canMarkReady), tree: issue.tree })}`;
   if (TRY_KINDS.has(action.kind))
     return `${action.text}  ${trySpot(action, issue?.tree)}`;
   return action.text;
@@ -331,7 +353,7 @@ const statesOf = (issues, of) =>
 
 /**
  * The MR next in the merge order (merge-order.mjs): the first nothing holds
- * up (`isReady`: pipeline passed, work boxes ticked, its turn), else the
+ * up (`isReady`: pipeline passed, boxes ticked, tries good, its turn), else the
  * first and what holds it up; null without an open one. Its click opens it.
  */
 const nextMerge = (local, issues, of) => {
@@ -524,6 +546,7 @@ export const renderOrchestration = (local, remote, error) => {
       files: issue.tree?.files ?? new Set(),
       boxes: of(issue).issue?.boxes ?? [],
       behind: issue.tree?.behind ?? 0,
+      tree: issue.tree ?? null,
     })),
     merge,
   );

@@ -26,6 +26,7 @@ import { repoOfAgents } from "./agent-repo.mjs";
 import { questionOf } from "./auto-actions.mjs";
 import { readClaude } from "./claude.mjs";
 import { nextText } from "./handovers.mjs";
+import { checksOf } from "./merge.mjs";
 
 /** Tokens of an earlier layout (#167, the group head and tree marks): cleared, nothing shows them any more. */
 const GONE = { wt_head: null, wt_tree: null };
@@ -52,7 +53,9 @@ const KIND_NAMES = { "browser-check": "try" };
  * - `pipeline` `waits for the pipeline`: its MR's pipeline runs, or GitLab
  *   has none yet for the commit it pushed; `failed` `pipeline failed`
  * - `waits` `waits for you: merge, try #4, decide`: its open actions, or a
- *   merge when its MR's pipeline passed and no requested change is open
+ *   merge when its MR's pipeline passed, no requested change is open and
+ *   no check (#280); `checks` `checks open: try #2 broken, 1 acceptance
+ *   box open: …` when only those hold the merge
  * - `waitsForMr` `waits for !271` (wt:wait); `next` `→ next #226 after
  *   !232` (a handover announced for it, handovers.mjs `announcedOf`)
  * - `change` `change requested`; `unpushed` `not pushed: 2 commits`
@@ -60,11 +63,18 @@ const KIND_NAMES = { "browser-check": "try" };
  * `tree` as the overview reads a worktree (`claude`, `actions`, `wait`,
  * `change` and pushStateOf's fields), `mr` its MR (`state`, `pipeline` with
  * `status` and `sha`), `status` herdr's state of its agent, `merged` the iids
- * known merged (a wait names only the others), `handover` the announced one.
+ * known merged (a wait names only the others), `handover` the announced one,
+ * `checks` what the human's checks still lack (merge.mjs `checksOf`).
  */
 export const agentStateOf = (
   tree,
-  { mr = null, status = null, merged = new Set(), handover = null } = {},
+  {
+    mr = null,
+    status = null,
+    merged = new Set(),
+    handover = null,
+    checks = [],
+  } = {},
 ) => {
   const state = (key, text, tone) => ({ key, text, tone });
   if (status === "working") return state("working", "at work", "work");
@@ -85,14 +95,16 @@ export const agentStateOf = (
       const kind = KIND_NAMES[action.kind] ?? action.kind;
       return kind === "try" ? `try #${action.id}` : kind;
     });
-  if (isOpen && pipeline === "success" && !isChangeOpen(tree, mr))
-    kinds.push("merge");
+  const isGreen = isOpen && pipeline === "success" && !isChangeOpen(tree, mr);
+  if (isGreen && !checks.length) kinds.push("merge");
   if (kinds.length)
     return state(
       "waits",
       `waits for you: ${[...new Set(kinds)].join(", ")}`,
       "you",
     );
+  if (isGreen)
+    return state("checks", `checks open: ${checks.join(", ")}`, "you");
   if (tree.wait)
     return state("waitsForMr", waitsText(tree.wait, merged), "gitlab");
   if (handover) return state("next", nextText(handover), "gitlab");
@@ -223,6 +235,8 @@ export const reportStates = (local, remote) => {
           status: pane.agent_status,
           merged,
           handover,
+          // The issue's boxes aren't read here: its tries only.
+          checks: checksOf([], tree),
         }),
       );
   }

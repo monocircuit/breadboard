@@ -64,7 +64,50 @@ describe("rowBlockersOf", () => {
           ],
         },
       ),
-      ["3 Work boxes open: The blockers in order, Say who acts +1 → agent"],
+      [
+        "3 Work boxes open: The blockers in order, Say who acts +1 → agent",
+        "1 acceptance box open: Checked → agent",
+      ],
+    );
+  });
+
+  it("names open tries for you and open acceptance boxes, the draft only after them (#280)", () => {
+    const tree = {
+      actions: [
+        { id: 1, kind: "try", text: "the row" },
+        { id: 2, kind: "try", text: "on test", on: "test" },
+      ],
+      answered: [],
+    };
+    const acceptance = (text, isTicked = false) => ({
+      heading: "Acceptance criteria",
+      text,
+      isTicked,
+    });
+    assert.deepEqual(
+      reasonsOf(
+        { isDraft: true, mergeStatus: "draft_status" },
+        {
+          tree,
+          boxes: [
+            work("Tests", true),
+            acceptance("No merge while a try is open"),
+            acceptance("Looks good unblocks"),
+            acceptance("On the test instance (after deploy, try #2)"),
+          ],
+        },
+      ),
+      [
+        "try #1 open → you",
+        "2 acceptance boxes open: No merge while a …, Looks good unblocks → agent",
+      ],
+    );
+    assert.deepEqual(
+      reasonsOf(
+        { isDraft: true, mergeStatus: "draft_status" },
+        { tree: { actions: [], answered: [] }, boxes: [work("Tests", true)] },
+      ),
+      ["draft: mark ready → you"],
     );
   });
 

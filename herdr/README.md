@@ -158,7 +158,8 @@ that holds:
 | `asks you` | it asks something (herdr: blocked) or stopped on a question | `red`, bold |
 | `waits for the pipeline` | its MR's pipeline runs, or GitLab has none yet for its last push | `blue` |
 | `pipeline failed` | the pipeline of its MR failed | `red` |
-| `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed | `red` |
+| `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed and no try is open | `red` |
+| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORKTREES an acceptance box) is open | `red` |
 | `waits for !n`, `→ next #n after !m` | `wt:wait`, a handover announced for it | `blue` |
 | `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
 | `free` | none of these: nothing to do | `teal` |
