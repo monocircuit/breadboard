@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 
 import { ESCAPES } from "../lib/tty.mjs";
 import { actionsFile, actionsOf } from "../worktree/actions.mjs";
-import { isOnApp, pageOf, shortPage, trySpot } from "./try.mjs";
+import { clickTry, isOnApp, pageOf, shortPage, trySpot } from "./try.mjs";
 
 const ENTRY = path.join(import.meta.dirname, "..", "worktree.mjs");
 /** A repository with a linked worktree, where wt:action keeps its actions. */
@@ -155,5 +155,19 @@ describe("try", () => {
     assert.equal(action(dir, "look", "x", "--run", "ls").status, 1);
     assert.equal(action(dir, "browser-check", "x").status, 1);
     assert.deepEqual(actionsOf(actionsFile(dir)), []);
+  });
+});
+
+describe("clickTry", () => {
+  it("says on the row when its terminal can't open, instead of doing nothing (#290)", () => {
+    // Outside herdr: no space to open the tab try in.
+    const action = { kind: "try", run: "pnpm overview" };
+    const tree = { dir: "/nowhere-290" };
+    assert.match(trySpot(action, tree), /opens a terminal/);
+    clickTry(action, tree, () => assert.fail("no silent fallback"));
+    assert.match(
+      trySpot(action, tree).replace(ESCAPES, ""),
+      /no space of its worktree in herdr: run pnpm overview there yourself/,
+    );
   });
 });

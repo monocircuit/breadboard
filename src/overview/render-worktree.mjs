@@ -48,7 +48,25 @@ import {
 } from "./boxes.mjs";
 import { editorTrouble, fileLine, openFile, pushFiles } from "./files.mjs";
 import { open, show } from "./io.mjs";
-import { KEYS, pushRows } from "./screen.mjs";
+import { KEYS, pushRows, screen } from "./screen.mjs";
+
+/**
+ * The Storybook starts of this overview, by worktree dir: `{ error }`, kept
+ * until it answers (#290): the row says it is starting, or why it didn't.
+ */
+const storybooks = new Map();
+/** Storybook of `dir` started (startStorybook), its row on its way. */
+const startStorybookOf = async dir => {
+  storybooks.set(dir, { error: null });
+  screen.redraw();
+  const isStarted = await startStorybook(dir);
+  if (!isStarted)
+    storybooks.set(dir, {
+      error: "no space of the worktree in herdr to start it in",
+    });
+  screen.redraw();
+  return isStarted;
+};
 
 export const tokens = count =>
   count >= 1_000_000
@@ -299,6 +317,8 @@ export const renderWorktree = (local, remote, error) => {
 
   const isUp = tree.stack?.includes("running");
   const mark = isOn => (isOn ? green("●") : dim("○"));
+  // Storybook answers: its start is done with.
+  if (local.isStorybookUp) storybooks.delete(tree.dir);
   const where = [
     {
       isOn: local.isAppUp,
@@ -341,12 +361,17 @@ export const renderWorktree = (local, remote, error) => {
       url: `http://localhost:${STORYBOOK_PORT + offset}`,
       hint: local.isStorybookUp
         ? ""
-        : isInHerdr()
-          ? button("▶ start storybook")
-          : dim(
+        : !isInHerdr()
+          ? dim(
               `cd packages/monolithium && pnpm exec storybook dev -p ${STORYBOOK_PORT + offset}`,
-            ),
-      start: () => startStorybook(tree.dir),
+            )
+          : storybooks.get(tree.dir)?.error
+            ? `${button("▶ start storybook")}  ${red(storybooks.get(tree.dir).error)}`
+            : storybooks.has(tree.dir)
+              ? `${button("◐ starting storybook …", "yellow")} ${dim("its tab storybook, the row turns ● once it answers")}`
+              : button("▶ start storybook"),
+      // Outside herdr there is no tab to start it in: the row shows the command.
+      start: isInHerdr() ? () => startStorybookOf(tree.dir) : null,
     },
   ];
   const whereBox = openBox(lines);
@@ -361,7 +386,8 @@ export const renderWorktree = (local, remote, error) => {
     ]),
     where.map(w => {
       if (!w.url) return null;
-      if (w.isOn || !w.start) return () => open(w.url);
+      if (w.isOn) return () => open(w.url);
+      if (!w.start) return null;
       // Without the extension a browser would only show a connection error: the row turns ● once it runs.
       return () => w.start().then(() => canGroupTabs() && open(w.url));
     }),

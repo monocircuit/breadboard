@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { ESCAPES, visible } from "../lib/tty.mjs";
 import {
   blockOf,
+  isInert,
   nextFor,
   renderOrchestration,
 } from "./render-orchestration.mjs";
@@ -203,5 +204,22 @@ describe("the orchestration view", () => {
     assert.doesNotMatch(view, /AGENTS/);
     assert.match(view, /WORKTREES/);
     assert.doesNotMatch(view, /FEED/);
+  });
+});
+
+describe("isInert", () => {
+  it("takes no click on what can't do anything yet (#290)", () => {
+    assert.equal(isInert({ tryState: { isReady: false } }), true);
+    assert.equal(isInert({ action: { isRunning: true } }), true);
+  });
+
+  it("keeps the click where it does something", () => {
+    assert.equal(isInert({ tryState: { isReady: true } }), false);
+    // A failed deployment opens its job.
+    assert.equal(
+      isInert({ tryState: { isReady: false, url: "https://j" } }),
+      false,
+    );
+    assert.equal(isInert({ action: { kind: "merge" } }), false);
   });
 });

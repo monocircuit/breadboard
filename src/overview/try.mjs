@@ -49,6 +49,8 @@ export const testOrigin = () => {
 
 /** Clicks on their way to a page: dir → `{ stage: "stack" | "app", error }`. */
 const trying = new Map();
+/** The worktrees whose try terminal a click couldn't open (no herdr, no space): their row says so. */
+const unopened = new Set();
 
 /**
  * What a click on the try `action` of the worktree `tree` does, for its row:
@@ -58,7 +60,12 @@ const trying = new Map();
 export const trySpot = (action, tree) => {
   if (action.on === "test")
     return dim(`opens ${action.url} on the test instance`);
-  if (action.run) return dim(`opens a terminal: ${action.run}`);
+  if (action.run)
+    return tree && unopened.has(tree.dir)
+      ? red(
+          `no space of its worktree in herdr: run ${action.run} there yourself`,
+        )
+      : dim(`opens a terminal: ${action.run}`);
   if (!action.url) return "";
   if (!tree) return dim(`opens ${shortPage(action.url)}`);
   const page = pageOf(action.url, tree.offset);
@@ -151,7 +158,12 @@ export const clickTry = (action, tree, fallback, state = null) => {
     if (origin) open(`${origin}${action.url}`, tree?.dir);
     return;
   }
-  if (action.run && tree && openTerminal(tree.dir, action.run)) return;
+  if (action.run && tree) {
+    // Without a terminal the row says why instead of a click doing nothing.
+    if (openTerminal(tree.dir, action.run)) unopened.delete(tree.dir);
+    else unopened.add(tree.dir);
+    return screen.redraw();
+  }
   if (action.url && tree) return openPage(tree, action.url);
   if (action.url) return open(action.url);
   return fallback();
