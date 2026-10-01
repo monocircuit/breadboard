@@ -23,6 +23,7 @@ ships; the package is private.
 | [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | `:Changes` and `:ChangesDiff` in a worktree's `nvim` tab |
+| `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 
 The commands run from the root `package.json` (`node packages/breadboard/src/…`),
 so they work from every checkout without a `--filter`.
