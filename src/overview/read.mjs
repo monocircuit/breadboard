@@ -3,6 +3,7 @@
 import path from "node:path";
 
 import {
+  checkOf,
   envFileOf,
   boxesOf,
   isInside,
@@ -62,6 +63,8 @@ export const readLocal = async () => {
             dir,
           ).stdout.trim(),
         ) || 0,
+      // Whether wt:check passed on its HEAD (#298, worktree/check.mjs).
+      checked: checkOf(dir),
     });
   }
   const known = new Set(trees.map(tree => tree.project));
