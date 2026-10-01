@@ -36,11 +36,12 @@ pub fn run() -> ExitCode {
             print!("{}", text_of(&stale));
             ExitCode::SUCCESS
         }
-        // The reason once: `GitLab: <reason> (<call>)` says GitLab already.
-        Err(error) => fail(&format!(
-            "GitLab could not be read: {}",
-            error.strip_prefix("GitLab: ").unwrap_or(&error)
-        )),
+        Err(error) => {
+            let (reason, hint) = gitlab::explain(&error);
+            let code = fail(&format!("GitLab could not be read: {reason}"));
+            eprintln!("\n  {hint}, then pnpm wt:issues again.");
+            code
+        }
     }
 }
 
@@ -105,8 +106,10 @@ pub fn stale_issues(main: &Path) -> Result<Vec<Stale>, String> {
 
     // A closed issue with every box ticked says all there is: the merge closed
     // it, the boxes show what it did. Open ones and ones with a box left open
-    // need the word on what's done and what's open.
-    let open: Vec<Stale> = issues
+    // need the word on what's done and what's open. With the number of its
+    // comments (`user_notes_count`, GitLab's count of the notes people wrote):
+    // one nobody commented on is stale without reading its notes.
+    let open: Vec<(Stale, bool)> = issues
         .iter()
         .filter_map(|issue| {
             let iid = issue.get("iid").and_then(Value::as_u64)?;
@@ -114,18 +117,27 @@ pub fn stale_issues(main: &Path) -> Result<Vec<Stale>, String> {
             let boxes = boxes_of(str_of(issue, "description").unwrap_or(""));
             let state = str_of(issue, "state").unwrap_or("").to_string();
             let ticked = boxes.iter().filter(|is_ticked| **is_ticked).count();
-            (state == "opened" || ticked < boxes.len()).then(|| Stale {
-                iid,
-                state,
-                title: str_of(issue, "title").unwrap_or("").to_string(),
-                boxes: (ticked, boxes.len()),
-                mr: *mr,
-                merged_at: merged_at.clone(),
+            let has_comments = issue.get("user_notes_count").and_then(Value::as_u64) != Some(0);
+            (state == "opened" || ticked < boxes.len()).then(|| {
+                let stale = Stale {
+                    iid,
+                    state,
+                    title: str_of(issue, "title").unwrap_or("").to_string(),
+                    boxes: (ticked, boxes.len()),
+                    mr: *mr,
+                    merged_at: merged_at.clone(),
+                };
+                (stale, has_comments)
             })
         })
         .collect();
 
-    let endpoints: Vec<String> = open
+    let asked: Vec<&Stale> = open
+        .iter()
+        .filter(|(_, has_comments)| *has_comments)
+        .map(|(entry, _)| entry)
+        .collect();
+    let endpoints: Vec<String> = asked
         .iter()
         .map(|entry| {
             format!(
@@ -134,16 +146,21 @@ pub fn stale_issues(main: &Path) -> Result<Vec<Stale>, String> {
             )
         })
         .collect();
-    let mut stale = Vec::new();
-    for (entry, notes) in open.into_iter().zip(gitlab::lists(main, &endpoints)) {
+    let mut is_caught_up: Vec<u64> = Vec::new();
+    for (entry, notes) in asked.iter().zip(gitlab::lists(main, &endpoints)) {
         let has_comment = notes?.iter().any(|note| {
             note.get("system").and_then(Value::as_bool) != Some(true)
                 && str_of(note, "created_at").is_some_and(|at| is_later(at, &entry.merged_at))
         });
-        if !has_comment {
-            stale.push(entry);
+        if has_comment {
+            is_caught_up.push(entry.iid);
         }
     }
+    let mut stale: Vec<Stale> = open
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .filter(|entry| !is_caught_up.contains(&entry.iid))
+        .collect();
     stale.sort_by(|a, b| order_of(&b.merged_at, &a.merged_at));
     Ok(stale)
 }

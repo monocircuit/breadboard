@@ -124,6 +124,56 @@ fn reason_of(stderr: &str) -> Option<String> {
     })
 }
 
+/// A GitLab error (`GitLab: <reason> (<call>)`) in words a person acts on:
+/// what went wrong, the reason as glab gave it; and what to try.
+pub fn explain(error: &str) -> (String, String) {
+    let error = error.strip_prefix("GitLab: ").unwrap_or(error);
+    let (reason, call) = match error.rsplit_once(" (") {
+        Some((reason, call)) if call.ends_with(')') => (reason, Some(call.trim_end_matches(')'))),
+        _ => (error, None),
+    };
+    let lower = reason.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|word| lower.contains(word));
+    let what = if has(&["not installed"]) {
+        return (
+            reason.to_string(),
+            "install glab: https://gitlab.com/gitlab-org/cli".into(),
+        );
+    } else if has(&["401", "unauthorized", "token", "auth"]) {
+        "glab is not logged in, or its login expired"
+    } else if has(&["403", "forbidden"]) {
+        "this login may not read the project"
+    } else if has(&["404", "not found"]) {
+        "GitLab doesn't know the project origin names"
+    } else if has(&["429", "rate limit"]) {
+        "GitLab's rate limit is reached"
+    } else if has(&["500", "502", "503", "504", "bad gateway", "unavailable"]) {
+        "GitLab has trouble answering"
+    } else if has(&[
+        "port",
+        "refused",
+        "no such host",
+        "not resolve",
+        "enotfound",
+        "dial tcp",
+        "timeout",
+        "timed out",
+        "network",
+        "fetch failed",
+        "unreachable",
+        "invalid url",
+    ]) {
+        "GitLab can't be reached"
+    } else {
+        "glab failed"
+    };
+    let asked = call.map(|call| format!("glab api {call} failed: ")).unwrap_or_default();
+    (
+        format!("{what} ({reason})"),
+        format!("{asked}check the login (glab auth status) and the network"),
+    )
+}
+
 /// A GET whose answer is text (a job's log).
 pub fn text(main: &Path, endpoint: &str) -> Result<String, String> {
     let output = Command::new("glab")
@@ -202,6 +252,24 @@ mod tests {
             assert_eq!(project_of(&dir).as_deref(), Some(project), "{url}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn says_what_went_wrong_in_words_and_what_to_try() {
+        let (reason, hint) = explain("GitLab: Error: bad port (projects/:fullpath/merge_requests?state=merged)");
+        assert_eq!(reason, "GitLab can't be reached (Error: bad port)");
+        assert_eq!(
+            hint,
+            "glab api projects/:fullpath/merge_requests?state=merged failed: check the login (glab auth status) and the network"
+        );
+        let (reason, _) = explain("GitLab: glab: 401 Unauthorized (projects/:fullpath/issues)");
+        assert_eq!(
+            reason,
+            "glab is not logged in, or its login expired (glab: 401 Unauthorized)"
+        );
+        let (reason, hint) = explain("GitLab: glab is not installed (https://gitlab.com/gitlab-org/cli) (x)");
+        assert!(reason.starts_with("glab is not installed"), "{reason}");
+        assert!(hint.starts_with("install glab"), "{hint}");
     }
 
     #[test]

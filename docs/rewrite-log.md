@@ -4,6 +4,28 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:10 · CLI / wt:issues · 2 calls, and an error that says what to do
+Chose: an issue GitLab counts no comment of (`user_notes_count`, the
+notes people wrote, in the issues list already read) is stale without
+reading its notes; only an issue with comments has its notes read, to
+see whether one came after the merge. In the breadboard world: 2 calls
+where it made 13 (the 11 candidates have none), ~230 ms against Node's
+~450 ms, the output byte-identical. Against: one GraphQL query for MRs,
+issues and notes (spec §3's "simpler form"): the fake GitLab's schema has
+no notes and the fake glab no `api graphql`, so it could not be checked,
+and the count already leaves nothing to batch here. A GitLab error now
+says what went wrong in words, glab's own reason after it, and what to
+try: `✗ GitLab could not be read: GitLab can't be reached (Error: bad
+port)` and `  glab api <call> failed: check the login (glab auth status)
+and the network, then pnpm wt:issues again.` (a 401 reads `glab is not
+logged in, or its login expired`, a missing glab `install glab: …`).
+Node printed `GitLab: Node.js v25.8.0 (…)` there. For the gauntlet: the
+fake GitLab doesn't raise `user_notes_count` when a note is posted, as
+GitLab does; a world that notes an issue nobody had commented on and
+then runs wt:issues would see it stale.
+Why: rule 7 (measured: 2 calls, nothing lost), rule 3 with the bar for
+the error (an exact error that says what to do), rule 4 (one REST path).
+
 ## 2026-10-02 01:05 · CLI / overview --once · a button never splits, narrow widths read as rows
 Chose: wrapping keeps a button or chip whole (`[ ✕ dismiss ]` moves to
 the next line, with colour too, where it is the coloured ground that
