@@ -6,7 +6,7 @@
   "description": "The dev workflow of the repo: worktrees, stacks, the overview, the herdr plugin, the Chromium extension",
   "scripts": {
     "lint": "eslint .",
-    "test": "node --test"
+    "test": "node --test \"src/**/*.test.mjs\""
   },
   "devDependencies": {
     "@monocircuit/eslint-config": "workspace:*",
