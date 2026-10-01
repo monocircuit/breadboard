@@ -4,7 +4,7 @@
 //! of its orchestration told, its herdr space released. Refused while
 //! anything of anyone's is still in it.
 
-use super::args::Args;
+use super::args::{Args, Takes};
 use super::claude::{bound_session, left_in, left_text, running_claudes, session_file};
 use super::gitlab;
 use super::herdr;
@@ -14,8 +14,11 @@ use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
 use super::setups::{setup_at, setup_text, setups_of};
 use breadboard_core::git::is_inside;
+use breadboard_core::json::str_of;
 use breadboard_core::record::{self, origin_of};
 use breadboard_core::time::{now_ms, to_iso};
+use serde_json::Value;
+use std::cell::OnceCell;
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -23,6 +26,14 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const USAGE: &str = "usage: pnpm wt:remove <feature> [--keep-branch] [--close-space]";
+const TAKES: Takes = Takes {
+    switches: &["--keep-branch", "--close-space"],
+    valued: &[],
+    lists: &[],
+    words: 1,
+    about: "Removes the worktree of <feature> (or its folder, platform-<feature>): its own stack and its data, the worktree, its branch once all of it is in develop, the empty claim on origin, its herdr tab. Refused while anything of anyone's is still in it. --keep-branch keeps the branch, merged or not; --close-space closes its whole herdr space, conversations too.",
+    usage: USAGE,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -35,17 +46,34 @@ pub struct Options {
 }
 
 pub fn command(args: &Args) -> Done {
-    args.check(&["--keep-branch", "--close-space"], &[], USAGE)?;
-    let (Some(feature), 1) = (args.first(), args.positionals(&[]).len()) else {
+    if args.check(&TAKES)? {
+        return Ok(());
+    }
+    let Some(given) = args.first() else {
         return fail(USAGE);
     };
     let repo = Repo::here()?;
+    let feature = &feature_given(&repo.main, given);
     let options = Options {
         is_keeping_branch: args.has("--keep-branch"),
         is_closing_space: args.has("--close-space"),
         is_fetched: false,
     };
     remove(&repo, feature, &options)
+}
+
+/// The feature `given` names: itself, or the folder of a worktree as a path
+/// (`../platform-303-x`, `platform-303-x/`) or its name.
+pub fn feature_given(main: &Path, given: &str) -> String {
+    let base = Path::new(given.trim_end_matches('/'))
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| given.to_string());
+    let main_name = main.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+    base.strip_prefix(&format!("{main_name}-"))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(&base)
+        .to_string()
 }
 
 /// Whether the claim of `branch` on origin can go with its worktree (#272):
@@ -64,13 +92,27 @@ fn remove_dir(dir: &Path) {
     }
 }
 
-/// The MRs of `branch` in `state`, None when GitLab does not answer.
-fn mrs_of(repo: &Repo, state: &str, branch: &str) -> Option<Vec<serde_json::Value>> {
+/// Every MR of `branch`, None when GitLab does not answer: one read for
+/// both questions of a removal, an open MR on its claim and when it was
+/// merged (Node asked twice, #305).
+fn mrs_of(repo: &Repo, branch: &str) -> Option<Vec<Value>> {
     let endpoint = format!(
-        "projects/:fullpath/merge_requests?state={state}&source_branch={}",
+        "projects/:fullpath/merge_requests?state=all&per_page=100&source_branch={}",
         gitlab::encode(branch)
     );
     gitlab::api(&repo.main, &endpoint)?.as_array().cloned()
+}
+
+/// How many of `mrs` are open.
+fn open_count(mrs: &[Value]) -> usize {
+    mrs.iter().filter(|mr| str_of(mr, "state") == Some("opened")).count()
+}
+
+/// When the last merged one of `mrs` was merged (GitLab lists the newest first).
+fn merged_at(mrs: &[Value]) -> Option<String> {
+    mrs.iter()
+        .filter(|mr| str_of(mr, "state") == Some("merged"))
+        .find_map(|mr| str_of(mr, "merged_at").filter(|at| !at.is_empty()).map(String::from))
 }
 
 /// Rewrites the orchestration's changelog in the background (it asks GitLab
@@ -91,8 +133,17 @@ fn changelog_in_background(repo: &Repo, name: &str) {
 pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
     let dir = repo.dir_of(feature);
     let dir_text = text(&dir);
-    let Some(worktree) = repo.worktrees().into_iter().skip(1).find(|tree| tree.dir == dir) else {
-        return fail(format!("{dir_text} is not a worktree (pnpm wt:list)"));
+    let trees = repo.trees();
+    let Some(worktree) = trees.iter().find(|tree| tree.dir == dir).cloned() else {
+        let names: Vec<String> = trees.iter().map(|tree| repo.feature_of(&tree.dir)).collect();
+        return fail(format!(
+            "{dir_text} is not a worktree (pnpm wt:list); the worktrees: {}",
+            if names.is_empty() {
+                "none".into()
+            } else {
+                names.join(", ")
+            }
+        ));
     };
     if std::env::current_dir().is_ok_and(|here| is_inside(&here, &dir)) {
         return fail(format!("run it from outside {dir_text}"));
@@ -176,6 +227,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
             step(&format!("left in {dir_text}: {}", files.join(", ")));
         }
     }
+    let mrs = OnceCell::new();
     if let Some(branch) = branch.as_deref().filter(|_| is_merged && !options.is_keeping_branch) {
         step(&format!("delete {branch} (all of it is in develop)"));
         if !run_inherit("git", &["branch", "-D", branch], &repo.main) {
@@ -184,26 +236,23 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
         // Its claim on origin too, while empty: the issue can start again (#272).
         let remote = format!("refs/remotes/origin/{branch}");
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;
-        let claim = if is_on_origin {
-            empty_claim(
-                true,
-                has_own_commits(&remote, &repo.main),
-                mrs_of(repo, "opened", branch).map(|mrs| mrs.len()),
-            )
-        } else {
-            None
-        };
-        if let Some(claim) = claim {
-            step(&format!("delete {branch} on origin ({claim})"));
-            run_inherit("git", &["push", "--quiet", "origin", "--delete", branch], &repo.main);
+        if is_on_origin && !has_own_commits(&remote, &repo.main) {
+            let open_mrs = mrs.get_or_init(|| mrs_of(repo, branch)).as_deref().map(open_count);
+            if let Some(claim) = empty_claim(true, false, open_mrs) {
+                step(&format!("delete {branch} on origin ({claim})"));
+                run_inherit("git", &["push", "--quiet", "origin", "--delete", branch], &repo.main);
+            } else if open_mrs.is_none() {
+                // Not deleted blind: an open MR may build on it.
+                step(&format!(
+                    "kept {branch} on origin: GitLab did not answer whether an open MR builds on it; without one: git push origin --delete {branch}"
+                ));
+            }
         }
     }
     // The overview of the orchestration lists it under "done and removed", with the times.
     if let (Some(origin), Some(branch)) = (&origin, &branch) {
         let merged_at = if is_merged {
-            mrs_of(repo, "merged", branch)
-                .and_then(|mrs| mrs.first()?.get("merged_at")?.as_str().map(String::from))
-                .filter(|at| !at.is_empty())
+            mrs.get_or_init(|| mrs_of(repo, branch)).as_deref().and_then(merged_at)
         } else {
             None
         };
@@ -230,7 +279,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
         }
     }
     let kept = match &branch {
-        Some(branch) if !is_merged => format!(", {branch} kept"),
+        Some(branch) if !is_merged || options.is_keeping_branch => format!(", {branch} kept"),
         _ => String::new(),
     };
     println!("\n✓ {feature} removed{kept}");
@@ -240,6 +289,28 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Done {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_read_answers_both_questions() {
+        let mrs = vec![
+            serde_json::json!({ "state": "closed", "merged_at": null }),
+            serde_json::json!({ "state": "merged", "merged_at": "2026-10-01T10:00:00Z" }),
+            serde_json::json!({ "state": "opened" }),
+        ];
+        assert_eq!(open_count(&mrs), 1);
+        assert_eq!(merged_at(&mrs).as_deref(), Some("2026-10-01T10:00:00Z"));
+        assert_eq!(merged_at(&mrs[..1]), None);
+    }
+
+    #[test]
+    fn takes_a_feature_or_its_folder() {
+        let main = Path::new("/r/platform");
+        assert_eq!(feature_given(main, "303-x"), "303-x");
+        assert_eq!(feature_given(main, "platform-303-x"), "303-x");
+        assert_eq!(feature_given(main, "../platform-303-x/"), "303-x");
+        assert_eq!(feature_given(main, "/r/platform-303-x"), "303-x");
+        assert_eq!(feature_given(main, "platform-"), "platform-");
+    }
 
     #[test]
     fn an_empty_claim_goes_only_without_work_and_mrs() {

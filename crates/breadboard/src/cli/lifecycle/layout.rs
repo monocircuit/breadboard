@@ -16,7 +16,7 @@ pub mod orchestrations;
 pub mod spaces;
 pub mod tabs;
 
-use super::args::Args;
+use super::args::{Args, Takes};
 use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::proc::{Done, fail};
@@ -33,12 +33,18 @@ use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 use tabs::{CHANGELOG, OVERVIEW, ROOT, Want, ensure_tab, is_grouped};
 
-const USAGE: &str = "usage: pnpm wt:herdr [--no-focus]";
+const TAKES: Takes = Takes {
+    switches: &["--no-focus"],
+    valued: &[],
+    lists: &[],
+    words: 0,
+    about: "Lays out herdr: Monocircuit/Platform and a space per worktree, its tabs in order, the agents resumed (the way back after a herdr restart). --no-focus leaves the focus where it is.",
+    usage: "usage: pnpm wt:herdr [--no-focus]",
+};
 
 pub fn command(args: &Args) -> Done {
-    args.check(&["--no-focus"], &[], USAGE)?;
-    if !args.positionals(&[]).is_empty() {
-        return fail(USAGE);
+    if args.check(&TAKES)? {
+        return Ok(());
     }
     if !herdr::is_in() {
         return fail("this runs inside herdr (HERDR_ENV is not set)");

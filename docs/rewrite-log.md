@@ -4,6 +4,73 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-01 23:40 · CLI / wt:orchestrate --to · one handover
+Chose: `wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…]`, the
+call people and the overview make, runs the lifecycle group's handover
+(`cli/lifecycle/handover.rs`): `cli/lifecycle.rs` takes `wt:orchestrate`
+when `--to` is given and none of `--end`, `--changelog`, `--changes`;
+every other `wt:orchestrate` goes on to the setup group. Its command line
+is checked first: `--dryrun` is `✗ unknown flag --dryrun` and the usage,
+exit 1, nothing read or written (it handed over for real before: worktree
+made, branch pushed, herdr `pane move` and both prompts); `--title`,
+`--queue`, `--now`, `--cap`, `--watch` with `--to` say they don't go with
+it; `--help` prints what a handover does. The names `wt:handover` and
+`wt:change` are gone: they were in no package.json. A change for an MR is
+`wt:action change` alone (the write group's, which tells "no MR" from
+"glab failed" and takes the actions lock); lifecycle's copy is deleted.
+Against: two implementations each, the weaker one the one that ran.
+Why: rule 5 (the names stay exactly, no new ones), rule 4 (one way to do
+a thing), rule 6 (a typo is no herdr write). The setup group's
+`hand_over`/`announce` in `cli/setup/orchestrate/mod.rs` are unreachable
+now and go in its next commit.
+
+## 2026-10-01 23:35 · CLI / wt:remove, wt:prune, wt:herdr, handover · the command line
+Chose: the read and write groups' check and wording: `--help` / `-h`
+prints what the command does and its usage on stdout, exit 0; an unknown
+flag (`✗ unknown flag --keep-brnach`), a valued flag without its value, a
+switch given one, a word too many (`✗ x is one argument too many`) is
+refused with the usage, exit 1, before anything is read. `wt:remove`
+takes the worktree's folder too (`../platform-303-x`, `platform-303-x`),
+and a name that is none lists the worktrees after today's
+`✗ <dir> is not a worktree (pnpm wt:list)`. Against: Node's way of
+running on (`wt:remove 303-… --keep-brnach` removed the worktree and
+deleted its branch, exit 0).
+Why: rule 6 over rule 3: a typo of a flag that keeps something must not
+destroy it; rule 4: one wording across the CLI (the three checkers belong
+in one `cli/args.rs` once the groups meet).
+
+## 2026-10-01 23:30 · CLI / wt:prune · a failed remove, the columns
+Chose: a worktree whose removal fails gets `kept, wt:remove failed:
+<reason>` on its line and the prune goes on with the others; at the end
+`✗ <n> worktree(s) could not be removed: the reason is on each line
+above`, exit 1. The names are padded to 32 as today, or to the longest
+name when one is longer, so the second column stays one column.
+Against: Node, whose in-process `fail` exited in the middle of the prune
+(the branches and folders after it untouched, no report); the frozen
+32-column padding that pushed long names' lines out of line.
+Why: rule 3 says decide it; the entries are independent, and a prune
+that stops halfway without its report is the worse tool (rule 4: the
+same loop, no early exit). The padding changes nothing for names under
+32 characters.
+
+## 2026-10-01 23:25 · CLI / wt:remove · GitLab reads, the changelog, what it says
+Chose: one `merge_requests?state=all&source_branch=` read answers both
+questions of a removal (an open MR on its claim, when it was merged):
+1 GitLab request where Node made 2. The orchestration's changelog rewrite
+after a merged removal runs as a detached `wt:orchestrate <name>
+--changelog` process (its own process group, output to nowhere), so the
+removal neither waits for it nor cuts it off. `--keep-branch` ends
+`✓ <feature> removed, <branch> kept` merged or not; when GitLab doesn't
+answer whether an open MR builds on the claim, the claim stays and a step
+says so with the command to delete it.
+Against: Node's `writeChangelog` promise kept alive in the same process;
+its silent claim kept on a GitLab error.
+Why: rule 7 / #305: the rewrite itself still asks GitLab about 96 times
+(one MR list per record branch, one issue per record issue) in the
+world; it is the setup group's `changelog.rs` and moves to core's
+batched/GraphQL client. Rule 3: the background rewrite is today's, only
+the mechanism differs.
+
 ## 2026-10-01 23:20 · CLI / overview --worktree --once · the worktree's view
 Chose: the printed view of one worktree ports render-worktree.mjs: WORK
 (origin, issue, MR with its URL, `tests untested: 1 commit pnpm wt:check

@@ -1,6 +1,6 @@
-//! `wt:handover <name> <issue> --to <agent> [--limit <percent>] [--after
-//! !<mr>…] [--dry-run] [--shared] [--peer <session>] [--brief <file>]`,
-//! today's `wt:orchestrate <name> <issue> --to <agent>`
+//! `wt:orchestrate <name> <issue> --to <agent> [--limit <percent>] [--after
+//! !<mr>…] [--dry-run] [--shared] [--peer <session>] [--brief <file>]`, the
+//! one handover (cli/lifecycle.rs routes it here)
 //! (worktree/commands/handover.mjs, workers.mjs, history.mjs): the issue goes
 //! to an idle agent of the orchestration instead of a fresh one. Its
 //! worktree is made as for any issue, the brief says what the agent had
@@ -10,7 +10,7 @@
 
 mod brief;
 
-use super::args::Args;
+use super::args::{Args, Takes};
 use super::claude::{bound_session, claude_dir, context_share_of, session_file};
 use super::gitlab;
 use super::herdr::{self, call, did, id_at, s};
@@ -32,13 +32,23 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const USAGE: &str =
-    "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]";
+const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
 const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]";
 /// The share of its context above which an agent gets no next issue: it would run out in the middle of it.
 pub const CONTEXT_LIMIT: f64 = 0.5;
 /// The flags whose next word is their value, not an issue.
-const VALUED: [&str; 5] = ["--peer", "--brief", "--to", "--limit", "--title"];
+const VALUED: [&str; 4] = ["--peer", "--brief", "--to", "--limit"];
+const TAKES: Takes = Takes {
+    switches: &["--dry-run", "--shared"],
+    valued: &VALUED,
+    lists: &["--after"],
+    // `--to hands over one issue at a time` says more than "one argument too many".
+    words: usize::MAX,
+    about: "Hands the issue to an idle agent of the orchestration <name> instead of a fresh one: its worktree is made, the agent moves into it, is renamed after it and told in its prompt. --after !<mr>… only announces it: the overview hands it over once those MRs are merged. --limit: the share of its context (default 50 %) above which the agent gets no next issue. --dry-run shows the brief and changes nothing.",
+    usage: USAGE,
+};
+/// The flags of `wt:orchestrate` that start or queue fresh agents: none of them goes with `--to`.
+const NOT_WITH_TO: [&str; 5] = ["--title", "--queue", "--now", "--cap", "--watch"];
 
 /// The values of `--after` and where they stand: `--after=!232,!233` one,
 /// `--after !232 !233` the `!` words behind it (handovers.mjs `afterArgs`).
@@ -720,8 +730,33 @@ pub struct Request<'a> {
     pub is_dry: bool,
 }
 
+/// Whether `wt:orchestrate <words>` is a handover: `--to` given, and none
+/// of the modes `wt:orchestrate` reads before it (`--end`, `--changelog`,
+/// `--changes`).
+pub fn is_handover(words: &[String]) -> bool {
+    let is_given = |flag: &str| {
+        words
+            .iter()
+            .any(|word| word == flag || word.strip_prefix(flag).is_some_and(|rest| rest.starts_with('=')))
+    };
+    is_given("--to") && !["--end", "--changelog", "--changes"].iter().any(|mode| is_given(mode))
+}
+
+/// `wt:orchestrate <name> <issue> --to <agent> …`: the command line held
+/// against what a handover takes before anything is read or written: a
+/// typo (`--dryrun`) must not hand over for real.
 pub fn command(args: &Args) -> Done {
-    args.check(&["--dry-run", "--shared"], &[&VALUED[..], &["--after"]].concat(), USAGE)?;
+    if let Some(flag) = args.words().iter().find_map(|word| {
+        let name = word.split('=').next().unwrap_or(word);
+        NOT_WITH_TO.contains(&name).then_some(name)
+    }) {
+        return fail(format!(
+            "{flag} does not go with --to: a handover gives one issue to one idle agent (--after !<mr>: once those MRs are merged)\n{USAGE}"
+        ));
+    }
+    if args.check(&TAKES)? {
+        return Ok(());
+    }
     let words = args.words();
     let after = after_args(words);
     let places = after.as_ref().map(|(_, at)| at.clone()).unwrap_or_default();
@@ -743,8 +778,8 @@ pub fn command(args: &Args) -> Done {
         let digits = arg.bytes().take_while(u8::is_ascii_digit).count();
         digits > 0 && (digits == arg.len() || (is_name(arg) && arg.as_bytes()[digits] == b'-'))
     };
-    if !issues.iter().all(|issue| is_issue(issue)) {
-        return fail(USAGE);
+    if let Some(issue) = issues.iter().find(|issue| !is_issue(issue)) {
+        return fail(format!("{issue} is no issue (12, or 12-<feature>)\n{USAGE}"));
     }
     let brief_file = args.value("--brief");
     if let Some(file) = brief_file.filter(|file| !Path::new(file).exists()) {

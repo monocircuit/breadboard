@@ -52,44 +52,83 @@ impl Args {
             .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
     }
 
-    /// The words that are no flag and no flag's value, `valued` the flags that take one.
-    pub fn positionals(&self, valued: &[&str]) -> Vec<&str> {
-        let mut words = Vec::new();
-        let mut is_value = false;
-        for word in &self.words {
-            if is_value {
-                is_value = false;
-                if !word.starts_with("--") {
-                    continue;
-                }
-            }
-            if word.starts_with("--") {
-                is_value = valued.contains(&word.as_str());
-            } else {
-                words.push(word.as_str());
-            }
-        }
-        words
-    }
-
     /// Every word as given.
     pub fn words(&self) -> &[String] {
         &self.words
     }
 
-    /// Refuses a flag the command doesn't know: a typo of `--keep-branch`
-    /// must not pass silently. `flags`: the plain ones, `valued`: those with
-    /// a value. The message ends with the usage.
-    pub fn check(&self, flags: &[&str], valued: &[&str], usage: &str) -> Result<(), Fail> {
-        for word in self.words.iter().filter(|word| word.starts_with("--")) {
-            let name = word.split('=').next().unwrap_or(word);
-            let is_known = flags.contains(&word.as_str()) || valued.contains(&name);
-            if !is_known {
-                return fail(format!("{word} is no flag of this command: {usage}"));
-            }
+    /// The command line held against what the command `takes`, before
+    /// anything is read or written (as the read and write groups do, one
+    /// wording): `--help` / `-h` prints what it does and its usage on stdout
+    /// and answers `Ok(true)`; an unknown flag (a typo of `--keep-branch`),
+    /// a valued flag without its value, a switch given one or a word too many
+    /// is refused with the usage. Node read the flags it knew and ran on.
+    pub fn check(&self, takes: &Takes) -> Result<bool, Fail> {
+        if self.words.iter().any(|word| word == "--help" || word == "-h") {
+            println!("{}\n\n{}", takes.about, takes.usage);
+            return Ok(true);
         }
-        Ok(())
+        match problem_of(&self.words, takes) {
+            Some(problem) => fail(format!("{problem}\n{}", takes.usage)),
+            None => Ok(false),
+        }
     }
+}
+
+/// What a command takes on its command line.
+pub struct Takes {
+    /// The flags that stand alone.
+    pub switches: &'static [&'static str],
+    /// The flags followed by a value (`--flag value` or `--flag=value`).
+    pub valued: &'static [&'static str],
+    /// The flags followed by MRs, the `!N` words behind them (`--after !232 !233`).
+    pub lists: &'static [&'static str],
+    /// How many words (no flag, no flag's value) at most.
+    pub words: usize,
+    /// What the command does, for `--help`.
+    pub about: &'static str,
+    pub usage: &'static str,
+}
+
+fn problem_of(words: &[String], takes: &Takes) -> Option<String> {
+    let mut count = 0;
+    let mut at = 0;
+    while at < words.len() {
+        let word = words[at].as_str();
+        at += 1;
+        if !word.starts_with("--") {
+            count += 1;
+            if count > takes.words {
+                return Some(format!("{word} is one argument too many"));
+            }
+            continue;
+        }
+        let (name, inline) = match word.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (word, None),
+        };
+        if takes.lists.contains(&name) {
+            while inline.is_none() && words.get(at).is_some_and(|next| next.starts_with('!')) {
+                at += 1;
+            }
+        } else if takes.valued.contains(&name) {
+            // `--flag value`, but a next flag is no value (proc.mjs `flagValue`).
+            let has_next = words.get(at).is_some_and(|next| !next.starts_with("--"));
+            match inline {
+                Some("") => return Some(format!("{name} needs a value")),
+                Some(_) => {}
+                None if has_next => at += 1,
+                None => return Some(format!("{name} needs a value")),
+            }
+        } else if takes.switches.contains(&name) {
+            if inline.is_some() {
+                return Some(format!("{name} takes no value"));
+            }
+        } else {
+            return Some(format!("unknown flag {name}"));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -111,17 +150,53 @@ mod tests {
         assert_eq!(Args::of(&["--to"]).value("--to"), None);
     }
 
-    #[test]
-    fn positionals_skip_the_values_of_flags() {
-        let args = Args::of(&["name", "12", "--to", "agent", "--dry-run", "--peer=x"]);
-        assert_eq!(args.positionals(&["--to", "--peer"]), vec!["name", "12"]);
+    const TAKES: Takes = Takes {
+        switches: &["--dry-run"],
+        valued: &["--to"],
+        lists: &["--after"],
+        words: 2,
+        about: "about",
+        usage: "usage: u",
+    };
+
+    fn checked(words: &[&str]) -> Result<bool, String> {
+        Args::of(words).check(&TAKES).map_err(|refused| refused.0)
     }
 
     #[test]
-    fn refuses_an_unknown_flag_with_the_usage() {
-        let args = Args::of(&["x", "--keep-brnach"]);
-        let refused = args.check(&["--keep-branch"], &[], "usage: u").unwrap_err();
-        assert_eq!(refused.0, "--keep-brnach is no flag of this command: usage: u");
-        assert!(Args::of(&["x", "--limit=4"]).check(&[], &["--limit"], "u").is_ok());
+    fn refuses_what_the_command_does_not_take_with_the_usage() {
+        assert_eq!(
+            checked(&["x", "--dryrun"]),
+            Err("unknown flag --dryrun\nusage: u".into())
+        );
+        assert_eq!(
+            checked(&["x", "--bogus=1"]),
+            Err("unknown flag --bogus\nusage: u".into())
+        );
+        assert_eq!(
+            checked(&["a", "b", "c"]),
+            Err("c is one argument too many\nusage: u".into())
+        );
+        assert_eq!(checked(&["--to"]), Err("--to needs a value\nusage: u".into()));
+        assert_eq!(
+            checked(&["--to", "--dry-run"]),
+            Err("--to needs a value\nusage: u".into())
+        );
+        assert_eq!(checked(&["--to="]), Err("--to needs a value\nusage: u".into()));
+        assert_eq!(
+            checked(&["--dry-run=yes"]),
+            Err("--dry-run takes no value\nusage: u".into())
+        );
+        assert_eq!(
+            checked(&["a", "12", "--to", "b", "--after", "!1", "!2", "--dry-run"]),
+            Ok(false)
+        );
+        assert_eq!(checked(&["a", "12", "--to=b", "--after=!1,!2"]), Ok(false));
+    }
+
+    #[test]
+    fn hears_the_help_before_any_problem() {
+        assert_eq!(checked(&["--help"]), Ok(true));
+        assert_eq!(checked(&["--dryrun", "-h"]), Ok(true));
     }
 }

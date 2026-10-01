@@ -5,7 +5,7 @@
 //! behind, the leftover folders of removals that stopped halfway. Everything
 //! else is only listed: a branch with own commits is the only copy of them.
 
-use super::args::Args;
+use super::args::{Args, Takes};
 use super::claude::{bound_session, left_in, left_text, running_claudes, session_file};
 use super::proc::{Done, fail, git, step, text};
 use super::remove::{self, Options};
@@ -14,7 +14,14 @@ use breadboard_core::git::{is_inside, own_commits};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "usage: pnpm wt:prune [--dry-run]";
+const TAKES: Takes = Takes {
+    switches: &["--dry-run"],
+    valued: &[],
+    lists: &[],
+    words: 0,
+    about: "Removes what GitLab is done with: worktrees whose branch is gone from origin with all of it in develop, local branches left behind, leftover folders. Everything else is listed with why it stays. --dry-run only lists.",
+    usage: "usage: pnpm wt:prune [--dry-run]",
+};
 
 /// Commits of `rev` that origin/develop doesn't have, by patch (`cwd`: a checkout of its repo).
 pub fn has_own_commits(rev: &str, cwd: &Path) -> bool {
@@ -208,15 +215,19 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
     }
 }
 
-/// `  <name padded to 32> <line>`.
-fn line(name: &str, what: &str) -> String {
-    format!("{name:<32} {what}")
+/// `<name> <line>`, the names padded to 32 as today's, or to the longest
+/// when one is longer: the lines stay in one column.
+fn lines(report: &[(String, String)]) -> Vec<String> {
+    let width = report.iter().map(|(name, _)| name.chars().count()).fold(32, usize::max);
+    report
+        .iter()
+        .map(|(name, what)| format!("{name:<width$} {what}"))
+        .collect()
 }
 
 pub fn command(args: &Args) -> Done {
-    args.check(&["--dry-run"], &[], USAGE)?;
-    if !args.positionals(&[]).is_empty() {
-        return fail(USAGE);
+    if args.check(&TAKES)? {
+        return Ok(());
     }
     let is_dry = args.has("--dry-run");
     let repo = Repo::here()?;
@@ -255,7 +266,7 @@ pub fn command(args: &Args) -> Done {
                 }
             }
         };
-        report.push(line(name, &what));
+        report.push((name.clone(), what));
     }
     for Entry { name, why, .. } in &branches {
         let what = match why {
@@ -264,7 +275,7 @@ pub fn command(args: &Args) -> Done {
             None if git(&repo.main, &["branch", "-D", name], None).is_ok => "deleted, all of it is in develop".into(),
             None => "kept, git refused".into(),
         };
-        report.push(line(name, &what));
+        report.push((name.clone(), what));
     }
     for Entry { name, dir, why } in &folders {
         let what = match why {
@@ -275,7 +286,7 @@ pub fn command(args: &Args) -> Done {
                 "deleted, a leftover folder".into()
             }
         };
-        report.push(line(name, &what));
+        report.push((name.clone(), what));
     }
 
     println!(
@@ -286,7 +297,7 @@ pub fn command(args: &Args) -> Done {
             "pruned"
         }
     );
-    for entry in &report {
+    for entry in lines(&report) {
         println!("  {entry}");
     }
     if report.is_empty() {
@@ -347,12 +358,16 @@ mod tests {
     }
 
     #[test]
-    fn pads_names_to_32() {
+    fn pads_names_to_32_or_the_longest() {
+        let short = |name: &str, what: &str| (name.to_string(), what.to_string());
         assert_eq!(
-            line("302-wt-mr-mr-s-tests", "kept, x"),
-            "302-wt-mr-mr-s-tests             kept, x"
+            lines(&[short("302-wt-mr-mr-s-tests", "kept, x")]),
+            vec!["302-wt-mr-mr-s-tests             kept, x"]
         );
         let long = "307-breadboard-best-stack-breadboard-rust";
-        assert_eq!(line(long, "kept"), format!("{long} kept"));
+        assert_eq!(
+            lines(&[short("1-x", "removed"), short(long, "kept")]),
+            vec![format!("{:<41} removed", "1-x"), format!("{long} kept")]
+        );
     }
 }
