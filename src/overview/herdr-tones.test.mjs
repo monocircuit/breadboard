@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { STATE_COLOURS, coloursOf, toneOf, tonesOf } from "./herdr-tones.mjs";
+import {
+  STATE_COLOURS,
+  WAIT_COLOURS,
+  coloursOf,
+  paintOf,
+  toneOf,
+  tonesOf,
+} from "./herdr-tones.mjs";
 
 describe("herdr tones", () => {
   it("paints each state as herdr's sidebar does", () => {
@@ -35,5 +42,16 @@ green = "#7CFF6B"
     // Without a terminal every paint gives the plain text.
     assert.equal(toneOf(null)("no agent"), "no agent");
     assert.equal(toneOf("working")("at work"), "at work");
+  });
+
+  it("paints whom an agent waits for, each in a colour of its own (#288)", () => {
+    const names = Object.values(WAIT_COLOURS);
+    assert.equal(new Set(names).size, names.length);
+    assert.equal(WAIT_COLOURS.work, STATE_COLOURS.working);
+    assert.equal(
+      paintOf("gitlab")("waits for the pipeline"),
+      "waits for the pipeline",
+    );
+    assert.equal(paintOf(null)("no agent"), "no agent");
   });
 });

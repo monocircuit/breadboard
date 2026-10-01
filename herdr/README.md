@@ -132,7 +132,7 @@ to next to the agent, then what it waits for; no name twice:
 ```
 ● 144-branch-pill-morph
   Monocircuit/Platform · claude
-  review · !172
+  waits for you: merge · !172
 ● Monocircuit/Platform
   claude
 ```
@@ -148,14 +148,21 @@ together. Rows of your own stay for other agents; claude gets these
 ## What an agent waits for
 
 Under each agent in a worktree's space the sidebar says what it waits for,
-so you see it without the overview:
+so you see it without the overview, its MR behind it (`· !n`): the same
+words as WORKTREES in the overview of an orchestration (#288), the first
+that holds:
 
 | Line | When | Colour |
 | ---- | ---- | ------ |
-| `needs you · !n` | the agent asks something (herdr: blocked) | `red`, bold |
-| `pipeline failed · !n` | the pipeline of its MR failed | `red` |
-| `working · !n` | the agent works | `yellow` |
-| `draft · !n`, `review · !n` | its MR is open, the agent idles | `blue` for review, dim for draft |
+| `at work` | the agent works | `yellow` |
+| `asks you` | it asks something (herdr: blocked) or stopped on a question | `red`, bold |
+| `waits for the pipeline` | its MR's pipeline runs, or GitLab has none yet for its last push | `blue` |
+| `pipeline failed` | the pipeline of its MR failed | `red` |
+| `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed and no try is open | `red` |
+| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORKTREES an acceptance box) is open | `red` |
+| `waits for !n`, `→ next #n after !m` | `wt:wait`, a handover announced for it | `blue` |
+| `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
+| `free` | none of these: nothing to do | `teal` |
 
 The overview of the main space reports it (`../src/overview/agent-state.mjs`,
 token `$wt_state`), every couple of seconds, GitLab's part every half
