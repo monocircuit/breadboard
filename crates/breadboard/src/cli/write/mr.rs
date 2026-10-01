@@ -62,7 +62,11 @@ pub fn install_push_guard(dir: &Path) -> String {
     if !hooks.is_ok || hooks.out().is_empty() {
         return "no git repository".into();
     }
-    let hooks = Path::new(hooks.out());
+    install_into(Path::new(hooks.out()))
+}
+
+/// The guard put into the hooks folder `hooks`.
+fn install_into(hooks: &Path) -> String {
     let file = hooks.join("pre-push");
     let current = fs::read_to_string(&file).ok();
     if current.as_deref() == Some(SHIM) {
@@ -133,7 +137,9 @@ pub fn run(argv: &Argv) -> Outcome {
     }
     let is_dry = argv.has("--dry-run");
     let here = Here::find();
-    let top = here.dir();
+    let Some(top) = here.top.as_deref() else {
+        return Err("not in a git checkout: run it in a worktree".into());
+    };
     let branch = here.branch();
     if branch.is_empty() || branch == "develop" || branch == "main" {
         return Err(format!(
@@ -141,6 +147,13 @@ pub fn run(argv: &Argv) -> Outcome {
             if branch.is_empty() { "a detached HEAD" } else { &branch }
         ));
     }
+    let is_update = argv.has("--update");
+    // glab hands over the newest MR of the branch, merged or closed too (Node
+    // said "open already" to both). A merged one takes nothing any more; a
+    // closed one is history, the branch gets a new one. glab failing is no
+    // "none": that opened a second MR (rule 6).
+    let newest = glab::view(top, "mr", &branch)?;
+
     // Worktrees made before the guard existed get it here (#184).
     if !is_dry {
         let guard = install_push_guard(top);
@@ -148,12 +161,6 @@ pub fn run(argv: &Argv) -> Outcome {
             say(&format!("! {guard}"));
         }
     }
-
-    let is_update = argv.has("--update");
-    // glab hands over the newest MR of the branch, merged or closed too (Node
-    // said "open already" to both). A merged one takes nothing any more; a
-    // closed one is history, the branch gets a new one.
-    let newest = glab::view(top, "mr", &branch);
     let state = newest.as_ref().map(|mr| glab::text_of(mr, "state"));
     if let Some(mr) = newest.as_ref().filter(|_| state == Some("merged")) {
         return Err(format!(
@@ -197,7 +204,7 @@ pub fn run(argv: &Argv) -> Outcome {
 
     // The labels and the milestone of the work item are those of its merge
     // request. Labels fall back to the kind of the branch; the milestone does not.
-    let Some(work) = glab::view(top, "issue", &number) else {
+    let Some(work) = glab::view(top, "issue", &number)? else {
         return Err(format!(
             "issue #{number} does not exist — a merge request without a work item is none"
         ));
@@ -297,14 +304,18 @@ pub fn run(argv: &Argv) -> Outcome {
     // An MR that is open already only gets the description, the same body.
     if let Some(mr) = open {
         let iid = glab::shown(mr.get("iid"));
-        if !glab::put_description(
+        let put = glab::put_description(
             top,
             &format!("projects/:fullpath/merge_requests/{iid}"),
             &format!("{body}\n"),
-        ) {
-            return Err(format!("glab could not update the description of !{iid}"));
+        );
+        if !put.is_ok {
+            return Err(format!(
+                "glab could not update the description of !{iid}: {}",
+                put.why()
+            ));
         }
-        let back = glab::view(top, "mr", &iid);
+        let back = glab::view(top, "mr", &iid).ok().flatten();
         let is_there = back.is_some_and(|back| glab::text_of(&back, "description").trim() == body.trim());
         say(&format!(
             "\n{} description of !{iid} updated, closes #{number}{}\n  {}{boxes}\n",
@@ -342,7 +353,10 @@ pub fn run(argv: &Argv) -> Outcome {
     args.extend(["--assignee", "@me", "--remove-source-branch", "--yes", "--no-editor"]);
     let created = glab::glab(top, &args);
     if !created.is_ok {
-        return Err("glab could not create the merge request, is everything pushed? (git push)".into());
+        return Err(format!(
+            "glab could not create the merge request ({}): is everything pushed? (git push)",
+            created.first_line()
+        ));
     }
     // glab prints the URL; one that didn't is asked for it (Node printed an empty line).
     let printed = created
@@ -354,6 +368,8 @@ pub fn run(argv: &Argv) -> Outcome {
     let url = printed
         .or_else(|| {
             glab::view(top, "mr", &branch)
+                .ok()
+                .flatten()
                 .filter(|mr| glab::text_of(mr, "state") == "opened")
                 .map(|mr| glab::text_of(&mr, "web_url").to_string())
                 .filter(|url| !url.is_empty())
@@ -403,19 +419,20 @@ mod tests {
         assert!(!has_fragment(scratch.path(), "30"));
     }
 
+    // Into a hooks folder of its own: install_push_guard asks git, which in a
+    // scratch folder inside a real repo would find that repo's hooks.
     #[test]
     fn installs_the_push_guard_once_and_leaves_a_foreign_hook() {
         let scratch = Scratch::new();
-        let repo = scratch.path();
-        assert_eq!(install_push_guard(repo), "no git repository");
-        git(repo, &["init", "--quiet"]);
-        assert_eq!(install_push_guard(repo), "installed");
-        let hook = repo.join(".git/hooks/pre-push");
+        let hooks = scratch.path().join("hooks");
+        assert_eq!(install_into(&hooks), "installed");
+        let hook = hooks.join("pre-push");
         assert_eq!(fs::read_to_string(&hook).unwrap(), SHIM);
-        assert_eq!(install_push_guard(repo), "installed");
+        assert_eq!(install_into(&hooks), "installed");
         fs::write(&hook, format!("{SHIM}# old\n")).unwrap();
-        assert_eq!(install_push_guard(repo), "updated");
+        assert_eq!(install_into(&hooks), "updated");
         fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
-        assert!(install_push_guard(repo).ends_with("is someone else's hook, the push guard is not installed"));
+        assert!(install_into(&hooks).ends_with("is someone else's hook, the push guard is not installed"));
+        assert_eq!(fs::read_to_string(&hook).unwrap(), "#!/bin/sh\nexit 0\n");
     }
 }

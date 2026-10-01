@@ -25,7 +25,9 @@ pub fn run(argv: &Argv) -> Outcome {
         return help(ABOUT, USAGE);
     }
     let here = Here::find();
-    let top = here.dir();
+    let Some(top) = here.top.as_deref() else {
+        return Err("not in a git checkout: run it in a worktree".into());
+    };
     let words: Vec<&str> = argv
         .all()
         .iter()
@@ -48,7 +50,7 @@ pub fn run(argv: &Argv) -> Outcome {
 
     // Read right before writing: someone may have changed the description since.
     let read = || -> Result<Value, String> {
-        glab::view(top, "issue", number).ok_or_else(|| format!("issue #{number} could not be read"))
+        glab::view(top, "issue", number)?.ok_or_else(|| format!("GitLab has no issue #{number}"))
     };
     let issue = read()?;
     let title = glab::text_of(&issue, "title").to_string();
@@ -96,8 +98,12 @@ pub fn run(argv: &Argv) -> Outcome {
     }
 
     let ticked = ticked_text(&description, &boxes, &fresh);
-    if !glab::put_description(top, &format!("projects/:fullpath/issues/{number}"), &ticked) {
-        return Err(format!("glab could not update the description of #{number}"));
+    let put = glab::put_description(top, &format!("projects/:fullpath/issues/{number}"), &ticked);
+    if !put.is_ok {
+        return Err(format!(
+            "glab could not update the description of #{number}: {}",
+            put.why()
+        ));
     }
 
     // Read it back: the same boxes, the chosen ones ticked. A body that became

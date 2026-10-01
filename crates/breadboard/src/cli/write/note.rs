@@ -21,7 +21,6 @@ pub fn run(argv: &Argv) -> Outcome {
         return help(ABOUT, USAGE);
     }
     let here = Here::find();
-    let top = here.dir();
     let number = argv.first().and_then(number_of);
     let (Some(number), Some(file)) = (number, argv.given("--message-file")) else {
         return Err(USAGE.into());
@@ -39,17 +38,22 @@ pub fn run(argv: &Argv) -> Outcome {
         return Err(format!("{} is empty", here.shown(file)));
     }
 
+    // glab finds the project through the checkout's origin.
+    let Some(top) = here.top.as_deref() else {
+        return Err("not in a git checkout: run it in a worktree".into());
+    };
     let posted = glab::glab(top, &["issue", "note", number, "--message", &message]);
     if !posted.is_ok {
-        return Err(format!("glab could not comment on #{number}"));
+        return Err(format!("glab could not comment on #{number}: {}", posted.why()));
     }
     let url = posted
         .stdout
         .trim()
         .split('\n')
         .find(|line| line.starts_with("http"))
-        .unwrap_or("")
-        .to_string();
+        // No URL printed: no line of two spaces (Node printed one).
+        .map(|url| format!("\n  {url}"))
+        .unwrap_or_default();
 
     // Read it back, as stored: `glab issue view --comments` renders the
     // markdown and leaves the newest comments of a long issue out. An answer
@@ -69,7 +73,7 @@ pub fn run(argv: &Argv) -> Outcome {
             })
         });
     say(&format!(
-        "\n{} comment on #{number}{}\n  {url}\n",
+        "\n{} comment on #{number}{}{url}\n",
         if is_there { "✓" } else { "⚠" },
         if is_there {
             ""

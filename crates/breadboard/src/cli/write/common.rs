@@ -72,7 +72,9 @@ impl<'a> Argv<'a> {
     }
 
     /// The command line held against what the command takes, before anything
-    /// is read or written: `Ok(true)` asks for the help (`--help`, `-h`), an
+    /// is read or written: `Ok(true)` asks for the help (`--help` anywhere,
+    /// `-h` as the first argument: later it is a word of a text, as Node read
+    /// it, `wt:action look check -h output`), an
     /// unknown flag, a valued flag without its value, a switch given a value
     /// or one word too many is refused with the usage. Node read only the
     /// flags it knew and ran on: a typo of `--dry-run` opened the MR (rule 6).
@@ -83,7 +85,7 @@ impl<'a> Argv<'a> {
         while at < self.0.len() {
             let arg = self.0[at].as_str();
             at += 1;
-            if arg == "--help" || arg == "-h" {
+            if arg == "--help" || (arg == "-h" && at == 1) {
                 return Ok(true);
             }
             if problem.is_some() {
@@ -334,6 +336,14 @@ mod tests {
         assert_eq!(checked(&["10", "--description-file", "-h"]), Ok(false));
         assert_eq!(checked(&["--dryrun", "--help"]), Ok(true));
         assert_eq!(checked(&["-h"]), Ok(true));
+        // Later, -h is a word: of a text, or one too many.
+        assert_eq!(
+            checked(&["10", "-h"]),
+            Err("-h is one argument too many\nusage: x".into())
+        );
+        let text = argv(&["look", "check", "-h", "output"]);
+        let any = Takes { words: None, ..TAKES };
+        assert_eq!(Argv(&text).check(&any), Ok(false));
     }
 
     #[test]

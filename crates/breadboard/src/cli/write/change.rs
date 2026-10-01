@@ -35,7 +35,8 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
         else {
             return Err("which MR? --mr !N".into());
         };
-        let Some(mr) = glab::view(&main, "mr", iid) else {
+        // glab failing is no "no MR": the change would block nothing (rule 6).
+        let Some(mr) = glab::view(&main, "mr", iid)? else {
             return Err(format!("GitLab knows no MR !{iid}"));
         };
         let source = glab::text_of(&mr, "source_branch");
@@ -50,9 +51,10 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
             return Err("run it inside a worktree, or name the MR: --orchestration <name> --mr !N".into());
         };
         let branch = here.branch();
-        let mr = Some(branch)
-            .filter(|b| !b.is_empty())
-            .and_then(|branch| glab::view(&main, "mr", &branch));
+        let mr = match Some(branch).filter(|b| !b.is_empty()) {
+            Some(branch) => glab::view(&main, "mr", &branch)?,
+            None => None,
+        };
         (Some(dir.to_path_buf()), mr)
     };
     let iid = mr.as_ref().map(|mr| glab::shown(mr.get("iid")));
@@ -64,9 +66,10 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
     }
 
     // First blocked, then built: the user can't merge it meanwhile.
-    let is_draft = iid
+    let drafted = iid
         .as_ref()
-        .map(|iid| glab::glab(&main, &["mr", "update", iid, "--draft"]).is_ok);
+        .map(|iid| glab::glab(&main, &["mr", "update", iid, "--draft"]));
+    let is_draft = drafted.as_ref().map(|ran| ran.is_ok);
     let withdrawn = match &dir {
         Some(dir) => {
             let branch = match &mr {
@@ -119,9 +122,10 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
             &format!("  no worktree of this orchestration has {source}: the MR is blocked, the change needs one\n");
     }
     say(&lines);
-    if let (Some(iid), Some(false)) = (&iid, is_draft) {
+    if let (Some(iid), Some(ran)) = (&iid, drafted.filter(|ran| !ran.is_ok)) {
         return Err(format!(
-            "glab could not make !{iid} a draft: do it by hand before the change is built (glab mr update {iid} --draft)"
+            "glab could not make !{iid} a draft ({}): do it by hand before the change is built (glab mr update {iid} --draft)",
+            ran.first_line()
         ));
     }
     Ok(ExitCode::SUCCESS)

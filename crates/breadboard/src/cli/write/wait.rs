@@ -279,19 +279,39 @@ fn is_ours(dir: &Path) -> bool {
     wait_of(dir).and_then(|wait| int_of(&wait, "pid")) == Some(i64::from(std::process::id()))
 }
 
-/// Every awaited MR asked side by side: its facts, or why not (`Err(true)`: GitLab has none).
-fn ask(dir: &Path, mrs: &[i64]) -> Vec<Result<Facts, bool>> {
+/// What GitLab said of an awaited MR.
+#[derive(Debug, Clone, PartialEq)]
+enum Answer {
+    Found(Facts),
+    /// GitLab has no such MR (404).
+    Missing,
+    /// glab couldn't ask: `glab failed: … (glab auth status)`.
+    Failed(String),
+}
+
+fn answer_of(ran: &glab::Ran) -> Answer {
+    match ran.json().as_ref().and_then(facts_of) {
+        Some(facts) => Answer::Found(facts),
+        None if ran.is_not_there() => Answer::Missing,
+        None => Answer::Failed(ran.failure()),
+    }
+}
+
+/// Every awaited MR asked side by side.
+fn ask(dir: &Path, mrs: &[i64]) -> Vec<Answer> {
     let calls: Vec<_> = mrs
         .iter()
         .map(|iid| glab::start(dir, &["api", &format!("projects/:fullpath/merge_requests/{iid}")]))
         .collect();
-    calls
-        .into_iter()
-        .map(|call| {
-            let ran = glab::finish(call);
-            ran.json().as_ref().and_then(facts_of).ok_or_else(|| ran.is_not_found())
-        })
-        .collect()
+    calls.into_iter().map(|call| answer_of(&glab::finish(call))).collect()
+}
+
+/// The first `glab failed: …` of the answers.
+fn failure_of(answers: &[Answer]) -> Option<&str> {
+    answers.iter().find_map(|answer| match answer {
+        Answer::Failed(failure) => Some(failure.as_str()),
+        _ => None,
+    })
 }
 
 /// Sleeps until the next ask, at most until `until`, looking every second
@@ -329,6 +349,23 @@ pub fn run(argv: &Argv) -> Outcome {
         return Ok(ExitCode::SUCCESS);
     }
     let parsed = parse_wait(argv.all()).map_err(|error| format!("{error}\n{USAGE}"))?;
+    // Asked once before anything is written or said: a typo or a glab that
+    // can't reach GitLab ends it at once, not after 8 h of silent asking
+    // (Node wrote the wait and printed its start line first).
+    let first = ask(dir, &parsed.mrs);
+    let unknown: Vec<i64> = parsed
+        .mrs
+        .iter()
+        .zip(&first)
+        .filter(|(_, answer)| **answer == Answer::Missing)
+        .map(|(&iid, _)| iid)
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!("GitLab has no MR {}", list_of(&unknown)));
+    }
+    if let Some(failure) = failure_of(&first) {
+        return Err(failure.to_string());
+    }
     let since = now_ms();
     // A century at most: a date past year 9999 is none the readers parse (Node threw on it).
     let until = since + (parsed.hours * 3_600_000.0).min(100.0 * 365.25 * 86_400_000.0) as i64;
@@ -348,30 +385,34 @@ pub fn run(argv: &Argv) -> Outcome {
     say(&format!("▸ {}, asking GitLab every minute", waits_text(&parsed.mrs)));
 
     let mut conflicts_since = HashMap::new();
-    let mut is_first = true;
+    let mut first = Some(first);
+    let mut is_failing = false;
     loop {
         // A newer wt:wait in this worktree took over: this one steps back quietly.
         if !is_ours(dir) {
             return Ok(ExitCode::SUCCESS);
         }
-        let answers = ask(dir, &parsed.mrs);
-        // A typo waits forever: an MR GitLab doesn't know ends it at once.
-        // Node meant to (its test read a field its errors don't have).
-        if is_first {
-            let unknown: Vec<i64> = parsed
-                .mrs
-                .iter()
-                .zip(&answers)
-                .filter(|(_, answer)| **answer == Err(true))
-                .map(|(&iid, _)| iid)
-                .collect();
-            if !unknown.is_empty() {
-                clear_wait(dir);
-                return Err(format!("GitLab has no MR {}", list_of(&unknown)));
+        let answers = first.take().unwrap_or_else(|| ask(dir, &parsed.mrs));
+        // glab failing later (a login expired, the network gone) is said once
+        // on stderr, and once more when GitLab answers again; the wait goes on.
+        match failure_of(&answers) {
+            Some(failure) if !is_failing => {
+                eprintln!("! {failure}: asks again every minute");
+                is_failing = true;
             }
-            is_first = false;
+            None if is_failing => {
+                eprintln!("  GitLab answers again");
+                is_failing = false;
+            }
+            _ => {}
         }
-        let found: Vec<Facts> = answers.into_iter().filter_map(Result::ok).collect();
+        let found: Vec<Facts> = answers
+            .into_iter()
+            .filter_map(|answer| match answer {
+                Answer::Found(facts) => Some(facts),
+                _ => None,
+            })
+            .collect();
         let verdict = verdict_of(&parsed.mrs, until, &found, now_ms(), &mut conflicts_since);
         if verdict != Verdict::Waiting {
             let behind = if verdict == Verdict::Merged {
@@ -531,6 +572,27 @@ mod tests {
             line_of(&one, &Verdict::Timeout(vec![313]), None).split(" h ").next(),
             Some("waited 8")
         );
+    }
+
+    #[test]
+    fn tells_a_missing_mr_from_glab_failing() {
+        let ran = |is_ok: bool, stdout: &str, stderr: &str| glab::Ran {
+            is_ok,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        assert_eq!(
+            answer_of(&ran(true, "{\"iid\":3,\"state\":\"merged\"}", "")),
+            Answer::Found(mr(3, "merged", false))
+        );
+        assert_eq!(answer_of(&ran(false, "", "glab: 404 Not found\n")), Answer::Missing);
+        let failed = Answer::Failed("glab failed: 401 Unauthorized (glab auth status)".into());
+        assert_eq!(answer_of(&ran(false, "", "glab: 401 Unauthorized\n")), failed);
+        assert_eq!(
+            failure_of(&[Answer::Missing, failed]),
+            Some("glab failed: 401 Unauthorized (glab auth status)")
+        );
+        assert_eq!(failure_of(&[Answer::Missing]), None);
     }
 
     #[test]

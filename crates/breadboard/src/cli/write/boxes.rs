@@ -130,7 +130,8 @@ pub fn box_report(top: &Path, number: &str, text: Option<&str>) -> String {
     let text = match text {
         Some(text) => text,
         None => {
-            let Some(issue) = glab::view(top, "issue", number) else {
+            // Only the end of an answer: glab failing leaves it out, as none.
+            let Ok(Some(issue)) = glab::view(top, "issue", number) else {
                 return String::new();
             };
             read = glab::text_of(&issue, "description").to_string();
