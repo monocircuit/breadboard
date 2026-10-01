@@ -75,9 +75,9 @@ fn button_width(label: &str) -> u16 {
 
 /// `free  Nadia Moreau  298-breadboard-no-push     ✕ dismiss`, then dim
 /// `0 % · from 298-breadboard-no-push (!310) · 1 issue` under the name.
-/// The widest label not beside the widest name: the name goes under its
-/// display name, the text under it, the button stays at the right edge of
-/// the first line. Not even beside the display name: the words as they
+/// The widest label not beside the widest name: the name and the text go
+/// under the display name, the button stays at the right edge of the first
+/// line. Not even beside the display name: the words as they
 /// come, the button after them. Nothing is cut (#304).
 fn row_lines(scene: &mut Scene<Act>, row: &FreeRow, columns: &Columns, label: &str) {
     let dismiss = Act::Dismiss(row.id.clone());
@@ -107,12 +107,14 @@ fn row_lines(scene: &mut Scene<Act>, row: &FreeRow, columns: &Columns, label: &s
         scene.pad_to(scene.width() - button - 1);
         scene.button(label, Tone::Red, dismiss);
         scene.end_line();
-        scene.indent(under);
+        // Beside the name: under it. Stacked: under the display name, where the most room is.
+        let indent = if is_wide { under } else { columns.state + 2 };
+        scene.indent(indent);
         if !is_wide {
             scene.atom(vec![name]);
             scene.end_line();
         }
-        text(scene, row, scene.width().saturating_sub(under));
+        text(scene, row, scene.width().saturating_sub(indent));
         scene.indent(0);
     });
 }
@@ -246,10 +248,7 @@ mod tests {
                 " ".repeat(18)
             )
         );
-        assert_eq!(
-            armed_text[1],
-            "                      298-breadboard-no-push-without-passing"
-        );
+        assert_eq!(armed_text[1], "      298-breadboard-no-push-without-passing");
         assert_eq!(armed_text[1..], unarmed_text[1..]);
         assert!(!armed_text.iter().any(|line| line.contains('…')));
     }
@@ -273,9 +272,17 @@ mod tests {
         assert_eq!(
             lines[1..],
             [
-                "                   306-overview-merge-requests-crash-row",
-                "                   0 % · from 306-overview-merge-requests-crash-row (!310) ·",
-                "                   1 issue",
+                "      306-overview-merge-requests-crash-row",
+                "      0 % · from 306-overview-merge-requests-crash-row (!310) · 1 issue",
+            ]
+        );
+        let lines = text(&draw(&rows, 64));
+        assert_eq!(
+            lines[1..],
+            [
+                "      306-overview-merge-requests-crash-row",
+                "      0 % · from 306-overview-merge-requests-crash-row (!310) ·",
+                "      1 issue",
             ]
         );
     }

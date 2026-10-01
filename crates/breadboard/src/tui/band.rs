@@ -12,8 +12,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// The keys of the views, as the Node overview lists them.
-pub const KEYS: &str = "q quit · r refresh GitLab · click a row · wheel j k ↑↓ PgUp PgDn space g G scroll";
+/// The keys of the views, as the Node overview lists them, and the pick.
+/// Tab and Enter last: a narrow band drops them first, Node's keys stay.
+pub const KEYS: &str =
+    "q quit · r refresh GitLab · click a row · wheel j k ↑↓ PgUp PgDn space g G scroll · Tab Enter pick a row";
 
 /// What the band says.
 #[derive(Clone, Debug, Default)]
@@ -159,6 +161,22 @@ pub fn lines(header: &Header, mark: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Below this many rows the band leaves out its blank first and last line:
+/// at 80x24 the list gets 2 more rows (15 instead of 13), the logo then
+/// fills the band from top to bottom.
+pub const TIGHT_BELOW: u16 = 30;
+
+/// The band as drawn in a pane `height` rows tall: `lines`, without the
+/// blank first and last line in a short pane.
+pub fn shown(header: &Header, mark: &str, width: u16, height: u16) -> Vec<Line<'static>> {
+    let mut lines = lines(header, mark, width);
+    if height < TIGHT_BELOW && lines.len() > 2 {
+        lines.pop();
+        lines.remove(0);
+    }
+    lines
+}
+
 /// Spans as lines of at most `width` columns, broken at words.
 fn wrapped(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let mut scene = Scene::<()>::new(width);
@@ -259,7 +277,11 @@ mod tests {
         }
         assert!(text[1].ends_with("↓ 84 more  GitLab 14:57  ▀▀▀▀▀  "), "{}", text[1]);
         assert!(text[2].starts_with(" ⇶ breadboard "), "{}", text[2]);
-        assert!(text[3].ends_with("g G scroll  ▀ 🭭 ▀  "), "{}", text[3]);
+        assert!(
+            text[3].ends_with("g G scroll · Tab Enter pick a row  ▀ 🭭 ▀  "),
+            "{}",
+            text[3]
+        );
     }
 
     #[test]
@@ -311,6 +333,16 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_short_pane_drops_the_blank_lines_and_keeps_the_rest() {
+        let header = Header::new("⇶ breadboard").status(vec![Span::raw("GitLab 14:57")]);
+        let tall = text(&shown(&header, "↓ 3 more", 80, 40));
+        let short = text(&shown(&header, "↓ 3 more", 80, 24));
+        assert_eq!(tall.len(), 5);
+        assert_eq!(short, tall[1..4]);
+        assert!(short[0].contains("↓ 3 more  GitLab 14:57") && short[0].contains("▀▀▀▀▀"));
     }
 
     #[test]

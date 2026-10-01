@@ -20,6 +20,8 @@ pub enum Command {
     Half(i32),
     Top,
     Bottom,
+    /// Picks the next block (1, Tab) or the one before (-1, Shift-Tab).
+    Select(i32),
     /// The pointer moved there; None: it left the pane (the focus went).
     Hover(Option<(u16, u16)>),
     Click(u16, u16),
@@ -55,6 +57,8 @@ fn key_command(key: &KeyEvent) -> Command {
         KeyCode::PageUp => Command::Page(-1),
         KeyCode::Char('g') | KeyCode::Home => Command::Top,
         KeyCode::Char('G') | KeyCode::End => Command::Bottom,
+        KeyCode::Tab => Command::Select(1),
+        KeyCode::BackTab => Command::Select(-1),
         _ => Command::Key(*key),
     }
 }
@@ -288,6 +292,13 @@ mod tests {
         assert_eq!(command(KeyCode::Down), Some(Command::Scroll(1)));
         assert_eq!(command(KeyCode::Home), Some(Command::Top));
         assert!(matches!(command(KeyCode::Char('u')), Some(Command::Key(_))));
+        assert_eq!(command(KeyCode::Tab), Some(Command::Select(1)));
+        let back_tab = Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(command_of(&back_tab), Some(Command::Select(-1)));
+        assert!(
+            matches!(command(KeyCode::Enter), Some(Command::Key(_))),
+            "the app's or the pick's"
+        );
     }
 
     #[test]

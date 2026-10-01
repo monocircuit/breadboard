@@ -11,14 +11,14 @@
 use super::App;
 use super::band::{self, Header};
 use super::clicks;
-use super::page::{Ground, Page, Sheet, guarded};
+use super::page::{self, Ground, Page, Row, Sheet, guarded};
 use super::scene::Target;
 use super::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Span;
-use std::time::Instant;
+use ratatui::text::{Line, Span};
+use std::time::{Duration, Instant};
 
 /// What is lit: the block under the pointer and the button, by their region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,6 +166,10 @@ pub struct View<A> {
     shown_scroll: u16,
     /// The pointer, in screen cells.
     mouse: Option<(u16, u16)>,
+    /// The block picked with Tab, as lazygit's selected row: lit like the
+    /// pointer's, run by Enter. Its action and which of the blocks with
+    /// that action, so it is found again in a page built anew.
+    selected: Option<(A, usize)>,
     area: Rect,
     lit: Lit,
 }
@@ -181,6 +185,7 @@ impl<A: Clone> Default for View<A> {
             scroll: 0,
             shown_scroll: 0,
             mouse: None,
+            selected: None,
             area: Rect::default(),
             lit: Lit::default(),
         }
@@ -205,11 +210,15 @@ impl<A: Clone + PartialEq> View<A> {
             Header::new("breadboard").status(vec![Span::styled(format!("⚠ {why}"), theme::tone(theme::Tone::Red))])
         });
         let mut page = Page::new(width);
-        if let Err(why) = guarded(|| app.build(&mut page)) {
-            page.failed("VIEW", &why);
-        }
-        self.sheet = Some(page.finish());
-        self.band_height = band::lines(&self.header, "", width).len() as u16;
+        self.sheet = match guarded(|| app.build(&mut page)) {
+            Ok(()) => Some(page.finish()),
+            Err(why) => Some(failed(
+                self.sheet.take().filter(|last| last.width == width),
+                width,
+                &why,
+            )),
+        };
+        self.band_height = band::shown(&self.header, "", width, self.area.height).len() as u16;
         self.built_at = Instant::now();
         self.is_stale = false;
     }
@@ -242,6 +251,12 @@ impl<A: Clone + PartialEq> View<A> {
     }
 
     fn lit_at(&self, window: &Window) -> Lit {
+        if let Some(block) = self.selected_index() {
+            return Lit {
+                block: Some(block),
+                button: None,
+            };
+        }
         let (Some(sheet), Some((x, y))) = (&self.sheet, self.mouse) else {
             return Lit::default();
         };
@@ -255,6 +270,91 @@ impl<A: Clone + PartialEq> View<A> {
                 .filter(|(_, region)| region.is_button())
                 .map(|(i, _)| i),
         }
+    }
+
+    /// The region of the block picked with Tab, in the page on screen.
+    fn selected_index(&self) -> Option<usize> {
+        let (sheet, (action, nth)) = (self.sheet.as_ref()?, self.selected.as_ref()?);
+        let (index, _) = sheet
+            .regions
+            .iter()
+            .enumerate()
+            .filter(|(_, region)| !region.is_button() && region.action() == action)
+            .nth(*nth)?;
+        Some(index)
+    }
+
+    /// What Enter runs: the block picked with Tab.
+    pub fn selected(&self) -> Option<A> {
+        let index = self.selected_index()?;
+        Some(self.sheet.as_ref()?.regions[index].action().clone())
+    }
+
+    /// Picks the next block (`by` > 0, Tab) or the one before (Shift-Tab),
+    /// as lazygit's j/k move the selection: the first one on screen when
+    /// none is picked yet, no further than the first or the last; the
+    /// scroll follows it. Whether anything changed.
+    pub fn select_by(&mut self, by: i32) -> bool {
+        let Some(sheet) = &self.sheet else { return false };
+        let order = blocks(sheet);
+        let Some(last) = order.len().checked_sub(1) else {
+            return false;
+        };
+        let window = self.window(self.scroll);
+        let at = match self
+            .selected_index()
+            .and_then(|index| order.iter().position(|&i| i == index))
+        {
+            Some(at) => (at as i64 + i64::from(by)).clamp(0, last as i64) as usize,
+            None => {
+                let is_shown = |i: &usize| window.screen_y(sheet.regions[*i].area.y).is_some();
+                if by > 0 {
+                    order.iter().position(is_shown).unwrap_or(0)
+                } else {
+                    order.iter().rposition(is_shown).unwrap_or(last)
+                }
+            }
+        };
+        let index = order[at];
+        let region = &sheet.regions[index];
+        let nth = sheet.regions[..index]
+            .iter()
+            .filter(|other| !other.is_button() && other.action() == region.action())
+            .count();
+        let picked = Some((region.action().clone(), nth));
+        let area = region.area;
+        let is_new = self.selected != picked;
+        self.selected = picked;
+        self.reveal(area) || is_new
+    }
+
+    /// Scrolls the least that shows the page rows of `area`, all of them,
+    /// or its top when it is taller than the room. Whether it moved.
+    fn reveal(&mut self, area: Rect) -> bool {
+        let was = self.scroll;
+        let window = self.window(was);
+        if area.y < window.sticky || area.height == 0 {
+            return false;
+        }
+        let last = area.bottom() - 1;
+        let is_shown = |view: &Self, row| view.window(view.scroll).screen_y(row).is_some();
+        if is_shown(self, area.y) && is_shown(self, last) {
+            return false;
+        }
+        if area.y >= window.first_seen() {
+            // Below: its last row the last on screen.
+            self.scroll = (last + 1 - window.sticky)
+                .saturating_sub(window.room)
+                .min(window.max_scroll);
+        }
+        if area.y < window.first_seen() || !is_shown(self, area.y) {
+            // Above, or taller than the room: its top on top, under the pin of its section.
+            self.scroll = (area.y - window.sticky).min(window.max_scroll);
+            while !is_shown(self, area.y) && self.scroll > 0 {
+                self.scroll -= 1;
+            }
+        }
+        self.scroll != was
     }
 
     /// Where the scroll is in the page on screen, to find it again in the next.
@@ -356,6 +456,10 @@ impl<A: Clone + PartialEq> View<A> {
             }
         }
         self.area = area;
+        if self.selected.is_some() && self.selected_index().is_none() {
+            // Its block is gone from the page built anew.
+            self.selected = None;
+        }
         let window = self.window(self.scroll);
         self.scroll = window.scroll;
         let scroll = window.scroll;
@@ -363,10 +467,19 @@ impl<A: Clone + PartialEq> View<A> {
         let Some(sheet) = &self.sheet else { return };
         let buffer = frame.buffer_mut();
 
-        let mark = band::more_mark(scroll, window.max_scroll - scroll);
+        let mut mark = band::more_mark(scroll, window.max_scroll - scroll);
+        if let Some(index) = lit.block.filter(|_| self.selected.is_some()) {
+            // Where the picked block is among all, as lazygit's `9 of 300`.
+            let order = blocks(sheet);
+            let at = order.iter().position(|&i| i == index).map_or(0, |at| at + 1);
+            mark = [format!("{at} of {}", order.len()), mark]
+                .join("  ")
+                .trim_end()
+                .to_string();
+        }
         let band_area = Rect::new(0, 0, area.width, window.top);
         buffer.set_style(band_area, Style::new().bg(theme::HEAD).fg(theme::BAND_TEXT));
-        for (y, line) in band::lines(&self.header, &mark, area.width)
+        for (y, line) in band::shown(&self.header, &mark, area.width, area.height)
             .iter()
             .take(window.top as usize)
             .enumerate()
@@ -392,6 +505,18 @@ impl<A: Clone + PartialEq> View<A> {
                 buffer.set_style(Rect::new(0, y, area.width, 1), Style::new().bg(ground));
             }
             buffer.set_line(0, y, &drawn.line, area.width);
+        }
+
+        // The block picked with Tab: a bar in its left margin, as lazygit's
+        // selected row stands out from the hovered one.
+        if let Some(block) = lit_block.filter(|_| self.selected.is_some()) {
+            for row in block.y..block.y + block.height {
+                if let Some(y) = window.screen_y(row)
+                    && y < area.height
+                {
+                    buffer[(0, y)].set_symbol("▌").set_fg(theme::Tone::Cyan.fg());
+                }
+            }
         }
 
         // The button under the pointer: its own, stronger light.
@@ -424,8 +549,10 @@ impl<A: Clone + PartialEq> View<A> {
     /// The pointer moved (None: it left). Whether what is lit changes: only
     /// then a frame is drawn, not on every move.
     pub fn hover(&mut self, at: Option<(u16, u16)>) -> bool {
+        // The pointer moved: it lights what it is on again, not the pick.
+        let was_picked = at.is_some() && self.selected.take().is_some();
         self.mouse = at;
-        self.lit_at(&self.shown()) != self.lit
+        was_picked || self.lit_at(&self.shown()) != self.lit
     }
 
     /// What a click at screen cell (x, y) runs, in the frame on screen.
@@ -528,6 +655,44 @@ impl<A: Clone + PartialEq> View<A> {
         let window = self.window(0);
         (window.top, window.height)
     }
+}
+
+/// The blocks of a page in reading order: from the top, an outer block
+/// before the ones inside it.
+fn blocks<A>(sheet: &Sheet<A>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..sheet.regions.len())
+        .filter(|&i| !sheet.regions[i].is_button())
+        .collect();
+    order.sort_by_key(|&i| (sheet.regions[i].area.y, std::cmp::Reverse(sheet.regions[i].area.height)));
+    order
+}
+
+/// How often a view that failed to draw is built again (Node's local read).
+const TRY_AGAIN: Duration = Duration::from_secs(2);
+
+/// The view failed to draw as a whole (guard.mjs `guarded`): the last good
+/// page with its first line replaced, not pushed down, by
+/// ` the overview failed to draw: <why> · trace in <log> · trying again`,
+/// so every other row keeps its place and its click; built again in a while.
+fn failed<A: Clone>(last: Option<Sheet<A>>, width: u16, why: &str) -> Sheet<A> {
+    let log = page::log_error(why);
+    let text = format!(
+        " the overview failed to draw: {} · trace in {} · trying again",
+        page::message_of(why),
+        log.display()
+    );
+    let row = Row {
+        line: Line::from(Span::styled(text, theme::tone(theme::Tone::Red))),
+        ground: Ground::Plain,
+    };
+    let mut sheet = last.unwrap_or_else(|| Page::new(width).finish());
+    match sheet.rows.first_mut() {
+        Some(first) => *first = row,
+        None => sheet.rows.push(row),
+    }
+    sheet.regions.retain(|region| region.area.y > 0);
+    sheet.redraw_in = Some(sheet.redraw_in.map_or(TRY_AGAIN, |was| was.min(TRY_AGAIN)));
+    sheet
 }
 
 /// The whole page as plain text at `width`, no terminal: `overview --once`.
@@ -772,9 +937,12 @@ mod tests {
         let mut screen = Screen::new(120, 40);
         screen.click(Action::Break);
         let text = page_text(&screen);
-        assert!(text.contains("BROKEN failed to draw"), "{text}");
+        let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            text.contains("⚠ Cannot read properties of undefined (reading 'branch')"),
+            text.contains("\n  BROKEN failed to draw: ")
+                && words.contains(
+                    "BROKEN failed to draw: Cannot read properties of undefined (reading 'branch') · trace in "
+                ),
             "{text}"
         );
         assert!(text.contains("MERGE REQUESTS") && text.contains("WORKTREES"), "{text}");
@@ -1188,5 +1356,88 @@ mod tests {
         let at = screen.view.redraw_at().expect("a clock");
         assert!(at <= Instant::now() + std::time::Duration::from_secs(60));
         assert!(at > Instant::now());
+    }
+
+    #[test]
+    fn tab_picks_the_blocks_in_order_the_scroll_follows_and_enter_runs_the_pick() {
+        let mut screen = Screen::new(120, 24);
+        let order = blocks(screen.view.sheet());
+        assert!(order.len() > 5);
+        assert_eq!(screen.view.selected(), None);
+        let mut seen = vec![];
+        for _ in 0..order.len() + 2 {
+            screen.view.select_by(1);
+            screen.draw();
+            let picked = screen.view.selected().expect("picked");
+            let index = screen.view.selected_index().unwrap();
+            let area = screen.view.sheet().regions[index].area;
+            // Its rows are on screen (its top at least, when it is taller than the room), lit, with the bar.
+            let y = screen.view.screen_y(area.y).expect("its top on screen");
+            assert_eq!(screen.bg(60, y), Some(theme::HOVER), "{picked:?}");
+            assert_eq!(screen.terminal.backend().buffer()[(0, y)].symbol(), "▌");
+            if area.height < screen.view.shown().room {
+                assert!(screen.view.screen_y(area.bottom() - 1).is_some(), "{picked:?}");
+            }
+            seen.push(index);
+        }
+        // Every block once, in reading order, then it stays on the last.
+        let mut expected = order.clone();
+        let first_on_screen = expected[0];
+        expected.extend([*order.last().unwrap(), *order.last().unwrap()]);
+        assert_eq!(seen[0], first_on_screen);
+        assert_eq!(seen, expected);
+        let band: String = (0..120)
+            .map(|x| screen.terminal.backend().buffer()[(x, 0)].symbol().to_string())
+            .collect();
+        assert!(band.contains(&format!("{} of {}", order.len(), order.len())), "{band}");
+        // Back up to the first: the scroll follows to the top.
+        for _ in 0..order.len() {
+            screen.view.select_by(-1);
+        }
+        screen.draw();
+        assert_eq!(screen.view.selected_index(), Some(order[0]));
+        // Enter runs it: the run loop sends the pick as a click.
+        let picked = screen.view.selected().unwrap();
+        assert_eq!(screen.view.sheet().regions[order[0]].action(), &picked);
+        // The pointer moving takes the light back.
+        assert!(screen.view.hover(Some((60, 10))));
+        assert_eq!(screen.view.selected(), None);
+    }
+
+    #[test]
+    fn a_short_pane_has_the_band_without_its_blank_lines() {
+        let tall = Screen::new(80, 40);
+        let short = Screen::new(80, 24);
+        assert_eq!(tall.view.body().0, 5);
+        assert_eq!(short.view.body().0, 3);
+        let row = |screen: &Screen, y| -> String {
+            (0..80)
+                .map(|x| screen.terminal.backend().buffer()[(x, y)].symbol().to_string())
+                .collect()
+        };
+        assert!(row(&short, 1).contains("breadboard demo"), "{}", row(&short, 1));
+    }
+
+    #[test]
+    fn a_view_that_fails_keeps_its_last_page_with_the_error_on_its_first_line() {
+        let mut page = Page::<u8>::new(60);
+        page.section("FIRST", |scene| scene.block(1, |scene| scene.text("one", Style::new())));
+        page.section("SECOND", |scene| {
+            scene.block(2, |scene| scene.text("two", Style::new()))
+        });
+        let last = page.finish();
+        let was = last.text();
+        let sheet = failed(Some(last), 60, "boom (at src/x.rs:1:1)");
+        let text = sheet.text();
+        assert!(
+            text[0].starts_with(" the overview failed to draw: boom · trace in ")
+                && text[0].ends_with(" · trying again"),
+            "{text:?}"
+        );
+        assert_eq!(text[1..], was[1..], "every other row keeps its place");
+        assert!(sheet.regions.iter().any(|region| *region.action() == 2));
+        assert_eq!(sheet.redraw_in, Some(TRY_AGAIN));
+        // Nothing before it: the line alone.
+        assert_eq!(failed::<u8>(None, 60, "boom").text().len(), 1);
     }
 }

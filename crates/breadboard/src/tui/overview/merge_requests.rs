@@ -319,8 +319,33 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&
     left.atom_gap(mark, 0);
     left.pad_to(at);
     left.indent(at);
-    look::flow(&mut left, &title);
+    // The status stands beside the first line only: the words that do not
+    // fit there wrap under the title's column across the whole row, so a
+    // long title takes one line less (lazygit's subjects use the whole width).
+    let words = look::words_of(&title);
+    let first = words
+        .iter()
+        .scan(at, |x, word| {
+            let gap = if *x > at { 1 } else { 0 };
+            *x += gap + width_of(word);
+            (*x <= at + span).then_some(())
+        })
+        .count()
+        .max(1);
+    for word in &words[..first.min(words.len())] {
+        left.atom(word.clone());
+    }
     left.finish();
+    if words.len() > first {
+        let mut rest = Scene::<Act>::new(width);
+        rest.indent(at);
+        rest.pad_to(at);
+        for word in &words[first..] {
+            rest.atom(word.clone());
+        }
+        rest.finish();
+        left.lines.extend(rest.lines);
+    }
     scene.end_line();
     let top = scene.y();
     pipeline_region(scene, mr, Rect::new(columns.iid + 2, top, mark_width, 1));
@@ -479,6 +504,11 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
 
 /// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
 fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
+    // A short reason stays on one line: `try #2 broken → you`, not `try #2`
+    // and `broken → you` on two; one longer than half the line wraps at its
+    // words, or it would leave the line before it half empty. The scene
+    // starts at its indent here.
+    let room = scene.width().saturating_sub(scene.x()) / 2;
     let mut parts: Vec<Vec<Span<'static>>> = Vec::new();
     if let Some(error) = failed_of(ctx, mr) {
         parts.push(vec![look::span(
@@ -519,14 +549,23 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
             look::ticks(scene);
         }
     }
-    parts.extend(reasons_of(&mr.reasons));
+    parts.extend(reasons_of(&mr.reasons, room));
     look::parted(scene, &parts);
 }
 
 /// The reasons as parts, `text → who`; the MRs it waits for said once,
-/// `waits for !311, !303` (the `→ !311` would only name them again).
-fn reasons_of(reasons: &[Reason]) -> Vec<Vec<Span<'static>>> {
-    let glue = |text: &str| text.replace(' ', "\u{a0}");
+/// `waits for !311, !303` (the `→ !311` would only name them again). A part
+/// at most `room` wide is glued into one word, so it wraps whole; the arrow
+/// and its who always are.
+fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
+    let glue = |part: Vec<Span<'static>>| {
+        if width_of(&part) > room {
+            return part;
+        }
+        part.into_iter()
+            .map(|span| Span::styled(span.content.replace(' ', "\u{a0}"), span.style))
+            .collect()
+    };
     let waits: Vec<&str> = reasons
         .iter()
         .filter(|reason| is_wait(reason))
@@ -538,17 +577,17 @@ fn reasons_of(reasons: &[Reason]) -> Vec<Vec<Span<'static>>> {
         if is_wait(reason) {
             if !is_waits_said {
                 is_waits_said = true;
-                parts.push(vec![look::span(
+                parts.push(glue(vec![look::span(
                     format!("waits for {}", waits.join(", ")),
                     theme::tone(Tone::Yellow),
-                )]);
+                )]));
             }
             continue;
         }
-        parts.push(vec![
+        parts.push(glue(vec![
             look::span(&reason.text, theme::tone(Tone::Yellow)),
-            look::dim(format!("\u{a0}→\u{a0}{}", glue(&reason.who))),
-        ]);
+            look::dim(format!("\u{a0}→\u{a0}{}", reason.who.replace(' ', "\u{a0}"))),
+        ]));
     }
     parts
 }
@@ -613,20 +652,42 @@ mod tests {
 
     #[test]
     fn the_mrs_it_waits_for_are_named_once() {
-        let parts = reasons_of(&[
-            reason("pipeline pending", "GitLab"),
-            reason("waits for !311", "!311"),
-            reason("after !303 (shares a.rs)", "!303"),
-            reason("waits for !304", "!304"),
-        ]);
-        let parts: Vec<String> = parts.iter().map(|part| text(part)).collect();
+        let parts = reasons_of(
+            &[
+                reason("pipeline pending", "GitLab"),
+                reason("waits for !311", "!311"),
+                reason("after !303 (shares a.rs)", "!303"),
+                reason("waits for !304", "!304"),
+            ],
+            80,
+        );
+        let parts: Vec<String> = parts.iter().map(|part| text(part).replace('\u{a0}', " ")).collect();
         assert_eq!(
             parts,
             [
-                "pipeline pending\u{a0}→\u{a0}GitLab",
+                "pipeline pending → GitLab",
                 "waits for !311, !304",
-                "after !303 (shares a.rs)\u{a0}→\u{a0}!303",
+                "after !303 (shares a.rs) → !303"
             ]
+        );
+    }
+
+    #[test]
+    fn a_reason_that_fits_wraps_whole() {
+        let reasons = [
+            reason("try #2 broken", "you"),
+            reason("2 work boxes open: one two three", "agent"),
+        ];
+        let parts = reasons_of(&reasons, 30);
+        let words = |part: &Vec<Span<'static>>| look::words_of(part).len();
+        // `try #2 broken → you` is one word; the longer one wraps at its spaces, the arrow glued.
+        assert_eq!(words(&parts[0]), 1);
+        assert_eq!(text(&parts[0]), "try\u{a0}#2\u{a0}broken\u{a0}→\u{a0}you");
+        assert!(words(&parts[1]) > 1);
+        assert!(
+            text(&parts[1]).ends_with("three\u{a0}→\u{a0}agent"),
+            "{:?}",
+            text(&parts[1])
         );
     }
 
@@ -731,6 +792,8 @@ mod tests {
             "{lines:?}"
         );
         assert!(lines[0].ends_with("  merged 25 h ago"), "{lines:?}");
+        // The rest of the title runs under the status's column too: two lines, not three.
+        assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines.len() > 1 && lines[1].starts_with(&" ".repeat(columns.title_at() as usize)));
         assert!(lines.iter().all(|line| Span::raw(line.as_str()).width() <= 80));
         let title: Vec<&str> = lines

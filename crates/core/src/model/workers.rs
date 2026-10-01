@@ -314,6 +314,9 @@ pub struct WorkerFacts<'a> {
     pub now: i64,
 }
 
+/// How the text of a start that failed ends: the queued node paints it red.
+pub const TRIES_AGAIN: &str = "; a click tries again";
+
 /// The rows of UP NEXT for the workers of the orchestration: per queued issue
 /// its suggested agent (`hand over`), else a fresh one (`start`); each
 /// announced handover a row of its own (#227).
@@ -508,7 +511,7 @@ pub fn worker_actions_of(
                 to,
                 ..
             }) => format!(
-                "{} failed: {error}; a click tries again",
+                "{} failed: {error}{TRIES_AGAIN}",
                 if *is_fresh {
                     "its fresh agent".to_string()
                 } else {
@@ -532,7 +535,7 @@ pub fn worker_actions_of(
             ..
         }) = run_of(Some(*number))
         {
-            fresh.insert(*number, format!("its handover failed: {error}; a click tries again"));
+            fresh.insert(*number, format!("its handover failed: {error}{TRIES_AGAIN}"));
         }
     }
     for issue in &queued {

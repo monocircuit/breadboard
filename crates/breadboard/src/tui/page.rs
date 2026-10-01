@@ -8,7 +8,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::cell::{Cell, RefCell};
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 use std::time::Duration;
 
 thread_local! {
@@ -179,15 +181,26 @@ impl<A: Clone> Page<A> {
         }
     }
 
-    /// A section that failed to draw: its name and why, in its own place.
+    /// A section that failed to draw, in its own place: one red line,
+    /// `  NAME failed to draw: <why> · trace in <log>` (guard.mjs
+    /// `drawSection`), the whole of it in the log.
     pub fn failed(&mut self, section: impl Into<Section>, why: &str) {
         let section = section.into();
+        let log = log_error(why);
         let mut failed = Scene::new(self.inner());
-        failed.note("failed to draw");
+        failed.pad_to(1);
         failed.indent(1);
-        failed.text(&format!("⚠ {why}"), theme::tone(theme::Tone::Red));
+        failed.text(
+            &format!(
+                "{} failed to draw: {} · trace in {}",
+                section.name,
+                message_of(why),
+                log.display()
+            ),
+            theme::tone(theme::Tone::Red),
+        );
         failed.finish();
-        self.add(&section, failed, false);
+        self.add(&section, failed, true);
     }
 
     /// The scene of a section onto the page: its title line, its lines on
@@ -300,6 +313,79 @@ fn margin(line: Line<'static>, ground: Ground) -> Row {
     }
 }
 
+/// Where a failed draw writes its trace, one file per user, as Node's
+/// `errorLog`: `<tmpdir>/overview-<user>-errors.log`.
+pub fn error_log() -> PathBuf {
+    // The tests' failures stay out of the user's log.
+    let end = if cfg!(test) { "errors.test.log" } else { "errors.log" };
+    std::env::temp_dir().join(format!("overview-{}-{end}", user_name()))
+}
+
+/// The user's name from the password database, as Node's `os.userInfo()`;
+/// `$USER` or the uid when it has none.
+fn user_name() -> String {
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buffer = vec![0 as libc::c_char; 4096];
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: getpwuid_r writes only into `entry` and `buffer`, which outlive the call.
+    let status = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
+    if status == 0 && !found.is_null() && !entry.pw_name.is_null() {
+        // SAFETY: pw_name points into `buffer`, a NUL-terminated string.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        return name.to_string_lossy().into_owned();
+    }
+    std::env::var("USER").unwrap_or_else(|_| unsafe { libc::getuid() }.to_string())
+}
+
+thread_local! {
+    /// The last trace written: a page built again with the same failure
+    /// doesn't write it again (Node's log grows by one every 2 s instead).
+    static LOGGED: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+/// Appends `<ISO> <why>` and a blank line to the error log, once per
+/// failure in a row; where it is. Without a log the screen still says it.
+pub fn log_error(why: &str) -> PathBuf {
+    let log = error_log();
+    let is_new = LOGGED.with(|last| {
+        let mut last = last.borrow_mut();
+        let is_new = *last != why;
+        if is_new {
+            why.clone_into(&mut last);
+        }
+        is_new
+    });
+    if is_new {
+        let line = format!(
+            "{} {why}\n\n",
+            breadboard_core::time::to_iso(breadboard_core::time::now_ms())
+        );
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .and_then(|mut file| file.write_all(line.as_bytes()));
+    }
+    log
+}
+
+/// The first line of why a draw failed, without where (that is in the log).
+pub fn message_of(why: &str) -> &str {
+    let first = why.lines().next().unwrap_or_default();
+    match first.rfind(" (at ") {
+        Some(at) if first.ends_with(')') => &first[..at],
+        _ => first,
+    }
+}
+
 pub fn panic_text(panic: &(dyn std::any::Any + Send)) -> String {
     panic
         .downcast_ref::<&str>()
@@ -325,9 +411,17 @@ mod tests {
         let sheet = page.finish();
         let text = sheet.text().join("\n");
         assert!(text.contains(" FIRST\n before\n"), "{text}");
+        let log = error_log().display().to_string();
+        // One line, wrapped at words in a narrow pane, nothing cut.
+        let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = format!(
+            " BROKEN failed to draw: Cannot read properties of undefined (reading 'branch') · trace in {log} LAST "
+        );
+        assert!(words.contains(&line), "{text}");
+        assert!(!text.contains(" (at "), "where is in the log: {text}");
         assert!(
-            text.contains(" BROKEN failed to draw\n  ⚠ Cannot read properties of undefined"),
-            "{text}"
+            text.contains(" FIRST\n before\n\n  BROKEN"),
+            "one line in its place: {text}"
         );
         assert!(text.contains(" LAST\n  after "), "{text}");
         assert!(!is_in_section());
@@ -336,6 +430,21 @@ mod tests {
         assert_eq!(
             sheet.hit(button.area.x, button.area.y).map(|(_, r)| *r.action()),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn the_message_is_its_first_line_without_where() {
+        assert_eq!(message_of("boom (at src/a.rs:3:9)"), "boom");
+        assert_eq!(message_of("first\nsecond"), "first");
+        assert_eq!(message_of("no place"), "no place");
+        assert!(error_log().to_string_lossy().ends_with("-errors.test.log"));
+        assert!(
+            error_log()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("overview-")
         );
     }
 

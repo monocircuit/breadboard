@@ -8,7 +8,7 @@ use super::input::{Command, Rejoin, command_of};
 use super::term::{self, Tty};
 use super::view::View;
 use super::{App, Flow, Input};
-use crossterm::event::EventStream;
+use crossterm::event::{EventStream, KeyCode};
 use futures_util::StreamExt;
 use std::io;
 use std::time::Duration;
@@ -88,6 +88,10 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             is_dirty |= view.scroll_bottom();
                             continue;
                         }
+                        Command::Select(by) => {
+                            is_dirty |= view.select_by(by);
+                            continue;
+                        }
                         Command::Hover(at) => {
                             is_dirty |= view.hover(at);
                             continue;
@@ -98,7 +102,13 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             continue;
                         }
                         Command::Refresh => Input::Refresh,
-                        Command::Key(key) => Input::Key(key),
+                        // Enter runs the block picked with Tab, as its click; else it is the app's.
+                        Command::Key(key) => match view.selected() {
+                            Some(action) if key.code == KeyCode::Enter && key.modifiers.is_empty() => {
+                                Input::Click(action)
+                            }
+                            _ => Input::Key(key),
+                        },
                         Command::Click(x, y) => {
                             is_pressed = true;
                             clicks::log(&view.entry(x, y));

@@ -16,7 +16,7 @@ use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
 use super::numbering::numbers_of;
 use super::order::Go;
-use super::workers::Suggestion;
+use super::workers::{Suggestion, TRIES_AGAIN};
 use super::{Entry, Fact, Paint, Span, Tone, Tree, text_of};
 use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
@@ -582,10 +582,20 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 },
             );
             let state = match lifecycle.key {
-                "queued" => Lifecycle {
-                    text: queued_text(issue, facts, &names),
-                    ..lifecycle
-                },
+                "queued" => {
+                    let text = queued_text(issue, facts, &names);
+                    // Its start failed: no wait like the others, it needs a click.
+                    let paint = if text.ends_with(TRIES_AGAIN) {
+                        Paint::Red
+                    } else {
+                        lifecycle.paint
+                    };
+                    Lifecycle {
+                        text,
+                        paint,
+                        ..lifecycle
+                    }
+                }
                 "removed" if issue.removed_at.is_some() => {
                     let at = issue.removed_at.as_deref().and_then(parse_iso).unwrap_or(facts.now);
                     let merged = issue.merged_at.is_some() || mr.is_some_and(Mr::is_merged);
@@ -1362,6 +1372,9 @@ mod tests {
                 format!("→ {shown}: its handover failed: wt:orchestrate: not built yet; a click tries again"),
             ]
         );
+        // The failed one needs a click: red, the others wait in their own colour.
+        assert_eq!(found.queued[2].state.paint, Paint::Red);
+        assert_ne!(found.queued[1].state.paint, Paint::Red);
     }
 
     #[test]
