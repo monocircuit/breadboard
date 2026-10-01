@@ -714,7 +714,8 @@ pub struct Request<'a> {
     pub to: &'a str,
     pub limit: Option<&'a str>,
     pub peer: Option<String>,
-    pub extra: String,
+    /// The text of this run's `--brief`; without one the issue's kept brief.
+    pub extra: Option<String>,
     pub is_shared: bool,
     pub is_dry: bool,
 }
@@ -758,15 +759,17 @@ pub fn command(args: &Args) -> Done {
     }
     let repo = Repo::here()?;
     let is_dry = args.has("--dry-run");
-    if let Some(after) = after {
-        return announce(&repo, name, issues[0], to, &after, is_dry);
-    }
-    let record = record::record_of(&repo.main, name);
     // A --brief applies to the issues of the run that passes it only (#247).
     let extra = match brief_file {
-        Some(file) => fs::read_to_string(file).map_err(|error| Fail(format!("{file} could not be read: {error}")))?,
-        None => String::new(),
+        Some(file) => {
+            Some(fs::read_to_string(file).map_err(|error| Fail(format!("{file} could not be read: {error}")))?)
+        }
+        None => None,
     };
+    if let Some(after) = after {
+        return announce(&repo, name, issues[0], to, &after, extra.as_deref(), is_dry);
+    }
+    let record = record::record_of(&repo.main, name);
     let peer = args
         .value("--peer")
         .map(String::from)
@@ -784,6 +787,29 @@ pub fn command(args: &Args) -> Done {
             is_dry,
         },
     )
+}
+
+/// The brief an earlier run gave the issue `number`: `briefs` of the record
+/// (#247, written by wt:orchestrate), "" without one.
+fn kept_brief(raw: &Value, number: i64) -> String {
+    raw.get("briefs")
+        .and_then(|briefs| briefs.get(number.to_string()))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// `text` kept as the brief of the issue `number` for its later start (#247).
+fn keep_brief(repo: &Repo, name: &str, number: i64, text: &str) {
+    let mut briefs = raw_record(repo, name)
+        .get("briefs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    briefs.insert(number.to_string(), json!(text));
+    let mut fields = Map::new();
+    fields.insert("briefs".into(), Value::Object(briefs));
+    let _ = record::update_record(&repo.main, name, fields);
 }
 
 /// `<label> has no agent <who>; its agents: …`.
@@ -871,12 +897,13 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         return fail(format!("#{number}: {why}"));
     }
     let before = before_line(&issues_before(&raw, &worker));
+    let extra = request.extra.clone().unwrap_or_else(|| kept_brief(&raw, number));
     let brief = brief_of(
         &issue,
         name,
         &label,
         request.peer.as_deref(),
-        &request.extra,
+        &extra,
         before.as_deref(),
         &repo.main,
     );
@@ -998,7 +1025,15 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
 /// The handover announced, not done (handover.mjs `announceCommand`): the
 /// record keeps it, the issue queued; the overview does it once the MRs are
 /// merged and the agent is idle.
-pub fn announce(repo: &Repo, name: &str, arg: &str, to: &str, after: &[i64], is_dry: bool) -> Done {
+pub fn announce(
+    repo: &Repo,
+    name: &str,
+    arg: &str,
+    to: &str,
+    after: &[i64],
+    extra: Option<&str>,
+    is_dry: bool,
+) -> Done {
     let label = repo.orchestrator_label(name);
     let workers = workers_of(repo, name);
     let Some(worker) = find_worker(&workers, to) else {
@@ -1042,6 +1077,10 @@ pub fn announce(repo: &Repo, name: &str, arg: &str, to: &str, after: &[i64], is_
         entry.insert("queuedAt".into(), json!(queued_at.unwrap_or_else(|| to_iso(now_ms()))));
     }
     let _ = record::write_record(&repo.main, name, &[entry]);
+    // Its --brief waits with it for the handover (#247), next to the record's issues.
+    if let Some(extra) = extra {
+        keep_brief(repo, name, number, extra);
+    }
     let _ = record::announce_handover(&repo.main, name, number, &worker.name, after, &to_iso(now_ms()));
     println!(
         "\n✓ #{number} {} goes to {} once {mrs} {verb} merged: the overview of {label} hands it over then (its worktree is kept until), shown on {}'s node as → next #{number}",
@@ -1147,6 +1186,13 @@ mod tests {
             twice,
             json!([{ "number": 9, "reason": "busy", "at": "t2", "times": 2 }])
         );
+    }
+
+    #[test]
+    fn a_brief_is_kept_per_issue() {
+        let raw = json!({ "brief": "old for all", "briefs": { "12": "for #12" } });
+        assert_eq!(kept_brief(&raw, 12), "for #12");
+        assert_eq!(kept_brief(&raw, 13), "");
     }
 
     #[test]
