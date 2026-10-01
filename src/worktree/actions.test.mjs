@@ -10,6 +10,9 @@ import {
   addAction,
   answerAction,
   answerLine,
+  draftLine,
+  draftWaits,
+  isDraft,
   answeredOf,
   answersOf,
   claimAnswer,
@@ -107,6 +110,31 @@ describe("actions", () => {
       actionsOf(file).map(action => action.id),
       [2],
     );
+  });
+
+  it("leaves a broken or different to the overview, as an unsent draft", () => {
+    const file = fileOf();
+    addAction(file, { kind: "try", text: "the chip" });
+    addAction(file, { kind: "plan", text: "the plan" });
+    addAction(file, { kind: "decide", text: "A or B", options: ["broken"] });
+    answerAction(file, 1, "broken");
+    answerAction(file, 2, "different");
+    answerAction(file, 3, "broken");
+    const [first, second, third] = actionsOf(file);
+    assert.equal(isDraft(first), true);
+    assert.equal(isDraft(second), true);
+    // A decide's option of that name is sent as it is.
+    assert.equal(isDraft(third), false);
+    assert.equal(draftLine(first), '[overview] #1 try "the chip" → broken: ');
+    // Not by the Stop hook: it would send the bare word.
+    assert.deepEqual(
+      takeAnswers(file).map(action => action.id),
+      [3],
+    );
+    draftWaits(file, 1, "at a question");
+    assert.equal(actionsOf(file)[0].waits, "at a question");
+    draftWaits(file, 1, null);
+    assert.equal(actionsOf(file)[0].waits, undefined);
   });
 
   it("takes only the answers asked from a pane", () => {

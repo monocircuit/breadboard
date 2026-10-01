@@ -35,6 +35,15 @@ const ANSWERS = {
   look: ["done"],
   plan: ["ok", "different"],
 };
+/**
+ * The answer per kind after which the user has more to say (what is broken,
+ * what is different): it goes into the agent's input as a draft, unsent
+ * (draftLine), for the user to complete with their words and images.
+ */
+const DRAFTS = { try: "broken", "browser-check": "broken", plan: "different" };
+/** Whether the answer of `action` is completed by the user before it is sent. */
+export const isDraft = action =>
+  Boolean(action.answer) && DRAFTS[action.kind] === action.answer;
 export const answersOf = action =>
   action.kind === "decide"
     ? (action.options ?? [])
@@ -267,6 +276,18 @@ export const answerAction = (file, id, answer) =>
 /** How an answer reaches its agent, one line: `[overview] #3 decide "A or B" → B`. */
 export const answerLine = action =>
   `[overview] #${action.id} ${action.kind} "${action.text}" → ${action.answer}`;
+/** The draft of an answer the user completes (isDraft): `… → broken: `, the cursor after it. */
+export const draftLine = action => `${answerLine(action)}: `;
+/**
+ * The draft of action `id` in `file` waits (`waits`, why), shown on its row;
+ * null: it no longer does.
+ */
+export const draftWaits = (file, id, waits) =>
+  changeActions(file, actions => ({
+    actions: actions.map(action =>
+      action.id === id ? { ...action, waits: waits ?? undefined } : action,
+    ),
+  }));
 /**
  * How long a claim holds: an answer whose deliverer died while typing it is
  * free again after that.
@@ -301,7 +322,8 @@ export const releaseAnswer = (file, id) =>
 /**
  * The answered actions in `file`, taken out of it into `answered`: whoever
  * takes them delivers them, so each answer arrives once. One claimed by another
- * (`claimAnswer`) stays. `pane`: only those asked from that pane (the
+ * (`claimAnswer`) stays, and a draft (isDraft) too: only the overview writes
+ * it into the agent's input, for the user to complete. `pane`: only those asked from that pane (the
  * orchestrator's in a record that others share).
  */
 export const takeAnswers = (file, { pane } = {}) =>
@@ -309,6 +331,7 @@ export const takeAnswers = (file, { pane } = {}) =>
     const taken = actions.filter(
       action =>
         action.answer &&
+        !isDraft(action) &&
         !isClaimed(action) &&
         (pane === undefined || action.pane === pane),
     );
