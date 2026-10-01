@@ -11,6 +11,12 @@ export const red = paint(31);
 export const green = paint(32);
 export const yellow = paint(33);
 export const cyan = paint(36);
+/**
+ * The width of the view: the terminal's, else `$COLUMNS` (a print piped
+ * into `less`: `COLUMNS=$(tput cols) … | less -R`), else 120.
+ */
+export const columns = () =>
+  process.stdout.columns || Number(process.env.COLUMNS) || 120;
 /** A colour of the theme as herdr's config names it, `#FF79C6`: 24 bits, as herdr paints its sidebar. */
 export const hex = colour => {
   const [r, g, b] = [1, 3, 5].map(at =>

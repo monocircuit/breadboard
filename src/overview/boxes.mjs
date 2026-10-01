@@ -2,6 +2,7 @@
 // and status marks.
 import {
   ESCAPES,
+  columns,
   dim,
   fit,
   fitParts,
@@ -22,7 +23,7 @@ import { LOGO_LINES, titleLogo } from "./logo.mjs";
  * never side by side: a click knows its row, not its column.
  */
 /** The boxes take the whole width of the pane: herdr's pane is the frame. */
-const boxWidth = () => process.stdout.columns || 120;
+const boxWidth = () => columns();
 /** Boxes follow each other without a blank line: their borders part them, and the view has to fit a pane. */
 export const openBox = lines => {
   lines.push("");

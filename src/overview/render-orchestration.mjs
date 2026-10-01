@@ -3,6 +3,7 @@
 // the merge order the overview computes (merge-order.mjs), the merged below.
 import {
   bold,
+  columns,
   dim,
   fit,
   green,
@@ -343,7 +344,7 @@ const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
   const why = local.plan?.merge?.length ? local.plan.why : null;
   // The first action as the block it is in ACTIONS, under the label; the
   // MR next to merge or that nothing waits after it; the plan's why under that.
-  const width = process.stdout.columns || 120;
+  const width = columns();
   const label = ` ${bold("NEXT")}  `;
   const indent = " ".repeat(visible(label));
   if (first) {
@@ -437,7 +438,7 @@ const pushUpNext = (lines, upNext, of) => {
  * after its worktree went with the merge (the record of wt:orchestrate).
  */
 export const renderOrchestration = (local, remote, error) => {
-  const width = process.stdout.columns || 120;
+  const width = columns();
   const label = `${ORCHESTRATOR} ${local.title ?? orchestration}`;
   const lines = [];
   lines.push(
