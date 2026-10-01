@@ -3,6 +3,7 @@
 // requests with their pipelines and the open issues with who claimed them.
 //
 //   pnpm overview                   full screen, refreshes itself; q quits, r fetches GitLab now,
+//                                   the button or row under the pointer is lit (lib/mouse.mjs),
 //                                   a click on a row opens it (a worktree: its herdr space; a url:
 //                                   the browser, in the tab group of its space, browser.mjs),
 //                                   Ctrl-click on !n, #n or a pipeline opens just that link,
@@ -29,6 +30,13 @@
 //
 // The local part (git, ports, docker) is read every LOCAL_MS, GitLab every
 // REMOTE_MS: glab costs a request, the ports cost nothing.
+import {
+  FOCUS_OUT,
+  MOUSE_OFF,
+  MOUSE_ON,
+  keyReader,
+  mouseOf,
+} from "./lib/mouse.mjs";
 import { startStack } from "./overview/actions.mjs";
 import { reportStates } from "./overview/agent-state.mjs";
 import {
@@ -124,14 +132,6 @@ const fetchRemote = async () => {
 };
 // GitLab again at once, after a merge from the overview (overview/merge.mjs).
 screen.refresh = fetchRemote;
-// Mouse reporting: clicks and the wheel as `ESC [ < button ; column ; row M`
-// (SGR, 1006), press only (1000). herdr hands them to the pane once the app
-// asks for them; Ctrl-click still goes to herdr, which opens the link under it.
-const MOUSE_ON = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_OFF = "\x1b[?1000l\x1b[?1006l";
-const CLICK = /^\x1b\[<(\d+);(\d+);(\d+)M$/;
-/** One key or mouse report each: a chunk of input can hold several (a fast wheel). */
-const KEY = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[\d;]*[~A-Za-z]|[\s\S]/g;
 /** How far a key scrolls, given the rows of a page. */
 const SCROLL = {
   j: () => 1,
@@ -146,8 +146,6 @@ const SCROLL = {
 };
 /** Lines per notch of the wheel. */
 const WHEEL = 3;
-/** The modifier bits of a mouse button (Shift, Alt, Ctrl). */
-const MODIFIERS = 4 | 8 | 16;
 const press = key => {
   if (key === "q" || key === "\u0003") leave();
   if (key === "r") fetchRemote();
@@ -156,17 +154,15 @@ const press = key => {
     scrollBy(SCROLL[key](pageOf(rows())));
     frame.scrolled();
   }
-  const click = key.match(CLICK);
-  if (!click) return;
-  const [, button, column, row] = click.map(Number);
-  // The wheel: 64 up, 65 down, with a modifier too.
-  const wheel = { 64: -WHEEL, 65: WHEEL }[button & ~MODIFIERS];
-  if (wheel) {
-    scrollBy(wheel);
+  // The pane lost the focus: the pointer is elsewhere, nothing stays lit.
+  if (key === FOCUS_OUT) frame.hoverAt(null);
+  const mouse = mouseOf(key);
+  if (mouse?.kind === "move") frame.hoverAt(mouse.row - 1, mouse.column);
+  if (mouse?.kind === "wheel") {
+    scrollBy(mouse.by * WHEEL);
     frame.scrolled();
   }
-  // The left button alone: no modifier (4, 8, 16), no motion (32), no wheel (64).
-  if (button === 0) frame.clickAt(row - 1, column);
+  if (mouse?.kind === "click") frame.clickAt(mouse.row - 1, mouse.column);
 };
 const leave = () => {
   process.stdout.write(`${MOUSE_OFF}${WRAP_ON}\x1b[?25h\x1b[?1049l`);
@@ -180,8 +176,9 @@ process.stdout.on("resize", frame.repaint);
 watchSize(process.stdout);
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
+const keysOf = keyReader();
 process.stdin.on("data", chunk => {
-  for (const [key] of chunk.toString().matchAll(KEY)) press(key);
+  for (const key of keysOf(chunk.toString())) press(key);
 });
 draw();
 fetchRemote();

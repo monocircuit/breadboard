@@ -2,6 +2,7 @@
 // changes, scrolling only cuts a new window out of it; input of one burst
 // adds up and draws once per frame; only the rows that changed are written.
 // A click resolves against the frame the user sees, not the next one.
+import { hovered } from "./boxes.mjs";
 import { screen } from "./screen.mjs";
 import { viewRowOf, windowOf } from "./scroll.mjs";
 
@@ -41,6 +42,10 @@ export const frameUpdate = (previous, next) => {
  *   screen.
  * - `actionAt(row)`: what a click on the row (from 0) of the frame on screen
  *   does, handed the column; `clickAt(row, column)` runs it.
+ * - `hoverAt(row, column)`: the pointer is there (row from 0, column from 1),
+ *   `hoverAt(null)` gone (#277): what a click there hits is drawn lit
+ *   (boxes.mjs hovered), on the next frame and only when that changed, not
+ *   on every move; after a redraw or a scroll it is found again.
  * - `repaint()`: the screen was cleared (a resize): all rows again.
  */
 export const painter = ({
@@ -58,6 +63,12 @@ export const painter = ({
   let last = -Infinity;
   let isCleared = false;
   let sized = null;
+  /** The rows of the frame on screen as cut, before the hover is drawn on them. */
+  let cut = [];
+  /** Where the pointer is, `{ row, column }`, null while it is away. */
+  let pointer = null;
+  /** What is lit on screen (`litOf`), null for nothing. */
+  let lit = null;
   const paint = () => {
     timer = null;
     last = now();
@@ -72,15 +83,18 @@ export const painter = ({
       text = render();
       sized = current;
     }
-    const lines = windowOf(text, rows());
-    write(`${isCleared ? "\x1b[2J" : ""}${frameUpdate(shown, lines)}`);
-    isCleared = false;
-    shown = lines;
+    cut = windowOf(text, rows());
     drawn = {
       sticky: screen.sticky,
       offset: screen.scroll,
       clicks: screen.clicks,
     };
+    const hover = hoverOf();
+    lit = hover?.key ?? null;
+    const lines = hover ? cut.with(pointer.row, hover.line) : cut;
+    write(`${isCleared ? "\x1b[2J" : ""}${frameUpdate(shown, lines)}`);
+    isCleared = false;
+    shown = lines;
   };
   const schedule = () => {
     if (timer) return;
@@ -88,6 +102,16 @@ export const painter = ({
   };
   const viewRowAt = row => viewRowOf(row, drawn);
   const actionAt = row => drawn.clicks[viewRowAt(row)];
+  /**
+   * What the pointer is on in the frame on screen, `{ key, line }`: only a
+   * row a click does something on, `key` with its row; null for nothing.
+   */
+  const hoverOf = () => {
+    if (!pointer || cut[pointer.row] === undefined || !actionAt(pointer.row))
+      return null;
+    const hover = hovered(cut[pointer.row], pointer.column);
+    return { ...hover, key: `${pointer.row} ${hover.key}` };
+  };
   return {
     changed: () => {
       text = null;
@@ -103,6 +127,10 @@ export const painter = ({
     viewRowAt,
     actionAt,
     clickAt: (row, column) => actionAt(row)?.(column),
+    hoverAt: (row, column) => {
+      pointer = row === null ? null : { row, column };
+      if ((hoverOf()?.key ?? null) !== lit) schedule();
+    },
   };
 };
 
