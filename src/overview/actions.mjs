@@ -9,17 +9,19 @@ import {
   ESCAPES,
   bold,
   dim,
+  flow,
   green,
   link,
   red,
   table,
+  wrap,
   yellow,
 } from "../lib/tty.mjs";
 import { ENTRY, VITA, featureOf, mainDir } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
-import { button, closeBox, openBox, pipelineMark } from "./boxes.mjs";
+import { boxInner, button, closeBox, openBox, pipelineMark } from "./boxes.mjs";
 import { toneOf } from "./herdr-tones.mjs";
-import { fileLine, logTargets, openFile, pushFiles } from "./files.mjs";
+import { logTargets, openFile, pushFiles } from "./files.mjs";
 import { show } from "./io.mjs";
 import { claudeLine, home, plural, someFiles } from "./render-worktree.mjs";
 import { onButton, pushRows, screen } from "./screen.mjs";
@@ -185,7 +187,7 @@ export const pushAgent = (lines, claude, status) => {
 const MAX_OPEN = 10;
 /**
  * ISSUE: its boxes under their headings, each heading with its count; the
- * open boxes by name, the ticked ones only counted — they are done.
+ * open boxes by name, wrapped, the ticked ones only counted — they are done.
  */
 export const pushIssue = (lines, issue) => {
   if (!issue?.boxes.length) return;
@@ -202,7 +204,11 @@ export const pushIssue = (lines, issue) => {
         : `${done}/${boxes.length}`;
     lines.push(`  ${bold(heading ?? "—")}  ${count}`);
     for (const box of boxes.filter(box => !box.isTicked)) {
-      if (shown < MAX_OPEN) lines.push(`    ${dim("○")} ${box.text}`);
+      // Wrapped under its text, never cut (#304): an acceptance criterion is read whole.
+      if (shown < MAX_OPEN)
+        wrap(box.text, boxInner() - 4).forEach((line, i) =>
+          lines.push(`    ${i ? " " : dim("○")} ${line}`),
+        );
       else rest++;
       shown++;
     }
@@ -215,7 +221,18 @@ export const pushIssue = (lines, issue) => {
     `${bold("ISSUE")} ${link(issue.url, `#${issue.iid}`)}  ${done === issue.boxes.length ? green(`${done}/${issue.boxes.length} done`) : `${done}/${issue.boxes.length} done`}`,
   );
 };
-/** PIPELINE: every job with its mark on one line; a failed one with the last lines of its log. */
+/** Where a job of PIPELINE stands: the failed ones first, then the ones still on their way, then the rest. */
+const JOB_RANK = { failed: 0, running: 1, pending: 1, created: 1 };
+/** The jobs in the order PIPELINE lists them (JOB_RANK), else in GitLab's. */
+export const jobOrder = jobs =>
+  jobs.toSorted(
+    (a, b) => (JOB_RANK[a.status] ?? 2) - (JOB_RANK[b.status] ?? 2),
+  );
+/**
+ * PIPELINE: every job with its mark, over as many lines as they take, the
+ * failed and running ones first (#304); a failed one with the last lines of
+ * its log.
+ */
 export const pushPipeline = (lines, mr, jobs, dir) => {
   if (!mr?.pipeline || jobs.length === 0) return;
   const start = openBox(lines);
@@ -228,10 +245,11 @@ export const pushPipeline = (lines, mr, jobs, dir) => {
       created: yellow("…"),
       manual: dim("▸"),
     })[status] ?? dim("·");
-  const marks = jobs.map(
+  const marks = jobOrder(jobs).map(
     job => `${short(job.status)} ${link(job.url, job.name)}`,
   );
-  lines.push(`  ${marks.join("   ")}`);
+  for (const line of flow(marks, boxInner(), { gap: "   " }))
+    lines.push(`  ${line}`);
   for (const job of jobs.filter(job => job.log)) {
     pushRows(
       lines,
@@ -269,11 +287,9 @@ export const pushDevelop = (lines, dir, develop, base) => {
       `  ${green("✓")} merges cleanly: ${dim("git fetch && git merge origin/develop")}`,
     );
   else
-    pushFiles(
-      lines,
-      fileLine(`  ${red("✗")} a merge conflicts in `, conflicts, { count: 4 }),
-      dir,
-    );
+    pushFiles(lines, `  ${red("✗")} a merge conflicts in `, conflicts, dir, {
+      count: 4,
+    });
   const merges = develop.merges.slice(0, MAX_MERGES);
   const url = mr => base && mr && `${base}/-/merge_requests/${mr}`;
   pushRows(

@@ -47,7 +47,7 @@ import {
   pipelineMark,
   titleLines,
 } from "./boxes.mjs";
-import { editorTrouble, fileLine, openFile, pushFiles } from "./files.mjs";
+import { editorTrouble, openFile, pushFiles } from "./files.mjs";
 import { errorText, waitingText } from "./gitlab-status.mjs";
 import { open, show } from "./io.mjs";
 import { KEYS, onButton, pushRows, screen } from "./screen.mjs";
@@ -167,19 +167,17 @@ const pushDiff = (lines, diff, dir) => {
   if (diff.withDevelop.length > 0) {
     pushFiles(
       lines,
-      fileLine(`  ${yellow("⚠")} also changed on develop: `, diff.withDevelop, {
-        suffix: `  ${dim("merge develop in while it is small")}`,
-      }),
+      `  ${yellow("⚠")} also changed on develop: `,
+      diff.withDevelop,
       dir,
+      { suffix: `  ${dim("merge develop in while it is small")}` },
     );
   }
   for (const other of diff.withWorktrees) {
     pushFiles(
       lines,
-      fileLine(
-        `  ${yellow("⚠")} also changed in ${bold(other.name)}: `,
-        other.files,
-      ),
+      `  ${yellow("⚠")} also changed in ${bold(other.name)}: `,
+      other.files,
       dir,
     );
   }
