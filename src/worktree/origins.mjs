@@ -15,6 +15,7 @@ import { mainDir, worktrees } from "./worktrees.mjs";
 // an agent per worktree (`wt:orchestrate`).
 //
 //   ⇶ <name>               root · overview (its issues and MRs) · orchestrator (the tab of the orchestrating session)
+//                          · changelog (what it got done, changelog.mjs)
 //   <feature> (per issue)  the usual space, its <feature> tab running a claude on the issue
 //
 // A worktree started for an orchestration records it (`.claude/origin`), and
