@@ -14,6 +14,7 @@ import {
   visible,
   yellow,
 } from "../lib/tty.mjs";
+import { HOVER, onHover } from "../lib/mouse.mjs";
 import { LOGO_LINES, titleLogo } from "./logo.mjs";
 
 /**
@@ -165,6 +166,65 @@ export const button = (label, tone = "cyan") => {
   if (isColor) return `\x1b[${TONES[tone]}m ${label} \x1b[0m`;
   // Greyed out without colours: parentheses instead of brackets.
   return tone === "gray" ? `( ${label} )` : `[ ${label} ]`;
+};
+/** A button under the pointer: its tone's bright ground. Gray can't be clicked yet: none. */
+const LIT = {
+  cyan: "1;30;106",
+  green: "1;30;102",
+  red: "1;37;101",
+  yellow: "1;30;103",
+};
+/** The escape a button starts with → the one it starts with lit. */
+const LIT_OF = new Map(
+  Object.entries(LIT).map(([tone, lit]) => [
+    `\x1b[${TONES[tone]}m`,
+    `\x1b[${lit}m`,
+  ]),
+);
+/** A drawn line cut at its escapes: text at the even places, an escape at the odd ones. */
+const SPLIT = new RegExp(`(${ESCAPES.source})`);
+/**
+ * The buttons that can be clicked on a drawn `line`: `{ from, to, at }`
+ * each, its columns (from 1) with the column of slack after it, as
+ * answers.mjs buttonAt counts them, and the place of its escape in `parts`.
+ */
+export const buttonsOn = line => {
+  const parts = line.split(SPLIT);
+  const buttons = [];
+  let column = 1;
+  let open = null;
+  parts.forEach((part, at) => {
+    if (at % 2 === 0) column += [...part].length;
+    else if (LIT_OF.has(part)) open = { from: column, at };
+    else if (open && part === "\x1b[0m") {
+      buttons.push({ ...open, to: column });
+      open = null;
+    }
+  });
+  return { parts, buttons };
+};
+/** The ground of an island's title line under the pointer: a step lighter than its own. */
+const HOVER_HEAD = "\x1b[48;2;74;74;74m";
+/**
+ * A clickable `line` with the pointer at `column` (from 1): `{ key, line }`,
+ * `key` what it is on (a button by its first column, else the line), `line`
+ * as drawn then: that button lit, else the line on a lighter ground over the
+ * width of the pane (without colours as it was).
+ */
+export const hovered = (line, column) => {
+  const { parts, buttons } = buttonsOn(line);
+  const on = buttons.find(({ from, to }) => column >= from && column <= to);
+  if (on) {
+    parts[on.at] = LIT_OF.get(parts[on.at]);
+    return { key: `button ${on.from}`, line: parts.join("") };
+  }
+  const isOnIsland = line.includes(ISLAND) || line.includes(ISLAND_HEAD);
+  return {
+    key: "line",
+    line: isOnIsland
+      ? line.replaceAll(ISLAND, HOVER).replaceAll(ISLAND_HEAD, HOVER_HEAD)
+      : onHover(line, boxWidth()),
+  };
 };
 /**
  * A chip: a label on a grey a step above the island's, in the colour of

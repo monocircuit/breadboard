@@ -11,7 +11,6 @@ import {
   red,
   visible,
   wrap,
-  yellow,
 } from "../lib/tty.mjs";
 import {
   ORCHESTRATOR,
@@ -51,6 +50,7 @@ import {
 } from "./merge.mjs";
 import { graphOf, mergeOrderOf } from "./merge-order.mjs";
 import { blockersText, mrRowLines, rowBlockersOf } from "./mr-blockers.mjs";
+import { nextOf, nothingText, staleOf, updatedPlan, whyOf } from "./next.mjs";
 import { orderActions, placeIn } from "./order.mjs";
 import {
   clickResolve,
@@ -245,33 +245,41 @@ const actionsOf = (local, issues, of, remote, announced) => {
           },
         ]
       : [];
-  // The computed merge order left the plan's: a click writes it into the plan.
+  // A stale plan (next.mjs): a click writes the computed merge order into
+  // it, the issues closed or gone and a why naming them dropped.
   const { order } = local;
-  const replan =
-    remote && order.isOffPlan
-      ? [
-          {
-            action: {
-              kind: "order",
-              text: `${local.plan?.merge?.length ? "the merge order left the plan's" : "no merge order in the plan yet"}: ${order.open.map(item => `#${item.number}`).join(" → ")} · click to write it into the plan (wt:plan)`,
-              at: "",
-            },
-            who: `${ORCHESTRATOR} orchestrator`,
-            key: `order:${orchestration}:${order.planned.join(",")}`,
-            isAuto: true,
-            rank: -1,
-            go: () => {
-              writePlan(orchestration, { merge: order.planned });
-              screen.redraw({ isReread: true });
-            },
+  const states = statesOf(issues, of);
+  const stale = remote
+    ? staleOf({ plan: local.plan, states, isOffPlan: order.isOffPlan })
+    : [];
+  const replan = stale.length
+    ? [
+        {
+          action: {
+            kind: "order",
+            text: `${local.plan?.merge?.length ? `the plan is stale: ${stale.join("; ")}` : "no merge order in the plan yet"}: ${order.open.map(item => `#${item.number}`).join(" → ")} · click to write it into the plan (wt:plan)`,
+            at: "",
           },
-        ]
-      : [];
+          who: `${ORCHESTRATOR} orchestrator`,
+          key: `order:${orchestration}:${order.planned.join(",")}:${stale.join(";")}`,
+          isAuto: true,
+          rank: -1,
+          go: () => {
+            writePlan(
+              orchestration,
+              updatedPlan({ plan: local.plan, states, planned: order.planned }),
+            );
+            screen.redraw({ isReread: true });
+          },
+        },
+      ]
+    : [];
   // Merged worktrees nothing holds go by themselves, from the one live overview (clean-up.mjs).
   if (remote && isInHerdr() && deliversAnswers(orchestration))
     removeMerged(issues, of, local.agents ?? new Map(), handovers.holds);
   return {
     holds: handovers.holds,
+    stale,
     ...orderActions([
       ...own,
       ...agents,
@@ -326,67 +334,105 @@ const clickOf =
   };
 
 /**
- * What there is to merge: every open MR nothing holds up (merge-order.mjs),
- * else the first by the merge order and what holds it up.
+ * Each issue's state by its number, for the plan's staleness (next.mjs):
+ * `merged`, `closed` (without a merge) or `open`.
+ */
+const statesOf = (issues, of) =>
+  new Map(
+    issues
+      .filter(issue => issue.number)
+      .map(issue => [
+        issue.number,
+        of(issue).mr?.state === "merged"
+          ? "merged"
+          : of(issue).issue?.state === "closed"
+            ? "closed"
+            : "open",
+      ]),
+  );
+
+/**
+ * The MR next in the merge order (merge-order.mjs): the first nothing holds
+ * up (`isReady`: pipeline passed, work boxes ticked, its turn), else the
+ * first and what holds it up; null without an open one. Its click opens it.
  */
 const nextMerge = (local, issues, of) => {
   const byNumber = local.withMr;
   const open = local.order.open.filter(item => byNumber.has(item.number));
   if (!open.length) return null;
   const ready = open.filter(item => item.holdUp.length === 0);
-  const mrOf = item => of(byNumber.get(item.number)).mr;
-  const named = item =>
-    `${link(mrOf(item).url, `!${mrOf(item).iid}`)} ${bold(byNumber.get(item.number).feature)}`;
   const first = ready[0] ?? open[0];
+  const issue = byNumber.get(first.number);
+  const { mr } = of(issue);
   return {
-    line: ready.length
-      ? `${green(`ready to merge (${ready.length}):`)} ${ready.map(named).join(", ")}`
-      : `${named(first)}  ${yellow(first.holdUp.join(" · "))}`,
-    go: () => show(mrOf(first).url, byNumber.get(first.number).tree?.dir),
+    isReady: ready.length > 0,
+    iid: mr.iid,
+    holdUp: first.holdUp,
+    line: `${green("ready to merge")}  ${link(mr.url, `!${mr.iid}`)} ${bold(issue.feature)}${ready.length > 1 ? dim(` · ${ready.length - 1} more ready`) : ""}`,
+    go: () => show(mr.url, issue.tree?.dir),
   };
 };
 
+/** What NEXT shows (next.mjs `nextOf`), a try that isn't ready skipped. */
+export const nextFor = (actions, upNext, merge) =>
+  nextOf({ actions, upNext, merge, isWaiting: isWaitingTry });
+/** How many of the orchestration's agents are at work. */
+const atWorkOf = (issues, agents = new Map()) =>
+  issues.filter(
+    issue =>
+      issue.tree?.claude &&
+      agents.get(issue.tree.claude.id)?.status === "working",
+  ).length;
 /**
- * The action NEXT names: the first not answered yet and, a try, ready; else
- * the first of UP NEXT but a clean up or a new plan while an MR is left to
- * merge (`hasMerge`); null for none.
+ * NEXT, the answer to "what now?", only what the user can do now (#278):
+ * the first action not answered yet, else the first clickable row of UP
+ * NEXT, else the merge that is ready, each as in its own section and a
+ * click there does the same; else one dim line that nothing is for the
+ * user. The plan's why under a merge only, never once the plan is stale.
  */
-export const nextActionOf = (actions, upNext, hasMerge) =>
-  actions.find(item => !item.action.answer && !isWaitingTry(item)) ??
-  upNext.find(item => !["clean up", "order"].includes(item.action.kind)) ??
-  (hasMerge ? null : (upNext[0] ?? null));
-/**
- * NEXT, the answer to "what now?": the first action not answered yet (an
- * answered one waits for its agent), else the first of UP NEXT (the end,
- * once no worktree is left, among them), else the MR that is next to merge
- * and what it waits for, else that nothing waits. A clean up comes after
- * the next MR: after a merge NEXT names the next one. A click does it, like
- * on its row.
- */
-const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
+const pushNext = (
+  lines,
+  local,
+  { actions, upNext, stale },
+  issues,
+  of,
+  remote,
+) => {
   const merge = remote ? nextMerge(local, issues, of) : null;
-  const first = nextActionOf(actions, upNext, Boolean(merge));
-  const why = local.plan?.merge?.length ? local.plan.why : null;
-  // The first action as the block it is in ACTIONS, under the label; the
-  // MR next to merge or that nothing waits after it; the plan's why under that.
+  const next = nextFor(actions, upNext, merge);
+  const why = whyOf(local.plan, stale, next);
   const width = columns();
   const label = ` ${bold("NEXT")}  `;
   const indent = " ".repeat(visible(label));
-  if (first) {
-    blockOf(first, of, width - indent.length).forEach(({ line, on }, i) => {
-      screen.clicks[lines.length] = clickOf(first, on, indent.length + 1);
+  if (next?.kind === "action") {
+    blockOf(next.item, of, width - indent.length).forEach(({ line, on }, i) => {
+      screen.clicks[lines.length] = clickOf(next.item, on, indent.length + 1);
+      lines.push(`${i === 0 ? label : indent}${line}`);
+    });
+  } else if (next) {
+    // An UP NEXT row or the ready merge: a click anywhere on it does it.
+    const { item } = next;
+    const text =
+      next.kind === "merge"
+        ? merge.line
+        : `${kindChip(item.action.kind)} ${bold(item.who)}  ${actionText(item, of)}`;
+    const go = next.kind === "merge" ? merge.go : item.go;
+    wrap(text, width - indent.length).forEach((line, i) => {
+      screen.clicks[lines.length] = () => go();
       lines.push(`${i === 0 ? label : indent}${line}`);
     });
   } else {
-    const text = merge
-      ? `${dim("next to merge")}  ${merge.line}`
-      : dim(
-          remote ? "nothing waits for you: the agents are at work" : "GitLab …",
-        );
-    wrap(text, width - indent.length).forEach((line, i) => {
-      if (merge) screen.clicks[lines.length] = () => merge.go();
-      lines.push(`${i === 0 ? label : indent}${line}`);
-    });
+    // Nothing for the user: one dim line in place of the band.
+    lines.push(
+      ` ${dim(
+        remote
+          ? nothingText({
+              atWork: atWorkOf(issues, local.agents),
+              merge,
+            })
+          : "GitLab …",
+      )}`,
+    );
   }
   if (!why) return;
   lines.push(

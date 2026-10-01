@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
+import { HOVER } from "../lib/mouse.mjs";
 import { ESCAPES } from "../lib/tty.mjs";
 import { titleHeight } from "./boxes.mjs";
 import { EventEmitter } from "node:events";
@@ -366,5 +367,93 @@ describe("clicks in a scrolled orchestration view", () => {
     flush();
     assert.match(plain(text), /▾ done and removed \(5\)/);
     assert.match(plain(text), /201-feature/);
+  });
+});
+
+describe("the hover (#277)", () => {
+  beforeEach(() => {
+    screen.scroll = 0;
+  });
+  const ISLAND = "\x1b[48;2;38;38;38m";
+  /** Island lines, every odd one clickable, line 4 with a button at column 2. */
+  const view = () => {
+    screen.clicks = [];
+    screen.sticky = 1;
+    return Array.from({ length: 40 }, (_, i) => {
+      if (i % 2) screen.clicks[i] = () => i;
+      const body =
+        i === 3 ? `\x1b[1;30;46m go \x1b[0m${ISLAND} after` : `l${i}`;
+      return `${ISLAND} ${body} \x1b[0m`;
+    }).join("\n");
+  };
+
+  it("draws the line under the pointer lit, and again when the pointer leaves it", () => {
+    const { frame, flush, screen: shown } = setup(view, 10);
+    frame.changed();
+    flush();
+    frame.hoverAt(1, 10);
+    flush();
+    assert.ok(shown[1].startsWith(HOVER));
+    frame.hoverAt(2, 10);
+    flush();
+    assert.ok(shown[1].startsWith(ISLAND));
+    assert.ok(
+      shown[2].startsWith(ISLAND),
+      "a line a click does nothing on stays",
+    );
+  });
+
+  it("draws nothing while the pointer moves over the same target", () => {
+    const { frame, flush, isPending, renders } = setup(view, 10);
+    frame.changed();
+    flush();
+    frame.hoverAt(3, 12);
+    assert.ok(isPending());
+    flush();
+    for (const column of [13, 14, 20]) {
+      frame.hoverAt(3, column);
+      assert.ok(!isPending(), `column ${column}`);
+    }
+    frame.hoverAt(3, 3);
+    assert.ok(isPending(), "onto the button");
+    flush();
+    frame.hoverAt(3, 4);
+    assert.ok(!isPending(), "still on the button");
+    assert.equal(renders(), 1, "the view itself is never rendered again");
+  });
+
+  it("lights only the button under the pointer", () => {
+    const { frame, flush, screen: shown } = setup(view, 10);
+    frame.changed();
+    flush();
+    frame.hoverAt(3, 3);
+    flush();
+    assert.ok(shown[3].includes("\x1b[1;30;106m go "));
+    assert.ok(!shown[3].includes(HOVER));
+  });
+
+  it("clears on hoverAt(null), the focus gone", () => {
+    const { frame, flush, isPending, screen: shown } = setup(view, 10);
+    frame.changed();
+    flush();
+    frame.hoverAt(1, 5);
+    flush();
+    frame.hoverAt(null);
+    assert.ok(isPending());
+    flush();
+    assert.ok(!shown.some(line => line.includes(HOVER)));
+  });
+
+  it("finds the target again after a scroll, under the pointer that stayed", () => {
+    const { frame, flush, screen: shown } = setup(view, 10);
+    frame.changed();
+    flush();
+    frame.hoverAt(2, 10);
+    flush();
+    assert.ok(!shown[2].includes(HOVER));
+    scrollBy(1);
+    frame.scrolled();
+    flush();
+    assert.ok(shown[2].startsWith(HOVER), "line 3 is under it now");
   });
 });

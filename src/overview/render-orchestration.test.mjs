@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { ESCAPES, visible } from "../lib/tty.mjs";
 import {
   blockOf,
-  nextActionOf,
+  nextFor,
   renderOrchestration,
 } from "./render-orchestration.mjs";
 
@@ -169,9 +169,9 @@ describe("a try's state", () => {
 
   it("NEXT skips a try that isn't ready", () => {
     const look = { who: "a", action: { kind: "look", text: "y", at } };
-    assert.equal(nextActionOf([waiting, ready], [], false), ready);
-    assert.equal(nextActionOf([waiting, look], [], false), look);
-    assert.equal(nextActionOf([waiting], [], true), null);
+    assert.equal(nextFor([waiting, ready], [], null).item, ready);
+    assert.equal(nextFor([waiting, look], [], null).item, look);
+    assert.equal(nextFor([waiting], [], { isReady: false }), null);
   });
 });
 
