@@ -38,7 +38,8 @@ const afterText = after =>
  * agent is bound to, `{ issue, name, was, status, state, share, next }`,
  * `was` its name before its last handover for a day (#251), `status`
  * herdr's state of it (the colour of `state`, herdr-tones.mjs); `waiting` one
- * per issue without an agent, `{ issue, text }`, why it waits.
+ * per worktree without an agent, `{ issue, text }`. The queued issues are
+ * WORKTREES' queue (#250).
  * `known`: the record's workers (their names), `handovers`: the announced
  * ones (#227, announcedOf: `{ number, to, after, open }`, the MRs still
  * `open` named), `suggested`: number → `{ worker }`
@@ -80,24 +81,10 @@ export const agentRowsOf = (
             : "",
       };
     });
+  // A queued issue waits in WORKTREES' queue, with who takes it (#250).
   const waiting = issues
-    .filter(issue => !issue.tree?.claude && (issue.queued || issue.tree))
-    .map(issue => {
-      const announced = handovers.find(
-        handover => handover.number === issue.number,
-      );
-      const offered = suggested.get(issue.number)?.worker;
-      return {
-        issue,
-        text: issue.tree
-          ? "no agent runs in its worktree"
-          : announced
-            ? `goes to ${announced.to}${afterText(announced.open ?? announced.after)}`
-            : offered
-              ? `goes to ${offered.name} once its MR is merged`
-              : "queued (--queue): a click on its start in UP NEXT",
-      };
-    });
+    .filter(issue => issue.tree && !issue.tree.claude)
+    .map(issue => ({ issue, text: "no agent runs in its worktree" }));
   return { agents, waiting };
 };
 
