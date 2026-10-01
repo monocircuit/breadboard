@@ -4,6 +4,48 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:40 · CLI / wt:remove, wt:prune · a changelog that lists the merge is not rewritten (#305)
+Chose: a removal of merged work reads its MRs once anyway (the claim on
+origin, `mergedAt`); when its orchestration's changelog lists the last
+merged one (`[!<iid>](`) already, as the overview or an earlier removal
+wrote it, nothing is rewritten: 22 calls, 1 of them glab, where it made
+218 (99 glab), and in a world with a 200 ms GitLab it exits at 0.9 s
+(Node 2.4 s, round four 3.7 s). Otherwise `▸ rewrite the changelog of
+<name> (!<iid> is not in it yet)` says it, the rewrite runs beside
+herdr's calls and the ✓ comes before the wait, as remove.mjs did; a
+failure is said after the ✓ (exit 0: the removal is done). wt:prune
+starts its rewrites at once, beside the plugin's check, and waits after
+its report. When GitLab doesn't answer or there is no merged MR, the
+changelog is rewritten as today's always did. Open: the rewrite itself
+(setup group, `wt:orchestrate --changelog`) still asks GitLab per issue,
+12 workers with two calls one after the other each: 2.8 s at 200 ms
+where Node's takes ~1 s; a removal of a merge the changelog misses exits
+at 3.1 s against Node's 2.4 s until it runs both reads of an issue at
+once or adds the one merge (#305).
+Why: rule 7 (measured above), rule 3 (the ✓ before the wait, as Node),
+rule 4 (the check reads the file it would write, no new state).
+
+## 2026-10-02 01:40 · CLI / lifecycle group · flags, the plugin check, wt:herdr's silent space, prune's columns
+Chose: an unknown flag of wt:remove, wt:prune, wt:herdr and the
+handover says the one meant (`unknown flag --dryrun: did you mean
+--dry-run?`, cli/typo.rs, the same as the setup and write groups), on
+the same two lines as theirs (`✗ …`, the usage). The plugin check
+(#230, one `herdr plugin list`) runs once nothing refused: after a
+removal's own steps, after the handover's agent, context and issue
+checks; a refusal costs no extra process (round four checked on every
+refusal). wt:herdr says `space <feature> not set up: herdr gave no id
+back for it (worktree open, workspace create)` where both tools said
+nothing. wt:prune pads the names to 32 as today's, or to the longest
+when one is longer, so the column stays one: nothing reads these lines
+(the overview runs wt:remove, not wt:prune; checked in src/).
+Kept: wt:remove and wt:prune refuse outside a checkout (01:15).
+Why: rule 3 (exact errors, no silent outcome), rule 7 (no process a
+refusal doesn't need), rule 2 for the columns (the wording is today's).
+Suite: `lifecycle.check.mjs` keeps --keep-branch, the uncommitted
+refusal, #305's calls, wt:prune of a gone branch and leftover folders,
+wt:herdr outside herdr and the flag hints green (Node: 4 pass, #305 a
+known bug, the hints rewrite-only).
+
 ## 2026-10-02 01:20 · CLI / every command · an unknown command, `--help`, a bare `breadboard`
 Chose: a name no group takes says `✗ unknown command <name>: did you
 mean <nearest>?` and the usage with every command, a group per line, on
