@@ -1,922 +1,922 @@
 {
- "data": {
-  "project": {
-   "mergeRequests": {
-    "nodes": [
-     {
-      "iid": "315",
-      "title": "Draft: fix(breadboard): draw MERGE REQUESTS again on rows of the graph alone",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/315",
-      "draft": true,
-      "sourceBranch": "fix/306-overview-merge-requests-crash-row",
-      "headPipeline": {
-       "iid": "1213",
-       "status": "PENDING",
-       "path": "/monocircuit/platform/-/pipelines/2901431556",
-       "jobs": {
+  "data": {
+    "project": {
+      "mergeRequests": {
         "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867463548"
-         },
-         {
-          "name": "check:changelog",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463547"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463546"
-         },
-         {
-          "name": "check:agents",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463545"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463544"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463543"
-         },
-         {
-          "name": "check:vita",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867463542"
-         }
+          {
+            "iid": "315",
+            "title": "Draft: fix(breadboard): draw MERGE REQUESTS again on rows of the graph alone",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/315",
+            "draft": true,
+            "sourceBranch": "fix/306-overview-merge-requests-crash-row",
+            "headPipeline": {
+              "iid": "1213",
+              "status": "PENDING",
+              "path": "/monocircuit/platform/-/pipelines/2901431556",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463548"
+                  },
+                  {
+                    "name": "check:changelog",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463547"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463546"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463545"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463544"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463543"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867463542"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "314",
+            "title": "Draft: fix(breadboard): PIPELINE, ISSUE and file lines wrap instead of cutting",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/314",
+            "draft": true,
+            "sourceBranch": "fix/304-overview-pipeline-cuts-its-jobs",
+            "headPipeline": {
+              "iid": "1208",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901394111",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867143968"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867143967"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867143966"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867143965"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867143964"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "313",
+            "title": "Draft: fix(breadboard): every drawn button of the overview works on every click",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/313",
+            "draft": true,
+            "sourceBranch": "fix/303-overview-every-drawn-button-works",
+            "headPipeline": {
+              "iid": "1212",
+              "status": "PENDING",
+              "path": "/monocircuit/platform/-/pipelines/2901424141",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405493"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405492"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405491"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405490"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405489"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867405488"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "312",
+            "title": "Draft: fix(vita): the lens switch's move shows again, the crumb's flap goes",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/312",
+            "draft": true,
+            "sourceBranch": "fix/300-switching-atlas-another-vita-no",
+            "headPipeline": {
+              "iid": "1206",
+              "status": "RUNNING",
+              "path": "/monocircuit/platform/-/pipelines/2901391994",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123493"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123491"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123490"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123489"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123488"
+                  },
+                  {
+                    "name": "check:leaf-parity",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123487"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123486"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123485"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123484"
+                  },
+                  {
+                    "name": "check:routes",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123483"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16867123482"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "311",
+            "title": "Draft: feat(breadboard): an MR's Tests list only the checks that apply",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/311",
+            "draft": true,
+            "sourceBranch": "feature/302-wt-mr-mr-s-tests",
+            "headPipeline": {
+              "iid": "1210",
+              "status": "PENDING",
+              "path": "/monocircuit/platform/-/pipelines/2901406277",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257117"
+                  },
+                  {
+                    "name": "check:changelog",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257116"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257115"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257114"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257113"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257112"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257111"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "310",
+            "title": "Draft: feat(breadboard): no push without a passing wt:check",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/310",
+            "draft": true,
+            "sourceBranch": "feature/298-breadboard-no-push-without-passing",
+            "headPipeline": {
+              "iid": "1211",
+              "status": "PENDING",
+              "path": "/monocircuit/platform/-/pipelines/2901406362",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257802"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257801"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257800"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "CREATED",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257799"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257798"
+                  },
+                  {
+                    "name": "check:changelog",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257797"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257796"
+                  },
+                  {
+                    "name": "check:leaf-parity",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257795"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257794"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257793"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257792"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "PENDING",
+                    "webPath": "/monocircuit/platform/-/jobs/16867257791"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "309",
+            "title": "fix(breadboard): the nvim tab names a tree that doesn't open and a stale changes.lua (#297)",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/309",
+            "draft": false,
+            "sourceBranch": "fix/297-nvim-worktree-tab-s-neo",
+            "headPipeline": {
+              "iid": "1196",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901163092",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291388"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291387"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291386"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291385"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291384"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291383"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291382"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291381"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291380"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865291379"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "308",
+            "title": "Draft: feat(breadboard): hover lights the whole block under the pointer",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/308",
+            "draft": true,
+            "sourceBranch": "feature/296-overview-hover-highlights-whole-block",
+            "headPipeline": {
+              "iid": "1199",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901208736",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865620670"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865620669"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865620668"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865620667"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16865620666"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "304",
+            "title": "Draft: feat(breadboard): an open MR shows a progress bar of its ticked boxes",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/304",
+            "draft": true,
+            "sourceBranch": "feature/294-overview-open-mr-shows-progress",
+            "headPipeline": {
+              "iid": "1187",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901105180",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864765"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864764"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864763"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864762"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864761"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864864760"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "303",
+            "title": "Draft: feat(breadboard): every agent has a name, shown under its worktree",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/303",
+            "draft": true,
+            "sourceBranch": "feature/292-overview-every-agent-has-name",
+            "headPipeline": {
+              "iid": "1204",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901333182",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601266"
+                  },
+                  {
+                    "name": "check:breadboard",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601265"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601264"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601263"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601262"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16866601261"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "297",
+            "title": "refactor(vita): the pixi timeline's rules move into vita-core (#270, phase 2b)",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/297",
+            "draft": false,
+            "sourceBranch": "feature/270-timeline-rules-into-core",
+            "headPipeline": {
+              "iid": "1184",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2901089488",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722649"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722648"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722647"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722646"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722645"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16864722644"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "188",
+            "title": "Draft: feat(vita): on a phone only the side panel opened last shows",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/188",
+            "draft": true,
+            "sourceBranch": "feature/35-editor-panels-open-as-overlay",
+            "headPipeline": {
+              "iid": "613",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2890710975",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801062"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801061"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801060"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801059"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801058"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801057"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801056"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801055"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788801054"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "187",
+            "title": "Draft: fix(scripts): wt:mr and wt:tick pass the description as text",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/187",
+            "draft": true,
+            "sourceBranch": "fix/157-wt-mr-wt-tick-fail",
+            "headPipeline": {
+              "iid": "611",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2890687641",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671229"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671228"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671227"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671226"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671225"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671224"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671223"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671222"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788671221"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "186",
+            "title": "Draft: feat(vita): rate limit and clean up anonymous client registrations",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/186",
+            "draft": true,
+            "sourceBranch": "feature/84-rate-limit-clean-up-anonymous",
+            "headPipeline": {
+              "iid": "612",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2890709245",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786702"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786701"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786700"
+                  },
+                  {
+                    "name": "check:agents",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786699"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786698"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786697"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788786696"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "185",
+            "title": "Draft: feat(vita): branch off a chronicle by dragging it on the timeline",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/185",
+            "draft": true,
+            "sourceBranch": "feature/79-branch-off-chronicle-dragging-it",
+            "headPipeline": {
+              "iid": "621",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2890834696",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783260"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783259"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783258"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783257"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783256"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16789783255"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "184",
+            "title": "fix(vita): deleting a chronicle no longer makes the editor flicker",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/184",
+            "draft": false,
+            "sourceBranch": "fix/82-deleting-chronicle-makes-editor-flicker",
+            "headPipeline": {
+              "iid": "604",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2890658664",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464418"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464417"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464416"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464415"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464414"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464413"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464412"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16788464411"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "iid": "102",
+            "title": "build: update pnpm from 10.11.0 to 12.6.0",
+            "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/102",
+            "draft": false,
+            "sourceBranch": "feature/update-pnpm-12",
+            "headPipeline": {
+              "iid": "278",
+              "status": "SUCCESS",
+              "path": "/monocircuit/platform/-/pipelines/2882148734",
+              "jobs": {
+                "nodes": [
+                  {
+                    "name": "preview:storybook",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681048"
+                  },
+                  {
+                    "name": "scan:image:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681047"
+                  },
+                  {
+                    "name": "build:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681046"
+                  },
+                  {
+                    "name": "scan:deps:mr",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681045"
+                  },
+                  {
+                    "name": "check:packages",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681044"
+                  },
+                  {
+                    "name": "check:vita:int",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681043"
+                  },
+                  {
+                    "name": "check:keycloak-theme",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681042"
+                  },
+                  {
+                    "name": "check:vita",
+                    "status": "SUCCESS",
+                    "webPath": "/monocircuit/platform/-/jobs/16733681041"
+                  }
+                ]
+              }
+            }
+          }
         ]
-       }
       }
-     },
-     {
-      "iid": "314",
-      "title": "Draft: fix(breadboard): PIPELINE, ISSUE and file lines wrap instead of cutting",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/314",
-      "draft": true,
-      "sourceBranch": "fix/304-overview-pipeline-cuts-its-jobs",
-      "headPipeline": {
-       "iid": "1208",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901394111",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867143968"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867143967"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867143966"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867143965"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867143964"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "313",
-      "title": "Draft: fix(breadboard): every drawn button of the overview works on every click",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/313",
-      "draft": true,
-      "sourceBranch": "fix/303-overview-every-drawn-button-works",
-      "headPipeline": {
-       "iid": "1212",
-       "status": "PENDING",
-       "path": "/monocircuit/platform/-/pipelines/2901424141",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867405493"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867405492"
-         },
-         {
-          "name": "check:agents",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867405491"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867405490"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867405489"
-         },
-         {
-          "name": "check:vita",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867405488"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "312",
-      "title": "Draft: fix(vita): the lens switch's move shows again, the crumb's flap goes",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/312",
-      "draft": true,
-      "sourceBranch": "fix/300-switching-atlas-another-vita-no",
-      "headPipeline": {
-       "iid": "1206",
-       "status": "RUNNING",
-       "path": "/monocircuit/platform/-/pipelines/2901391994",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123493"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867123491"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123490"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123489"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123488"
-         },
-         {
-          "name": "check:leaf-parity",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123487"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123486"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123485"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123484"
-         },
-         {
-          "name": "check:routes",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123483"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16867123482"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "311",
-      "title": "Draft: feat(breadboard): an MR's Tests list only the checks that apply",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/311",
-      "draft": true,
-      "sourceBranch": "feature/302-wt-mr-mr-s-tests",
-      "headPipeline": {
-       "iid": "1210",
-       "status": "PENDING",
-       "path": "/monocircuit/platform/-/pipelines/2901406277",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867257117"
-         },
-         {
-          "name": "check:changelog",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257116"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257115"
-         },
-         {
-          "name": "check:agents",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257114"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257113"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257112"
-         },
-         {
-          "name": "check:vita",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257111"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "310",
-      "title": "Draft: feat(breadboard): no push without a passing wt:check",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/310",
-      "draft": true,
-      "sourceBranch": "feature/298-breadboard-no-push-without-passing",
-      "headPipeline": {
-       "iid": "1211",
-       "status": "PENDING",
-       "path": "/monocircuit/platform/-/pipelines/2901406362",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867257802"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867257801"
-         },
-         {
-          "name": "build:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867257800"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "CREATED",
-          "webPath": "/monocircuit/platform/-/jobs/16867257799"
-         },
-         {
-          "name": "check:packages",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257798"
-         },
-         {
-          "name": "check:changelog",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257797"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257796"
-         },
-         {
-          "name": "check:leaf-parity",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257795"
-         },
-         {
-          "name": "check:agents",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257794"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257793"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257792"
-         },
-         {
-          "name": "check:vita",
-          "status": "PENDING",
-          "webPath": "/monocircuit/platform/-/jobs/16867257791"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "309",
-      "title": "fix(breadboard): the nvim tab names a tree that doesn't open and a stale changes.lua (#297)",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/309",
-      "draft": false,
-      "sourceBranch": "fix/297-nvim-worktree-tab-s-neo",
-      "headPipeline": {
-       "iid": "1196",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901163092",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291388"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291387"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291386"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291385"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291384"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291383"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291382"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291381"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291380"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865291379"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "308",
-      "title": "Draft: feat(breadboard): hover lights the whole block under the pointer",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/308",
-      "draft": true,
-      "sourceBranch": "feature/296-overview-hover-highlights-whole-block",
-      "headPipeline": {
-       "iid": "1199",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901208736",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865620670"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865620669"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865620668"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865620667"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16865620666"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "304",
-      "title": "Draft: feat(breadboard): an open MR shows a progress bar of its ticked boxes",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/304",
-      "draft": true,
-      "sourceBranch": "feature/294-overview-open-mr-shows-progress",
-      "headPipeline": {
-       "iid": "1187",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901105180",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864765"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864764"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864763"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864762"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864761"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864864760"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "303",
-      "title": "Draft: feat(breadboard): every agent has a name, shown under its worktree",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/303",
-      "draft": true,
-      "sourceBranch": "feature/292-overview-every-agent-has-name",
-      "headPipeline": {
-       "iid": "1204",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901333182",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601266"
-         },
-         {
-          "name": "check:breadboard",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601265"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601264"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601263"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601262"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16866601261"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "297",
-      "title": "refactor(vita): the pixi timeline's rules move into vita-core (#270, phase 2b)",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/297",
-      "draft": false,
-      "sourceBranch": "feature/270-timeline-rules-into-core",
-      "headPipeline": {
-       "iid": "1184",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2901089488",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722649"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722648"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722647"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722646"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722645"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16864722644"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "188",
-      "title": "Draft: feat(vita): on a phone only the side panel opened last shows",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/188",
-      "draft": true,
-      "sourceBranch": "feature/35-editor-panels-open-as-overlay",
-      "headPipeline": {
-       "iid": "613",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2890710975",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801062"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801061"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801060"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801059"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801058"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801057"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801056"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801055"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788801054"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "187",
-      "title": "Draft: fix(scripts): wt:mr and wt:tick pass the description as text",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/187",
-      "draft": true,
-      "sourceBranch": "fix/157-wt-mr-wt-tick-fail",
-      "headPipeline": {
-       "iid": "611",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2890687641",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671229"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671228"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671227"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671226"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671225"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671224"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671223"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671222"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788671221"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "186",
-      "title": "Draft: feat(vita): rate limit and clean up anonymous client registrations",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/186",
-      "draft": true,
-      "sourceBranch": "feature/84-rate-limit-clean-up-anonymous",
-      "headPipeline": {
-       "iid": "612",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2890709245",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786702"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786701"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786700"
-         },
-         {
-          "name": "check:agents",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786699"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786698"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786697"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788786696"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "185",
-      "title": "Draft: feat(vita): branch off a chronicle by dragging it on the timeline",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/185",
-      "draft": true,
-      "sourceBranch": "feature/79-branch-off-chronicle-dragging-it",
-      "headPipeline": {
-       "iid": "621",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2890834696",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783260"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783259"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783258"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783257"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783256"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16789783255"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "184",
-      "title": "fix(vita): deleting a chronicle no longer makes the editor flicker",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/184",
-      "draft": false,
-      "sourceBranch": "fix/82-deleting-chronicle-makes-editor-flicker",
-      "headPipeline": {
-       "iid": "604",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2890658664",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464418"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464417"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464416"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464415"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464414"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464413"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464412"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16788464411"
-         }
-        ]
-       }
-      }
-     },
-     {
-      "iid": "102",
-      "title": "build: update pnpm from 10.11.0 to 12.6.0",
-      "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/102",
-      "draft": false,
-      "sourceBranch": "feature/update-pnpm-12",
-      "headPipeline": {
-       "iid": "278",
-       "status": "SUCCESS",
-       "path": "/monocircuit/platform/-/pipelines/2882148734",
-       "jobs": {
-        "nodes": [
-         {
-          "name": "preview:storybook",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681048"
-         },
-         {
-          "name": "scan:image:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681047"
-         },
-         {
-          "name": "build:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681046"
-         },
-         {
-          "name": "scan:deps:mr",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681045"
-         },
-         {
-          "name": "check:packages",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681044"
-         },
-         {
-          "name": "check:vita:int",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681043"
-         },
-         {
-          "name": "check:keycloak-theme",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681042"
-         },
-         {
-          "name": "check:vita",
-          "status": "SUCCESS",
-          "webPath": "/monocircuit/platform/-/jobs/16733681041"
-         }
-        ]
-       }
-      }
-     }
-    ]
-   }
+    }
   }
- }
 }
