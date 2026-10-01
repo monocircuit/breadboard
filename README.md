@@ -17,7 +17,7 @@ ships; the package is private.
 | `src/overview/` | its parts: reading (`read`, `claude`, `gitlab`, `diff`, `develop`), drawing (`render*`, `boxes`, `agents`), `actions` (clicks and keys), `screen`, `view`, `args` |
 | `src/lib/` | what both use: `proc` (`run`, `git`, `sh`, `lines`, `step`, `fail`), `glab`, `herdr`, `tty` (colours, widths, tables) |
 | `src/herdr.mjs`, `src/session/` | `pnpm herdr`, `pnpm herdr:install`, `--reload`: the session `platform` (`session`, `setup`), your own herdr (`own`), `reload` |
-| `src/git-hooks/pre-push.mjs` | the push guard (`worktree/push-guard`): refuses a push to the branch of a merged or closed MR. `wt:new` and `wt:mr` install it as a shim into the hooks folder all worktrees share |
+| `src/git-hooks/pre-push.mjs` | the push guard (`worktree/push-guard`): refuses a push to the branch of a merged or closed MR, and (`worktree/check`, #298) a commit whose tree `pnpm wt:check` didn't pass; an empty or docs-only branch passes. `wt:new` and `wt:mr` install it as a shim into the hooks folder all worktrees share |
 | `src/browser.mjs` | `pnpm browser`: a URL in the Chromium tab group of its herdr space |
 | `src/commands.mjs` | `pnpm commands`: every script with what it is for |
 | [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
@@ -58,6 +58,12 @@ nothing more; it installs no plugin and names a missing one in the tab.
 | `:ChangesDiff` | the file side by side with its version in the base |
 | `:ChangesInline` | the marked lines and the removed ones off and on again (the signs stay) |
 | `<leader>e` | neo-tree closed and open again |
+
+A tab reads `nvim/changes.lua` of the main checkout once, when it starts:
+one started before an update of it keeps the old view (#297) and says so
+(`changes.lua was updated since this tab started`). Quit nvim (`:qa`); a
+click on a file in the overview or the next layout starts it again. A tree
+that doesn't open is asked for once more, then named in the tab.
 
 The colours come from `nvim/colours.lua`, not the theme's `DiffAdd`: some
 themes draw it barely apart from the background. The orchestration's

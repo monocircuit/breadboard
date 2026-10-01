@@ -207,6 +207,55 @@ describe("the orchestration view", () => {
   });
 });
 
+describe("MERGE REQUESTS", () => {
+  const issueOf = (number, feature) => ({
+    number,
+    feature,
+    branch: `fix/${feature}`,
+    tree: { dir: `/nowhere/${feature}`, name: feature, actions: [] },
+  });
+  const mrOf = iid => ({
+    iid,
+    url: `https://gitlab.example/mr/${iid}`,
+    title: `MR ${iid}`,
+    state: "opened",
+    pipeline: null,
+  });
+
+  it("draws open MRs with rows of the graph alone, which have no issue (#306)", () => {
+    const issues = [issueOf(1, "1-a"), issueOf(2, "2-b"), issueOf(3, "3-c")];
+    const needs = { 1: [], 2: [1], 3: [1] };
+    const remote = {
+      of: new Map(
+        issues.map(issue => [
+          issue.branch,
+          {
+            mr: mrOf(10 + issue.number),
+            issue: {
+              iid: issue.number,
+              needs: needs[issue.number],
+              boxes: [],
+            },
+          },
+        ]),
+      ),
+      develop: null,
+    };
+    const view = renderOrchestration(
+      {
+        issues,
+        agents: new Map(),
+        ownActions: [],
+        trees: issues.map(issue => issue.tree),
+      },
+      remote,
+    );
+    const plain = view.replace(ESCAPES, "");
+    assert.match(plain, /MERGE REQUESTS/);
+    for (const iid of [11, 12, 13]) assert.match(plain, new RegExp(`!${iid}`));
+  });
+});
+
 describe("isInert", () => {
   it("takes no click on what can't do anything yet (#290)", () => {
     assert.equal(isInert({ tryState: { isReady: false } }), true);
