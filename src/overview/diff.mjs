@@ -36,6 +36,12 @@ export const areaOf = file => {
 const pathOfStatus = line =>
   line.slice(3).split(" -> ").at(-1).replace(/^"|"$/g, "");
 
+/** `top`: the file of an area with the most lines changed, the one a click on the area opens. */
+const topOf = (area, file, changed) => {
+  if (area.top && changed <= area.topChanged) return;
+  area.top = file;
+  area.topChanged = changed;
+};
 /** What the result of `dir` depends on; the same key means the same result. */
 const keyOf = dir =>
   `${git(["rev-parse", "HEAD", "origin/develop"], dir)}${git(["status", "--porcelain"], dir)}`;
@@ -102,6 +108,7 @@ export const diffOf = (dir, others = []) => {
       area.added += fileAdded;
       area.removed += fileRemoved;
       area.files += 1;
+      topOf(area, name, fileAdded + fileRemoved);
       areas.set(area.name, area);
     }
     // New files git doesn't track yet: counted as files, their lines as added.
@@ -122,6 +129,7 @@ export const diffOf = (dir, others = []) => {
       };
       area.added += Number(fileAdded) || 0;
       area.files += 1;
+      topOf(area, file, Number(fileAdded) || 0);
       areas.set(area.name, area);
     }
 
