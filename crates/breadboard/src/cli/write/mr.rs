@@ -9,7 +9,7 @@
 mod template;
 
 use super::boxes::box_report;
-use super::common::{Argv, Here, Outcome, plural, say, temp_dir};
+use super::common::{Argv, Here, Outcome, Takes, help, number_of, plural, say, temp_dir};
 use super::glab;
 use breadboard_core::git::{git, issue_of_branch};
 use regex::Regex;
@@ -18,6 +18,22 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+const USAGE: &str = "usage: pnpm wt:mr [<issue>] [--update] [--dry-run] [--description-file <f>]";
+const ABOUT: &str = "pnpm wt:mr opens the draft merge request of this worktree: the title from the last commit,
+the description from .claude/mr-description.md (put down from the template when there is none),
+Closes #<issue>, the issue's labels and milestone. It installs the push guard (#184) too.
+
+  <issue>                   the work item, when the branch name carries none (34-…)
+  --update                  send the description of the open MR again
+  --dry-run                 show what would be sent, send nothing
+  --description-file <f>    the description from <f> instead";
+const TAKES: Takes = Takes {
+    valued: &["--description-file"],
+    switches: &["--update", "--dry-run"],
+    words: Some(1),
+    usage: USAGE,
+};
 
 /// The label of an MR that needs no changelog entry.
 const NO_CHANGELOG: &str = "no-changelog";
@@ -106,6 +122,15 @@ fn strings_of(value: Option<&Value>) -> Vec<String> {
 }
 
 pub fn run(argv: &Argv) -> Outcome {
+    // Refused before the push guard or any glab call: nothing is written on a typo.
+    if argv.check(&TAKES)? {
+        return help(ABOUT, USAGE);
+    }
+    if let Some(given) = argv.first()
+        && number_of(given).is_none()
+    {
+        return Err(format!("{given} is no issue number (34 or #34)\n{USAGE}"));
+    }
     let is_dry = argv.has("--dry-run");
     let here = Here::find();
     let top = here.dir();
@@ -125,20 +150,21 @@ pub fn run(argv: &Argv) -> Outcome {
     }
 
     let is_update = argv.has("--update");
-    let open = glab::view(top, "mr", &branch);
-    // glab hands over the newest MR of the branch, merged or closed too:
-    // that one takes nothing any more (Node said "open already").
-    if let Some(mr) = &open
-        && glab::text_of(mr, "state") != "opened"
-    {
+    // glab hands over the newest MR of the branch, merged or closed too (Node
+    // said "open already" to both). A merged one takes nothing any more; a
+    // closed one is history, the branch gets a new one.
+    let newest = glab::view(top, "mr", &branch);
+    let state = newest.as_ref().map(|mr| glab::text_of(mr, "state"));
+    if let Some(mr) = newest.as_ref().filter(|_| state == Some("merged")) {
         return Err(format!(
-            "!{} of {branch} is {} already: new work goes on a new branch, its own issue first (glab issue create), then pnpm wt:new <n>-<feature>\n  {}",
+            "!{} of {branch} is merged already: new work goes on a new branch, its own issue first (glab issue create), then pnpm wt:new <n>-<feature>\n  {}",
             glab::shown(mr.get("iid")),
-            glab::text_of(mr, "state"),
             glab::text_of(mr, "web_url")
         ));
     }
-    let closes = open.as_ref().and_then(|mr| {
+    let closed = newest.as_ref().filter(|_| state != Some("opened"));
+    let open = newest.as_ref().filter(|_| state == Some("opened"));
+    let closes = newest.as_ref().and_then(|mr| {
         CLOSES
             .captures(glab::text_of(mr, "description"))
             .map(|found| found[1].to_string())
@@ -148,7 +174,7 @@ pub fn run(argv: &Argv) -> Outcome {
         .map(|issue| issue.strip_prefix('#').unwrap_or(issue).to_string())
         .or_else(|| issue_of_branch(&branch).map(|n| n.to_string()))
         .or(closes);
-    if let Some(mr) = &open
+    if let Some(mr) = open
         && !is_dry
         && !is_update
     {
@@ -237,13 +263,30 @@ pub fn run(argv: &Argv) -> Outcome {
     let body = body_of(&written, &number);
     let title = git(top, &["log", "-1", "--format=%s"]).out().to_string();
 
+    // The closed one stays closed: say that this is a new one, not it reopened.
+    let anew = closed
+        .map(|mr| {
+            format!(
+                "  !{} of {branch} is {}: a new merge request {}",
+                glab::shown(mr.get("iid")),
+                glab::text_of(mr, "state"),
+                if is_dry {
+                    "would be opened"
+                } else {
+                    "was opened, that one stays closed"
+                }
+            )
+        })
+        .unwrap_or_default();
+
     if is_dry {
         let dir = temp_dir("wt-mr-").map_err(|error| format!("no temp folder for the body: {error}"))?;
         let file = dir.join("description.md");
         fs::write(&file, format!("{body}\n"))
             .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
         say(&format!(
-            "\n▸ nothing was sent (--dry-run)\n  title     {title}\n  work item #{number}\n  labels    {}\n  milestone {}\n  body      {}\n\n{body}\n",
+            "\n▸ nothing was sent (--dry-run)\n{anew}{}  title     {title}\n  work item #{number}\n  labels    {}\n  milestone {}\n  body      {}\n\n{body}\n",
+            if anew.is_empty() { "" } else { "\n" },
             labels.join(", "),
             milestone.as_deref().unwrap_or("none — the issue has none"),
             file.display()
@@ -252,7 +295,7 @@ pub fn run(argv: &Argv) -> Outcome {
     }
 
     // An MR that is open already only gets the description, the same body.
-    if let Some(mr) = &open {
+    if let Some(mr) = open {
         let iid = glab::shown(mr.get("iid"));
         if !glab::put_description(
             top,
@@ -301,12 +344,21 @@ pub fn run(argv: &Argv) -> Outcome {
     if !created.is_ok {
         return Err("glab could not create the merge request, is everything pushed? (git push)".into());
     }
-    let url = created
+    // glab prints the URL; one that didn't is asked for it (Node printed an empty line).
+    let printed = created
         .stdout
-        .trim()
         .split('\n')
+        .map(str::trim)
         .find(|line| line.starts_with("http"))
-        .unwrap_or("");
+        .map(String::from);
+    let url = printed
+        .or_else(|| {
+            glab::view(top, "mr", &branch)
+                .filter(|mr| glab::text_of(mr, "state") == "opened")
+                .map(|mr| glab::text_of(&mr, "web_url").to_string())
+                .filter(|url| !url.is_empty())
+        })
+        .unwrap_or_else(|| format!("glab printed no URL: glab mr view {branch} shows it"));
     let carried = format!(
         "labels: {}{}",
         labels.join(", "),
@@ -316,7 +368,8 @@ pub fn run(argv: &Argv) -> Outcome {
             .unwrap_or_default()
     );
     say(&format!(
-        "\n✓ draft merge request opened, closes #{number}, {carried}\n  {title}\n  {url}{boxes}\n"
+        "\n✓ draft merge request opened, closes #{number}, {carried}\n  {title}\n  {url}{}{anew}{boxes}\n",
+        if anew.is_empty() { "" } else { "\n" }
     ));
     // check:changelog fails the MR until it has an entry: say so now, not at the pipeline.
     if !has_fragment(top, &number) {

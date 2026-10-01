@@ -3,15 +3,27 @@
 //! description and read back. Without any, the issue of the branch is listed.
 
 use super::boxes::{self, Box, boxes_of, tally};
-use super::common::{Argv, Here, Outcome, number_of, say};
+use super::common::{Argv, Here, Outcome, Takes, help, number_of, say};
 use super::glab;
 use breadboard_core::git::issue_of_branch;
 use serde_json::Value;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: pnpm wt:tick [<issue>] [<box>…]   (the issue first when you tick)";
+const ABOUT: &str = "pnpm wt:tick lists the checkboxes of an issue's description, numbered; given box numbers,
+it ticks those on GitLab and reads the description back. Without an issue: the one of the branch.";
+const TAKES: Takes = Takes {
+    valued: &[],
+    switches: &[],
+    words: None,
+    usage: USAGE,
+};
 
 pub fn run(argv: &Argv) -> Outcome {
+    // Refused before GitLab is asked: Node dropped every `--x` and ticked anyway.
+    if argv.check(&TAKES)? {
+        return help(ABOUT, USAGE);
+    }
     let here = Here::find();
     let top = here.dir();
     let words: Vec<&str> = argv

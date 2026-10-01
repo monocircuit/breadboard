@@ -6,7 +6,7 @@
 //! recorded in `.claude/wait.json` for the overview, which delivers the line
 //! itself when this command is gone.
 
-use super::common::{Argv, Here, Outcome, say};
+use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::glab;
 use breadboard_core::git::git;
 use breadboard_core::json::{self, int_of, ints_of, str_of};
@@ -19,12 +19,24 @@ use std::time::Duration;
 
 /// How often it asks GitLab.
 const POLL: Duration = Duration::from_secs(60);
+/// How often it looks between asks whether the wait is still its own.
+const LOOK: Duration = Duration::from_secs(1);
 /// How long it waits by default before it gives up, in hours.
 const DEFAULT_HOURS: f64 = 8.0;
 /// How long an awaited MR may have conflicts with develop before the wait ends.
 const CONFLICT_MS: i64 = 30 * 60_000;
 
 const USAGE: &str = "usage: pnpm wt:wait !<mr> [!<mr>…] [--then \"<what to do>\"] [--hours <h>]   (run_in_background)\n       pnpm wt:wait --cancel";
+const ABOUT: &str = "pnpm wt:wait waits until every named MR is merged, asking GitLab every minute, and ends with
+the line to go on with. It ends early when one is closed or stays in conflict for 30 min, or after
+--hours (default 8). The overview shows the wait; --cancel ends it.";
+/// Only to hear `--help`: parse_wait refuses everything else in its own words.
+const TAKES: Takes = Takes {
+    valued: &["--then", "--hours"],
+    switches: &["--cancel"],
+    words: None,
+    usage: USAGE,
+};
 
 fn wait_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("wait.json")
@@ -282,7 +294,27 @@ fn ask(dir: &Path, mrs: &[i64]) -> Vec<Result<Facts, bool>> {
         .collect()
 }
 
+/// Sleeps until the next ask, at most until `until`, looking every second
+/// whether the wait is still this process's; false when it isn't (cancelled
+/// or taken over), so a stale wait doesn't poll GitLab for another minute.
+fn pause(dir: &Path, until: i64) -> bool {
+    let end = (now_ms() + POLL.as_millis() as i64).min(until);
+    loop {
+        let left = end - now_ms();
+        if left <= 0 {
+            return true;
+        }
+        std::thread::sleep(LOOK.min(Duration::from_millis(left as u64)));
+        if !is_ours(dir) {
+            return false;
+        }
+    }
+}
+
 pub fn run(argv: &Argv) -> Outcome {
+    if argv.check(&TAKES) == Ok(true) {
+        return help(ABOUT, USAGE);
+    }
     let here = Here::find();
     let Some(dir) = here.worktree() else {
         return Err("wt:wait is for a worktree's agent".into());
@@ -358,7 +390,9 @@ pub fn run(argv: &Argv) -> Outcome {
                 ExitCode::FAILURE
             });
         }
-        std::thread::sleep(POLL);
+        if !pause(dir, until) {
+            return Ok(ExitCode::SUCCESS);
+        }
     }
 }
 

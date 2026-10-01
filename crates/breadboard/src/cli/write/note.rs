@@ -2,17 +2,29 @@
 //! comment on an issue from a file, read back from the API, where a comment
 //! that holds a path instead of the text shows.
 
-use super::common::{Argv, Here, Outcome, number_of, say};
+use super::common::{Argv, Here, Outcome, Takes, help, number_of, say};
 use super::glab;
 use serde_json::Value;
 use std::process::ExitCode;
 
+const USAGE: &str = "usage: pnpm wt:note <issue> --message-file <file>";
+const ABOUT: &str = "pnpm wt:note comments the text of a file on an issue and reads it back from GitLab.";
+const TAKES: Takes = Takes {
+    valued: &["--message-file"],
+    switches: &[],
+    words: Some(1),
+    usage: USAGE,
+};
+
 pub fn run(argv: &Argv) -> Outcome {
+    if argv.check(&TAKES)? {
+        return help(ABOUT, USAGE);
+    }
     let here = Here::find();
     let top = here.dir();
     let number = argv.first().and_then(number_of);
     let (Some(number), Some(file)) = (number, argv.given("--message-file")) else {
-        return Err("usage: pnpm wt:note <issue> --message-file <file>".into());
+        return Err(USAGE.into());
     };
     let path = here.resolve(file);
     if !path.exists() {

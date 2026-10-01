@@ -70,6 +70,74 @@ impl<'a> Argv<'a> {
     pub fn all(&self) -> &'a [String] {
         self.0
     }
+
+    /// The command line held against what the command takes, before anything
+    /// is read or written: `Ok(true)` asks for the help (`--help`, `-h`), an
+    /// unknown flag, a valued flag without its value, a switch given a value
+    /// or one word too many is refused with the usage. Node read only the
+    /// flags it knew and ran on: a typo of `--dry-run` opened the MR (rule 6).
+    pub fn check(&self, takes: &Takes) -> Result<bool, String> {
+        let mut problem = None;
+        let mut words = 0;
+        let mut at = 0;
+        while at < self.0.len() {
+            let arg = self.0[at].as_str();
+            at += 1;
+            if arg == "--help" || arg == "-h" {
+                return Ok(true);
+            }
+            if problem.is_some() {
+                continue;
+            }
+            if !arg.starts_with("--") {
+                words += 1;
+                if takes.words.is_some_and(|most| words > most) {
+                    problem = Some(format!("{arg} is one argument too many"));
+                }
+                continue;
+            }
+            let (name, inline) = match arg.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (arg, None),
+            };
+            if takes.valued.contains(&name) {
+                // `--flag value`, but a next flag is no value (proc.mjs `flagValue`).
+                let has_next = self.0.get(at).is_some_and(|next| !next.starts_with("--"));
+                if inline.is_none() && !has_next {
+                    problem = Some(format!("{name} needs a value"));
+                } else if inline.is_none() {
+                    at += 1;
+                }
+            } else if takes.switches.contains(&name) {
+                if inline.is_some() {
+                    problem = Some(format!("{name} takes no value"));
+                }
+            } else {
+                problem = Some(format!("unknown flag {name}"));
+            }
+        }
+        match problem {
+            Some(problem) => Err(format!("{problem}\n{}", takes.usage)),
+            None => Ok(false),
+        }
+    }
+}
+
+/// What a command takes on its command line.
+pub struct Takes {
+    /// The flags followed by a value.
+    pub valued: &'static [&'static str],
+    /// The flags that stand alone.
+    pub switches: &'static [&'static str],
+    /// How many words (no flag, no flag's value) at most; None: any number.
+    pub words: Option<usize>,
+    pub usage: &'static str,
+}
+
+/// `--help`: what the command does and its usage, on stdout, exit 0.
+pub fn help(about: &str, usage: &str) -> Outcome {
+    say(&format!("{about}\n\n{usage}"));
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Where a command runs: the cwd, the checkout it lies in (`git rev-parse
@@ -226,6 +294,46 @@ mod tests {
 
     fn argv_of_flag() -> Vec<String> {
         argv(&["--list"])
+    }
+
+    const TAKES: Takes = Takes {
+        valued: &["--description-file"],
+        switches: &["--update", "--dry-run"],
+        words: Some(1),
+        usage: "usage: x",
+    };
+
+    fn checked(args: &[&str]) -> Result<bool, String> {
+        Argv(&argv(args)).check(&TAKES)
+    }
+
+    #[test]
+    fn refuses_what_the_command_does_not_take_and_hears_the_help() {
+        assert_eq!(checked(&["10", "--update", "--description-file", "f"]), Ok(false));
+        assert_eq!(checked(&["--description-file=f", "--dry-run"]), Ok(false));
+        assert_eq!(checked(&[]), Ok(false));
+        assert_eq!(checked(&["--dryrun"]), Err("unknown flag --dryrun\nusage: x".into()));
+        assert_eq!(checked(&["--bogus=1"]), Err("unknown flag --bogus\nusage: x".into()));
+        assert_eq!(
+            checked(&["10", "11"]),
+            Err("11 is one argument too many\nusage: x".into())
+        );
+        assert_eq!(
+            checked(&["--description-file", "--update"]),
+            Err("--description-file needs a value\nusage: x".into())
+        );
+        assert_eq!(
+            checked(&["--description-file"]),
+            Err("--description-file needs a value\nusage: x".into())
+        );
+        assert_eq!(
+            checked(&["--update=yes"]),
+            Err("--update takes no value\nusage: x".into())
+        );
+        // A flag's value is no word, and the help wins over any problem.
+        assert_eq!(checked(&["10", "--description-file", "-h"]), Ok(false));
+        assert_eq!(checked(&["--dryrun", "--help"]), Ok(true));
+        assert_eq!(checked(&["-h"]), Ok(true));
     }
 
     #[test]

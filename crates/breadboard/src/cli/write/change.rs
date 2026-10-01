@@ -87,6 +87,7 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
                 "head": head,
             });
             let file = actions_file(dir);
+            super::action::announce_lock(&file);
             request_change(&file, change)
                 .map_err(|error| format!("{} could not be written: {error}", file.display()))?
         }

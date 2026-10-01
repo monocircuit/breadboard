@@ -4,12 +4,13 @@
 //! its worktree's `.claude/actions.json`, the orchestrator's into the record.
 
 use super::change;
-use super::common::{Argv, Here, Outcome, say};
+use super::common::{Argv, Here, Outcome, Takes, help, say};
 use breadboard_core::actions::{
     ACTION_KINDS, Action, NewAction, actions_file, actions_of, add_action, answer_line, answered_of, answers_of,
     decide_problem, done_action, split_option, take_answers,
 };
 use breadboard_core::git::push_state;
+use breadboard_core::lock::lock_of;
 use breadboard_core::record::{is_name, origin_of, record_file, record_of};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -38,6 +39,27 @@ const VALUED: [&str; 9] = [
     "--mr",
     "--on",
 ];
+
+const ABOUT: &str = "pnpm wt:action asks the human for something concrete: a row in ACTIONS of the
+orchestration's overview, where a click does it and ✓ ticks it off.";
+const TAKES: Takes = Takes {
+    valued: &VALUED,
+    switches: &["--list", "--answers"],
+    words: None,
+    usage: USAGE,
+};
+
+/// Says on stderr what a write waits for when another writer holds the file's
+/// lock: it is taken over after 5 s, and silence looked like a hang.
+pub fn announce_lock(file: &std::path::Path) {
+    let lock = lock_of(file);
+    if lock.exists() {
+        eprintln!(
+            "  waits for {}, held by another writer (taken over after 5 s)",
+            lock.display()
+        );
+    }
+}
 
 /// The words after `<kind>` that are no flag and no flag's value.
 pub fn text_of(argv: &Argv) -> String {
@@ -176,6 +198,10 @@ fn written(result: std::io::Result<impl Sized>, file: &std::path::Path) -> Resul
 }
 
 pub fn run(argv: &Argv) -> Outcome {
+    // Refused before anything is written: Node dropped a flag it didn't know and posted.
+    if argv.check(&TAKES)? {
+        return help(ABOUT, USAGE);
+    }
     let given = argv.first();
     let kind = match given {
         Some("browser-check") => Some("try"),
@@ -217,6 +243,7 @@ pub fn run(argv: &Argv) -> Outcome {
         return Ok(ExitCode::SUCCESS);
     }
     if argv.has("--answers") {
+        announce_lock(&file);
         let answers =
             take_answers(&file, None).map_err(|error| format!("{} could not be read: {error}", file.display()))?;
         say(&if answers.is_empty() {
@@ -231,6 +258,7 @@ pub fn run(argv: &Argv) -> Outcome {
         let Some(id) = argv.value("--done").and_then(js_integer) else {
             return Err(USAGE.into());
         };
+        announce_lock(&file);
         let result = done_action(&file, id);
         let is_done = *result.as_ref().unwrap_or(&false);
         written(result, &file)?;
@@ -317,6 +345,7 @@ pub fn run(argv: &Argv) -> Outcome {
         pane: std::env::var("HERDR_PANE_ID").ok(),
         mr,
     };
+    announce_lock(&file);
     let result = add_action(&file, new);
     let action = result.as_ref().ok().cloned().unwrap_or_default();
     written(result, &file)?;
