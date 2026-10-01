@@ -9,6 +9,7 @@ const {
   areasOf,
   emptyChangelog,
   foldInto,
+  fragmentsAt,
   issueOfName,
   notesOf,
   parseFragment,
@@ -18,6 +19,7 @@ const {
   verdictOf,
   versionsOf,
 } = await import("./platform-changelog.mjs");
+const { git } = await import("../lib/proc.mjs");
 
 const URL = "https://gitlab.test/monocircuit/platform";
 const AREAS = ["vita", "breadboard", "monolithium", "ci", "repo"];
@@ -293,5 +295,48 @@ describe("verdictOf", () => {
     assert.equal(verdictOf([["A", ".changelog/README.md"]], []).isOk, false);
     assert.equal(verdictOf([["M", "CHANGELOG.md"]], []).isOk, false);
     assert.equal(verdictOf([["M", ".changelog/291-x.md"]], []).isOk, false);
+  });
+});
+
+describe("fragmentsAt", () => {
+  let root;
+  before(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "platform-changelog-git-"));
+    fs.mkdirSync(path.join(root, "products/vita"), { recursive: true });
+    fs.mkdirSync(path.join(root, ".changelog"));
+    fs.writeFileSync(path.join(root, ".changelog/README.md"), "# How\n");
+    fs.writeFileSync(
+      path.join(root, ".changelog/12-a.md"),
+      fragment("added", "vita", "Groups."),
+    );
+    fs.writeFileSync(
+      path.join(root, ".changelog/13-b.md"),
+      fragment("new", "vita", "x"),
+    );
+    for (const args of [
+      ["init", "-q"],
+      ["add", "."],
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"],
+    ])
+      git(args, root);
+    // Not committed, so not in HEAD.
+    fs.writeFileSync(
+      path.join(root, ".changelog/14-c.md"),
+      fragment("fixed", "vita", "y"),
+    );
+  });
+  after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it("reads the valid fragments of a commit, not the README nor the working tree", () => {
+    assert.deepEqual(fragmentsAt(root, "HEAD"), [
+      {
+        file: ".changelog/12-a.md",
+        type: "added",
+        area: "vita",
+        text: "Groups.",
+        issue: 12,
+      },
+    ]);
+    assert.deepEqual(fragmentsAt(root, "origin/develop"), []);
   });
 });

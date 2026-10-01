@@ -135,6 +135,24 @@ export const readFragments = root => {
   });
 };
 
+/**
+ * The valid fragments as `ref` (`origin/develop`) has them, read through git
+ * so the main checkout's own state doesn't matter; invalid ones are skipped.
+ */
+export const fragmentsAt = (root, ref) => {
+  const areas = areasOf(root);
+  return git(["ls-tree", "--name-only", ref, `${FRAGMENTS}/`], root)
+    .out.split("\n")
+    .filter(file => file.endsWith(".md") && file !== `${FRAGMENTS}/README.md`)
+    .flatMap(file => {
+      const content = git(["show", `${ref}:${file}`], root).out;
+      if (problemsOf(file, content, areas).length > 0) return [];
+      const { fields, text } = parseFragment(content);
+      const { type, area } = fields;
+      return [{ file, type, area, text, issue: issueOfName(file) }];
+    });
+};
+
 /** The project's web URL, from CI or from the origin remote (ssh or https). */
 export const projectUrl = root => {
   if (process.env.CI_PROJECT_URL) return process.env.CI_PROJECT_URL;
