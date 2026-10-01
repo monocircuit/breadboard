@@ -8,6 +8,11 @@ mod write;
 
 use std::process::ExitCode;
 
+/// `overview` printed once, None when it runs live (cli/read.rs).
+pub fn overview_once(args: &[String]) -> Option<ExitCode> {
+    read::run("overview", args)
+}
+
 pub fn main(command: &str, args: &[String]) -> ExitCode {
     if let Some(code) = read::run(command, args) {
         return code;

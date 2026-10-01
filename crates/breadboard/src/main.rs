@@ -13,7 +13,8 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     match command.as_str() {
-        "overview" => tui::main(rest),
+        // Printed once (`--once`, or stdout no terminal): the read group's; live: the TUI.
+        "overview" => cli::overview_once(rest).unwrap_or_else(|| tui::main(rest)),
         _ => cli::main(command, rest),
     }
 }
