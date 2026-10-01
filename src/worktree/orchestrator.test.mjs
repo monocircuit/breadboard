@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { describe, it } from "node:test";
 
-import { slugOf } from "./orchestrator.mjs";
+import { editorCommand } from "./nvim.mjs";
+import { ORCHESTRATION_LUA, changesCommands, slugOf } from "./orchestrator.mjs";
 
 describe("slugOf", () => {
   it("keeps up to five words without the small ones", () => {
@@ -25,5 +27,25 @@ describe("slugOf", () => {
 
   it("names an issue without words `issue`", () => {
     assert.equal(slugOf("the — of"), "issue");
+  });
+});
+
+describe("changesCommands", () => {
+  it("loads orchestration.lua and lists the orchestration's changes", () => {
+    assert.ok(fs.existsSync(ORCHESTRATION_LUA));
+    assert.deepEqual(changesCommands("breadboard"), [
+      `luafile ${ORCHESTRATION_LUA}`,
+      "OrchestrationChanges breadboard",
+    ]);
+  });
+
+  it("starts the tab on the orchestration's own socket, without changes.lua", () => {
+    const line = editorCommand("/repo", {
+      name: "breadboard",
+      commands: changesCommands("breadboard"),
+    });
+    assert.match(line, /--listen '\.claude\/nvim-breadboard\.sock'/);
+    assert.match(line, /-c 'OrchestrationChanges breadboard'$/);
+    assert.doesNotMatch(line, /changes\.lua/);
   });
 });

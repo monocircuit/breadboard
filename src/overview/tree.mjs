@@ -24,7 +24,9 @@ import {
   focusSpace,
   isChangeOpen,
   waitsText,
+  wasOf,
 } from "../worktree.mjs";
+import { THRESHOLD, gb } from "../worktree/memory.mjs";
 import { isOnce } from "./args.mjs";
 import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
@@ -64,6 +66,7 @@ const placeCell = (count, number) =>
  * - `kept`: merged, but changes or commits not in develop keep it
  * - `held`: merged, its clean-up waits for its agent (at work, a handover)
  * - `asks`: its agent is blocked on you; `waits`: an action of it is open
+ *   (`waits for you: <kinds>`); `waitsForMr`: it waits for MRs (wt:wait)
  * - `working`: its agent is at work; `ready`: the MR is ready, pipeline passed
  * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
@@ -92,13 +95,21 @@ export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
               : "merged: will be removed",
           ),
         };
-  // An agent's state in the colour herdr's sidebar gives it (herdr-tones.mjs).
+  // The agent's state in the colour herdr's sidebar gives it (herdr-tones.mjs),
+  // what it waits for before what it does (#260).
+  const tone = toneOf(status);
   if (status === "blocked")
-    return { key: "asks", text: toneOf(status)("asks you") };
-  if (tree.actions?.some(action => !action.answer))
-    return { key: "waits", text: toneOf(status)("waits for you") };
-  if (status === "working")
-    return { key: "working", text: toneOf(status)("working") };
+    return { key: "asks", text: tone("waits for you: asks") };
+  const open = tree.actions?.filter(action => !action.answer) ?? [];
+  if (open.length)
+    return {
+      key: "waits",
+      text: tone(
+        `waits for you: ${[...new Set(open.map(action => action.kind))].join(", ")}`,
+      ),
+    };
+  if (tree.wait) return { key: "waitsForMr", text: tone(waitsText(tree.wait)) };
+  if (status === "working") return { key: "working", text: tone("at work") };
   const pipeline = mr?.pipeline?.status ?? mr?.pipeline;
   if (
     mr?.state === "opened" &&
@@ -109,7 +120,7 @@ export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
     return { key: "ready", text: green("ready to merge") };
   return {
     key: "idle",
-    text: tree.claude ? toneOf(status)("idle") : dim("no agent"),
+    text: tree.claude ? tone("idle") : dim("no agent"),
   };
 };
 
@@ -148,20 +159,40 @@ const agentFact = claude => {
   return `${tone(`${Math.round(share * 100)}%`)} ${dim(`of ${tokens(claude.window)} · ${ago(claude.at)}`)}`;
 };
 /**
- * The facts line of a node: issue, MR and pipeline, work, agent, a wait
- * (#216), a requested change and what isn't pushed (#228), the next issue
+ * The agent of a worktree by its name when that isn't the worktree's (a
+ * handover, #251), its name before for a day; nothing else.
+ */
+const agentNameFact = (tree, known, now) => {
+  const worker = tree?.claude && known[tree.claude.id];
+  const was = wasOf(worker, now);
+  return [
+    worker?.name && worker.name !== tree.name
+      ? `agent ${bold(worker.name)}`
+      : "",
+    was ? dim(`was ${was}`) : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+};
+/**
+ * The facts line of a node: issue, MR and pipeline, work, its agent's name
+ * after a handover and its context, a wait (#216) its state doesn't name
+ * already, a requested change and what isn't pushed (#228), the next issue
  * announced for its agent (#227). What doesn't apply is left out; a worktree
  * without an MR says so.
  */
-const factsOf = (issue, found, mr, hasRemote, handover) => {
+const factsOf = (issue, found, mr, hasRemote, { handover, state, agent }) => {
   const { tree } = issue;
   const mergedAt = issue.mergedAt ?? mr?.mergedAt;
   return [
     issueFact(issue, found, hasRemote),
     tree ? mrFact(mr, mergedAt) || dim("no MR yet") : mrFact(mr, mergedAt),
     tree ? workFact(tree) : "",
+    agent,
     tree ? agentFact(tree.claude) : "",
-    tree?.wait ? yellow(waitsText(tree.wait)) : "",
+    tree?.wait && state.key !== "waitsForMr"
+      ? yellow(waitsText(tree.wait))
+      : "",
     tree ? changeFact(tree, mr) : "",
     tree ? unpushedFact(tree) : "",
     // Its agent's next issue, announced (#227).
@@ -200,7 +231,8 @@ const queuedText = (issue, announced, suggested) => {
  * order of wt:plan; `merge`: the open MRs' issues in the computed merge order;
  * `announced`: the announced handovers (handovers.mjs); `holds`: dir → why
  * the clean-up of a worktree waits for a handover (workers.mjs);
- * `suggested`: number → `{ worker }` of UP NEXT (workers.mjs).
+ * `suggested`: number → `{ worker }` of UP NEXT (workers.mjs); `known`: the
+ * record's workers by agent id (their names, #217).
  */
 export const treeOf = (
   issues,
@@ -213,6 +245,8 @@ export const treeOf = (
     holds = new Map(),
     suggested = new Map(),
     hasRemote = true,
+    known = {},
+    now = Date.now(),
   } = {},
 ) => {
   const numbers = numbersOf(issues, { work, merge, of });
@@ -245,7 +279,11 @@ export const treeOf = (
       number: numbers.get(issue),
       place: placeCell(issues.length, numbers.get(issue)),
       name: pink(tree ? bold(issue.feature) : issue.feature),
-      facts: factsOf(issue, found, mr, hasRemote, handoverOf(tree)),
+      facts: factsOf(issue, found, mr, hasRemote, {
+        handover: handoverOf(tree),
+        state,
+        agent: agentNameFact(tree, known, now),
+      }),
       title: dim(found?.title ?? issue.title ?? issue.branch),
     };
   });
@@ -297,6 +335,36 @@ export const nodeLines = (row, { branch, stem, width }) => {
   ];
 };
 
+/**
+ * The head line of WORKTREES after its title (#260): how many agents work,
+ * wait (for you or for MRs) and idle, the ready ones, the ones about to go,
+ * queued and removed, then the free memory and the threshold below which a
+ * fresh agent gets the shared stack (memory.mjs), red below it.
+ */
+export const headOf = ({ live, queued, removed }, free) => {
+  const count = (...keys) =>
+    live.filter(row => keys.includes(row.state.key)).length;
+  const counts = [
+    [count("working"), "working"],
+    [count("asks", "waits", "waitsForMr"), "waiting"],
+    [count("idle"), "idle"],
+    [count("ready"), "ready"],
+    [count("removable"), "will be removed"],
+    [queued.length, "queued"],
+    [removed.length, "removed"],
+  ]
+    .filter(([n]) => n)
+    .map(([n, what]) => `${n} ${what}`)
+    .join(" · ");
+  const memory =
+    free === undefined
+      ? ""
+      : free < THRESHOLD
+        ? red(`${gb(free)} free: fresh agents on the shared stack`)
+        : dim(`${gb(free)} free (shared stack below ${gb(THRESHOLD)})`);
+  return [counts && dim(counts), memory].filter(Boolean).join(dim(" · "));
+};
+
 /** Past this many, "done and removed" starts folded into its one line. */
 const FOLD_OVER = 3;
 /** Whether the user unfolded (true) or folded (false) "done and removed", over redraws; null: by FOLD_OVER. */
@@ -327,7 +395,7 @@ export const foldLine = ({ branch, isOpen, text, width }) =>
  * it, then "done and removed" with the gone ones, folded into one line when
  * long (a click shows or folds them).
  * A click on any line of a node goes to the worktree's space, on a gone one
- * to its issue.
+ * to its issue. Its head line counts them and names the free memory (#260).
  */
 export const pushWorktrees = (
   lines,
@@ -342,6 +410,8 @@ export const pushWorktrees = (
     holds,
     suggested,
     hasRemote,
+    known,
+    free,
   },
 ) => {
   const { live, queued, removed } = treeOf(issues, of, {
@@ -352,6 +422,7 @@ export const pushWorktrees = (
     holds,
     suggested,
     hasRemote,
+    known,
   });
   const box = openBox(lines);
   lines.push(
@@ -415,20 +486,9 @@ export const pushWorktrees = (
     );
   }
   shown.forEach((row, i) => pushNode(row, i === shown.length - 1, "   "));
-  const count = key => live.filter(row => row.state.key === key).length;
-  const counts = [
-    count("working") ? `${count("working")} working` : "",
-    count("asks") + count("waits")
-      ? `${count("asks") + count("waits")} wait for you`
-      : "",
-    count("ready") ? `${count("ready")} ready` : "",
-    count("removable") ? `${count("removable")} will be removed` : "",
-    queued.length ? `${queued.length} queued` : "",
-    removed.length ? `${removed.length} removed` : "",
-  ];
   closeBox(
     lines,
     box,
-    `${bold("WORKTREES")} ${dim([...counts, "click one to go to its space"].filter(Boolean).join(" · "))}`,
+    `${bold("WORKTREES")} ${headOf({ live, queued, removed }, free)}`,
   );
 };

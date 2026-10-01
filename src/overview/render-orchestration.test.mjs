@@ -140,7 +140,8 @@ describe("the orchestration view", () => {
       },
       null,
     );
-    assert.match(view, /AGENTS/);
+    assert.doesNotMatch(view, /AGENTS/);
+    assert.match(view, /WORKTREES/);
     assert.doesNotMatch(view, /FEED/);
   });
 });

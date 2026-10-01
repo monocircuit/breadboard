@@ -16,6 +16,7 @@ import { mainDir, worktrees } from "./worktrees.mjs";
 //
 //   ⇶ <name>               root · overview (its issues and MRs) · orchestrator (the tab of the orchestrating session)
 //                          · changelog (what it got done, changelog.mjs)
+//                          · changes (what its MRs changed in the code, nvim, changeset.mjs)
 //   <feature> (per issue)  the usual space, its <feature> tab running a claude on the issue
 //
 // A worktree started for an orchestration records it (`.claude/origin`), and

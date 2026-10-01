@@ -16,6 +16,7 @@
 //                                             claude (kept for /resume), its record and checkout away
 //   pnpm wt:orchestrate <name> --changelog    its changelog (every merged MR) rewritten from record and
 //     [--watch]                               GitLab and printed; --watch: live, the tab `changelog`
+//   pnpm wt:orchestrate <name> --changes      what its MRs changed in the code, as JSON: the tab `changes`
 //   pnpm changelog [--since 30d|<date>]      what got into develop by product and package, rewritten
 //     [--watch]                               from GitLab and printed; --watch: live, the main space's tab
 //   pnpm wt:plan <name> [--work <n>…]         the order of an orchestration's issues and merges

@@ -1,7 +1,7 @@
 // The machine is the only limit on an orchestration's agents (#229): before a
 // fresh agent starts, wt:orchestrate checks the free memory. Below the
 // threshold it starts anyway, on the shared stack, and says so; the overview
-// names the threshold (AGENTS).
+// names the threshold (the head line of WORKTREES).
 import fs from "node:fs";
 import os from "node:os";
 

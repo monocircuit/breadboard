@@ -4,8 +4,10 @@ import { describe, it } from "node:test";
 import { ESCAPES } from "../lib/tty.mjs";
 import { withRemoved } from "../worktree/origins.mjs";
 import { numbersOf } from "./numbering.mjs";
+import { MEMORY, THRESHOLD } from "../worktree/memory.mjs";
 import {
   foldLine,
+  headOf,
   lifecycleOf,
   pushWorktrees,
   toggleQueue,
@@ -82,6 +84,28 @@ describe("lifecycleOf", () => {
     assert.equal(stateOf(answered, { status: "working" }), "working");
   });
 
+  it("says the agent's state as text, what it waits for first (#260)", () => {
+    const text = (entry, facts) => plain(lifecycleOf(entry, facts).text);
+    assert.equal(text(issue(1), { status: "blocked" }), "waits for you: asks");
+    const asked = issue(1, {
+      tree: tree({
+        actions: [{ kind: "try" }, { kind: "merge" }, { kind: "try" }],
+        wait: { mrs: [271] },
+      }),
+    });
+    assert.equal(text(asked, { status: "idle" }), "waits for you: try, merge");
+    const waiting = issue(1, { tree: tree({ wait: { mrs: [271] } }) });
+    assert.equal(stateOf(waiting, { status: "idle" }), "waitsForMr");
+    assert.equal(text(waiting, { status: "idle" }), "waits for !271");
+    assert.equal(text(waiting, { status: "working" }), "waits for !271");
+    assert.equal(text(issue(1), { status: "working" }), "at work");
+    assert.equal(text(issue(1), { status: "idle" }), "idle");
+    assert.equal(
+      text(issue(1, { tree: tree({ claude: null }) }), {}),
+      "no agent",
+    );
+  });
+
   it("is ready once the MR is ready and its pipeline passed", () => {
     const mr = {
       state: "opened",
@@ -136,6 +160,32 @@ describe("treeOf", () => {
     });
     assert.equal(stateOf(changed, { mr: green }), "idle");
     assert.equal(stateOf(issue(1), { mr: green }), "ready");
+  });
+
+  it("names the wait once: in the state, else in the facts", () => {
+    const waiting = issue(1, { tree: tree({ wait: { mrs: [271] } }) });
+    const factsAt = status =>
+      plain(
+        treeOf([waiting], () => ({}), {
+          agents: new Map([["c1", { status }]]),
+        }).live[0].facts,
+      );
+    assert.doesNotMatch(factsAt("idle"), /waits for !271/);
+    assert.match(factsAt("blocked"), /waits for !271/);
+  });
+
+  it("names the agent when it isn't the worktree's, its old name for a day (#260)", () => {
+    const renamed = "2026-09-30T10:00:00.000Z";
+    const entry = issue(1, { tree: tree({ name: "1-feature" }) });
+    const factsOf = (known, now = Date.parse(renamed) + 60_000) =>
+      plain(treeOf([entry], () => ({}), { known, now }).live[0].facts);
+    assert.doesNotMatch(factsOf({ c1: { name: "1-feature" } }), /agent/);
+    assert.doesNotMatch(factsOf({}), /agent /);
+    const known = { c1: { name: "2-other", was: "1-feature", renamed } };
+    assert.match(factsOf(known), /agent 2-other was 1-feature/);
+    const later = factsOf(known, Date.parse(renamed) + 2 * 86_400_000);
+    assert.match(later, /agent 2-other/);
+    assert.doesNotMatch(later, /was 1-feature/);
   });
 
   it("puts the gone ones under removed, the last removed first", () => {
@@ -244,6 +294,39 @@ describe("numbersOf", () => {
   it("gives two entries of one issue number a number each", () => {
     const numbers = numbersOf([issue(3), issue(3)], {});
     assert.deepEqual([...numbers.values()], [1, 2]);
+  });
+});
+
+describe("headOf", () => {
+  const rows = (...keys) => keys.map(key => ({ state: { key } }));
+
+  it("counts the agents by their state, then queued and removed, then the memory", () => {
+    const head = headOf(
+      {
+        live: rows("working", "asks", "waits", "waitsForMr", "waits", "idle"),
+        queued: rows("queued"),
+        removed: rows(...Array(14).fill("removed")),
+      },
+      THRESHOLD + MEMORY.stack,
+    );
+    assert.equal(
+      plain(head),
+      "1 working · 4 waiting · 1 idle · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)",
+    );
+  });
+
+  it("leaves out what is none, warns below the threshold", () => {
+    const head = plain(
+      headOf({ live: rows("ready"), queued: [], removed: [] }, MEMORY.agent),
+    );
+    assert.equal(
+      head,
+      "1 ready · 0.5 GB free: fresh agents on the shared stack",
+    );
+    assert.equal(
+      plain(headOf({ live: rows("idle"), queued: [], removed: [] })),
+      "1 idle",
+    );
   });
 });
 

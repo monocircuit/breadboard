@@ -11,7 +11,7 @@ import {
   tabsOf,
 } from "../lib/herdr.mjs";
 import { git, quote, run } from "../lib/proc.mjs";
-import { CHANGELOG, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
+import { CHANGELOG, CHANGES, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
 import { exclusive } from "./lock.mjs";
 import {
@@ -22,7 +22,8 @@ import {
   orchestratorLabel,
   slotOf,
 } from "./origins.mjs";
-import { mainSpace, spaceOf } from "./spaces.mjs";
+import { editorCommand } from "./nvim.mjs";
+import { canEdit, mainSpace, spaceOf } from "./spaces.mjs";
 import {
   dropDuplicates,
   ensureSpace,
@@ -81,15 +82,30 @@ export const orchestratorOrder = () => [
   OVERVIEW,
   ORCHESTRATOR_TAB,
   CHANGELOG,
+  CHANGES,
 ];
 /** What the tab `changelog` runs: the changelog of the orchestration, live (changelog-view.mjs). */
 export const changelogTabCommand = name =>
   `node ${quote(ENTRY)} orchestrate ${name} --changelog --watch`;
+/** What nvim/orchestration.lua is: the tab `changes` loads it. */
+export const ORCHESTRATION_LUA = path.join(
+  import.meta.dirname,
+  "..",
+  "..",
+  "nvim",
+  "orchestration.lua",
+);
+/** What the nvim of the tab `changes` runs on start (editorCommand, openInEditor): what the MRs of `name` changed. */
+export const changesCommands = name => [
+  `luafile ${ORCHESTRATION_LUA}`,
+  `OrchestrationChanges ${name}`,
+];
 /**
  * The space `⇶ <name>`: `root`, its `overview` (the issues and merge
  * requests of the orchestration), the orchestrator's tab and `changelog`
- * (what it got done, #248), in that order. The layout calls it for every
- * such space, so overview and changelog come back after a herdr restart and
+ * (what it got done, #248) and, with nvim on the PATH, `changes` (what
+ * its MRs changed in the code, #256), in that order. The layout calls it for every
+ * such space, so overview, changelog and changes come back after a herdr restart and
  * an older space gets them.
  */
 export const orchestratorSpace = name => {
@@ -134,6 +150,17 @@ export const orchestratorSpace = name => {
     { label: CHANGELOG, cwd: main, command: changelogTabCommand(name) },
     tabs,
   );
+  // On the orchestration's own socket in the main checkout (nvim.mjs), so a click can open a file in it.
+  if (canEdit())
+    ensureTab(
+      workspace,
+      {
+        label: CHANGES,
+        cwd: main,
+        command: editorCommand(main, { name, commands: changesCommands(name) }),
+      },
+      tabs,
+    );
   keepOrder(workspace, orchestratorOrder());
   return workspace;
 };
@@ -282,7 +309,7 @@ export const BRIEF_PROMPT =
   "Read .claude/brief.md and work on the issue it describes.";
 /**
  * What an orchestrated agent is told. It stays in its worktree, works like
- * any session there, and the overview shows where it is (AGENTS,
+ * any session there, and the overview shows where it is (its node in
  * WORKTREES); SendMessage to the orchestrator only for what needs it.
  */
 export const briefOf = ({
@@ -310,7 +337,7 @@ Don't run \`wt:new\`, \`EnterWorktree\` or \`ExitWorktree\`.`
    A change requested for your MR (by the user or the orchestrator): \`pnpm wt:action change "<what>"\` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
    Your MR's pipeline failed: the overview types \`[overview] the pipeline of !N failed: job …, <url>: …\` into this tab by itself. Read the job's log (the url, or \`glab ci trace <job id>\`), fix what is your MR's doing and push. When the line says develop fails the same job, it isn't yours: say so in the MR (\`glab mr note\`) and go on, don't chase it.
    Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run \`pnpm wt:wait !N … --then "<what next>"\` with \`run_in_background\` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Its AGENTS shows herdr's state of your agent and what you wait for, its WORKTREES and MERGE REQUESTS show commits, MR, boxes and pipeline: no note, no status message.
+3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline; MERGE REQUESTS shows the boxes: no note, no status message.
    \`SendMessage\` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
    - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its \`decide\` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;
