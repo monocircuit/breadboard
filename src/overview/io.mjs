@@ -3,7 +3,7 @@ import { openInGroup, openPopup } from "../browser.mjs";
 import { mainDir, spaceLabel } from "../worktree.mjs";
 import { only } from "./args.mjs";
 
-export { glabApi as glab } from "../lib/glab.mjs";
+export { glabApi as glab, glabText, phase } from "../lib/glab.mjs";
 export { exec, sh } from "../lib/proc.mjs";
 
 /**

@@ -48,6 +48,7 @@ import {
   titleLines,
 } from "./boxes.mjs";
 import { editorTrouble, fileLine, openFile, pushFiles } from "./files.mjs";
+import { errorText, waitingText } from "./gitlab-status.mjs";
 import { open, show } from "./io.mjs";
 import { KEYS, onButton, pushRows, screen } from "./screen.mjs";
 
@@ -252,7 +253,7 @@ export const renderWorktree = (local, remote, error) => {
       ...table([["", "work", work || dim("clean, nothing ahead of develop")]]),
     );
   }
-  if (error) lines.push(red(`GitLab: ${error.split("\n")[0]}`));
+  if (error) lines.push(red(errorText(error, remote)));
   // One table with issue and MR, so their columns line up; the conversation is AGENT's.
   const rows = [];
   const actions = [];
@@ -293,7 +294,7 @@ export const renderWorktree = (local, remote, error) => {
   }
   pushRows(lines, rows, actions);
   if (!remote && !error) {
-    lines.push(dim("  GitLab …"));
+    lines.push(dim(`  ${waitingText()}`));
   }
   // Below issue and MR: the button is the last step of a worktree.
   if (local.isDone || removing?.isRunning) {

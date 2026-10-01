@@ -44,6 +44,7 @@ import {
 import { pushChatButton } from "./chat.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { agentNamesOf, announcedOf } from "./handovers.mjs";
+import { errorText, freshText, waitingText } from "./gitlab-status.mjs";
 import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
 import {
@@ -464,7 +465,7 @@ const pushNext = (
               atWork: atWorkOf(issues, local.agents),
               merge,
             })
-          : "GitLab …",
+          : waitingText(),
       )}`,
     );
   }
@@ -563,7 +564,7 @@ export const renderOrchestration = (local, remote, error) => {
     );
     return lines.map(line => fit(line, width)).join("\n");
   }
-  if (error) lines.push("", red(`GitLab: ${error.split("\n")[0]}`));
+  if (error) lines.push("", red(errorText(error, remote)));
   // A row of the graph alone has no issue (#306): nothing to look up.
   const of = issue => (issue && remote?.of.get(issue.branch)) || {};
   // The merge order, computed on each read; the plan's alone until GitLab answers.
@@ -679,7 +680,9 @@ export const renderOrchestration = (local, remote, error) => {
   const doneMrs = order.merged.map(number => byNumber.get(number));
   const mrsBox = openBox(lines);
   if (!remote) {
-    lines.push(dim(error ? "  GitLab does not answer" : "  GitLab …"));
+    lines.push(
+      dim(`  ${error ? "GitLab does not answer yet" : waitingText()}`),
+    );
   } else if (order.open.length + doneMrs.length === 0) {
     lines.push(dim("  none yet"));
   } else
@@ -806,6 +809,8 @@ export const renderOrchestration = (local, remote, error) => {
     waiting ? `${waiting} without one yet` : "",
     order.open.length ? "in merge order, side by side where independent" : "",
   ];
+  // How old what it shows is, and GitLab's minute of all the user's clients (#305).
+  if (freshText(remote)) lines.push(dim(`  ${freshText(remote)}`));
   closeBox(
     lines,
     mrsBox,
