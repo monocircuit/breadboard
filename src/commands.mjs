@@ -60,6 +60,8 @@ const DESCRIPTIONS = {
     "wt:plan":
       "<name> [--work <n>…] [--merge <n>…] [--why <t>] the order of an orchestration's issues and merges, for its overview",
     "wt:stack": "give the worktree you are in its own stack",
+    "wt:check":
+      "lint, typecheck and test of what the branch changes (and what depends on it), cached; stamps the tree it passed: the pre-push hook refuses any other commit",
     "wt:mr":
       "open the draft MR of this worktree (--update sends the description again)",
     "wt:note": "<issue> --message-file <f> comment a file on an issue",
