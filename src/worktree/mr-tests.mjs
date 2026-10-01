@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { git } from "../lib/proc.mjs";
+import { readCheck, treeOf } from "./check.mjs";
 
 /** A change here needs vita's integration tests (`pnpm test:int`). */
 export const SERVER = /^products\/vita\/(?:[^/]+\/)*src\/server\//;
@@ -12,21 +13,32 @@ export const SERVER = /^products\/vita\/(?:[^/]+\/)*src\/server\//;
 export const BROWSER =
   /^(?:products\/vita\/web\/src\/(?:app|components)\/|products\/vita\/ui\/src\/|packages\/monolithium\/src\/)/;
 
-/** What a package's line names, of the scripts it has. */
-export const TASKS = ["lint", "typecheck", "test"];
+/**
+ * The wt:check line (#298): ticked with its result when the last check that
+ * passed tested HEAD's tree (`check`: `{ sha, packages, duration }`), else
+ * the check still to run on `packages` (the names of the changed ones). It
+ * stands for every package's lint, typecheck and test.
+ */
+export function checkLine({ check, packages }) {
+  if (check) {
+    const count = check.packages.length;
+    const what =
+      count === 0
+        ? "no package changed"
+        : `lint / typecheck / test of ${count} package${count === 1 ? "" : "s"} (${check.packages.join(", ")})`;
+    return `- [x] \`pnpm wt:check\` passed on ${check.sha.slice(0, 8)}: ${what}${check.duration ? `, ${check.duration} s` : ""}`;
+  }
+  if (packages.length === 0) return null;
+  return `- [ ] \`pnpm wt:check\`: lint / typecheck / test of ${packages.join(", ")} and what depends on them`;
+}
 
 /**
- * The box lines of the Tests section for a branch: `packages` the packages it
- * changes (`{ name, scripts }`), `files` its changed paths (repo-relative).
+ * The box lines of the Tests section for a branch: `packages` the names of
+ * the packages it changes, `files` its changed paths (repo-relative),
+ * `check` the wt:check that passed on HEAD, if one did.
  */
-export function testLines({ packages, files }) {
-  const lines = packages.flatMap(({ name, scripts = TASKS }) => {
-    const [first, ...rest] = TASKS.filter(task => scripts.includes(task));
-    if (!first) return [];
-    return [
-      `- [ ] ${[`\`pnpm --filter ${name} ${first}\``, ...rest.map(task => `\`${task}\``)].join(" / ")}`,
-    ];
-  });
+export function testLines({ packages, files, check = null }) {
+  const lines = [checkLine({ check, packages })].filter(Boolean);
   if (files.some(file => SERVER.test(file)))
     lines.push("- [ ] `pnpm test:int` (`src/server` changed)");
   if (files.some(file => BROWSER.test(file)))
@@ -34,8 +46,8 @@ export function testLines({ packages, files }) {
   return lines;
 }
 
-/** A template box the pre-fill decides on: package checks, test:int, the browser. */
-export const PREFILLED = /pnpm --filter|test:int|browser/;
+/** A template box the pre-fill decides on: the package checks, test:int, the browser. */
+export const PREFILLED = /pnpm --filter|wt:check|test:int|browser/;
 
 /**
  * `text` (the template) with its Tests section replaced by `lines` under a
@@ -109,40 +121,50 @@ export function changedFiles(top) {
 }
 
 /**
- * The packages of `files`: `{ name, scripts }` of the nearest `package.json`
- * above each, the root's left out. `packageAt(dir)` reads the package of a
+ * The packages of `files`: the name in the nearest `package.json` above
+ * each, the root's left out. `nameAt(dir)` reads the name of a package
  * directory (null when there is none).
  */
-export function packagesOf(files, packageAt) {
-  const found = new Map();
+export function packagesOf(files, nameAt) {
+  const names = new Set();
   for (const file of files) {
     let dir = path.posix.dirname(file);
     while (dir !== "." && dir !== "/") {
-      const pkg = packageAt(dir);
-      if (pkg) {
-        found.set(pkg.name, pkg);
+      const name = nameAt(dir);
+      if (name) {
+        names.add(name);
         break;
       }
       dir = path.posix.dirname(dir);
     }
   }
-  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...names].sort();
 }
 
-/** packageAt for the checkout `top`. */
-export const packageIn = top => dir => {
+/** nameAt for the checkout `top`. */
+export const packageNameIn = top => dir => {
   try {
-    const { name, scripts = {} } = JSON.parse(
-      fs.readFileSync(path.join(top, dir, "package.json"), "utf-8"),
+    return (
+      JSON.parse(fs.readFileSync(path.join(top, dir, "package.json"), "utf-8"))
+        .name ?? null
     );
-    return name ? { name, scripts: Object.keys(scripts) } : null;
   } catch {
     return null;
   }
 };
 
+/** The wt:check of `top` that passed on its HEAD, or null. */
+export function passedCheckOf(top) {
+  const passed = readCheck(top).passed;
+  return passed && passed.tree === treeOf(top) ? passed : null;
+}
+
 /** The Tests lines of the branch in `top`. */
 export function testLinesOf(top) {
   const files = changedFiles(top);
-  return testLines({ packages: packagesOf(files, packageIn(top)), files });
+  return testLines({
+    packages: packagesOf(files, packageNameIn(top)),
+    files,
+    check: passedCheckOf(top),
+  });
 }

@@ -16,21 +16,42 @@ const template = fs.readFileSync(
 );
 
 describe("testLines", () => {
-  it("has a lint/typecheck/test line per changed package", () => {
+  it("ticks wt:check with its result when it passed on HEAD", () => {
     assert.deepEqual(
       testLines({
-        packages: [
-          { name: "@monocircuit/breadboard", scripts: ["lint", "test"] },
-        ],
+        packages: ["@monocircuit/breadboard"],
+        files: ["packages/breadboard/src/worktree/mr-tests.mjs"],
+        check: {
+          sha: "0fd4fe6f1234",
+          packages: ["@monocircuit/breadboard", "@monocircuit/eslint-config"],
+          duration: 42,
+        },
+      }),
+      [
+        "- [x] `pnpm wt:check` passed on 0fd4fe6f: lint / typecheck / test of 2 packages (@monocircuit/breadboard, @monocircuit/eslint-config), 42 s",
+      ],
+    );
+  });
+
+  it("leaves wt:check open on the changed packages without a pass on HEAD", () => {
+    assert.deepEqual(
+      testLines({
+        packages: ["@monocircuit/breadboard"],
         files: ["packages/breadboard/src/worktree/mr-tests.mjs"],
       }),
-      ["- [ ] `pnpm --filter @monocircuit/breadboard lint` / `test`"],
+      [
+        "- [ ] `pnpm wt:check`: lint / typecheck / test of @monocircuit/breadboard and what depends on them",
+      ],
     );
+  });
+
+  it("has no wt:check box for a docs-only branch that wasn't checked", () => {
+    assert.deepEqual(testLines({ packages: [], files: ["AGENTS.md"] }), []);
   });
 
   it("has no browser box and no test:int box without such changes", () => {
     const lines = testLines({
-      packages: [{ name: "@monocircuit/vita-core" }],
+      packages: ["@monocircuit/vita-core"],
       files: ["products/vita/core/src/chronicle.ts"],
     }).join("\n");
     assert.doesNotMatch(lines, /browser/);
@@ -40,7 +61,7 @@ describe("testLines", () => {
   it("asks for test:int with a change under a src/server of vita", () => {
     assert.match(
       testLines({
-        packages: [{ name: "@monocircuit/vita" }],
+        packages: ["@monocircuit/vita"],
         files: ["products/vita/web/src/server/operations/share.ts"],
       }).join("\n"),
       /pnpm test:int/,
@@ -63,7 +84,7 @@ describe("testLines", () => {
 
   it("asks for no browser with a server or a docs change", () => {
     const lines = testLines({
-      packages: [{ name: "@monocircuit/vita" }],
+      packages: ["@monocircuit/vita"],
       files: [
         "products/vita/web/src/server/db/schema.ts",
         "products/vita/docs/backend.md",
@@ -78,8 +99,7 @@ describe("packagesOf", () => {
     "packages/breadboard": "@monocircuit/breadboard",
     "products/vita/web": "@monocircuit/vita",
   };
-  const packageAt = dir =>
-    names[dir] ? { name: names[dir], scripts: ["test"] } : null;
+  const nameAt = dir => names[dir] ?? null;
 
   it("names the nearest package of each file once, the root's left out", () => {
     assert.deepEqual(
@@ -91,8 +111,8 @@ describe("packagesOf", () => {
           "turbo.json",
           ".gitlab/merge_request_templates/Default.md",
         ],
-        packageAt,
-      ).map(pkg => pkg.name),
+        nameAt,
+      ),
       ["@monocircuit/breadboard", "@monocircuit/vita"],
     );
   });
@@ -101,11 +121,12 @@ describe("packagesOf", () => {
 describe("withTests", () => {
   it("replaces the template's boxes with the ones that apply, the rest stays", () => {
     const text = withTests(template, [
-      "- [ ] `pnpm --filter @monocircuit/breadboard lint` / `typecheck` / `test`",
+      "- [x] `pnpm wt:check` passed on 0fd4fe6f: lint / typecheck / test of 1 package (@monocircuit/breadboard)",
     ]);
     const tests = text.slice(text.indexOf("## Tests"));
     assert.doesNotMatch(tests, /browser|test:int/);
-    assert.match(tests, /@monocircuit\/breadboard lint/);
+    assert.match(tests, /wt:check` passed/);
+    assert.doesNotMatch(tests, /pnpm --filter/);
     assert.match(tests, /changelog entry/);
     assert.match(text, /## Changes/);
     assert.match(text, /\nRefs #\s*$/);
