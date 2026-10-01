@@ -246,6 +246,36 @@ describe("overallText", () => {
       /Nothing merged in this window/,
     );
   });
+
+  it("puts CHANGELOG.md's waiting entries on top, none without fragments", () => {
+    const text = overallText({
+      since: "2026-09-01T00:00:00Z",
+      unreleased: {
+        entries: [
+          {
+            file: "a.md",
+            type: "fixed",
+            area: "vita",
+            text: "Fonts load.",
+            issue: 271,
+          },
+        ],
+        areas: ["vita"],
+        url: URL.replace(/\/-$/, ""),
+      },
+    });
+    assert.match(
+      text,
+      /## Unreleased\n\n`CHANGELOG\.md` · 1 entry waiting in `\.changelog\/` for the next release\n\n### Fixed\n\n- \*\*vita:\*\* Fonts load\. \(\[#271\]/,
+    );
+    assert.doesNotMatch(
+      overallText({
+        since: "2026-09-01T00:00:00Z",
+        unreleased: { entries: [], areas: [], url: null },
+      }),
+      /Unreleased/,
+    );
+  });
 });
 
 describe("readOverall", () => {

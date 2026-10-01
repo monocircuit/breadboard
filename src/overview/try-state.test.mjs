@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   DEPLOY_GRACE_MS,
+  decidingDeployOf,
   deployStateOf,
   span,
   tryStateOf,
@@ -140,6 +141,41 @@ describe("deployStateOf", () => {
       ).state,
       "deploying",
     );
+  });
+});
+
+describe("decidingDeployOf", () => {
+  // #191: the merge's own pipeline failed in check:vita, so deploy:develop was skipped.
+  const own = deploy(
+    [
+      job("check:vita", "failed"),
+      job("build:develop", "skipped"),
+      job("deploy:develop", "skipped"),
+    ],
+    "failed",
+  );
+  const later = deploy(
+    [job("deploy:develop", "success", at(5 * MIN))],
+    "success",
+  );
+
+  it("names the check that stopped a pipeline before it deployed", () => {
+    assert.equal(deployStateOf(own, NOW).job.name, "check:vita");
+  });
+
+  it("lets a later develop pipeline deploy a merge whose own one failed", () => {
+    assert.equal(decidingDeployOf(own, later, NOW), later);
+    assert.equal(
+      stateOf(merged(decidingDeployOf(own, later, NOW))).label,
+      "ready (deploy:develop passed 5 min ago)",
+    );
+    // Without a later one the failure stays.
+    assert.equal(decidingDeployOf(own, null, NOW), own);
+  });
+
+  it("keeps the merge's own pipeline unless it failed", () => {
+    const running = deploy([job("build:develop", "running")]);
+    assert.equal(decidingDeployOf(running, later, NOW), running);
   });
 });
 
