@@ -34,9 +34,14 @@ describe("sidebarConfig", () => {
     assert.match(rows, /\{ token = "\$orch1", fg = "#112233", bold = true \}/);
     assert.match(
       rows,
-      /\{ starts_with = "needs you", fg = "#AA0000", bold = true \}/,
+      /\{ starts_with = "asks you", fg = "#AA0000", bold = true \}/,
     );
     assert.match(rows, /\{ token = "\$wt_branch", fg = "#FF79C6" \}/);
+    // Whom an agent waits for (#288): you before GitLab, GitLab blue.
+    assert.match(
+      rows,
+      /"waits for you", fg = "#AA0000" \}.*"waits", fg = "#112233" \}.*"free", fg = "#94E2D5" \}/,
+    );
   });
 
   it("leaves spaces rows of the config alone", () => {
