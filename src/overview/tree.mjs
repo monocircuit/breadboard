@@ -19,19 +19,14 @@ import {
   wrap,
   yellow,
 } from "../lib/tty.mjs";
-import {
-  ORCHESTRATOR,
-  focusSpace,
-  isChangeOpen,
-  waitsText,
-  wasOf,
-} from "../worktree.mjs";
+import { ORCHESTRATOR, focusSpace, waitsText, wasOf } from "../worktree.mjs";
 import { historyText, reuseOf, reuseText } from "../worktree/history.mjs";
 import { THRESHOLD, gb } from "../worktree/memory.mjs";
+import { agentStateOf } from "./agent-state.mjs";
 import { isOnce } from "./args.mjs";
 import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
-import { toneOf } from "./herdr-tones.mjs";
+import { paintOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
@@ -58,28 +53,30 @@ const clock = at => {
 const placeCell = (count, number) =>
   dim(`${String(number).padStart(String(count).length)}. `);
 /**
- * Where a worktree stands in its life: `{ key, text }`. `issue` as issuesOf
- * gives it (its `tree` while the worktree is there, with `ownCommits`: commits
- * develop doesn't have), `mr` its merge request, `status` herdr's state of its
- * agent, `hold` why a handover holds the agent, `removal` the automatic
- * wt:remove's `{ isRunning, error }` (auto-actions.mjs), `merged` the iids
- * known merged (a wait names only the others, #262). Merged comes first:
- * what is left then is the clean-up (clean-up.mjs).
+ * Where a worktree stands in its life: `{ key, text, tone }`. `issue` as
+ * issuesOf gives it (its `tree` while the worktree is there, with
+ * `ownCommits`: commits develop doesn't have), `mr` its merge request,
+ * `status` herdr's state of its agent, `hold` why a handover holds the
+ * agent, `removal` the automatic wt:remove's `{ isRunning, error }`
+ * (auto-actions.mjs), `merged` the iids known merged (a wait names only the
+ * others, #262), `handover` the one announced for its agent, `checks` the
+ * tries and acceptance boxes still open (merge.mjs checksOf). Merged comes
+ * first: what is left then is the clean-up (clean-up.mjs).
  * - `removable`: merged, nothing left in it: the overview removes it
  * - `kept`: merged, but changes or commits not in develop keep it
  * - `held`: merged, its clean-up waits for its agent (at work, a handover)
- * - `asks`: its agent is blocked on you; `waits`: an action of it is open
- *   (`waits for you: <kinds>`); `waitsForMr`: it waits for MRs (wt:wait)
- * - `working`: its agent is at work; `ready`: the MR is ready, pipeline
- *   passed, no try or acceptance box open (`checks`, merge.mjs checksOf)
- * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
+ * - else what its agent waits for (agent-state.mjs `agentStateOf`, #288),
+ *   in the colour of whom it waits for: `at work`, `asks you`, `waits for
+ *   the pipeline`, `waits for you: merge`, `waits for !271`, … `free`;
+ *   `no agent` for a worktree without one
+ * - `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
  * - `setup`: no agent yet, a start sets it up for one (`setup`,
  *   worktree/setups.mjs, #272): wt:new takes minutes
  */
 export const lifecycleOf = (
   issue,
-  { mr, status, hold, removal, merged, setup, checks = [] } = {},
+  { mr, status, hold, removal, merged, setup, handover, checks = [] } = {},
 ) => {
   const { tree } = issue;
   if (!tree)
@@ -111,35 +108,11 @@ export const lifecycleOf = (
               : "merged: will be removed",
           ),
         };
-  // The agent's state in the colour herdr's sidebar gives it (herdr-tones.mjs),
-  // what it waits for before what it does (#260).
-  const tone = toneOf(status);
-  if (status === "blocked")
-    return { key: "asks", text: tone("waits for you: asks") };
-  const open = tree.actions?.filter(action => !action.answer) ?? [];
-  if (open.length)
-    return {
-      key: "waits",
-      text: tone(
-        `waits for you: ${[...new Set(open.map(action => action.kind))].join(", ")}`,
-      ),
-    };
-  if (tree.wait)
-    return { key: "waitsForMr", text: tone(waitsText(tree.wait, merged)) };
-  if (status === "working") return { key: "working", text: tone("at work") };
-  const pipeline = mr?.pipeline?.status ?? mr?.pipeline;
-  if (
-    mr?.state === "opened" &&
-    !mr.isDraft &&
-    pipeline === "success" &&
-    !isChangeOpen(tree, mr) &&
-    !checks.length
-  )
-    return { key: "ready", text: green("ready to merge") };
-  return {
-    key: "idle",
-    text: tree.claude ? tone("idle") : dim("no agent"),
-  };
+  // What its agent waits for, in the colour of whom (herdr-tones.mjs, #288).
+  const agent = agentStateOf(tree, { mr, status, merged, handover, checks });
+  if (agent.key === "free" && !tree.claude && !status)
+    return { key: "none", text: dim("no agent"), tone: null };
+  return { ...agent, text: paintOf(agent.tone)(agent.text) };
 };
 
 /** The issue of a node: its link and state. */
@@ -220,8 +193,8 @@ const factsOf = (
       : "",
     tree ? changeFact(tree, mr) : "",
     tree ? unpushedFact(tree) : "",
-    // Its agent's next issue, announced (#227).
-    handover ? cyan(nextText(handover)) : "",
+    // Its agent's next issue, announced (#227), when its state doesn't say it.
+    handover && state.key !== "next" ? cyan(nextText(handover)) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -310,6 +283,7 @@ export const treeOf = (
       removal: tree && removalOf(tree.dir),
       merged,
       setup: tree && setups.find(setup => setup.dir === tree.dir),
+      handover: handoverOf(tree),
       checks: checksOf(found?.boxes ?? [], tree),
     });
     const state =
@@ -401,20 +375,23 @@ export const nodeLines = (row, { branch, stem, width }) => {
 };
 
 /**
- * The head line of WORKTREES after its title (#260): how many agents work,
- * wait (for you or for MRs) and idle, the ready ones, the ones about to go,
- * queued and removed, then the free memory and the threshold below which a
- * fresh agent gets the shared stack (memory.mjs), red below it.
+ * The head line of WORKTREES after its title (#260): how many agents are at
+ * work, wait for GitLab (a pipeline, another MR), wait for you and are free
+ * (#288), the ones about to go, queued and removed, then the free memory
+ * and the threshold below which a fresh agent gets the shared stack
+ * (memory.mjs), red below it.
  */
 export const headOf = ({ live, queued, removed }, free) => {
-  const count = (...keys) =>
-    live.filter(row => keys.includes(row.state.key)).length;
+  const count = tone => live.filter(row => row.state.tone === tone).length;
   const counts = [
-    [count("working"), "working"],
-    [count("asks", "waits", "waitsForMr"), "waiting"],
-    [count("idle"), "idle"],
-    [count("ready"), "ready"],
-    [count("removable"), "will be removed"],
+    [count("work"), "at work"],
+    [count("gitlab"), "wait for GitLab"],
+    [count("you"), "wait for you"],
+    [count("free"), "free"],
+    [
+      live.filter(row => row.state.key === "removable").length,
+      "will be removed",
+    ],
     [queued.length, "queued"],
     [removed.length, "removed"],
   ]
