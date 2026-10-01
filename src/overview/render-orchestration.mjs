@@ -546,6 +546,16 @@ export const renderOrchestration = (local, remote, error) => {
   screen.sticky = lines.length;
   pushActions(lines, actions.actions, of);
   pushUpNext(lines, actions.upNext, of);
+  // The MRs a wait may name that are over already: the orchestration's own
+  // and the awaited ones (#262).
+  const overMrs = [
+    ...issues.map(issue => of(issue).mr),
+    ...(remote?.awaited?.values() ?? []),
+  ].filter(mr => mr && mr.state !== "opened");
+  const doneIids = new Set(overMrs.map(mr => mr.iid));
+  const mergedIids = new Set(
+    overMrs.filter(mr => mr.state === "merged").map(mr => mr.iid),
+  );
   pushWorktrees(lines, {
     name: orchestration,
     issues,
@@ -559,17 +569,11 @@ export const renderOrchestration = (local, remote, error) => {
     hasRemote: Boolean(remote),
     known: local.workers,
     free: local.free,
+    merged: mergedIids,
   });
 
   const byNumber = withMr;
   const afterOf = new Map(order.open.map(item => [item.number, item.after]));
-  // The MRs a wait may name that are over already.
-  const doneIids = new Set(
-    issues
-      .map(issue => of(issue).mr)
-      .filter(mr => mr && mr.state !== "opened")
-      .map(mr => mr.iid),
-  );
   const doneMrs = order.merged.map(number => byNumber.get(number));
   const mrsBox = openBox(lines);
   if (!remote) {

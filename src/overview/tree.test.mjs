@@ -98,6 +98,19 @@ describe("lifecycleOf", () => {
     assert.equal(stateOf(waiting, { status: "idle" }), "waitsForMr");
     assert.equal(text(waiting, { status: "idle" }), "waits for !271");
     assert.equal(text(waiting, { status: "working" }), "waits for !271");
+    // Only the MRs still open, all merged: it wakes up (#262).
+    const six = issue(1, {
+      tree: tree({ wait: { mrs: [269, 270, 272, 273, 274, 275] } }),
+    });
+    const merged = new Set([269, 270, 272, 274, 275]);
+    assert.equal(
+      text(six, { status: "idle", merged }),
+      "waits for !273 · 5 merged",
+    );
+    assert.equal(
+      text(six, { status: "idle", merged: new Set([...merged, 273]) }),
+      "waits: all merged, wakes up",
+    );
     assert.equal(text(issue(1), { status: "working" }), "at work");
     assert.equal(text(issue(1), { status: "idle" }), "idle");
     assert.equal(

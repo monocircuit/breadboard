@@ -89,9 +89,17 @@ export const listOf = mrs => {
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 };
-/** What the overview shows of a wait: `waits for !213, !217`. */
-export const waitsText = wait =>
-  `waits for ${wait.mrs.map(iid => `!${iid}`).join(", ")}`;
+/**
+ * What the overview shows of a wait: the MRs still open, `waits for !213,
+ * !217` (`· 5 merged` after it when some of the list are, #262), `waits:
+ * all merged, wakes up` once none is left. `merged`: the iids known merged.
+ */
+export const waitsText = (wait, merged = new Set()) => {
+  const open = wait.mrs.filter(iid => !merged.has(iid));
+  if (open.length === 0) return "waits: all merged, wakes up";
+  const done = wait.mrs.length - open.length;
+  return `waits for ${open.map(iid => `!${iid}`).join(", ")}${done ? ` · ${done} merged` : ""}`;
+};
 
 /**
  * Where a wait stands, from the awaited MRs as GitLab has them (`{ iid,
