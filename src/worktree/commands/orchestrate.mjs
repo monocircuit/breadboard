@@ -38,8 +38,8 @@ import handOverCommand, { announceCommand } from "./handover.mjs";
 /**
  * One session orchestrates several issues: its own space `⇶ <name>` (its
  * tab moves there), a worktree per issue started with `wt:new --origin`,
- * and in each worktree's space a claude briefed on its issue: AGENTS and
- * WORKTREES of the overview show where it is, SendMessage carries only decisions. The
+ * and in each worktree's space a claude briefed on its issue: the
+ * WORKTREES of the overview shows where it is, SendMessage carries only decisions. The
  * worktrees one after the other: two at once would pick the same free ports.
  *
  * `--to <agent>` hands one issue to an idle agent of it instead
@@ -261,7 +261,7 @@ export default async function orchestrateCommand(name, flags) {
   if (started.length) {
     console.log(`
   A folder claude has not seen asks to be trusted first: answer it in the agent's tab.
-  The overview's AGENTS and WORKTREES show where each agent is: look there, don't ask and don't relay it.
+  The overview's WORKTREES shows where each agent is: look there, don't ask and don't relay it.
   An agent messages you${peer ? ` (${peer})` : ""} only for a decision, a changed plan or another agent's work.
   Say hello first, so it has your address:
 ${started.map(item => `    SendMessage(to: "${item.worker?.name ?? item.feature}", message: "…")`).join("\n")}
