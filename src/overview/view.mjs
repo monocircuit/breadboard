@@ -40,6 +40,7 @@ import {
   issuesOf,
   readRemoteOfOrchestration,
 } from "./gitlab.mjs";
+import { beginRead } from "../lib/glab.mjs";
 import { sh } from "./io.mjs";
 import { readLocal, readRemote, readRemoteOf } from "./read.mjs";
 import { renderOrchestration } from "./render-orchestration.mjs";
@@ -189,13 +190,27 @@ export const view = (...args) => {
   if (orchestration) return renderOrchestration(...args);
   return only ? renderWorktree(...args) : render(...args);
 };
-export const readRemoteSafely = () =>
-  (orchestration
-    ? readRemoteOfOrchestration(orchestration)
-    : only
-      ? readRemoteOf(worktrees().find(w => w.dir === only)?.branch, only)
-      : readRemote()
+/**
+ * GitLab read without failing: `{ remote, error }`, `error` `{ reason, at }`
+ * (gitlab-status.mjs). `isFull`: an orchestration's read looks again at what
+ * moves slowly too (gitlab.mjs readBranches): the first read, `r`, a merge.
+ */
+export const readRemoteSafely = ({ isFull = true } = {}) => {
+  beginRead();
+  return (
+    orchestration
+      ? readRemoteOfOrchestration(orchestration, { isFull })
+      : only
+        ? readRemoteOf(worktrees().find(w => w.dir === only)?.branch, only)
+        : readRemote()
   ).then(
     remote => ({ remote, error: null }),
-    error => ({ remote: null, error: error.stderr?.trim() || error.message }),
+    error => ({
+      remote: null,
+      error: {
+        reason: error.reason ?? (error.stderr?.trim() || error.message),
+        at: new Date(),
+      },
+    }),
   );
+};

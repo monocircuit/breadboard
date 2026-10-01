@@ -37,6 +37,7 @@ import {
   keyReader,
   mouseOf,
 } from "./lib/mouse.mjs";
+import { progress } from "./lib/glab.mjs";
 import { startStack } from "./overview/actions.mjs";
 import { reportStates } from "./overview/agent-state.mjs";
 import {
@@ -128,18 +129,46 @@ screen.redraw = async ({ isReread = false } = {}) => {
   local = await read();
   draw();
 };
-const fetchRemote = async () => {
+/** How many of an orchestration's MRs are merged: one more, and the next read is a full one. */
+const mergedIn = data =>
+  data?.of
+    ? [...data.of.values()].filter(found => found?.mr?.state === "merged")
+        .length
+    : 0;
+// The first read and the ones asked for are full (overview/gitlab.mjs
+// readBranches): they look again at what moves slowly; the timer's are fast.
+let isFullNext = true;
+// While a read runs, its progress redraws the view (`GitLab: 4/7 · pipelines`), a few times a second.
+let isDrawPending = false;
+progress.onChange = () => {
+  if (isDrawPending) return;
+  isDrawPending = true;
+  setTimeout(() => {
+    isDrawPending = false;
+    if (!remote) draw();
+  }, 200);
+};
+const fetchRemote = async ({ isFull = false } = {}) => {
+  isFullNext ||= isFull;
   if (isFetching) return;
   isFetching = true;
-  const next = await readRemoteSafely();
+  const wasMerged = mergedIn(remote);
+  const isFullRead = isFullNext;
+  isFullNext = false;
+  const next = await readRemoteSafely({ isFull: isFullRead });
   // A failed fetch keeps the last good state on screen, with the error above it.
   if (next.remote) remote = next.remote;
+  else isFullNext ||= isFullRead;
   error = next.error;
+  // Merged since the last read, wherever: what moves slowly may have moved.
+  if (remote && wasMerged && mergedIn(remote) > wasMerged) isFullNext = true;
   isFetching = false;
   draw();
+  // `r` or a merge while this read ran: its full read now.
+  if (isFullNext && next.remote && !isFullRead) fetchRemote();
 };
 // GitLab again at once, after a merge from the overview (overview/merge.mjs).
-screen.refresh = fetchRemote;
+screen.refresh = () => fetchRemote({ isFull: true });
 /** How far a key scrolls, given the rows of a page. */
 const SCROLL = {
   j: () => 1,
@@ -158,7 +187,7 @@ const WHEEL = 3;
 let isPressed = false;
 const press = key => {
   if (key === "q" || key === "\u0003") leave();
-  if (key === "r") fetchRemote();
+  if (key === "r") fetchRemote({ isFull: true });
   if (key === "u" && screen.upTarget) startStack(screen.upTarget);
   if (SCROLL[key]) {
     scrollBy(SCROLL[key](pageOf(rows())));
