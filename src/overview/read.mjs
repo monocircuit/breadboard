@@ -4,6 +4,7 @@ import path from "node:path";
 
 import {
   VITA,
+  adoptEnv,
   boxesOf,
   isInside,
   isOverallBehind,
@@ -30,6 +31,7 @@ export const readLocal = async () => {
   for (const [index, { dir, branch }] of worktrees().entries()) {
     if (only && dir !== only) continue;
     if (orchestration && originOf(dir)?.name !== orchestration) continue;
+    adoptEnv(dir);
     const env = readEnv(path.join(dir, VITA, ".env.local"));
     const offset = index === 0 ? 0 : offsetOf(dir);
     const hasOwnPort = index === 0 || offset > 0;

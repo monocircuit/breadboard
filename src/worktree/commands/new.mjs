@@ -11,6 +11,7 @@ import { prunable, staleIssues } from "../prune.mjs";
 import { installPushGuard } from "../push-guard.mjs";
 import { openApp } from "../spaces.mjs";
 import {
+  adoptEnv,
   claimedElsewhere,
   createStack,
   handOver,
@@ -107,6 +108,7 @@ export default async function newCommand(feature, flags) {
   // run the app, because APP_ORIGIN and the Keycloak realm of the shared
   // .env.local point at port 3000.
   let offset = 0;
+  adoptEnv(mainDir());
   const mainEnv = path.join(mainDir(), VITA, ".env.local");
   if (!fs.existsSync(mainEnv)) {
     console.log(

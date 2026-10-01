@@ -25,6 +25,23 @@ export const readEnv = file =>
           .map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
       )
     : null;
+/**
+ * The .env.local of a checkout from before #191, in products/vita, moves to
+ * products/vita/web once the checkout has that folder (merged develop): it is
+ * untracked, so git leaves it behind. Returns whether it moved.
+ */
+export const adoptEnv = dir => {
+  const old = path.join(dir, "products", "vita", ".env.local");
+  const target = path.join(dir, VITA, ".env.local");
+  if (
+    !fs.existsSync(old) ||
+    fs.existsSync(target) ||
+    !fs.existsSync(path.join(dir, VITA, "package.json"))
+  )
+    return false;
+  fs.renameSync(old, target);
+  return true;
+};
 /** The offset of a worktree's own stack, 0 for the shared one. */
 export const offsetOf = dir => {
   const env = readEnv(path.join(dir, VITA, ".env.local"));
