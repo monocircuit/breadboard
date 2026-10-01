@@ -6,9 +6,10 @@ import { ESCAPES } from "../lib/tty.mjs";
 import { titleHeight } from "./boxes.mjs";
 import { EventEmitter } from "node:events";
 
+import { missedButtons } from "./every-button.mjs";
 import { frameUpdate, painter, watchSize } from "./frame.mjs";
 import { renderOrchestration } from "./render-orchestration.mjs";
-import { screen } from "./screen.mjs";
+import { onButton, screen } from "./screen.mjs";
 import { scrollBy } from "./scroll.mjs";
 
 const plain = text => text.replace(ESCAPES, "");
@@ -31,7 +32,10 @@ const terminal = () => {
   };
 };
 
-/** A painter whose frames come when `flush` says, with a count of renders. */
+/**
+ * A painter whose frames come when `flush` says, with a count of renders.
+ * Every frame it draws has every button run its own click (#303).
+ */
 const setup = (render, rows = 20) => {
   const screenOf = terminal();
   let pending = null;
@@ -58,6 +62,7 @@ const setup = (render, rows = 20) => {
       const paint = pending;
       pending = null;
       paint?.();
+      assert.deepEqual(missedButtons(frame, screenOf.rows), []);
     },
   };
 };
@@ -380,7 +385,7 @@ describe("the hover (#277)", () => {
     screen.clicks = [];
     screen.sticky = 1;
     return Array.from({ length: 40 }, (_, i) => {
-      if (i % 2) screen.clicks[i] = () => i;
+      if (i % 2) screen.clicks[i] = i === 3 ? onButton("go", () => i) : () => i;
       const body =
         i === 3 ? `\x1b[1;30;46m go \x1b[0m${ISLAND} after` : `l${i}`;
       return `${ISLAND} ${body} \x1b[0m`;

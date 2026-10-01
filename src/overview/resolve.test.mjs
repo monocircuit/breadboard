@@ -2,9 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ESCAPES, isColor } from "../lib/tty.mjs";
-import { button } from "./boxes.mjs";
 import {
-  RESOLVE,
   clickResolve,
   conflictCell,
   conflictStateOf,
@@ -12,7 +10,6 @@ import {
   isConflictSettled,
   noAgentOf,
   noteTold,
-  resolveColumns,
   resolveLine,
 } from "./resolve.mjs";
 
@@ -189,22 +186,5 @@ describe("resolveLine", () => {
     assert.match(line, /git merge origin\/develop/);
     assert.match(line, /lint, typecheck and test/);
     assert.match(line, /push\.$/);
-  });
-});
-
-describe("resolveColumns", () => {
-  it("finds the chip on screen, the box's indent taken into account", () => {
-    const line = `      ${button(RESOLVE, "yellow")} 4 behind`;
-    // The box replaces the two columns of indent with its margin or border.
-    const shown = isColor
-      ? ` ${line.slice(2)}`.replace(ESCAPES, "")
-      : `│ ${line.slice(2)}`.replace(ESCAPES, "");
-    const chip = isColor ? ` ${RESOLVE} ` : `[ ${RESOLVE} ]`;
-    const { from, to } = resolveColumns(line);
-    assert.equal(shown.slice(from - 1, to), chip);
-  });
-
-  it("is null on a line without it", () => {
-    assert.equal(resolveColumns("  no merge conflicts"), null);
   });
 });

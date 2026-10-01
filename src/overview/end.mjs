@@ -6,7 +6,7 @@ import { dim, red } from "../lib/tty.mjs";
 import { ORCHESTRATOR, endInBackground, endLog } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { button } from "./boxes.mjs";
-import { pushRows, screen } from "./screen.mjs";
+import { onButton, pushRows, screen } from "./screen.mjs";
 
 /** How long the first click keeps the button armed, as the ✕ of a worktree. */
 const ARM_MS = 4000;
@@ -71,10 +71,15 @@ export const pushEndButton = (lines, name, left) => {
     );
     return;
   }
-  const chip = ending?.isRunning
-    ? `${button("◐ ending …", "yellow")} ${dim(lastLine(ending.log))}`
+  const shown = ending?.isRunning
+    ? "◐ ending …"
     : ending?.isArmed
-      ? `${button(`✕ click again to end ${label}`, "red")} ${dim("its space and the orchestrator's claude close, record and checkout go; the conversation stays in /resume")}`
-      : `${button("✕ end orchestration", "red")} ${dim(isOnce ? `pnpm wt:orchestrate ${name} --end` : "no worktree left: its space, record and checkout go")}${ending?.error ? `  ${red(ending.error)}` : ""}`;
-  pushRows(lines, [["", chip]], [() => clickEnd(name)]);
+      ? `✕ click again to end ${label}`
+      : "✕ end orchestration";
+  const chip = ending?.isRunning
+    ? `${button(shown, "yellow")} ${dim(lastLine(ending.log))}`
+    : ending?.isArmed
+      ? `${button(shown, "red")} ${dim("its space and the orchestrator's claude close, record and checkout go; the conversation stays in /resume")}`
+      : `${button(shown, "red")} ${dim(isOnce ? `pnpm wt:orchestrate ${name} --end` : "no worktree left: its space, record and checkout go")}${ending?.error ? `  ${red(ending.error)}` : ""}`;
+  pushRows(lines, [["", chip]], [onButton(shown, () => clickEnd(name))]);
 };

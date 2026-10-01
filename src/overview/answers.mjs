@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { herdrDid, paneText, panesOf, spaces, tabsOf } from "../lib/herdr.mjs";
-import { dim, visible, yellow } from "../lib/tty.mjs";
+import { dim, yellow } from "../lib/tty.mjs";
 import {
   ORCHESTRATOR_TAB,
   actionsOf,
@@ -28,7 +28,8 @@ import {
 } from "../worktree.mjs";
 import { holds } from "../worktree/lock.mjs";
 import { isOnce } from "./args.mjs";
-import { CELL_START, button } from "./boxes.mjs";
+import { button } from "./boxes.mjs";
+import { onButtons } from "./screen.mjs";
 
 /**
  * Where a line for an agent goes: `{ dir }` a worktree's agent, the tab
@@ -200,43 +201,69 @@ export const answerCell = action =>
         .map(label => button(label, label === "✓" ? "green" : "cyan"))
         .join(" ");
 /**
- * The button at `column` (from 1) of a line whose buttons start at column
- * `start`, a column of slack after each; -1 past them.
+ * Answers clicked in this overview: `file#id` → `{ answer, waits, at }`.
+ * The action shows its answer from the click on (#303), also in a view
+ * drawn from a read that started before it, until a read has it; one
+ * delivered meanwhile is gone from the file and its row with it.
  */
-export const buttonAt = (action, column, start = CELL_START) => {
-  let end = start - 1;
-  const labels = labelsOf(action);
-  for (let i = 0; i < labels.length; i++) {
-    end += visible(button(labels[i])) + 1;
-    if (column <= end) return i;
+const clicked = new Map();
+/** How long a clicked answer stands in for one a read doesn't show (a read takes seconds). */
+const CLICKED_MS = 60_000;
+/** `action` of `file` as the view shows it: with the answer clicked for it while a read hasn't caught up. */
+export const shownAction = (file, action, now = Date.now()) => {
+  const key = `${file}#${action.id}`;
+  const own = clicked.get(key);
+  if (!own) return action;
+  if (action.answer || now - own.at > CLICKED_MS) {
+    clicked.delete(key);
+    return action;
   }
-  return -1;
+  return { ...action, answer: own.answer, waits: own.waits };
 };
 /**
  * The answer `at` (its index in answersOf) to the action of `item`: `{
  * action, file, to, onAnswer }`; stored, typed into the agent's pane at
  * once, then `onAnswer(answer)` (a `broken` re-drafts the MR); ✓ (no
- * answers) ticks it off.
+ * answers) ticks it off. The row shows the answer at once (shownAction):
+ * typed in, or why it waits.
  */
 export const answerWith = (item, at, redraw) => {
   const { action, file, to } = item;
   const answers = answersOf(action);
-  if (answers.length === 0) doneAction(file, action.id);
-  else {
-    answerAction(file, action.id, answers[at]);
+  if (answers.length === 0) {
+    if (doneAction(file, action.id))
+      clicked.set(`${file}#${action.id}`, {
+        answer: "✓",
+        waits: "ticked off",
+        at: Date.now(),
+      });
+  } else if (answerAction(file, action.id, answers[at])) {
     if (isDraft({ ...action, answer: answers[at] })) focusAgent(to);
     deliverAnswers(file, to);
+    const left = actionsOf(file).find(other => other.id === action.id);
+    clicked.set(`${file}#${action.id}`, {
+      answer: answers[at],
+      waits: left
+        ? (left.waits ?? "at its next stop")
+        : "typed into its agent's pane",
+      at: Date.now(),
+    });
     item.onAnswer?.(answers[at]);
   }
   redraw();
 };
 /**
- * A click on the buttons line of an action, `item`: `{ action, file, to, go
- * }`, its buttons from column `start`. On a button it answers (answerWith);
- * past the buttons it does the action (`go`). An answered one only goes.
+ * The click of the buttons line of an action, `item`: `{ action, file, to,
+ * go }`. A button answers (answerWith), the rest of the line does the
+ * action (`go`).
  */
-export const clickAction = (item, column, redraw, start = CELL_START) => {
-  const at = item.action.answer ? -1 : buttonAt(item.action, column, start);
-  if (at === -1) return item.go();
-  answerWith(item, at, redraw);
-};
+export const answerButtons = (item, redraw) =>
+  onButtons(
+    Object.fromEntries(
+      labelsOf(item.action).map((label, at) => [
+        label,
+        () => answerWith(item, at, redraw),
+      ]),
+    ),
+    () => item.go(),
+  );
