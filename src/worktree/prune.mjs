@@ -6,7 +6,12 @@ import path from "node:path";
 import { glabApi } from "../lib/glab.mjs";
 import { isInHerdr, panesOf, spaces } from "../lib/herdr.mjs";
 import { git } from "../lib/proc.mjs";
-import { sessionFile } from "./conversations.mjs";
+import {
+  leftIn,
+  leftText,
+  runningClaudes,
+  sessionFile,
+} from "./conversations.mjs";
 import { boxesOf, issueOfBranch } from "./issues.mjs";
 import { releaseSpace } from "./layout.mjs";
 import { pruneOrchestrators } from "./origins.mjs";
@@ -85,9 +90,11 @@ export const ownFiles = dir => {
  */
 export const prunable = () => {
   const here = path.resolve(process.cwd());
+  const claudes = runningClaudes();
   const trees = worktrees()
     .slice(1)
-    .map(({ dir, branch }) => ({
+    .map(({ dir, branch }) => ({ dir, branch, left: leftIn(dir, claudes) }))
+    .map(({ dir, branch, left }) => ({
       name: path.basename(dir).replace(`${path.basename(mainDir())}-`, ""),
       dir,
       why: !branch
@@ -100,7 +107,9 @@ export const prunable = () => {
               ? "uncommitted changes"
               : isInside(here, dir)
                 ? "you are working in it"
-                : null,
+                : left.length
+                  ? `${leftText(left)} still stands in it, not in its next worktree yet`
+                  : null,
     }));
 
   const branches = git([
