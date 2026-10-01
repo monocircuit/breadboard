@@ -104,6 +104,102 @@ group (core's job, rule 4).
 Why: rule 1 and rule 7 (#305: at most 10 calls, a second run asks nothing
 final), rule 5 (the cache file Node reads), rule 4 (glab, no new crate).
 
+## 2026-10-02 00:55 · CLI / setup group · what waits for the halves to meet
+Chose: three things of round two's critic stay open in the setup group,
+on purpose. (1) The brief text exists twice, `cli/setup/orchestrate/issue.rs`
+(a fresh start) and `cli/lifecycle/handover/brief.rs` (a handover): agents
+read it (rule 5), so one copy goes into breadboard-core once the halves
+meet, not into one group's module the other imports. (2) #230: the
+lifecycle group builds `plugin::heal` (the plugin relinked, the repo's
+config repaired, once per run inside herdr); `wt:new`, `wt:orchestrate`
+and `wt:stack` call it from there instead of a second copy. (3) An unknown
+command, `--help` and `help` belong to `cli/mod.rs`, which no group owns:
+today's `usage: … new|orchestrate|…` with exit 1 goes there.
+Why: rule 4, one way to do a thing; a copy now would be the thing the
+critic flagged next round.
+
+## 2026-10-02 00:50 · CLI / pnpm commands · its lines from commands.mjs
+Chose: `pnpm commands` reads the `DESCRIPTIONS` object of
+`packages/breadboard/src/commands.mjs` as data (a small reader of its
+`key: "…" + '…'` literals, no Node) instead of a Rust copy of it.
+Against: the copy of round one, which drifts the first time someone adds
+a script: AGENTS.md sends the new line to commands.mjs. Byte-identical
+to Node's output for `commands` and `commands --all` in this repo; a
+world without commands.mjs shows the scripts' commands, as Node does for
+a script without a line. When commands.mjs goes with the cut-over, its
+object moves to a data file both read, and AGENTS.md says so.
+Why: rule 4 (one source of truth), rule 8 (no Node at run time).
+
+## 2026-10-02 00:45 · CLI / stack:up · a herdr tab without a pane
+Chose: a tab herdr creates without a `root_pane` (the command could not
+be started in it) no longer counts as running: `▸ herdr: postgres
+keycloak seaweedfs studio opened empty: herdr gave no pane, nothing runs
+there` instead of `+postgres +keycloak …`. Node dies there with a
+TypeError. Why: rule 3 says decide it; a tool that reports logs running
+in an empty tab is wrong, and the line says what to look at.
+
+## 2026-10-02 00:40 · CLI / setup group · the command line
+Chose: the command line read by hand (`proc::Args`, ~60 lines) instead
+of clap; each command names the flags it takes, and any other is refused
+before anything happens: `✗ unknown flag --shraed: did you mean
+--shared?` and the usage, exit 1 (a near flag within two edits is
+named). Today's internal names run the same commands: `control
+up|down|reset|ps`, `platform-changelog add|…`, `new`, `orchestrate`,
+`stack`, `check` (the herdr plugin, tabs and the Node overview spawn
+them). Against: clap, which would need a custom setting for each of
+today's quirks (`--x=y` counted only so spelled, a value starting with
+`--` counted as missing, `--after !1 !2` taking several, a flag before
+the feature being a usage error); Node's silence (`wt:new 12-x --shraed`
+made the worktree on its own stack and pushed the claim).
+Why: rule 4 (fewer dependencies, the quirks in one place), rule 5 (the
+names and flags stay), rule 6 (a typo is no push and no herdr write).
+
+## 2026-10-02 00:35 · CLI / pnpm changelog · a failed GitLab read is no "changed nothing"
+Chose: every GitLab read of the setup group is tried again on a 429, a
+5xx, a timeout or the network, after 1 s and 4 s as lib/glab.mjs does,
+and a `glab api` is killed after 15 s. A merged MR whose diffs still
+fail stays out of `.claude/changelog.json`, so the next run reads it
+again, and the run says so last: `! GitLab: HTTP 502 Bad Gateway (!310's
+diffs): read again next time` (exit 0, the changelog is written). The
+release tags keep the pages read and say what is missing. The kept MRs
+are written by iid ascending, as Node's `Object.fromEntries` does.
+Against: round one's `unwrap_or_default`, which stored `"310":
+{"paths":[],"changesets":[]}` after one 502 and never read it again (the
+MR fell into no group, gone from the changelog until changelog.json was
+deleted); Node's way of dying with a stack trace and writing nothing.
+Why: rule 5 (changelog.json is read by the overview: same shape, same
+order); rule 3 says decide it, and a tool that heals itself on the next
+run beats one that refuses the whole rewrite.
+
+## 2026-10-02 00:32 · CLI / wt:orchestrate · the brief of an issue (#247)
+Chose: an issue gets the `--brief` of the very run that starts it, else
+the one an earlier run kept for that issue (`record.briefs[<n>]`), else
+none; the record's single `brief` is still written for the Node
+overview's queue starts while both run, but no longer read for issues of
+another run. The dry run says per issue which it gets: `#285 gets the
+brief of --brief <file>`, `… the brief an earlier run gave it` or `… no
+brief of the orchestrator`.
+Against: Node's `--brief ?? record.brief`, which handed one issue's
+brief to every later issue of the orchestration. The wait for `/rename`
+(#313) went with the handover to the lifecycle group (its log entry).
+Why: rule 2, #247's criteria over today's behaviour; rule 5 for the
+`brief` field other readers still use.
+
+## 2026-10-02 00:30 · CLI / setup group · GitLab through glab until core's client
+Chose: the setup group keeps one `glab api` per call (up to 12 side by
+side, a pool instead of round one's chunks) until breadboard-core's
+kept-alive HTTP client (`gitlab/client.rs` of wave 1, with the token,
+Retry-After and the rate limit) is in this crate's core; then every read
+of the group moves to it. Against: a second HTTP client in
+`cli/setup/gitlab.rs` now. GitLab's rate-limit headers stay unread until
+then (glab hides them). Also kept, from round one: the pre-push hook
+stays Node's behind the shim wt:new and wt:mr install; wt:check writes
+the stamp in Node's format, which that hook reads (#298, checked by the
+suite's `setup.check.mjs`). `wt:orchestrate --end` says `✓ ⇶ <title>
+ended` where Node says the name: the title is what the space shows.
+Why: rule 4 (one client, not one per group); rule 5 (the stamp's
+format, the hook's shim).
+
 ## 2026-10-02 00:20 · CLI / wt:remove, wt:prune, wt:herdr, handover · the plugin after a move (#230)
 Chose: once per run inside herdr, `wt:remove`, `wt:prune`, `wt:herdr` and
 the handover ask `herdr plugin list`; when `monocircuit.platform` is linked
