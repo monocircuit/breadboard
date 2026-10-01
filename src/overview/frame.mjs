@@ -10,6 +10,8 @@ export const WRAP_OFF = "\x1b[?7l";
 export const WRAP_ON = "\x1b[?7h";
 /** At most one draw per this many ms, about a frame of the screen. */
 export const FRAME_MS = 16;
+/** How often the pane's size is asked for, in ms, in case no resize event came (#253). */
+export const SIZE_MS = 250;
 
 /**
  * The escapes that turn the screen showing `previous` into `next`: every row
@@ -29,7 +31,8 @@ export const frameUpdate = (previous, next) => {
 /**
  * The drawing loop of the live overview. `render()` gives the whole view
  * (and fills `screen`'s clicks, sticky and upTarget), `rows()` the height of
- * the pane, `write` takes the escapes.
+ * the pane, `size()` its size as anything comparable (a view rendered at
+ * another size is laid out again, never only cut), `write` takes the escapes.
  * - `changed()`: the data changed (a read, GitLab, a click, a resize): render
  *   again, at the next frame.
  * - `scrolled()`: only the window moved: the kept view is cut again, at the
@@ -43,6 +46,7 @@ export const frameUpdate = (previous, next) => {
 export const painter = ({
   render,
   rows,
+  size = () => "",
   write,
   now = Date.now,
   later = setTimeout,
@@ -53,10 +57,21 @@ export const painter = ({
   let timer = null;
   let last = -Infinity;
   let isCleared = false;
+  let sized = null;
   const paint = () => {
     timer = null;
     last = now();
-    if (text === null) text = render();
+    const current = size();
+    if (text !== null && current !== sized) {
+      // The pane changed size without a repaint(): the kept rows have the old width.
+      text = null;
+      shown = [];
+      isCleared = true;
+    }
+    if (text === null) {
+      text = render();
+      sized = current;
+    }
     const lines = windowOf(text, rows());
     write(`${isCleared ? "\x1b[2J" : ""}${frameUpdate(shown, lines)}`);
     isCleared = false;
@@ -89,4 +104,20 @@ export const painter = ({
     actionAt,
     clickAt: (row, column) => actionAt(row)?.(column),
   };
+};
+
+/**
+ * Asks the terminal of `stream` for its size every `every` ms (#253): a pane
+ * resized while its tab was hidden may never send SIGWINCH, and Node's
+ * `columns` and `rows` only change with one. A changed size sets them and
+ * emits `resize`, as SIGWINCH would. The timer doesn't keep the process alive.
+ */
+export const watchSize = (
+  stream,
+  { every = SIZE_MS, repeat = setInterval } = {},
+) => {
+  if (!stream.isTTY || typeof stream._refreshSize !== "function") return null;
+  const timer = repeat(() => stream._refreshSize(), every);
+  timer?.unref?.();
+  return timer;
 };
