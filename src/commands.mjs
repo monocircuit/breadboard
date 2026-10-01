@@ -106,6 +106,7 @@ const DESCRIPTIONS = {
     storybook: "Storybook on :6006",
     "build-storybook": "static Storybook, like CI",
     "check-contrast": "contrast check of the built Storybook",
+    tokens: "write tokens.css and theme.css from src/tokens/tokens.ts",
   },
   "packages/eslint-config": {
     build: "build the configs (dev) and types",
