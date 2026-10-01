@@ -25,9 +25,31 @@ export const readEnv = file =>
           .map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
       )
     : null;
+/**
+ * The .env.local of a checkout from before #191, in products/vita, moves to
+ * products/vita/web once the checkout has that folder (merged develop): it is
+ * untracked, so git leaves it behind. Returns whether it moved.
+ */
+export const adoptEnv = dir => {
+  const old = path.join(dir, "products", "vita", ".env.local");
+  const target = path.join(dir, VITA, ".env.local");
+  if (
+    !fs.existsSync(old) ||
+    fs.existsSync(target) ||
+    !fs.existsSync(path.join(dir, VITA, "package.json"))
+  )
+    return false;
+  fs.renameSync(old, target);
+  return true;
+};
+/** The .env.local of a checkout, moved over from products/vita first if it is still there. */
+export const envFileOf = dir => {
+  adoptEnv(dir);
+  return path.join(dir, VITA, ".env.local");
+};
 /** The offset of a worktree's own stack, 0 for the shared one. */
 export const offsetOf = dir => {
-  const env = readEnv(path.join(dir, VITA, ".env.local"));
+  const env = readEnv(envFileOf(dir));
   return env?.COMPOSE_PROJECT_NAME && env.POSTGRES_PORT
     ? Number(env.POSTGRES_PORT) - 5432
     : 0;
@@ -101,7 +123,7 @@ export const compose = (dir, args, options) =>
   );
 /** Moves a worktree from the shared stack to an own one and starts it. */
 export const createStack = async (dir, feature) => {
-  const source = path.join(mainDir(), VITA, ".env.local");
+  const source = envFileOf(mainDir());
   const target = path.join(dir, VITA, ".env.local");
   if (!fs.existsSync(source))
     fail(`${source} is missing, set up the main checkout first`);
@@ -139,7 +161,7 @@ export const claimedElsewhere = feature => {
     .map(line => line.split("refs/heads/")[1])
     .find(Boolean);
 };
-/** What `pnpm stack:<action>` runs in products/vita of the worktree it names. */
+/** What `pnpm stack:<action>` runs in products/vita/web of the worktree it names. */
 export const STACK_ACTIONS = {
   up: ["pnpm", ["stack:up"]],
   down: ["pnpm", ["stack:down"]],

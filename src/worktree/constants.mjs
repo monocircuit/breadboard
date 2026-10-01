@@ -1,7 +1,7 @@
 // Names and ports every part of the worktree workflow agrees on.
 import path from "node:path";
 
-export const VITA = "products/vita";
+export const VITA = "products/vita/web";
 /**
  * Default port → the variable it is moved with, written into the .env.local of
  * the worktree. docker compose reads them, except VISUALIZER_PORT, which

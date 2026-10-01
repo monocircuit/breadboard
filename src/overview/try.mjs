@@ -7,11 +7,10 @@
 // `--on test --url <path>`: the path on the test instance, whose origin comes
 // from VITA_TEST_ORIGIN (never a hostname in the repo); try-state.mjs says
 // when it is deployed, and before that a click does nothing.
-import path from "node:path";
 
 import { herdr, isInHerdr, tabsOf } from "../lib/herdr.mjs";
 import { dim, red, yellow } from "../lib/tty.mjs";
-import { VITA, isPortFree, mainDir, readEnv } from "../worktree.mjs";
+import { envFileOf, isPortFree, mainDir, readEnv } from "../worktree.mjs";
 import { spaceOf } from "../worktree/spaces.mjs";
 import { ensureTab } from "../worktree/tabs.mjs";
 import { isStarting, stackProgress, startStack } from "./actions.mjs";
@@ -44,7 +43,7 @@ export const shortPage = page =>
 export const testOrigin = () => {
   const origin =
     process.env.VITA_TEST_ORIGIN ||
-    readEnv(path.join(mainDir(), VITA, ".env.local"))?.VITA_TEST_ORIGIN;
+    readEnv(envFileOf(mainDir()))?.VITA_TEST_ORIGIN;
   return origin?.trim().replace(/\/+$/, "") || null;
 };
 

@@ -64,7 +64,7 @@ const DESCRIPTIONS = {
     "wt:list": "every worktree: branch, url, stack",
     "wt:remove": "<feature> stack, worktree and merged branch away",
   },
-  "products/vita": {
+  "products/vita/web": {
     commands: "this list: vita first, then the root",
     overview: "live: worktrees, stacks, merge requests and issues (q quits)",
     dev: "the app on the port of this worktree, logged in",

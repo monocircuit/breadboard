@@ -33,7 +33,7 @@ import { exclusive } from "./lock.mjs";
 import { sortSpaces } from "./order.mjs";
 import { pruneSpaces } from "./prune.mjs";
 import { ensureEditor, mainSpace, spaceOf, worktreeSpace } from "./spaces.mjs";
-import { compose, isPortFree, offsetOf } from "./stack.mjs";
+import { compose, envFileOf, isPortFree, offsetOf } from "./stack.mjs";
 import {
   dropDuplicates,
   ensureTab,
@@ -86,8 +86,7 @@ const STORYBOOK = "storybook";
  */
 export const syncStackTabs = exclusive(
   async (dir, workspace = spaceOf(dir)) => {
-    if (!workspace || !fs.existsSync(path.join(dir, VITA, ".env.local")))
-      return [];
+    if (!workspace || !fs.existsSync(envFileOf(dir))) return [];
     const offset = dir === mainDir() ? 0 : offsetOf(dir);
     if (dir !== mainDir() && !offset) return [];
 

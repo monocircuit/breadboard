@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { lines, sh as run } from "../lib/proc.mjs";
+import { VITA } from "../worktree/constants.mjs";
 
 const git = (args, dir) => run("git", args, dir);
 
@@ -84,7 +85,7 @@ const MIGRATIONS_MS = 15_000;
 const migrationsCache = new Map();
 
 /**
- * The migrations of `dir` (products/vita/src/server/db/migrations) that the
+ * The migrations of `dir` (products/vita/web/src/server/db/migrations) that the
  * database of its stack hasn't applied, the way drizzle decides it: a
  * migration counts as applied when the newest one in
  * `drizzle.__drizzle_migrations` is at least as new as its `when`.
@@ -92,7 +93,7 @@ const migrationsCache = new Map();
  * null without .env.local, journal or psql.
  */
 export const migrationsOf = dir => {
-  const vita = path.join(dir, "products", "vita");
+  const vita = path.join(dir, VITA);
   const journalFile = path.join(
     vita,
     "src",

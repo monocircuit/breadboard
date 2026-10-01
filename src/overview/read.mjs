@@ -3,7 +3,7 @@
 import path from "node:path";
 
 import {
-  VITA,
+  envFileOf,
   boxesOf,
   isInside,
   isOverallBehind,
@@ -30,7 +30,7 @@ export const readLocal = async () => {
   for (const [index, { dir, branch }] of worktrees().entries()) {
     if (only && dir !== only) continue;
     if (orchestration && originOf(dir)?.name !== orchestration) continue;
-    const env = readEnv(path.join(dir, VITA, ".env.local"));
+    const env = readEnv(envFileOf(dir));
     const offset = index === 0 ? 0 : offsetOf(dir);
     const hasOwnPort = index === 0 || offset > 0;
     const project = env?.COMPOSE_PROJECT_NAME ?? "vita";
