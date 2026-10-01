@@ -4,6 +4,76 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:05 · CLI / wt:tick, wt:mr, wt:note · every text to GitLab through a file
+Chose: descriptions and comments reach glab as `--field <key>=@<file>`
+of `glab api` (a temp file, removed after): `PUT issues/<n>` (wt:tick),
+`PUT merge_requests/<iid>` (wt:mr --update), `POST merge_requests`
+(wt:mr: the branches, `Draft: <title>`, the labels, `assignee_id` from
+`glab api user`, the issue's `milestone_id`, `remove_source_branch`) and
+`POST issues/<n>/notes` (wt:note, after a `glab issue view` that gives the
+comment's URL and the same `✗ GitLab has no issue #N` as wt:tick). The
+value is always a path, so a text starting with `@` is never read as one.
+Against: the text as one argument (`--raw-field description=<text>`,
+`mr create --description`, `issue note --message`), which Linux caps at
+128 KiB: a 180 KB description failed with E2BIG before it reached GitLab,
+where Node ticked it; `--description-file`, missing in glab 1.114 (#157).
+Supersedes 19:55.
+Why: rule 3 (Node ticks a long description), rule 2 (#157), rule 6 (the
+routes `glab issue|mr update`, `mr create` and `issue note` take; one read
+more each, `user` or the issue). In a world: a 190 KB issue description
+ticked, a 186 KB MR description sent, a 200 KB comment posted. Gauntlet:
+the fake glab reads `--field k=@file` and typed values as glab does, the
+fake GitLab answers `GET user` and `POST merge_requests`.
+
+## 2026-10-02 01:05 · CLI / write group · glab's failures said exactly
+Chose: a refusal is said with its status, `(glab auth status)` only where
+the login can be the cause: `GitLab answered 404 Not found`, `GitLab
+refused it (403 Forbidden): the account glab uses may not do this here
+(glab auth status)`, `GitLab does not take glab's login (401 …): glab auth
+login`, `GitLab failed (503 …): try again in a minute`; GitLab's JSON
+message as words (`title is too long`); glab not starting (`glab could
+not be started: …`) without the suffix. A call that got no answer keeps
+`<glab's line> (glab auth status)`. A create GitLab refuses as invalid
+adds `Is everything pushed? git push`. Against: the suffix after every
+failure, raw JSON included (`404 {"message":…} (glab auth status)`).
+Why: rule 3, an error says what to do; nothing another program reads
+changes (rule 5).
+
+## 2026-10-02 01:05 · CLI / wt:action · a broken actions.json is kept
+Chose: an `actions.json` that is there but no JSON object (cut off
+mid-write) is refused by every form of wt:action (`change` before it
+drafts the MR): `✗ .claude/actions.json is no JSON object (cut off
+mid-write?): its actions can't be read, so it is kept as it is.` and the
+`mv … .broken` that starts empty. Against: Node and #306's parity, which
+read it as empty, so the next post overwrote it and every open action
+was gone without a word. The overview still reads it as empty (#306): a
+view must draw, a write must not destroy.
+Why: rule 3, #306 names refusing as better; rule 5, the file stays as
+the other sessions wrote it.
+
+## 2026-10-02 01:05 · CLI / wt:action · a lock left behind
+Chose: a `<file>.lock` older than 5 s is taken over at once and said so:
+`  takes over <lock>, left behind by a writer that ended`; only a younger
+one prints `waits for …, held by another writer (taken over after 5 s)`.
+Supersedes that line of 19:50 for a stale lock.
+Why: rule 3: the old line promised a wait that did not happen.
+
+## 2026-10-02 01:05 · CLI / wt:mr --update · refused without an open MR
+Chose: `wt:mr --update` without an open MR of the branch (none, or a
+closed one) is `✗ no open MR of <branch> to update: pnpm wt:mr opens it`,
+before the push guard and any write. Against: Node, which opened a new
+draft MR.
+Why: rule 6 over rule 3: `--update` asks to send a description again;
+an MR opened instead is a GitLab write nobody asked for (as 20:10 says
+of typos).
+
+## 2026-10-02 01:05 · gauntlet · a world reaches no repo around it
+Chose: a world sets `GIT_CEILING_DIRECTORIES` to the folder that holds
+it. Built under a checkout's `.claude/gauntlet/tmp`, a cwd outside the
+world's repos (its home) found that checkout, and wt:action wrote into
+its real `.claude/actions.json`.
+Why: the loop never acts on the live workflow (rewrite-rules.md, Working).
+
 ## 2026-10-02 01:00 · CLI / overview --once · GitLab's call budget (#305) and the disk cache
 Chose: the printed orchestration reads GitLab in at most three rounds of
 calls side by side: (1) the open MRs, the last 100 pipelines, the issues

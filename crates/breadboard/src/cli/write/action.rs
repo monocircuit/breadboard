@@ -12,7 +12,7 @@ use breadboard_core::actions::{
 use breadboard_core::git::push_state;
 use breadboard_core::lock::lock_of;
 use breadboard_core::record::{is_name, origin_of, record_file, record_of};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 pub const USAGE: &str = r#"usage: pnpm wt:action <kind> <text> [--url <url>]   kind: merge, try, decide, look, plan
@@ -49,16 +49,51 @@ const TAKES: Takes = Takes {
     usage: USAGE,
 };
 
-/// Says on stderr what a write waits for when another writer holds the file's
-/// lock: it is taken over after 5 s, and silence looked like a hang.
-pub fn announce_lock(file: &std::path::Path) {
+/// How old a lock may grow before the next writer takes it over (actions.mjs `LOCK_STALE`).
+const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Says on stderr what a write waits for when another writer holds the
+/// file's lock: silence looked like a hang. A lock older than 5 s is taken
+/// over at once, its writer ended without removing it.
+pub fn announce_lock(file: &Path) {
+    if let Some(line) = lock_line(file) {
+        eprintln!("{line}");
+    }
+}
+
+fn lock_line(file: &Path) -> Option<String> {
     let lock = lock_of(file);
-    if lock.exists() {
-        eprintln!(
+    let modified = std::fs::metadata(&lock).and_then(|meta| meta.modified()).ok()?;
+    let age = std::time::SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or_default();
+    Some(if age > LOCK_STALE {
+        format!("  takes over {}, left behind by a writer that ended", lock.display())
+    } else {
+        format!(
             "  waits for {}, held by another writer (taken over after 5 s)",
             lock.display()
-        );
+        )
+    })
+}
+
+/// Refuses a file that is there but no JSON object (cut off mid-write): it
+/// is kept, as it is. Read as empty, the next write replaced it and every
+/// open action in it was gone without a word (Node, #306).
+pub fn intact(file: &Path, here: &Here) -> Result<(), String> {
+    let Ok(bytes) = std::fs::read(file) else {
+        return Ok(());
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let is_object = serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|value| value.is_object());
+    if text.trim().is_empty() || is_object {
+        return Ok(());
     }
+    let path = file.display();
+    Err(format!(
+        "{} is no JSON object (cut off mid-write?): its actions can't be read, so it is kept as it is.\n  Repair it, or move it away to start empty, then run this again:\n  mv {path} {path}.broken",
+        here.shown(&file.to_string_lossy())
+    ))
 }
 
 /// The words after `<kind>` that are no flag and no flag's value.
@@ -216,6 +251,7 @@ pub fn run(argv: &Argv) -> Outcome {
         return change::run(argv, &here, &text);
     }
     let (file, name) = where_of(argv, &here)?;
+    intact(&file, &here)?;
     let orchestration = argv.given("--orchestration");
 
     if argv.has("--list") {
@@ -510,5 +546,48 @@ mod tests {
         assert!(posted(&try_, None, false).contains(
             "  the click opens /atlas on this worktree's app (its stack started first when it is down)\n  this worktree belongs to no orchestration"
         ));
+    }
+
+    #[test]
+    fn keeps_a_broken_actions_file_and_says_what_to_do() {
+        let scratch = crate::cli::write::common::scratch::Scratch::new();
+        let file = scratch.path().join("actions.json");
+        let here = Here {
+            cwd: scratch.path().to_path_buf(),
+            top: Some(scratch.path().to_path_buf()),
+            main: None,
+        };
+        let intact = |file: &Path| intact(file, &here);
+        assert_eq!(intact(&file), Ok(()));
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(intact(&file), Ok(()));
+        std::fs::write(&file, "{\"actions\":[]}").unwrap();
+        assert_eq!(intact(&file), Ok(()));
+        std::fs::write(&file, "{\"actions\":[{\"id\":1,").unwrap();
+        let refused = intact(&file).unwrap_err();
+        assert!(
+            refused.starts_with("actions.json is no JSON object (cut off mid-write?)"),
+            "{refused}"
+        );
+        assert!(refused.ends_with("actions.json.broken"), "{refused}");
+        std::fs::write(&file, "[]").unwrap();
+        assert!(intact(&file).is_err());
+    }
+
+    #[test]
+    fn tells_a_lock_held_from_one_left_behind() {
+        let scratch = crate::cli::write::common::scratch::Scratch::new();
+        let file = scratch.path().join("actions.json");
+        assert_eq!(lock_line(&file), None);
+        let lock = lock_of(&file);
+        std::fs::create_dir(&lock).unwrap();
+        assert!(lock_line(&file).unwrap().contains("held by another writer"));
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::open(&lock).unwrap().set_modified(old).unwrap();
+        assert!(
+            lock_line(&file)
+                .unwrap()
+                .ends_with("left behind by a writer that ended")
+        );
     }
 }

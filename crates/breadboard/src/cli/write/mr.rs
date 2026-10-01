@@ -154,6 +154,16 @@ pub fn run(argv: &Argv) -> Outcome {
     // "none": that opened a second MR (rule 6).
     let newest = glab::view(top, "mr", &branch)?;
 
+    // `--update` sends the description of the open MR again; without one it
+    // opened a new MR (Node too): a GitLab write nobody asked for (rule 6).
+    // A merged one is refused below, with what to do instead.
+    let has_one = newest
+        .as_ref()
+        .is_some_and(|mr| matches!(glab::text_of(mr, "state"), "opened" | "merged"));
+    if is_update && !has_one {
+        return Err(format!("no open MR of {branch} to update: pnpm wt:mr opens it"));
+    }
+
     // Worktrees made before the guard existed get it here (#184).
     if !is_dry {
         let guard = install_push_guard(top);
@@ -330,41 +340,60 @@ pub fn run(argv: &Argv) -> Outcome {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let description = format!("{body}\n");
-    let label = labels.join(",");
-    let mut args = vec![
-        "mr",
-        "create",
-        "--draft",
-        "--source-branch",
-        &branch,
-        "--target-branch",
-        "develop",
-        "--title",
-        &title,
-        "--description",
-        &description,
-        "--label",
-        &label,
-    ];
-    if let Some(milestone) = &milestone {
-        args.extend(["--milestone", milestone]);
-    }
-    args.extend(["--assignee", "@me", "--remove-source-branch", "--yes", "--no-editor"]);
-    let created = glab::glab(top, &args);
-    if !created.is_ok {
+    // POST merge_requests, the request `glab mr create --draft … --assignee
+    // @me --remove-source-branch` makes, the description through a file: an
+    // argument holds at most 128 KiB (`--description <text>` did), and
+    // `--description-file` is missing in glab 1.114 (#157). `@me` is the
+    // login's id, the milestone the issue's.
+    let me = glab::api(top, "user");
+    let Some(me) = me
+        .json()
+        .map(|user| glab::shown(user.get("id")))
+        .filter(|id| !id.is_empty())
+    else {
         return Err(format!(
-            "glab could not create the merge request ({}): is everything pushed? (git push)",
-            created.first_line()
+            "glab could not tell who you are, the MR's assignee: {}",
+            me.why()
+        ));
+    };
+    let description = format!("{body}\n");
+    let draft = format!("Draft: {title}");
+    let label = labels.join(",");
+    let milestone_id = work
+        .get("milestone")
+        .map(|m| glab::shown(m.get("id")))
+        .filter(|id| !id.is_empty());
+    let mut fields = vec![
+        glab::Field::Raw("source_branch", &branch),
+        glab::Field::Raw("target_branch", "develop"),
+        glab::Field::Raw("title", &draft),
+        glab::Field::Text("description", &description),
+        glab::Field::Raw("labels", &label),
+        glab::Field::Typed("assignee_id", &me),
+        glab::Field::Typed("remove_source_branch", "true"),
+    ];
+    if let Some(id) = &milestone_id {
+        fields.push(glab::Field::Typed("milestone_id", id));
+    }
+    let created = glab::send(top, "POST", "projects/:fullpath/merge_requests", &fields);
+    if !created.is_ok {
+        // GitLab refuses a branch it doesn't have as invalid (400, 422).
+        let is_unpushed = matches!(created.status(), Some(400 | 404 | 422));
+        return Err(format!(
+            "glab could not create the merge request: {}{}",
+            created.why(),
+            if is_unpushed {
+                "\n  Is everything pushed? git push"
+            } else {
+                ""
+            }
         ));
     }
-    // glab prints the URL; one that didn't is asked for it (Node printed an empty line).
+    // GitLab answers the MR with its URL; an answer without is asked for it (Node printed an empty line).
     let printed = created
-        .stdout
-        .split('\n')
-        .map(str::trim)
-        .find(|line| line.starts_with("http"))
-        .map(String::from);
+        .json()
+        .map(|mr| glab::text_of(&mr, "web_url").to_string())
+        .filter(|url| !url.is_empty());
     let url = printed
         .or_else(|| {
             glab::view(top, "mr", &branch)

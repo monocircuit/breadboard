@@ -57,6 +57,9 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
         };
         (Some(dir.to_path_buf()), mr)
     };
+    if let Some(dir) = &dir {
+        super::action::intact(&actions_file(dir), here)?;
+    }
     let iid = mr.as_ref().map(|mr| glab::shown(mr.get("iid")));
     if let (Some(mr), Some(iid)) = (&mr, &iid) {
         let state = glab::text_of(mr, "state");

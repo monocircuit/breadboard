@@ -99,6 +99,9 @@ pub fn run(argv: &Argv) -> Outcome {
 
     let ticked = ticked_text(&description, &boxes, &fresh);
     let put = glab::put_description(top, &format!("projects/:fullpath/issues/{number}"), &ticked);
+    if put.is_not_found() {
+        return Err(format!("GitLab has no issue #{number}"));
+    }
     if !put.is_ok {
         return Err(format!(
             "glab could not update the description of #{number}: {}",

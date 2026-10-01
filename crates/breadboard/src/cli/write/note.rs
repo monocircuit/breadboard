@@ -42,17 +42,29 @@ pub fn run(argv: &Argv) -> Outcome {
     let Some(top) = here.top.as_deref() else {
         return Err("not in a git checkout: run it in a worktree".into());
     };
-    let posted = glab::glab(top, &["issue", "note", number, "--message", &message]);
+    // The issue first: one GitLab lacks is said as wt:tick says it, and its
+    // URL is the comment's (glab issue note printed `<issue>#note_<id>`).
+    let Some(issue) = glab::view(top, "issue", number)? else {
+        return Err(format!("GitLab has no issue #{number}"));
+    };
+    // POST issues/<n>/notes, the route of `glab issue note`, the text through
+    // a file: an argument holds at most 128 KiB (`--message <text>` did).
+    let posted = glab::send(
+        top,
+        "POST",
+        &format!("projects/:fullpath/issues/{number}/notes"),
+        &[glab::Field::Text("body", &message)],
+    );
     if !posted.is_ok {
         return Err(format!("glab could not comment on #{number}: {}", posted.why()));
     }
+    let web_url = glab::text_of(&issue, "web_url");
     let url = posted
-        .stdout
-        .trim()
-        .split('\n')
-        .find(|line| line.starts_with("http"))
-        // No URL printed: no line of two spaces (Node printed one).
-        .map(|url| format!("\n  {url}"))
+        .json()
+        .map(|note| glab::shown(note.get("id")))
+        .filter(|id| !id.is_empty() && !web_url.is_empty())
+        // No URL known: no line of two spaces (Node printed one).
+        .map(|id| format!("\n  {web_url}#note_{id}"))
         .unwrap_or_default();
 
     // Read it back, as stored: `glab issue view --comments` renders the

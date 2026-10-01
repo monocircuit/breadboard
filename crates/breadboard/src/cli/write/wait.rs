@@ -285,7 +285,7 @@ enum Answer {
     Found(Facts),
     /// GitLab has no such MR (404).
     Missing,
-    /// glab couldn't ask: `glab failed: … (glab auth status)`.
+    /// glab couldn't ask, or GitLab refused: `glab failed: …` / `GitLab answered …`.
     Failed(String),
 }
 
@@ -580,17 +580,18 @@ mod tests {
             is_ok,
             stdout: stdout.into(),
             stderr: stderr.into(),
+            is_unstarted: false,
         };
         assert_eq!(
             answer_of(&ran(true, "{\"iid\":3,\"state\":\"merged\"}", "")),
             Answer::Found(mr(3, "merged", false))
         );
         assert_eq!(answer_of(&ran(false, "", "glab: 404 Not found\n")), Answer::Missing);
-        let failed = Answer::Failed("glab failed: 401 Unauthorized (glab auth status)".into());
+        let failed = Answer::Failed("GitLab does not take glab's login (401 Unauthorized): glab auth login".into());
         assert_eq!(answer_of(&ran(false, "", "glab: 401 Unauthorized\n")), failed);
         assert_eq!(
             failure_of(&[Answer::Missing, failed]),
-            Some("glab failed: 401 Unauthorized (glab auth status)")
+            Some("GitLab does not take glab's login (401 Unauthorized): glab auth login")
         );
         assert_eq!(failure_of(&[Answer::Missing]), None);
     }
