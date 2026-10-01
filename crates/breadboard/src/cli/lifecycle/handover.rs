@@ -808,9 +808,6 @@ pub fn command(args: &Args) -> Done {
     }
     let repo = Repo::here()?;
     let is_dry = args.has("--dry-run");
-    if !is_dry {
-        plugin::heal(&repo.main);
-    }
     // A --brief applies to the issues of the run that passes it only (#247).
     let extra = match brief_file {
         Some(file) => {
@@ -819,6 +816,9 @@ pub fn command(args: &Args) -> Done {
         None => None,
     };
     if let Some(after) = after {
+        if !is_dry {
+            plugin::heal(&repo.main);
+        }
         return announce(&repo, name, issues[0], to, &after, extra.as_deref(), is_dry);
     }
     let record = record::record_of(&repo.main, name);
@@ -915,6 +915,10 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     };
     if let Some(refusal) = refusal {
         return failed(&refusal);
+    }
+    // Once nothing refused it: a refusal costs no extra herdr call (#230).
+    if !request.is_dry {
+        plugin::heal(&repo.main);
     }
     // One start of an issue at a time (#272).
     let mut claim = if request.is_dry {

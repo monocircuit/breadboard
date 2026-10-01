@@ -243,7 +243,7 @@ pub fn command(args: &Args) -> Done {
     } = prunable(&repo, &here);
     let mut report = Vec::new();
     let mut failed = 0;
-    // The orchestrations whose changelog lists a removed merge: each rewritten once, at the end.
+    // The orchestrations whose changelog misses a removed merge: each rewritten once, at the end.
     let mut changelogs: Vec<String> = Vec::new();
     for Entry { name, why, .. } in &trees {
         let what = match why {
@@ -294,13 +294,18 @@ pub fn command(args: &Args) -> Done {
         };
         report.push((name.clone(), what));
     }
+    // Each at once, beside the plugin's check, waited for after the report.
+    let rewrites: Vec<remove::Rewrite> = changelogs
+        .iter()
+        .map(|name| {
+            step(&format!("rewrite the changelog of {name}"));
+            remove::Rewrite::start(&repo, name)
+        })
+        .collect();
     // After the removals (the plugin may have been linked from one of them,
     // #230); a dry run asks herdr nothing.
     if !is_dry {
         plugin::heal(&repo.main);
-    }
-    for name in &changelogs {
-        remove::write_changelog(&repo, name);
     }
 
     println!(
@@ -318,6 +323,9 @@ pub fn command(args: &Args) -> Done {
         println!("  nothing to do");
     }
     println!();
+    for rewrite in rewrites {
+        rewrite.wait();
+    }
     if failed > 0 {
         return fail(format!(
             "{failed} worktree(s) could not be removed: the reason is on each line above"

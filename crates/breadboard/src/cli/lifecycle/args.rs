@@ -6,6 +6,7 @@
 //! must stay today's; clap's would differ (rewrite rules 4 and 5).
 
 use super::proc::{Fail, fail};
+use crate::cli::typo::nearest;
 
 #[derive(Debug, Clone, Default)]
 pub struct Args {
@@ -127,7 +128,11 @@ fn problem_of(words: &[String], takes: &Takes) -> Option<String> {
                 return Some(format!("{name} takes no value"));
             }
         } else {
-            return Some(format!("unknown flag {name}"));
+            let flags: Vec<&str> = [takes.switches, takes.valued, takes.lists].concat();
+            let meant = nearest(name, &flags)
+                .map(|flag| format!(": did you mean {flag}?"))
+                .unwrap_or_default();
+            return Some(format!("unknown flag {name}{meant}"));
         }
     }
     None
@@ -170,7 +175,7 @@ mod tests {
     fn refuses_what_the_command_does_not_take_with_the_usage() {
         assert_eq!(
             checked(&["x", "--dryrun"]),
-            Err("unknown flag --dryrun\nusage: u".into())
+            Err("unknown flag --dryrun: did you mean --dry-run?\nusage: u".into())
         );
         assert_eq!(
             checked(&["x", "--bogus=1"]),

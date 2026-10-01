@@ -197,8 +197,13 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         let feature = repo.feature_of(&tree.dir);
         let before = known.get(&feature);
         let workspace = worktree_space(repo, &tree.dir, true, should_resume);
-        if before.is_none() && workspace.is_some() {
-            report.push(format!("space {feature} opened"));
+        match (before, &workspace) {
+            (None, Some(_)) => report.push(format!("space {feature} opened")),
+            // Today's said nothing: a space may be there now, without its tabs.
+            (None, None) => report.push(format!(
+                "space {feature} not set up: herdr gave no id back for it (worktree open, workspace create)"
+            )),
+            _ => {}
         }
         let was_linked = before
             .and_then(|space| space.get("worktree")?.get("is_linked_worktree")?.as_bool())
