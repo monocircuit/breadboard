@@ -16,8 +16,7 @@ import { orchestratorLabel } from "../worktree.mjs";
 import { holds } from "../worktree/lock.mjs";
 import {
   answerCell,
-  buttonAt,
-  clickAction,
+  answerButtons,
   deliverAnswers,
   deliverTo,
   deliverToOrchestrator,
@@ -31,22 +30,6 @@ import { isOnce } from "./args.mjs";
 // Without a terminal: buttons in brackets, the cell from column 3 (`│ `).
 describe("answers", () => {
   const decide = { kind: "decide", options: ["A", "B"] };
-
-  it("finds the button under a column, a column of slack after each", () => {
-    // `[ A ] [ B ]` from column 3: A up to 8, B up to 14.
-    assert.equal(buttonAt(decide, 1), 0);
-    assert.equal(buttonAt(decide, 8), 0);
-    assert.equal(buttonAt(decide, 9), 1);
-    assert.equal(buttonAt(decide, 14), 1);
-    assert.equal(buttonAt(decide, 15), -1);
-  });
-
-  it("counts the buttons from where their line starts", () => {
-    // In NEXT the buttons start after ` NEXT  `, at column 8.
-    assert.equal(buttonAt(decide, 8, 8), 0);
-    assert.equal(buttonAt(decide, 14, 8), 1);
-    assert.equal(buttonAt(decide, 20, 8), -1);
-  });
 
   it("shows ✓ alone for an action without answers", () => {
     assert.equal(answerCell({ kind: "merge" }), "[ ✓ ]");
@@ -67,9 +50,11 @@ describe("answers", () => {
       to: { dir: path.join(os.tmpdir(), "no-such-worktree") },
       go: () => (isGone = true),
     };
-    clickAction(item, 10, () => {});
+    const click = answerButtons(item, () => {});
+    assert.deepEqual(click.buttons, ["A", "B"]);
+    click(10, { label: "B" });
     assert.equal(actionsOf(file)[0].answer, "B");
-    clickAction(item, 40, () => {});
+    click(40, null);
     assert.equal(isGone, true);
   });
 
@@ -222,19 +207,17 @@ console.log(JSON.stringify({ result: results[what] ?? null }));
       process.env.PATH = before;
     }
   };
-  // `[ looks good ] [ broken ]` from column 3: broken from column 20.
-  const click = (file, to, column) =>
+  const click = (file, to, label) =>
     withHerdr(() =>
-      clickAction(
+      answerButtons(
         { action: actionsOf(file)[0], file, to, go: () => {} },
-        column,
         () => {},
-      ),
+      )(1, { label }),
     );
 
   it("focuses the agent's tab and writes the draft, without Enter, once", () => {
     const file = setUp("idle");
-    click(file, { dir }, 20);
+    click(file, { dir }, "broken");
     assert.deepEqual(callsMade(), [
       ["workspace", "focus", "ws-zz-draft"],
       ["tab", "focus", "zz-draft"],
@@ -253,8 +236,7 @@ console.log(JSON.stringify({ result: results[what] ?? null }));
 
   it("writes it into a working agent's input all the same", () => {
     const file = setUp("working", "plan");
-    // `[ ok ] [ different ]`: different from column 10.
-    click(file, { orchestration: "zz-draft" }, 12);
+    click(file, { orchestration: "zz-draft" }, "different");
     assert.deepEqual(callsMade().at(-1), [
       "pane",
       "send-text",
@@ -266,7 +248,7 @@ console.log(JSON.stringify({ result: results[what] ?? null }));
 
   it("submits every other answer as before", () => {
     const file = setUp("idle");
-    click(file, { dir }, 5);
+    click(file, { dir }, "looks good");
     assert.deepEqual(callsMade(), [
       [
         "agent",
@@ -279,7 +261,7 @@ console.log(JSON.stringify({ result: results[what] ?? null }));
 
   it("writes nothing into a blocked agent's dialog, the draft once it is answered", () => {
     const file = setUp("blocked");
-    click(file, { dir }, 20);
+    click(file, { dir }, "broken");
     // Only the focus: the row says why.
     assert.deepEqual(
       callsMade().map(call => call[0]),
@@ -301,7 +283,7 @@ console.log(JSON.stringify({ result: results[what] ?? null }));
 
   it("drops the waiting draft when the user typed meanwhile", () => {
     const file = setUp("blocked");
-    click(file, { dir }, 20);
+    click(file, { dir }, "broken");
     fs.writeFileSync(state, "idle");
     fs.writeFileSync(screen, `${rule}\n❯ the chip is grey\n${rule}\n`);
     withHerdr(() => deliverAnswers(file, { dir }));

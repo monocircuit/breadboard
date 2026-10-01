@@ -15,6 +15,7 @@ import {
 } from "../lib/tty.mjs";
 import { ORCHESTRATOR, focusSpace, mainDir } from "../worktree.mjs";
 import { isStarting, pushStackButton } from "./actions.mjs";
+import { checkFact } from "./check.mjs";
 import { isOnce } from "./args.mjs";
 import {
   closeBox,
@@ -57,6 +58,7 @@ export const render = (local, remote, error) => {
       const work = [
         tree.ahead ? `${tree.ahead} ahead` : "",
         tree.changed ? yellow(`${tree.changed} changed`) : "",
+        checkFact(tree.checked),
       ]
         .filter(Boolean)
         .join(" · ");

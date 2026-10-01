@@ -14,8 +14,13 @@ export const MOUSE_ON = "\x1b[?1003h\x1b[?1006h\x1b[?1004h";
 export const MOUSE_OFF = "\x1b[?1003l\x1b[?1006l\x1b[?1004l";
 /** One key or mouse report each: a chunk of input can hold several (a fast wheel, a move). */
 export const KEY = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[\d;]*[~A-Za-z]|[\s\S]/g;
-/** A mouse report cut off at the end of a chunk: the rest of it comes with the next one. */
-const CUT = /\x1b\[<[\d;]*$/;
+/**
+ * A report or key cut off at the end of a chunk, the rest of it in the next
+ * one: from its escape on, `ESC` or `ESC [` alone too (#303: a click cut
+ * there was read as loose characters and lost). A lone Escape key waits for
+ * the next input; the views don't use it.
+ */
+const CUT = /\x1b(?:\[[<\d;]*)?$/;
 /**
  * The keys of the input, chunk by chunk (`KEY` each): a report a chunk ends
  * in the middle of is kept for the next, so a fast move never turns into
@@ -33,7 +38,7 @@ export const keyReader = () => {
 };
 /** The pane lost the focus: the pointer went elsewhere. */
 export const FOCUS_OUT = "\x1b[O";
-const REPORT = /^\x1b\[<(\d+);(\d+);(\d+)M$/;
+const REPORT = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
 /** The modifier bits of a mouse button (Shift, Alt, Ctrl). */
 const MODIFIERS = 4 | 8 | 16;
 /** The bit of a report that the pointer moved, a button held or not. */
@@ -43,12 +48,16 @@ const MOTION = 32;
  * the pointer moved (never a click, whatever button is held), `{ kind:
  * "wheel", by }` a notch up (-1) or down (1), with a modifier too, `{ kind:
  * "click" }` the left button pressed alone (no modifier, no motion, no
- * wheel); null for anything else (a key, a release, another button).
+ * wheel), `{ kind: "release" }` it let go (a release without its press
+ * tells of a click lost on the way, #303); null for anything else (a key,
+ * another button).
  */
 export const mouseOf = key => {
   const report = key.match(REPORT);
   if (!report) return null;
-  const [, button, column, row] = report.map(Number);
+  const [button, column, row] = report.slice(1, 4).map(Number);
+  if (report[4] === "m")
+    return button === 0 ? { kind: "release", row, column } : null;
   if (button & MOTION) return { kind: "move", row, column };
   const by = { 64: -1, 65: 1 }[button & ~MODIFIERS];
   if (by) return { kind: "wheel", by, row, column };

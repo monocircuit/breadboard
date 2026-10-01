@@ -28,6 +28,7 @@ import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
 import { paintOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
+import { checkFact } from "./check.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
 import { checksOf } from "./merge.mjs";
@@ -166,7 +167,8 @@ const agentNameFact = (tree, known, now) => {
     .join(" ");
 };
 /**
- * The facts line of a node: issue, MR and pipeline, work, its agent's name
+ * The facts line of a node: issue, MR and pipeline, work, whether its HEAD is
+ * tested (#298), its agent's name
  * after a handover, which issue of its agent this is (#264) and its context, a wait (#216) its state doesn't name
  * already, a requested change and what isn't pushed (#228), the next issue
  * announced for its agent (#227). What doesn't apply is left out; a worktree
@@ -185,6 +187,8 @@ const factsOf = (
     issueFact(issue, found, hasRemote),
     tree ? mrFact(mr, mergedAt) || dim("no MR yet") : mrFact(mr, mergedAt),
     tree ? workFact(tree) : "",
+    // Whether its HEAD passed wt:check (#298).
+    tree ? checkFact(tree.checked) : "",
     agent,
     history ? dim(history) : "",
     tree ? agentFact(tree.claude) : "",

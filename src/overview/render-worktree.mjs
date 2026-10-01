@@ -16,6 +16,7 @@ import {
   table,
   yellow,
 } from "../lib/tty.mjs";
+import { checkRow } from "./check.mjs";
 import { barOf } from "./diff.mjs";
 import {
   ORCHESTRATOR,
@@ -49,7 +50,7 @@ import {
 import { editorTrouble, fileLine, openFile, pushFiles } from "./files.mjs";
 import { errorText, waitingText } from "./gitlab-status.mjs";
 import { open, show } from "./io.mjs";
-import { KEYS, pushRows, screen } from "./screen.mjs";
+import { KEYS, onButton, pushRows, screen } from "./screen.mjs";
 
 /**
  * The Storybook starts of this overview, by worktree dir: `{ error }`, kept
@@ -285,6 +286,12 @@ export const renderWorktree = (local, remote, error) => {
     );
     actions.push(remote.mr && (() => show(remote.mr.url)));
   }
+  // Whether its HEAD passed wt:check (#298): the pre-push hook wants it.
+  const tests = checkRow(tree.checked);
+  if (tests) {
+    rows.push(["", "tests", tests]);
+    actions.push(null);
+  }
   pushRows(lines, rows, actions);
   if (!remote && !error) {
     lines.push(dim(`  ${waitingText()}`));
@@ -320,6 +327,10 @@ export const renderWorktree = (local, remote, error) => {
   const mark = isOn => (isOn ? green("●") : dim("○"));
   // Storybook answers: its start is done with.
   if (local.isStorybookUp) storybooks.delete(tree.dir);
+  const storybookButton =
+    storybooks.has(tree.dir) && !storybooks.get(tree.dir)?.error
+      ? "◐ starting storybook …"
+      : "▶ start storybook";
   const where = [
     {
       isOn: local.isAppUp,
@@ -367,10 +378,12 @@ export const renderWorktree = (local, remote, error) => {
               `cd packages/monolithium && pnpm exec storybook dev -p ${STORYBOOK_PORT + offset}`,
             )
           : storybooks.get(tree.dir)?.error
-            ? `${button("▶ start storybook")}  ${red(storybooks.get(tree.dir).error)}`
+            ? `${button(storybookButton)}  ${red(storybooks.get(tree.dir).error)}`
             : storybooks.has(tree.dir)
-              ? `${button("◐ starting storybook …", "yellow")} ${dim("its tab storybook, the row turns ● once it answers")}`
-              : button("▶ start storybook"),
+              ? `${button(storybookButton, "yellow")} ${dim("its tab storybook, the row turns ● once it answers")}`
+              : button(storybookButton),
+      // The label of the button in its hint: a click on it does what the row does.
+      button: local.isStorybookUp || !isInHerdr() ? null : storybookButton,
       // Outside herdr there is no tab to start it in: the row shows the command.
       start: isInHerdr() ? () => startStorybookOf(tree.dir) : null,
     },
@@ -390,7 +403,8 @@ export const renderWorktree = (local, remote, error) => {
       if (w.isOn) return () => open(w.url);
       if (!w.start) return null;
       // Without the extension a browser would only show a connection error: the row turns ● once it runs.
-      return () => w.start().then(() => canGroupTabs() && open(w.url));
+      const start = () => w.start().then(() => canGroupTabs() && open(w.url));
+      return w.button ? onButton(w.button, start) : start;
     }),
   );
   closeBox(

@@ -20,7 +20,12 @@ import {
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
 import { actionBlock, kindChip } from "./action-block.mjs";
-import { answerWith, clickAction, deliversAnswers } from "./answers.mjs";
+import {
+  answerButtons,
+  answerWith,
+  deliversAnswers,
+  shownAction,
+} from "./answers.mjs";
 import { isOnce, orchestration } from "./args.mjs";
 import {
   autoActionsOf,
@@ -30,7 +35,6 @@ import {
   tellFailedPipelines,
 } from "./auto-actions.mjs";
 import {
-  CELL_START,
   boxInner,
   closeBox,
   openBox,
@@ -58,12 +62,12 @@ import {
   clickResolve,
   conflictStateOf,
   forgetResolved,
-  resolveColumns,
+  RESOLVE,
 } from "./resolve.mjs";
 import { ago } from "./render-worktree.mjs";
 import { pushFreeAgents } from "./free-agents.mjs";
 import { freeOnCleanUp, workerActionsOf } from "./workers.mjs";
-import { KEYS, pushUnder, screen } from "./screen.mjs";
+import { KEYS, onButtons, pushUnder, screen } from "./screen.mjs";
 import { foldLine, pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
 import { tryStateOf } from "./try-state.mjs";
@@ -90,6 +94,7 @@ const isWaitingTry = item => item.tryState?.isReady === false;
 const actionsOf = (local, issues, of, remote, announced) => {
   const merge = local.order.numbers;
   const own = (local.ownActions ?? [])
+    .map(stored => shownAction(local.recordFile, stored))
     .map(action => {
       // A merge the orchestrator posted for an MR (`--mr !N`) is that MR's.
       const issue =
@@ -122,7 +127,8 @@ const actionsOf = (local, issues, of, remote, announced) => {
   const agents = issues
     .filter(issue => issue.tree?.actions?.length)
     .flatMap(issue =>
-      issue.tree.actions.map(action => {
+      issue.tree.actions.map(stored => {
+        const action = shownAction(actionsFile(issue.tree.dir), stored);
         const tryState = TRY_KINDS.has(action.kind)
           ? tryStateOf(action, {
               tree: issue.tree,
@@ -334,12 +340,6 @@ const actionText = ({ action, issue, file }, of) => {
   return action.text;
 };
 /**
- * What a click on a line of an action's block does (action-block.mjs `on`):
- * on its buttons line a button answers, past them it does the action (the
- * buttons from column `start`); on an option that option answers; anywhere
- * else it does the action.
- */
-/**
  * Whether a click on the body of `item` can do nothing (#290): a try that
  * isn't ready and has no page to show why (try-state.mjs), a hand-over or
  * start already under way. Its row says why; it takes no click.
@@ -349,16 +349,18 @@ export const isInert = item =>
     (item.tryState && !item.tryState.isReady && !item.tryState.url) ||
     item.action?.isRunning,
   );
-/** The click of a line of `item`'s block; none on the body of an inert one. */
-const clickOf = (item, on, start = CELL_START) =>
-  on !== "buttons" && typeof on !== "number" && isInert(item)
-    ? undefined
-    : column => {
-        const redraw = () => screen.redraw({ isReread: true });
-        if (on === "buttons") return clickAction(item, column, redraw, start);
-        if (typeof on === "number") return answerWith(item, on, redraw);
-        return item.go();
-      };
+/**
+ * What a click on a line of an action's block does (action-block.mjs `on`):
+ * on its buttons line a button answers, the rest of it does the action; on
+ * an option that option answers; anywhere else it does the action, nothing
+ * on the body of an inert one.
+ */
+const clickOf = (item, on) => {
+  const redraw = () => screen.redraw({ isReread: true });
+  if (on === "buttons") return answerButtons(item, redraw);
+  if (typeof on === "number") return () => answerWith(item, on, redraw);
+  return isInert(item) ? undefined : () => item.go();
+};
 
 /**
  * Each issue's state by its number, for the plan's staleness (next.mjs):
@@ -433,7 +435,7 @@ const pushNext = (
   const indent = " ".repeat(visible(label));
   if (next?.kind === "action") {
     blockOf(next.item, of, width - indent.length).forEach(({ line, on }, i) => {
-      screen.clicks[lines.length] = clickOf(next.item, on, indent.length + 1);
+      screen.clicks[lines.length] = clickOf(next.item, on);
       lines.push(`${i === 0 ? label : indent}${line}`);
     });
   } else if (next) {
@@ -765,19 +767,21 @@ export const renderOrchestration = (local, remote, error) => {
         for (const text of rows[i]) {
           // On the button its agent gets the order, anywhere else the MR opens;
           // a grey one (or none) does nothing of its own.
-          const resolve = !conflictOf(item).canClick
-            ? null
-            : resolveColumns(text);
           if (item.issue)
-            screen.clicks[lines.length] = column =>
-              resolve && column >= resolve.from && column <= resolve.to
-                ? clickResolve({
-                    mr: of(item.issue).mr,
-                    tree: item.issue.tree,
-                    agents,
-                    behind: item.issue.tree?.behind ?? 0,
-                  })
-                : show(of(item.issue).mr.url, item.issue.tree?.dir);
+            screen.clicks[lines.length] = onButtons(
+              conflictOf(item).canClick
+                ? {
+                    [RESOLVE]: () =>
+                      clickResolve({
+                        mr: of(item.issue).mr,
+                        tree: item.issue.tree,
+                        agents,
+                        behind: item.issue.tree?.behind ?? 0,
+                      }),
+                  }
+                : {},
+              () => show(of(item.issue).mr.url, item.issue.tree?.dir),
+            );
           lines.push(text);
         }
       });
