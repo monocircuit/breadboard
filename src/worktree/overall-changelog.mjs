@@ -19,6 +19,12 @@ import path from "node:path";
 import { glabApi } from "../lib/glab.mjs";
 import { dayOf, groupOf, summaryOf } from "./changelog.mjs";
 import { ORCHESTRATOR, titleOf } from "./origins.mjs";
+import {
+  areasOf,
+  fragmentsAt,
+  projectUrl,
+  sectionBody,
+} from "./platform-changelog.mjs";
 import { mainDir } from "./worktrees.mjs";
 
 /** Where the changelog of the repo lives, and what it keeps between rewrites. */
@@ -176,13 +182,31 @@ const RELEASES = "Releases";
  * A section per group (`## vita`), in it the days newest first (`###`), in a
  * day its releases and then the types (`####`), the MRs newest first.
  */
-export const overallText = ({ since, merged = [], releases = [] }) => {
+export const overallText = ({
+  since,
+  merged = [],
+  releases = [],
+  unreleased = null,
+}) => {
   const lines = [
     "# Monocircuit/Platform: changelog",
     "",
     `Merged into develop since ${dayOf(since)}, by product and package.`,
     "",
   ];
+  // What CHANGELOG.md's next release will say (platform-changelog.mjs): its
+  // fragments on develop, as `{ entries, areas, url }`.
+  if (unreleased?.entries.length > 0) {
+    const count = `${unreleased.entries.length} entr${unreleased.entries.length === 1 ? "y" : "ies"}`;
+    lines.push(
+      "## Unreleased",
+      "",
+      `\`CHANGELOG.md\` · ${count} waiting in \`.changelog/\` for the next release`,
+      "",
+      sectionBody(unreleased.entries, unreleased.areas, unreleased.url),
+      "",
+    );
+  }
   const groups = [
     ...new Set([
       ...merged.flatMap(mr => mr.groups),
@@ -456,7 +480,15 @@ export const writeOverall = async ({
     gitlab,
     now,
   });
-  const text = overallText(read);
+  const root = mainDir();
+  const text = overallText({
+    ...read,
+    unreleased: {
+      entries: fragmentsAt(root, "origin/develop"),
+      areas: areasOf(root),
+      url: projectUrl(root),
+    },
+  });
   writeAtomic(overallFile(), text);
   writeAtomic(
     stateFile(),

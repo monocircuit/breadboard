@@ -62,7 +62,8 @@ local function refresh()
   vim.fn.setqflist({}, isOurs and "r" or " ", { title = TITLE, items = items(), idx = isOurs and current.idx or 1 })
 end
 
-dofile(debug.getinfo(1, "S").source:sub(2):match("(.*/)") .. "colours.lua")
+local here = debug.getinfo(1, "S").source:sub(2):match("(.*/)")
+dofile(here .. "colours.lua")
 
 local function plugin(name, module)
   local ok, found = pcall(require, module)
@@ -99,6 +100,36 @@ vim.api.nvim_create_user_command("ChangesInline", function()
   end
 end, { desc = "The changed and removed lines marked in every file, on or off" })
 
+local function hasTree()
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.bo[vim.api.nvim_win_get_buf(win)].filetype == "neo-tree" then
+      return true
+    end
+  end
+  return false
+end
+
+-- The tree on the left, its changed files marked against the base. neo-tree debounces
+-- every navigate of the filesystem (100 ms, first and last), so a later one can replace
+-- this "show" without a word: once it had time, a missing tree is asked for again, then named.
+local function showTree(neotree, from, isRetry)
+  local ok, err = pcall(neotree.execute, { action = "show", source = "filesystem", position = "left", dir = root, git_base = from })
+  if not ok then
+    vim.notify("breadboard: neo-tree didn't open: " .. tostring(err), vim.log.levels.WARN)
+    return
+  end
+  vim.defer_fn(function()
+    if hasTree() then
+      return
+    end
+    if isRetry then
+      vim.notify("breadboard: neo-tree didn't open, :Neotree show opens it", vim.log.levels.WARN)
+    else
+      showTree(neotree, from, true)
+    end
+  end, 1500)
+end
+
 -- The tree, the editor and the list, everything against the base.
 local function start()
   local from = base()
@@ -116,7 +147,7 @@ local function start()
   -- "show" comes back to the window it was called from, so the editor keeps the focus.
   local neotree = plugin("neo-tree.nvim", "neo-tree.command")
   if neotree then
-    neotree.execute({ action = "show", source = "filesystem", position = "left", dir = root, git_base = from })
+    showTree(neotree, from, false)
   end
   -- Nothing to read in the empty buffer nvim starts with: the first changed file instead.
   if vim.fn.argc() == 0 and #vim.fn.getqflist() > 0 then
@@ -138,9 +169,29 @@ else
   })
 end
 
+-- This file is read once, from the main checkout (#297): a tab started before an update of
+-- it keeps the old view until it restarts. When one of its files changes, the tab says so, once.
+local function loadedAt()
+  local stamps = {}
+  for _, name in ipairs({ "changes.lua", "colours.lua" }) do
+    local stat = vim.uv.fs_stat(here .. name)
+    table.insert(stamps, stat and stat.mtime.sec or 0)
+  end
+  return table.concat(stamps, ",")
+end
+local loaded = loadedAt()
+local isStale = false
+local function noticeUpdate()
+  if not isStale and loadedAt() ~= loaded then
+    isStale = true
+    vim.notify("breadboard: changes.lua was updated since this tab started; quit nvim (:qa), a click on a file in the overview or the next layout starts it again", vim.log.levels.WARN)
+  end
+end
+
 vim.o.autoread = true
 -- An agent changes files while this runs: the list follows when you come back, and every few seconds.
 vim.api.nvim_create_autocmd({ "FocusGained", "BufWritePost" }, { callback = refresh })
+vim.api.nvim_create_autocmd("FocusGained", { callback = noticeUpdate })
 -- A file it wrote comes back into its buffer (autoread, checktime), and gitsigns marks it again.
 vim.fn.timer_start(5000, function()
   if vim.fn.getqflist({ title = 0 }).title == TITLE then
@@ -149,4 +200,5 @@ vim.fn.timer_start(5000, function()
   if vim.fn.getcmdwintype() == "" then
     pcall(vim.cmd, "silent! checktime")
   end
+  noticeUpdate()
 end, { ["repeat"] = -1 })

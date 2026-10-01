@@ -5,8 +5,9 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import { ESCAPES } from "../lib/tty.mjs";
-import { guarded } from "./guard.mjs";
+import { drawSection, guarded } from "./guard.mjs";
 import { renderOrchestration } from "./render-orchestration.mjs";
+import { screen } from "./screen.mjs";
 
 describe("guarded", () => {
   it("keeps the last view with the error in its first line and tries again", () => {
@@ -27,6 +28,40 @@ describe("guarded", () => {
     assert.match(fs.readFileSync(log, "utf-8"), /Error: boom/);
     isBroken = false;
     assert.equal(render(), "the title\nthe view");
+  });
+});
+
+describe("drawSection", () => {
+  it("draws a section that throws as one line naming it, the others as before (#306)", () => {
+    const log = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "guard-")),
+      "errors.log",
+    );
+    screen.clicks = [];
+    const lines = ["the title"];
+    drawSection(lines, "NEXT", () => lines.push("next"), log);
+    drawSection(
+      lines,
+      "MERGE REQUESTS",
+      () => {
+        screen.clicks[lines.length] = () => {};
+        lines.push("half a row");
+        throw new TypeError("reading 'branch'");
+      },
+      log,
+    );
+    drawSection(lines, "WORKTREES", () => lines.push("worktrees"), log);
+    const plain = lines.map(line => line.replace(ESCAPES, ""));
+    assert.equal(plain[0], "the title");
+    assert.equal(plain[1], "next");
+    assert.match(
+      plain[2],
+      /^ {2}MERGE REQUESTS failed to draw: reading 'branch' · trace in /,
+    );
+    assert.equal(plain[3], "worktrees");
+    // The half-drawn row's click went with it.
+    assert.equal(screen.clicks[2], undefined);
+    assert.match(fs.readFileSync(log, "utf-8"), /TypeError: reading 'branch'/);
   });
 });
 
