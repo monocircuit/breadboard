@@ -874,6 +874,7 @@ mod tests {
             is_ticked,
             text: text.into(),
             heading: Some(heading.into()),
+            ..IssueBox::default()
         }
     }
 

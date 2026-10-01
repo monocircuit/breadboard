@@ -4,6 +4,36 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:00 · CLI / overview --once · GitLab's call budget (#305) and the disk cache
+Chose: the printed orchestration reads GitLab in at most three rounds of
+calls side by side: (1) the open MRs, the last 100 pipelines, the issues
+not known as closed; (2) the MRs updated lately, only for a branch neither
+open nor known as final, the blocked-by links of all open issues in one
+GraphQL query (`glab api graphql`, `blockedByIssues { nodes { iid } }` as
+real GitLab has it), the jobs of a failed open pipeline; (3) single MRs,
+only for what the lists don't hold. What can't change any more comes from
+`.claude/gitlab-cache.json` and goes into it: Node's file, kinds and shapes
+(`mrs` + `branches`, `issues`, `states`; `jobs` only read: the print reads
+no job logs, and Node caches a failed pipeline's jobs only with them).
+`--once` writes that cache: it holds only facts GitLab can't change any
+more, Node's `--once` writes it too, and spec §9's "changes nothing" is
+about the workflow (actions, deliveries, herdr, GitLab), which it still
+doesn't touch. Measured in the breadboard world at COLUMNS=120: 5 calls
+cold (was 11), 4 on the second run (was the same 11), whatever the number
+of open issues (was 4 + one per open issue); the print is byte-identical
+to before, and Node's print on the cache ours wrote is byte-identical to
+its cold one. In the world the GraphQL call is a 404: the fake glab sends
+`api graphql` to its REST routes, and the fake's `blockedByIssues` is a
+list where GitLab has a connection (both for the gauntlet to fix). The
+links are then left out, as Node's failed `issues/<n>/links` read did;
+the scenario has none. Supersedes "GitLab's call budget waits for core's
+client". Against: waiting longer for core's client (the critic's top gap
+two rounds running; its cache is this file and format, so the move is a
+swap); a second HTTP client with token, retries and rate limit in the read
+group (core's job, rule 4).
+Why: rule 1 and rule 7 (#305: at most 10 calls, a second run asks nothing
+final), rule 5 (the cache file Node reads), rule 4 (glab, no new crate).
+
 ## 2026-10-02 00:20 · CLI / wt:remove, wt:prune, wt:herdr, handover · the plugin after a move (#230)
 Chose: once per run inside herdr, `wt:remove`, `wt:prune`, `wt:herdr` and
 the handover ask `herdr plugin list`; when `monocircuit.platform` is linked

@@ -208,10 +208,11 @@ fn order_of(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// A checkbox of an issue description (issues.mjs `boxesOf`): ticked or
-/// not, its text and the heading it stands under.
+/// A checkbox of an issue description (issues.mjs `boxesOf`): its line (from
+/// 0), ticked or not, its text and the heading it stands under.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Box {
+    pub line: usize,
     pub is_ticked: bool,
     pub text: String,
     pub heading: Option<String>,
@@ -223,7 +224,7 @@ pub fn boxes_with_headings(text: &str) -> Vec<Box> {
     let mut boxes = Vec::new();
     let mut heading = None;
     let mut is_in_code = false;
-    for line in text.split('\n') {
+    for (at, line) in text.split('\n').enumerate() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") {
             is_in_code = !is_in_code;
@@ -251,6 +252,7 @@ pub fn boxes_with_headings(text: &str) -> Vec<Box> {
             && (bytes[3] as char).is_whitespace()
         {
             boxes.push(Box {
+                line: at,
                 is_ticked: bytes[1] != b' ',
                 text: rest[3..].trim().to_string(),
                 heading: heading.clone(),

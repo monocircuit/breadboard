@@ -1,19 +1,18 @@
 //! An orchestration's part of GitLab (gitlab.mjs `readRemoteOfOrchestration`):
 //! the MR of each of its branches with its pipeline, the issue of each with
 //! its boxes and prerequisites, the jobs of a failed pipeline, and the state
-//! of every MR a wait or a handover names. In lists, side by side: open MRs,
-//! the MRs updated lately, the last pipelines, the issues by iid; then the
-//! links of the open issues, the jobs of failed pipelines and what the lists
-//! didn't have. Read only, nothing cached on disk (the cache comes with
-//! core's GitLab client).
+//! of every MR a wait or a handover names. Lists side by side, the links of
+//! the open issues in one GraphQL query, what can't change any more from the
+//! disk cache Node's overview shares (`read`).
 
 use super::try_state::Deploy;
+use crate::cli::read::cache::Cache;
 use crate::cli::read::gitlab;
 use crate::cli::read::issues::{Box as IssueBox, boxes_with_headings};
 use breadboard_core::git::issue_of_branch;
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::time::now_ms;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -28,6 +27,8 @@ pub struct Pipeline {
     pub sha: Option<String>,
     /// When it finished, else when it last changed: the age of an action about it.
     pub finished_at: Option<String>,
+    /// When it last changed: with the id, the key of its jobs in the cache.
+    pub updated_at: Option<String>,
 }
 
 impl Pipeline {
@@ -40,6 +41,7 @@ impl Pipeline {
             finished_at: str_of(value, "finished_at")
                 .or_else(|| str_of(value, "updated_at"))
                 .map(String::from),
+            updated_at: str_of(value, "updated_at").map(String::from),
         })
     }
 }
@@ -227,21 +229,196 @@ fn lists(main: &Path, endpoints: &[String]) -> Result<Vec<Vec<Value>>, String> {
     gitlab::lists(main, endpoints).into_iter().collect()
 }
 
+/// The GraphQL query of the links of `issues`: the issues that block each, as
+/// real GitLab has them (`blockedByIssues` is a connection there).
+fn links_query(issues: &[i64]) -> String {
+    let iids: Vec<String> = issues.iter().map(|iid| format!("\"{iid}\"")).collect();
+    format!(
+        "issues(iids: [{}], state: all, first: 100) {{ nodes {{ iid blockedByIssues {{ nodes {{ iid }} }} }} }}",
+        iids.join(", ")
+    )
+}
+
+/// The links of each issue GraphQL answered, in the shape of REST's
+/// `issues/<n>/links` (`{ link_type, iid }`) that `issue_of` reads.
+fn links_of(project: &Value) -> HashMap<i64, Vec<Value>> {
+    let nodes = |value: &Value, field: &str| -> Vec<Value> {
+        value
+            .pointer(&format!("/{field}/nodes"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let iid_of = |value: &Value| match value.get("iid") {
+        Some(Value::String(iid)) => iid.parse().ok(),
+        Some(iid) => iid.as_i64(),
+        None => None,
+    };
+    nodes(project, "issues")
+        .iter()
+        .filter_map(|issue| {
+            let links = nodes(issue, "blockedByIssues")
+                .iter()
+                .filter_map(iid_of)
+                .map(|iid| json!({ "link_type": "is_blocked_by", "iid": iid }))
+                .collect();
+            Some((iid_of(issue)?, links))
+        })
+        .collect()
+}
+
+/// An MR as the Node overview caches a final one (read.mjs `mrOf`, rule 5):
+/// `{ mr, mergeSha }`, the pipeline in GitLab's REST shape.
+fn mr_to_cache(mr: &Mr) -> Value {
+    let pipeline = mr.pipeline.as_ref().map(|pipeline| {
+        json!({
+            "id": pipeline.id, "status": pipeline.status, "web_url": pipeline.url, "sha": pipeline.sha,
+            "finished_at": pipeline.finished_at, "updated_at": pipeline.updated_at,
+        })
+    });
+    json!({
+        "mr": {
+            "iid": mr.iid, "title": mr.title, "isDraft": mr.is_draft, "state": mr.state,
+            "mergedAt": mr.merged_at, "hasConflicts": mr.has_conflicts, "mergeStatus": mr.merge_status,
+            "mergeCheck": mr.merge_check, "sha": mr.sha, "url": mr.url, "pipeline": pipeline, "deploy": null,
+        },
+        "mergeSha": mr.merge_sha,
+    })
+}
+
+/// A final MR of `branch` from the cache, None in another shape.
+fn mr_from_cache(value: &Value, branch: &str) -> Option<Mr> {
+    let mr = value.get("mr")?;
+    let text = |key: &str| str_of(mr, key).map(String::from);
+    let is = |key: &str| mr.get(key).and_then(Value::as_bool).unwrap_or(false);
+    Some(Mr {
+        iid: int_of(mr, "iid")?,
+        title: text("title").unwrap_or_default(),
+        is_draft: is("isDraft"),
+        state: text("state")?,
+        merged_at: text("mergedAt"),
+        has_conflicts: is("hasConflicts"),
+        merge_status: text("mergeStatus"),
+        merge_check: text("mergeCheck"),
+        sha: text("sha"),
+        url: text("url"),
+        source_branch: branch.to_string(),
+        pipeline: mr.get("pipeline").and_then(Pipeline::from_value),
+        merge_sha: str_of(value, "mergeSha").map(String::from),
+        deploy: None,
+    })
+}
+
+/// A closed issue as the Node overview caches it (read.mjs `issueOf`).
+fn issue_to_cache(issue: &Issue) -> Value {
+    let boxes: Vec<Value> = issue
+        .boxes
+        .iter()
+        .map(|found| json!({ "line": found.line, "isTicked": found.is_ticked, "text": found.text, "heading": found.heading }))
+        .collect();
+    json!({
+        "iid": issue.iid, "title": issue.title, "url": issue.url, "state": issue.state,
+        "boxes": boxes, "needs": issue.needs, "paths": issue.paths,
+    })
+}
+
+/// A closed issue from the cache, None in another shape.
+fn issue_from_cache(value: &Value) -> Option<Issue> {
+    let list = |key: &str| value.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    Some(Issue {
+        iid: int_of(value, "iid")?,
+        title: str_of(value, "title").unwrap_or_default().to_string(),
+        url: str_of(value, "url").map(String::from),
+        state: str_of(value, "state")?.to_string(),
+        boxes: list("boxes")
+            .iter()
+            .map(|found| IssueBox {
+                line: found.get("line").and_then(Value::as_u64).unwrap_or(0) as usize,
+                is_ticked: found.get("isTicked").and_then(Value::as_bool).unwrap_or(false),
+                text: str_of(found, "text").unwrap_or_default().to_string(),
+                heading: str_of(found, "heading").map(String::from),
+            })
+            .collect(),
+        needs: list("needs").iter().filter_map(Value::as_i64).collect(),
+        paths: list("paths")
+            .iter()
+            .filter_map(|path| path.as_str().map(String::from))
+            .collect(),
+    })
+}
+
+/// The jobs of a finished pipeline the Node overview cached (gitlab.mjs `jobsOf`).
+fn jobs_from_cache(cache: &Cache, pipeline: &Pipeline) -> Option<Vec<Job>> {
+    let key = format!("{}@{}", pipeline.id, pipeline.updated_at.as_deref().unwrap_or_default());
+    let jobs = cache.get("jobs", &key)?.as_array()?;
+    Some(
+        jobs.iter()
+            .map(|job| Job {
+                name: str_of(job, "name").unwrap_or_default().to_string(),
+                status: str_of(job, "status").unwrap_or_default().to_string(),
+                url: str_of(job, "url").map(String::from),
+                finished_at: str_of(job, "finishedAt").map(String::from),
+            })
+            .collect(),
+    )
+}
+
+fn job_of(job: &Value) -> Job {
+    Job {
+        name: str_of(job, "name").unwrap_or_default().to_string(),
+        status: str_of(job, "status").unwrap_or_default().to_string(),
+        url: str_of(job, "web_url").map(String::from),
+        finished_at: str_of(job, "finished_at").map(String::from),
+    }
+}
+
+fn is_final(state: &str) -> bool {
+    state == "merged" || state == "closed"
+}
+
 /// Reads GitLab for `branches` and the MRs `awaited` names: `Err` the reason
 /// when its lists can't be read.
+///
+/// What can't change any more comes from the disk cache and goes into it
+/// (cache.rs): a closed issue, a merged or closed MR of a branch, an awaited
+/// MR's final state. The rest in at most three rounds of calls side by side,
+/// four calls or five whatever the number of branches: (1) the open MRs, the
+/// last 100 pipelines (an MR's head pipeline by its commit), the issues not
+/// known as closed; (2) the MRs updated lately, only for a branch neither
+/// open nor known as final, the links of the open issues in one GraphQL
+/// query, the jobs of a failed open pipeline; (3) single MRs, only for what
+/// the lists didn't hold.
 pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote, String> {
+    let mut cache = Cache::open(main);
     let mut numbers: Vec<i64> = branches
         .iter()
         .filter_map(|branch| issue_of_branch(branch).map(|number| number as i64))
         .collect();
     numbers.sort_unstable();
     numbers.dedup();
+    let mut issue_by: HashMap<i64, Issue> = numbers
+        .iter()
+        .filter_map(|number| Some((*number, issue_from_cache(cache.get("issues", &number.to_string())?)?)))
+        .collect();
+    let final_of: HashMap<&String, Mr> = branches
+        .iter()
+        .filter_map(|branch| {
+            let iid = cache.get("branches", branch)?.as_i64()?;
+            Some((branch, mr_from_cache(cache.get("mrs", &iid.to_string())?, branch)?))
+        })
+        .collect();
+
+    // (1) What moves.
+    let asked: Vec<i64> = numbers
+        .iter()
+        .copied()
+        .filter(|number| !issue_by.contains_key(number))
+        .collect();
     let mut endpoints = vec![
         "projects/:fullpath/merge_requests?state=opened&per_page=100".to_string(),
-        "projects/:fullpath/merge_requests?state=all&per_page=100&order_by=updated_at".to_string(),
         "projects/:fullpath/pipelines?per_page=100".to_string(),
     ];
-    for chunk in numbers.chunks(100) {
+    for chunk in asked.chunks(100) {
         let iids: Vec<String> = chunk.iter().map(|number| format!("iids[]={number}")).collect();
         endpoints.push(format!(
             "projects/:fullpath/issues?state=all&per_page=100&{}",
@@ -250,7 +427,6 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
     }
     let mut answers = lists(main, &endpoints)?.into_iter();
     let opened = answers.next().unwrap_or_default();
-    let recent = answers.next().unwrap_or_default();
     let pipelines = answers.next().unwrap_or_default();
     let issues: Vec<Value> = answers.flatten().collect();
 
@@ -261,140 +437,159 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
             pipeline_of.entry(sha).or_insert(pipeline);
         }
     }
+    let with_listed_pipeline = |mut mr: Mr| {
+        // The head pipeline by the head commit, as the list of pipelines has it.
+        if let Some(listed) = mr.sha.as_ref().and_then(|sha| pipeline_of.get(sha)) {
+            mr.pipeline = Some(listed.clone());
+        }
+        mr
+    };
     let mut mr_of: HashMap<String, Mr> = HashMap::new();
     let mut state_of: HashMap<i64, String> = HashMap::new();
-    for (list, is_open) in [(&opened, true), (&recent, false)] {
-        for mr in list.iter().filter_map(Mr::from_value) {
-            state_of.entry(mr.iid).or_insert_with(|| mr.state.clone());
-            // An open one before any other of its branch; else the newest.
-            let is_better = match mr_of.get(&mr.source_branch) {
-                None => true,
-                Some(known) => is_open && !known.is_open(),
-            };
-            if is_better {
-                mr_of.insert(mr.source_branch.clone(), mr);
-            }
+    for mr in opened.iter().filter_map(Mr::from_value) {
+        state_of.entry(mr.iid).or_insert_with(|| mr.state.clone());
+        if !mr_of.contains_key(&mr.source_branch) {
+            mr_of.insert(mr.source_branch.clone(), with_listed_pipeline(mr));
         }
     }
-    let mut found_mrs: Vec<Mr> = branches
-        .iter()
-        .filter_map(|branch| mr_of.get(branch).cloned())
-        .map(|mut mr| {
-            // The head pipeline by the head commit, as the list of pipelines has it.
-            if let Some(listed) = mr.sha.as_ref().and_then(|sha| pipeline_of.get(sha)) {
-                mr.pipeline = Some(listed.clone());
-            }
-            mr
-        })
-        .collect();
+    for (branch, mr) in &final_of {
+        state_of.entry(mr.iid).or_insert_with(|| mr.state.clone());
+        if !mr_of.contains_key(*branch) {
+            mr_of.insert((*branch).clone(), mr.clone());
+        }
+    }
+    for iid in awaited {
+        if let Some(state) = cache.get("states", &iid.to_string()).and_then(Value::as_str) {
+            state_of.entry(*iid).or_insert_with(|| state.to_string());
+        }
+    }
 
-    // What the lists didn't answer: the links of the open issues, the jobs of
-    // a failed pipeline, an MR's pipeline the last 100 don't hold, the state
-    // of an awaited MR none of the lists has.
+    // (2) What the first round didn't settle.
+    let is_unsettled = branches.iter().any(|branch| !mr_of.contains_key(branch));
     let open_issues: Vec<i64> = issues
         .iter()
         .filter(|issue| str_of(issue, "state") == Some("opened"))
         .filter_map(|issue| int_of(issue, "iid"))
         .collect();
-    let failed: Vec<i64> = found_mrs
-        .iter()
+    let mut jobs: HashMap<i64, Vec<Job>> = HashMap::new();
+    let mut failed: Vec<i64> = Vec::new();
+    for mr in mr_of
+        .values()
         .filter(|mr| mr.is_open() && mr.status() == Some("failed"))
-        .filter_map(|mr| mr.pipeline.as_ref().map(|pipeline| pipeline.id))
-        .collect();
-    let missing: Vec<i64> = found_mrs
+    {
+        let Some(pipeline) = &mr.pipeline else { continue };
+        match jobs_from_cache(&cache, pipeline) {
+            Some(cached) => {
+                jobs.insert(pipeline.id, cached);
+            }
+            None if !failed.contains(&pipeline.id) => failed.push(pipeline.id),
+            None => {}
+        }
+    }
+    let job_endpoints: Vec<String> = failed
         .iter()
-        .filter(|mr| mr.pipeline.is_none())
-        .map(|mr| mr.iid)
+        .map(|id| format!("projects/:fullpath/pipelines/{id}/jobs?per_page=100&include_retried=false"))
         .collect();
-    let unknown: Vec<i64> = awaited
-        .iter()
-        .copied()
-        .filter(|iid| !state_of.contains_key(iid))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let mut more: Vec<String> = Vec::new();
-    more.extend(
-        open_issues
-            .iter()
-            .map(|iid| format!("projects/:fullpath/issues/{iid}/links")),
-    );
-    more.extend(
-        failed
-            .iter()
-            .map(|id| format!("projects/:fullpath/pipelines/{id}/jobs?per_page=100&include_retried=false")),
-    );
-    let singles: Vec<i64> = missing.iter().chain(&unknown).copied().collect();
-    let answers = thread::scope(|scope| {
-        let singles = scope.spawn(|| {
-            singles
-                .chunks(10)
-                .flat_map(|chunk| {
-                    thread::scope(|inner| {
-                        let handles: Vec<_> = chunk
-                            .iter()
-                            .map(|iid| {
-                                inner.spawn(move || {
-                                    gitlab::get(main, &format!("projects/:fullpath/merge_requests/{iid}")).ok()
-                                })
-                            })
-                            .collect();
-                        handles
-                            .into_iter()
-                            .map(|handle| handle.join().ok().flatten())
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .collect::<Vec<_>>()
+    let (recent, links, job_lists) = thread::scope(|scope| {
+        let recent = scope.spawn(|| {
+            is_unsettled.then(|| {
+                gitlab::list(
+                    main,
+                    "projects/:fullpath/merge_requests?state=all&per_page=100&order_by=updated_at",
+                )
+            })
         });
-        let lists = gitlab::lists(main, &more);
-        (lists, singles.join().unwrap_or_default())
+        // An error (an older GitLab) leaves the links out, as a REST read that failed did.
+        let links = scope.spawn(|| {
+            (!open_issues.is_empty())
+                .then(|| gitlab::graphql(main, &links_query(&open_issues)).ok())
+                .flatten()
+                .map(|project| links_of(&project))
+                .unwrap_or_default()
+        });
+        let job_lists = gitlab::lists(main, &job_endpoints);
+        (
+            recent.join().unwrap_or(None),
+            links.join().unwrap_or_default(),
+            job_lists,
+        )
     });
-    let (more_lists, single_answers) = answers;
-    let mut more_lists = more_lists.into_iter();
-    let links: HashMap<i64, Vec<Value>> = open_issues
+    let recent = recent.transpose()?.unwrap_or_default();
+    for (id, listed) in failed.iter().zip(job_lists) {
+        let mut listed = listed.unwrap_or_default();
+        listed.sort_by_key(|job| int_of(job, "id").unwrap_or(0));
+        jobs.insert(*id, listed.iter().map(job_of).collect());
+    }
+    // Newly found: what may be final, written to the cache once its pipeline is known.
+    let mut found_final: Vec<String> = Vec::new();
+    for mr in recent.iter().filter_map(Mr::from_value) {
+        state_of.entry(mr.iid).or_insert_with(|| mr.state.clone());
+        if branches.contains(&mr.source_branch) && !mr_of.contains_key(&mr.source_branch) {
+            if is_final(&mr.state) {
+                found_final.push(mr.source_branch.clone());
+            }
+            mr_of.insert(mr.source_branch.clone(), with_listed_pipeline(mr));
+        }
+    }
+
+    // (3) Single MRs: a pipeline the last 100 don't hold, the state of an
+    // awaited MR none of the lists has.
+    let mut singles: Vec<i64> = mr_of
         .iter()
-        .map(|iid| (*iid, more_lists.next().and_then(Result::ok).unwrap_or_default()))
+        .filter(|(branch, mr)| mr.pipeline.is_none() && !final_of.contains_key(branch))
+        .map(|(_, mr)| mr.iid)
         .collect();
-    let jobs: HashMap<i64, Vec<Job>> = failed
+    singles.extend(awaited.iter().filter(|iid| !state_of.contains_key(iid)));
+    singles.sort_unstable();
+    singles.dedup();
+    let endpoints: Vec<String> = singles
         .iter()
-        .map(|id| {
-            let mut jobs = more_lists.next().and_then(Result::ok).unwrap_or_default();
-            jobs.sort_by_key(|job| int_of(job, "id").unwrap_or(0));
-            let jobs = jobs
-                .iter()
-                .map(|job| Job {
-                    name: str_of(job, "name").unwrap_or_default().to_string(),
-                    status: str_of(job, "status").unwrap_or_default().to_string(),
-                    url: str_of(job, "web_url").map(String::from),
-                    finished_at: str_of(job, "finished_at").map(String::from),
-                })
-                .collect();
-            (*id, jobs)
-        })
+        .map(|iid| format!("projects/:fullpath/merge_requests/{iid}"))
         .collect();
-    for single in single_answers.iter().flatten() {
-        let Some(read) = Mr::from_value(single) else { continue };
+    let mut is_read: HashSet<i64> = HashSet::new();
+    for single in gitlab::gets(main, &endpoints).into_iter().flatten() {
+        let Some(read) = Mr::from_value(&single) else { continue };
+        is_read.insert(read.iid);
         state_of.insert(read.iid, read.state.clone());
-        if let Some(mr) = found_mrs.iter_mut().find(|mr| mr.iid == read.iid)
+        if let Some(mr) = mr_of.values_mut().find(|mr| mr.iid == read.iid)
             && mr.pipeline.is_none()
         {
             mr.pipeline = read.pipeline;
         }
     }
 
-    let issue_by: HashMap<i64, Issue> = issues
-        .iter()
-        .filter_map(|issue| {
-            let iid = int_of(issue, "iid")?;
-            issue_of(issue, links.get(&iid).map(Vec::as_slice).unwrap_or_default()).map(|issue| (iid, issue))
-        })
-        .collect();
+    // What became final this read goes into the cache.
+    for branch in &found_final {
+        if let Some(mr) = mr_of.get(branch)
+            && (mr.pipeline.is_some() || is_read.contains(&mr.iid))
+        {
+            cache.set("mrs", &mr.iid.to_string(), mr_to_cache(mr));
+            cache.set("branches", branch, json!(mr.iid));
+        }
+    }
+    for iid in awaited {
+        if let Some(state) = state_of.get(iid).filter(|state| is_final(state)) {
+            cache.set("states", &iid.to_string(), json!(state));
+        }
+    }
+    for value in &issues {
+        let Some(iid) = int_of(value, "iid") else { continue };
+        let Some(issue) = issue_of(value, links.get(&iid).map(Vec::as_slice).unwrap_or_default()) else {
+            continue;
+        };
+        if issue.state == "closed" {
+            cache.set("issues", &iid.to_string(), issue_to_cache(&issue));
+        }
+        issue_by.insert(iid, issue);
+    }
+    cache.save();
+
     let mut of = HashMap::new();
     for branch in branches {
-        let mr = found_mrs.iter().find(|mr| &mr.source_branch == branch).cloned();
+        let mr = mr_of.get(branch).cloned();
         let jobs = mr
             .as_ref()
+            .filter(|mr| mr.is_open())
             .and_then(|mr| mr.pipeline.as_ref())
             .and_then(|pipeline| jobs.get(&pipeline.id).cloned())
             .unwrap_or_default();
@@ -463,5 +658,57 @@ mod tests {
         assert_eq!(issue.needs, vec![3, 4]);
         assert_eq!(issue.boxes.len(), 2);
         assert_eq!(issue.boxes[1].heading.as_deref(), Some("Work"));
+    }
+
+    #[test]
+    fn asks_the_links_of_every_open_issue_at_once() {
+        assert_eq!(
+            links_query(&[302, 304]),
+            r#"issues(iids: ["302", "304"], state: all, first: 100) { nodes { iid blockedByIssues { nodes { iid } } } }"#
+        );
+        let links = links_of(&json!({ "issues": { "nodes": [
+            { "iid": "302", "blockedByIssues": { "nodes": [{ "iid": "300" }] } },
+            { "iid": "304", "blockedByIssues": { "nodes": [] } },
+        ] } }));
+        assert_eq!(links[&302], vec![json!({ "link_type": "is_blocked_by", "iid": 300 })]);
+        assert!(links[&304].is_empty());
+        let issue = issue_of(&json!({ "iid": 302, "state": "opened" }), &links[&302]).unwrap();
+        assert_eq!(issue.needs, vec![300]);
+    }
+
+    #[test]
+    fn a_final_mr_comes_back_from_the_cache_as_it_went_in() {
+        let mut mr = Mr::from_value(&json!({
+            "iid": 249, "title": "feat: x", "state": "merged", "merged_at": "2026-09-30T15:27:33Z",
+            "detailed_merge_status": "not_open", "merge_status": "can_be_merged", "sha": "abc",
+            "web_url": "https://x/249", "source_branch": "feature/234-x", "merge_commit_sha": "def",
+            "head_pipeline": { "id": 9, "status": "success", "sha": "abc", "updated_at": "2026-09-30T15:00:00Z" }
+        }))
+        .unwrap();
+        let cached = mr_to_cache(&mr);
+        // Node's shape (read.mjs `mrOf`), which the Node overview reads.
+        assert_eq!(cached["mergeSha"], json!("def"));
+        assert_eq!(cached["mr"]["mergeStatus"], json!("not_open"));
+        assert_eq!(cached["mr"]["pipeline"]["web_url"], Value::Null);
+        assert_eq!(cached["mr"]["pipeline"]["status"], json!("success"));
+        mr.deploy = None;
+        assert_eq!(mr_from_cache(&cached, "feature/234-x"), Some(mr));
+        assert_eq!(mr_from_cache(&json!({ "iid": 1 }), "x"), None);
+    }
+
+    #[test]
+    fn a_closed_issue_comes_back_from_the_cache_as_it_went_in() {
+        let issue = issue_of(
+            &json!({ "iid": 234, "title": "t", "web_url": "https://x/234", "state": "closed",
+                     "description": "after #3, see tree.mjs\n## Done\n- [x] a\n- [ ] b" }),
+            &[],
+        )
+        .unwrap();
+        let cached = issue_to_cache(&issue);
+        assert_eq!(
+            cached["boxes"][0],
+            json!({ "line": 2, "isTicked": true, "text": "a", "heading": "Done" })
+        );
+        assert_eq!(issue_from_cache(&cached), Some(issue));
     }
 }

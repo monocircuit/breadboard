@@ -1,11 +1,13 @@
 //! GitLab reads of this group: `glab api <endpoint>` (a GET) in the main
 //! checkout, so glab finds the host, the project (`:fullpath`) and the login
-//! itself. Until core offers its GitLab client (rewrite-plan.md, step 1);
-//! then these calls move to it.
+//! itself; `glab api graphql` where one query asks what REST asks one by one.
+//! Until core offers its GitLab client (rewrite-plan.md, step 1); then these
+//! calls move to it.
 
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::thread;
 
 /// Calls in flight at once: GitLab does not like a burst of a hundred.
@@ -14,9 +16,15 @@ const PARALLEL: usize = 10;
 /// A GET of `endpoint`, parsed; Err says why in the words of `GitlabError`:
 /// `GitLab: <reason> (<endpoint>)`.
 pub fn get(main: &Path, endpoint: &str) -> Result<Value, String> {
-    let failed = |reason: &str| format!("GitLab: {reason} ({endpoint})");
+    glab_api(main, &[endpoint], endpoint)
+}
+
+/// `glab api <args>`, its answer parsed; `what` names the call in an error.
+fn glab_api(main: &Path, args: &[&str], what: &str) -> Result<Value, String> {
+    let failed = |reason: &str| format!("GitLab: {reason} ({what})");
     let output = Command::new("glab")
-        .args(["api", endpoint])
+        .arg("api")
+        .args(args)
         .current_dir(main)
         .stdin(Stdio::null())
         .output()
@@ -30,6 +38,42 @@ pub fn get(main: &Path, endpoint: &str) -> Result<Value, String> {
         return Err(failed(&reason));
     }
     serde_json::from_slice(&output.stdout).map_err(|_| failed("its answer was no JSON"))
+}
+
+/// The project origin names (`monocircuit/platform`), as GraphQL wants it:
+/// glab fills `:fullpath` in a REST endpoint only (glab.mjs `remoteOf`).
+fn project_of(main: &Path) -> Option<String> {
+    static REMOTE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^(?:[a-z+]+://)?(?:[^@/]+@)?([^:/]+)(?::\d+)?[:/](.+?)(?:\.git)?/?$")
+            .expect("the remote pattern")
+    });
+    let output = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(main)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let url = String::from_utf8_lossy(&output.stdout);
+    Some(REMOTE.captures(url.trim())?[2].to_string())
+}
+
+/// One GraphQL query of the project (`glab api graphql`): `fields` are what
+/// is asked of `project(fullPath: …)`, the answer its `data.project`. An
+/// answer with `errors` is an Err with the first.
+pub fn graphql(main: &Path, fields: &str) -> Result<Value, String> {
+    let project = project_of(main).ok_or("GitLab: origin's URL names no project (graphql)")?;
+    let query = format!("query {{ project(fullPath: {}) {{ {fields} }} }}", Value::from(project));
+    let answer = glab_api(main, &["graphql", "-f", &format!("query={query}")], "graphql")?;
+    if let Some(error) = answer
+        .get("errors")
+        .and_then(Value::as_array)
+        .and_then(|errors| errors.first())
+    {
+        let message = error.get("message").and_then(Value::as_str).unwrap_or("an error");
+        return Err(format!("GitLab: GraphQL said {message} (graphql)"));
+    }
+    Ok(answer.pointer("/data/project").cloned().unwrap_or(Value::Null))
 }
 
 /// What a failed `glab api` says went wrong, in one line: glab's own
@@ -105,21 +149,28 @@ pub fn list(main: &Path, endpoint: &str) -> Result<Vec<Value>, String> {
 
 /// Every endpoint's list, side by side, PARALLEL at a time, in their order.
 pub fn lists(main: &Path, endpoints: &[String]) -> Vec<Result<Vec<Value>, String>> {
+    each(endpoints, |endpoint| list(main, endpoint))
+}
+
+/// Every endpoint's answer side by side, None for one that failed.
+pub fn gets(main: &Path, endpoints: &[String]) -> Vec<Option<Value>> {
+    each(endpoints, |endpoint| get(main, endpoint).ok())
+}
+
+/// `read` of every endpoint, PARALLEL at a time, in their order.
+fn each<T: Send>(endpoints: &[String], read: impl Fn(&str) -> T + Sync) -> Vec<T> {
+    let read = &read;
     endpoints
         .chunks(PARALLEL)
         .flat_map(|chunk| {
             thread::scope(|scope| {
                 let handles: Vec<_> = chunk
                     .iter()
-                    .map(|endpoint| scope.spawn(move || list(main, endpoint)))
+                    .map(|endpoint| scope.spawn(move || read(endpoint)))
                     .collect();
                 handles
                     .into_iter()
-                    .map(|handle| {
-                        handle
-                            .join()
-                            .unwrap_or_else(|_| Err("GitLab: the read broke off".into()))
-                    })
+                    .map(|handle| handle.join().expect("a GitLab read panicked"))
                     .collect::<Vec<_>>()
             })
         })
@@ -129,6 +180,29 @@ pub fn lists(main: &Path, endpoints: &[String]) -> Vec<Result<Vec<Value>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_project_origin_names() {
+        let dir = std::env::temp_dir().join(format!("breadboard-read-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| Command::new("git").args(args).current_dir(&dir).output().unwrap();
+        git(&["init", "--quiet"]);
+        assert_eq!(project_of(&dir), None);
+        for (url, project) in [
+            ("git@gitlab.com:monocircuit/platform.git", "monocircuit/platform"),
+            (
+                "https://gitlab.example.com:8443/group/sub/project.git",
+                "group/sub/project",
+            ),
+            ("ssh://git@gitlab.com/monocircuit/platform", "monocircuit/platform"),
+        ] {
+            git(&["remote", "remove", "origin"]);
+            git(&["remote", "add", "origin", url]);
+            assert_eq!(project_of(&dir).as_deref(), Some(project), "{url}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn names_what_went_wrong_in_one_line() {

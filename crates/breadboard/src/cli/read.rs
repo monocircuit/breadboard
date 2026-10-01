@@ -2,6 +2,7 @@
 //! overview (`overview --once`, or any overview whose stdout is no terminal).
 
 mod args;
+mod cache;
 mod gitlab;
 mod issues;
 mod list;
