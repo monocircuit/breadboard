@@ -21,10 +21,17 @@ async fn main() -> std::io::Result<()> {
         Some(token) => Source::Live { client: reqwest::Client::new(), token },
         None => Source::Fixture(FIXTURE.into()),
     };
-    // A panic's message goes to the section that drew it, not over the screen.
-    std::panic::set_hook(Box::new(|_| {}));
-
     let mut terminal = ratatui::init();
+    // After init, replacing ratatui's hook: that one restores the terminal on
+    // every panic, also on a section's that is caught and drawn in its place,
+    // and the terminal leaves raw mode (the mouse reports then show as text).
+    // A section's panic stays silent; any other restores and says why.
+    std::panic::set_hook(Box::new(|info| {
+        if !app::is_in_section() {
+            ratatui::restore();
+            eprintln!("{info}");
+        }
+    }));
     crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
     let result = run(&mut terminal, source).await;
     crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;

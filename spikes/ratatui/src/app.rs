@@ -10,7 +10,18 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::cell::Cell;
 use std::time::{Duration, Instant};
+
+thread_local! {
+    /// Set while a section draws: a panic there is caught and drawn in its place.
+    static IN_SECTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the panic happening now is a section's, caught by `build`.
+pub fn is_in_section() -> bool {
+    IN_SECTION.with(Cell::get)
+}
 
 /// The lines above the scrolling body.
 pub const HEADER: u16 = 2;
@@ -45,10 +56,12 @@ impl App {
             [("MERGE REQUESTS", merge_requests), ("BROKEN", broken)];
         for (name, section) in sections {
             let mut part = Scene::new(width);
+            IN_SECTION.with(|flag| flag.set(true));
             let drawn = catch_unwind(AssertUnwindSafe(|| {
                 section(self, &mut part);
                 part
             }));
+            IN_SECTION.with(|flag| flag.set(false));
             scene.append(match drawn {
                 Ok(part) => part.finish(),
                 Err(panic) => failed(name, &panic_text(&panic), width),
