@@ -35,6 +35,7 @@ import {
   removeMerged,
   notifyNewActions,
   tellConflicts,
+  tellFailedPipelines,
 } from "./auto-actions.mjs";
 import {
   boxInner,
@@ -204,6 +205,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
   );
   const auto = autoActionsOf(issues, of, local.agents ?? new Map(), {
     readyDrafts,
+    develop: remote?.develop ?? null,
   })
     .filter(
       ({ key, issue }) =>
@@ -500,7 +502,16 @@ export const renderOrchestration = (local, remote, error) => {
   const ordered = { ...local, order, withMr };
   // Conflicts with develop reach their agents by themselves: only through
   // the live overview that delivers (never a --once print).
-  if (remote && deliversAnswers(orchestration)) tellConflicts(issues, of);
+  // So do failed pipelines, before the rows: one whose line got in has none.
+  if (remote && deliversAnswers(orchestration)) {
+    tellConflicts(issues, of);
+    tellFailedPipelines(
+      issues,
+      of,
+      local.agents ?? new Map(),
+      remote.develop ?? null,
+    );
+  }
 
   // The handovers the orchestrator announced, where they stand (handovers.mjs).
   const announced = announcedOf(local.handovers, issues, {
