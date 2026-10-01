@@ -25,6 +25,8 @@
 //   pnpm wt:stack                             give the current worktree its own vita dev stack
 //   pnpm wt:mr [<issue>] [--update]           the draft MR of the current worktree, opened once
 //                                             from .claude/mr-description.md; --update sends it again
+//   pnpm wt:check                             lint, typecheck, test of what the branch changes; stamps
+//                                             the tree it passed, the pre-push hook wants it (#298)
 //   pnpm wt:note <issue> --message-file <f>   comment <f> on the issue, read back
 //   pnpm wt:tick [<issue>] [<box>…]           the boxes of the issue, numbered; ticks the given ones
 //   pnpm wt:action <kind> <text> [--url <u>]  ask the human (merge, try, decide, look, plan): ACTIONS
@@ -86,6 +88,7 @@ export {
   pushStateOf,
 } from "./worktree/change.mjs";
 export { isChangelogBehind, writeChangelog } from "./worktree/changelog.mjs";
+export { checkOf, failuresText } from "./worktree/check.mjs";
 export {
   isOverallBehind,
   writeOverall,
@@ -132,7 +135,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const flags = new Set([feature, ...rest].filter(a => a?.startsWith("--")));
   if (!commands[command])
     fail(
-      "usage: node packages/breadboard/src/worktree.mjs new|orchestrate|changelog|plan|stack|control|mr|note|tick|action|wait|issues|herdr|prune|list|remove …",
+      "usage: node packages/breadboard/src/worktree.mjs new|orchestrate|changelog|plan|stack|control|mr|check|note|tick|action|wait|issues|herdr|prune|list|remove …",
     );
   await commands[command](
     feature?.startsWith("--") ? undefined : feature,
