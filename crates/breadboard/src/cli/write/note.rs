@@ -1,0 +1,69 @@
+//! `pnpm wt:note <issue> --message-file <file>` (commands/note.mjs): a
+//! comment on an issue from a file, read back from the API, where a comment
+//! that holds a path instead of the text shows.
+
+use super::common::{Argv, Here, Outcome, number_of, say};
+use super::glab;
+use serde_json::Value;
+use std::process::ExitCode;
+
+pub fn run(argv: &Argv) -> Outcome {
+    let here = Here::find();
+    let top = here.dir();
+    let number = argv.first().and_then(number_of);
+    let (Some(number), Some(file)) = (number, argv.given("--message-file")) else {
+        return Err("usage: pnpm wt:note <issue> --message-file <file>".into());
+    };
+    let path = here.resolve(file);
+    if !path.exists() {
+        return Err(format!(
+            "{} does not exist — write the comment there first",
+            here.shown(file)
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("{} could not be read: {error}", here.shown(file)))?;
+    let message = String::from_utf8_lossy(&bytes).trim().to_string();
+    if message.is_empty() {
+        return Err(format!("{} is empty", here.shown(file)));
+    }
+
+    let posted = glab::glab(top, &["issue", "note", number, "--message", &message]);
+    if !posted.is_ok {
+        return Err(format!("glab could not comment on #{number}"));
+    }
+    let url = posted
+        .stdout
+        .trim()
+        .split('\n')
+        .find(|line| line.starts_with("http"))
+        .unwrap_or("")
+        .to_string();
+
+    // Read it back, as stored: `glab issue view --comments` renders the
+    // markdown and leaves the newest comments of a long issue out. An answer
+    // that is no JSON is a comment not seen (Node crashed on it).
+    let back = glab::api(
+        top,
+        &format!("projects/:fullpath/issues/{number}/notes?sort=desc&order_by=created_at&per_page=10"),
+    );
+    let is_there = back
+        .json()
+        .and_then(|notes| notes.as_array().cloned())
+        .is_some_and(|notes| {
+            notes.iter().any(|note| {
+                note.get("body")
+                    .and_then(Value::as_str)
+                    .is_some_and(|body| body.trim() == message)
+            })
+        });
+    say(&format!(
+        "\n{} comment on #{number}{}\n  {url}\n",
+        if is_there { "✓" } else { "⚠" },
+        if is_there {
+            ""
+        } else {
+            " — GitLab does not show it back, check it"
+        }
+    ));
+    Ok(ExitCode::SUCCESS)
+}

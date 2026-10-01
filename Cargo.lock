@@ -133,6 +133,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tokio",
