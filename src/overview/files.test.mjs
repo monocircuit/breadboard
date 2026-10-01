@@ -6,6 +6,7 @@ import { CELL_START } from "./boxes.mjs";
 import {
   fileAt,
   fileLine,
+  fileLines,
   firstChangeIn,
   lineColumn,
   logTargets,
@@ -153,5 +154,55 @@ describe("the file of the checkout a logged path means (#257)", () => {
 
   it("is none for a file the checkout doesn't have", () => {
     assert.equal(matchFile(files, "src/gone.ts"), null);
+  });
+});
+
+describe("lines of files at a width (#304)", () => {
+  const files = [
+    "packages/breadboard/src/overview/actions.mjs",
+    "packages/breadboard/src/overview/files.mjs",
+    "packages/breadboard/src/lib/tty.mjs",
+    "README.md",
+  ];
+  const suffix = "  merge develop in while it is small";
+
+  it("is one line when it fits", () => {
+    const lines = fileLines("  ⚠ in: ", files, { suffix }, 400);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].text, fileLine("  ⚠ in: ", files, { suffix }).text);
+    assert.ok(lines[0].text.endsWith(`+1 more${suffix}`));
+  });
+
+  // From the width of the longest name and its indent up: a narrower line cuts it alone.
+  for (const width of [50, 60, 100])
+    it(`wraps between names, never cutting one, at ${width} columns`, () => {
+      const lines = fileLines(
+        "  ⚠ also changed on develop: ",
+        files,
+        { suffix },
+        width,
+      );
+      assert.ok(lines.length > 1);
+      for (const { text } of lines) {
+        assert.ok(visible(text) <= width, text);
+        assert.doesNotMatch(text, /…/);
+      }
+      const all = lines.map(({ text }) => text).join(" ");
+      for (const file of files.slice(0, 3)) assert.ok(all.includes(file), file);
+      assert.ok(all.includes("merge develop in while it is small"));
+    });
+
+  it("knows where each name stands on its own line", () => {
+    const lines = fileLines("  ⚠ in: ", files, {}, 60);
+    for (const { text, spans } of lines)
+      for (const { from, to, file } of spans) {
+        const shown = text.slice(from, to);
+        assert.ok(shown === file || shown === "+1 more", `${shown} ≠ ${file}`);
+      }
+    assert.deepEqual(
+      lines.flatMap(({ spans }) => spans.map(span => span.file)),
+      files,
+    );
+    assert.ok(lines.slice(1).every(({ text }) => text.startsWith("    ")));
   });
 });

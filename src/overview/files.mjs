@@ -2,41 +2,76 @@
 // the files of DIFF, the conflicts of DEVELOP, a `file:line` in the log of a
 // failed job. At the change: the first line the worktree's work changes in
 // the file, or the line the log names.
-import { dim, visible } from "../lib/tty.mjs";
+import { dim, fit, flowGroups, visible } from "../lib/tty.mjs";
 import { lines as linesOf, sh } from "../lib/proc.mjs";
 import { openInEditor } from "../worktree.mjs";
-import { CELL_START } from "./boxes.mjs";
+import { CELL_START, boxInner } from "./boxes.mjs";
 import { screen } from "./screen.mjs";
 
 /** A column on screen (from 1) → the column of a pushed line (from 0, its two-blank indent included). */
 export const lineColumn = column => column - CELL_START + 2;
 /**
- * `prefix` and a few files by name, the rest as a count (like someFiles),
- * with where each name stands: `{ text, spans: [{ from, to, file }] }`,
- * columns of the line from 0, `to` past the end. `+N more` stands for the
- * first one it hides.
+ * `prefix`, a few files by name and the rest as a count (like someFiles),
+ * then `suffix`, as the parts of a line: `{ text, name, file }` each, `name`
+ * the clickable part of `text` (without its comma, so a line breaks after
+ * it), `file` null for the words around them. `+N more` stands for the
+ * first file it hides.
  */
-export const fileLine = (prefix, files, { count = 3, suffix = "" } = {}) => {
-  let text = prefix;
-  const spans = [];
-  const add = (shown, file) => {
-    spans.push({
-      from: visible(text),
-      to: visible(text) + visible(shown),
-      file,
-    });
-    text += shown;
-  };
-  files.slice(0, count).forEach((file, i) => {
-    if (i > 0) text += ", ";
-    add(file, file);
-  });
-  if (files.length > count) {
-    text += " ";
-    add(dim(`+${files.length - count} more`), files[count]);
+const fileParts = (prefix, files, { count = 3, suffix = "" } = {}) => {
+  const more = files.length - count;
+  const names = files.slice(0, count).map((file, i, shown) => ({
+    text: i < shown.length - 1 ? `${file},` : file,
+    name: file,
+    file,
+  }));
+  if (more > 0) {
+    const name = dim(`+${more} more`);
+    names.push({ text: name, name, file: files[count] });
   }
-  return { text: text + suffix, spans };
+  return [
+    { text: prefix.trimEnd(), file: null },
+    ...names,
+    // Its own blanks stay before the suffix on its line: one is the gap.
+    ...(suffix ? [{ text: suffix.slice(1), file: null, isSuffix: true }] : []),
+  ];
 };
+/** Where a continued line of files starts: under the first word after the mark. */
+const FILE_INDENT = "    ";
+/**
+ * `prefix` and a few files by name, the rest as a count (like someFiles),
+ * with where each name stands, as lines of at most `width` columns
+ * (#304): `[{ text, spans: [{ from, to, file }] }]`, columns of the line
+ * from 0, `to` past the end. A name is never cut between two lines.
+ */
+export const fileLines = (prefix, files, options = {}, width = Infinity) => {
+  const parts = fileParts(prefix, files, options);
+  const groups = flowGroups(
+    parts.map(part => part.text),
+    width,
+    { indent: FILE_INDENT },
+  );
+  return groups.map((group, n) => {
+    let text = n ? FILE_INDENT : "";
+    const spans = [];
+    group.forEach((at, i) => {
+      const part = parts[at];
+      if (i > 0) text += " ";
+      // A suffix that starts a line starts at the indent.
+      else if (part.isSuffix) text += part.text.trimStart();
+      if (part.file)
+        spans.push({
+          from: visible(text),
+          to: visible(text) + visible(part.name),
+          file: part.file,
+        });
+      if (i > 0 || !part.isSuffix) text += part.text;
+    });
+    return { text: fit(text, width), spans };
+  });
+};
+/** fileLines on one line, however wide. */
+export const fileLine = (prefix, files, options = {}) =>
+  fileLines(prefix, files, options)[0];
 /** The file of `spans` under the column of the line, the nearest one before it, else the first. */
 export const fileAt = (spans, at) =>
   spans.findLast(span => span.from <= at)?.file ?? spans[0]?.file ?? null;
@@ -117,9 +152,19 @@ export const openFile = (dir, file, line = null, { isLogged = false } = {}) => {
   const { why } = openInEditor(dir, found, line ?? firstChange(dir, found));
   editorTrouble = why;
 };
-/** A `fileLine` onto `lines`: a click opens the file under it in the nvim of `dir`. */
-export const pushFiles = (lines, { text, spans }, dir) => {
-  screen.clicks[lines.length] = column =>
-    openFile(dir, fileAt(spans, lineColumn(column)));
-  lines.push(text);
+/**
+ * fileLines onto `lines`, wrapped inside a box: a click opens the file under
+ * it in the nvim of `dir`. `prefix` starts with the two blanks of a row.
+ */
+export const pushFiles = (lines, prefix, files, dir, options = {}) => {
+  for (const { text, spans } of fileLines(
+    prefix,
+    files,
+    options,
+    boxInner() + 2,
+  )) {
+    screen.clicks[lines.length] = column =>
+      openFile(dir, fileAt(spans, lineColumn(column)));
+    lines.push(text);
+  }
 };
