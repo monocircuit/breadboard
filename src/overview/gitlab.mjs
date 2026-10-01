@@ -20,7 +20,7 @@ import {
 import { gitlabCache } from "./gitlab-cache.mjs";
 import { glab, glabText, phase } from "./io.mjs";
 import { issueOf, mergeShaOf, mrOf } from "./read.mjs";
-import { deployStateOf } from "./try-state.mjs";
+import { decidingDeployOf, deployStateOf } from "./try-state.mjs";
 import { deliverWaits } from "./waits.mjs";
 
 /** How many lines of a failed job's log the view shows. */
@@ -96,30 +96,64 @@ export const jobsOf = async (pipeline, context = defaults()) => {
     context.cache.set("jobs", key, jobs);
   return jobs;
 };
+/** A develop pipeline as GitLab lists it, with its jobs: what try-state.mjs reads. */
+const deployFrom = async (found, context) => ({
+  pipeline: found
+    ? {
+        id: found.id,
+        status: found.status,
+        url: found.web_url,
+        createdAt: found.created_at,
+      }
+    : null,
+  jobs: found ? await jobsOf(found, context) : [],
+});
 /**
- * The develop pipeline of the merge commit `sha` with its jobs, what a try
- * on the test instance waits for (try-state.mjs): `{ pipeline, jobs }`,
- * `pipeline` null while GitLab has none for it yet. Read once it ended
- * (try-state.mjs `isFinal`).
+ * The develop pipeline after pipeline `after` that deploys the merge commit
+ * `sha` when its own failed (#275), else null: the newest one that passed,
+ * else the newest one (it may still deploy), each only when its commit
+ * contains `sha`.
+ */
+const laterDeployOf = async (sha, after, context) => {
+  for (const filter of ["&status=success", ""]) {
+    const [found] = await context.json(
+      `projects/:fullpath/pipelines?ref=develop${filter}&per_page=1`,
+    );
+    if (!found || found.id <= after) continue;
+    const base = await context.json(
+      `projects/:fullpath/repository/merge_base?refs%5B%5D=${sha}&refs%5B%5D=${found.sha}`,
+    );
+    if (base?.id === sha) return deployFrom(found, context);
+  }
+  return null;
+};
+/**
+ * The develop pipeline that deploys the merge commit `sha` with its jobs,
+ * what a try on the test instance waits for (try-state.mjs): `{ pipeline,
+ * jobs }`, `pipeline` null while GitLab has none for it yet. Its own
+ * pipeline, or when that failed the newest develop pipeline containing it
+ * (`decidingDeployOf`): a failed one isn't final while a later one may come.
+ * Its own pipeline once it ended (try-state.mjs `isFinal`) and a later one
+ * that deployed it are read once (gitlab-cache.mjs).
  */
 export const deployOf = async (sha, context = defaults()) => {
-  const cached = context.cache.get("deploys", sha);
-  if (cached) return cached;
-  const [found] = await context.json(
-    `projects/:fullpath/pipelines?ref=develop&sha=${sha}&per_page=1`,
+  const later = context.cache.get("deployedBy", sha);
+  if (later) return later;
+  let own = context.cache.get("deploys", sha);
+  if (!own) {
+    const [found] = await context.json(
+      `projects/:fullpath/pipelines?ref=develop&sha=${sha}&per_page=1`,
+    );
+    own = await deployFrom(found, context);
+    if (deployStateOf(own).isFinal) context.cache.set("deploys", sha, own);
+  }
+  if (deployStateOf(own).state !== "failed") return own;
+  const deploy = decidingDeployOf(
+    own,
+    await laterDeployOf(sha, own.pipeline.id, context),
   );
-  const deploy = {
-    pipeline: found
-      ? {
-          id: found.id,
-          status: found.status,
-          url: found.web_url,
-          createdAt: found.created_at,
-        }
-      : null,
-    jobs: found ? await jobsOf(found, context) : [],
-  };
-  if (deployStateOf(deploy).isFinal) context.cache.set("deploys", sha, deploy);
+  if (deploy !== own && deployStateOf(deploy).state === "deployed")
+    context.cache.set("deployedBy", sha, deploy);
   return deploy;
 };
 /**
