@@ -358,6 +358,26 @@ const branchesOf = name =>
         .map(({ branch }) => branch),
     ]),
   ].filter(Boolean);
+/**
+ * A GET whose answer is kept once it can't change: a merged or closed MR or
+ * issue, a list of merged MRs. What a rewrite of the changelog asks, two
+ * calls a branch, on every merge.
+ */
+export const finalGet =
+  (context = defaults()) =>
+  async endpoint => {
+    const cached = context.cache.get("answers", endpoint);
+    if (cached) return cached;
+    const found = await context.json(endpoint);
+    const isDone = item => item?.state === "merged" || item?.state === "closed";
+    if (
+      Array.isArray(found)
+        ? found.length > 0 && found.every(isDone)
+        : isDone(found)
+    )
+      context.cache.set("answers", endpoint, found);
+    return found;
+  };
 /** What a rewrite of the changelog was last started for, by orchestration: one that lists it still not is not tried again and again. */
 const changelogTried = new Map();
 /**
@@ -382,7 +402,10 @@ const keepChangelog = (name, found) => {
   if (changelogTried.get(name) === key || !isChangelogBehind(name, done))
     return;
   changelogTried.set(name, key);
-  writeChangelog(name).catch(() => changelogTried.delete(name));
+  const context = defaults();
+  writeChangelog(name, finalGet(context))
+    .then(() => context.cache.save())
+    .catch(() => changelogTried.delete(name));
 };
 /**
  * Of every branch of an orchestration: its merge request (merged ones too)

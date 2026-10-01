@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import { gitlabCache } from "./gitlab-cache.mjs";
-import { readBranches, readMemory } from "./gitlab.mjs";
+import { finalGet, readBranches, readMemory } from "./gitlab.mjs";
 
 /** Long ago: a deployment that passed then is final (try-state.mjs). */
 const PAST = "2026-01-01T10:00:00Z";
@@ -223,5 +223,32 @@ describe("a GitLab read of an orchestration (#305)", () => {
       kept: readMemory(),
     });
     assert.deepEqual(aboutFinal(gitlab.calls, 3), []);
+  });
+});
+
+describe("what a rewrite of the changelog asks (#305)", () => {
+  it("asks once for a merged MR or a closed issue, every time for an open one", async () => {
+    const answers = {
+      "mrs?source_branch=a": [{ iid: 1, state: "merged" }],
+      "mrs?source_branch=b": [],
+      "issues/1": { iid: 1, state: "closed" },
+      "issues/2": { iid: 2, state: "opened" },
+    };
+    const calls = [];
+    const get = finalGet({
+      json: async endpoint => {
+        calls.push(endpoint);
+        return answers[endpoint];
+      },
+      cache: gitlabCache(null),
+    });
+    for (let round = 0; round < 2; round++)
+      for (const endpoint of Object.keys(answers))
+        assert.deepEqual(await get(endpoint), answers[endpoint]);
+    assert.deepEqual(calls, [
+      ...Object.keys(answers),
+      "mrs?source_branch=b",
+      "issues/2",
+    ]);
   });
 });
