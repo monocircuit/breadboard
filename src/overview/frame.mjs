@@ -2,7 +2,8 @@
 // changes, scrolling only cuts a new window out of it; input of one burst
 // adds up and draws once per frame; only the rows that changed are written.
 // A click resolves against the frame the user sees, not the next one.
-import { hovered } from "./boxes.mjs";
+import { ESCAPES } from "../lib/tty.mjs";
+import { buttonOn, hovered } from "./boxes.mjs";
 import { screen } from "./screen.mjs";
 import { viewRowOf, windowOf } from "./scroll.mjs";
 
@@ -41,7 +42,12 @@ export const frameUpdate = (previous, next) => {
  * - `viewRowAt(row)`: the line of the view on the row (from 0) of the frame on
  *   screen.
  * - `actionAt(row)`: what a click on the row (from 0) of the frame on screen
- *   does, handed the column; `clickAt(row, column)` runs it.
+ *   does, handed the column and the button there.
+ * - `targetAt(row, column)`: what a click there hits, `{ click, hit, ran }`:
+ *   the row's click (none: nothing), the button drawn under it (`{ label }`,
+ *   read off the line on screen, null off the buttons), and what runs, `button
+ *   <label>`, `line` or `nothing`; `clickAt(row, column)` runs it and hands
+ *   it to `log` with the row, the column and the line (#303).
  * - `hoverAt(row, column)`: the pointer is there (row from 0, column from 1),
  *   `hoverAt(null)` gone (#277): what a click there hits is drawn lit
  *   (boxes.mjs hovered), on the next frame and only when that changed, not
@@ -55,6 +61,7 @@ export const painter = ({
   write,
   now = Date.now,
   later = setTimeout,
+  log = () => {},
 }) => {
   let text = null;
   let shown = [];
@@ -102,6 +109,16 @@ export const painter = ({
   };
   const viewRowAt = row => viewRowOf(row, drawn);
   const actionAt = row => drawn.clicks[viewRowAt(row)];
+  const targetAt = (row, column) => {
+    const click = actionAt(row);
+    const hit = cut[row] === undefined ? null : buttonOn(cut[row], column);
+    const ran = !click
+      ? "nothing"
+      : hit && click.buttons?.includes(hit.label)
+        ? `button ${hit.label}`
+        : "line";
+    return { click, hit, ran };
+  };
   /**
    * What the pointer is on in the frame on screen, `{ key, line }`: only a
    * row a click does something on, `key` with its row; null for nothing.
@@ -126,7 +143,19 @@ export const painter = ({
     },
     viewRowAt,
     actionAt,
-    clickAt: (row, column) => actionAt(row)?.(column),
+    targetAt,
+    clickAt: (row, column) => {
+      const { click, hit, ran } = targetAt(row, column);
+      log({
+        row,
+        column,
+        viewRow: viewRowAt(row),
+        ran,
+        button: hit?.label ?? null,
+        line: (cut[row] ?? "").replace(ESCAPES, "").trim(),
+      });
+      return click?.(column, hit);
+    },
     hoverAt: (row, column) => {
       pointer = row === null ? null : { row, column };
       if ((hoverOf()?.key ?? null) !== lit) schedule();
