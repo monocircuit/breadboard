@@ -12,6 +12,7 @@ import { installPushGuard } from "../push-guard.mjs";
 import { openApp } from "../spaces.mjs";
 import {
   claimedElsewhere,
+  envFileOf,
   createStack,
   handOver,
   leavingWorktree,
@@ -107,7 +108,7 @@ export default async function newCommand(feature, flags) {
   // run the app, because APP_ORIGIN and the Keycloak realm of the shared
   // .env.local point at port 3000.
   let offset = 0;
-  const mainEnv = path.join(mainDir(), VITA, ".env.local");
+  const mainEnv = envFileOf(mainDir());
   if (!fs.existsSync(mainEnv)) {
     console.log(
       `\n! ${mainEnv} is missing, the worktree has no .env.local and no stack`,

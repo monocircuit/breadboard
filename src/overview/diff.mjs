@@ -16,7 +16,7 @@ const git = (args, dir) => sh("git", args, dir).stdout ?? "";
 /**
  * The area a file belongs to. Inside a package the folder below `src`, so most
  * of vita isn't one row: `vita/server`, `vita/app`, `utilities/devtools`; a
- * file at a package's top is the package (`vita`). Outside the packages the
+ * file at a package's top is the package (`vita`, `vita-core`). Outside the packages the
  * top-level folder or file (`scripts`, `AGENTS.md`).
  */
 export const areaOf = file => {
@@ -27,9 +27,17 @@ export const areaOf = file => {
   ) {
     return parts.length > 1 ? parts[0] : file;
   }
-  const inside = parts.slice(2);
+  // A product holds packages (`products/vita/web`, `…/core`): the web app
+  // keeps the product's name, the others are `vita-core`, ….
+  const [name, inside] =
+    parts[0] === "products" && parts.length > 3
+      ? [
+          parts[2] === "web" ? parts[1] : `${parts[1]}-${parts[2]}`,
+          parts.slice(3),
+        ]
+      : [parts[1], parts.slice(2)];
   const below = inside[0] === "src" ? inside.slice(1) : inside;
-  return below.length > 1 ? `${parts[1]}/${below[0]}` : parts[1];
+  return below.length > 1 ? `${name}/${below[0]}` : name;
 };
 
 /** A path of `status --porcelain`: the new name of a rename, without quotes. */

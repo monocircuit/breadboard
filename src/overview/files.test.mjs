@@ -88,22 +88,22 @@ describe("file:line in the log of a failed job (#257)", () => {
   it("gives ESLint's problems the file above them", () => {
     assert.deepEqual(
       logTargets([
-        "/builds/monocircuit/platform/products/vita/src/a.ts",
+        "/builds/monocircuit/platform/products/vita/web/src/a.ts",
         "  12:5  error  'x' is defined but never used  no-unused-vars",
         "  20:1  warning  Unexpected console  no-console",
         "✖ 2 problems (1 error, 1 warning)",
       ]),
       [
         {
-          file: "/builds/monocircuit/platform/products/vita/src/a.ts",
+          file: "/builds/monocircuit/platform/products/vita/web/src/a.ts",
           line: null,
         },
         {
-          file: "/builds/monocircuit/platform/products/vita/src/a.ts",
+          file: "/builds/monocircuit/platform/products/vita/web/src/a.ts",
           line: 12,
         },
         {
-          file: "/builds/monocircuit/platform/products/vita/src/a.ts",
+          file: "/builds/monocircuit/platform/products/vita/web/src/a.ts",
           line: 20,
         },
         null,
@@ -124,9 +124,9 @@ describe("file:line in the log of a failed job (#257)", () => {
 
 describe("the file of the checkout a logged path means (#257)", () => {
   const files = [
-    "products/vita/src/a.ts",
+    "products/vita/web/src/a.ts",
     "packages/monolithium/src/a.ts",
-    "products/vita/src/app/page.tsx",
+    "products/vita/web/src/app/page.tsx",
     "package.json",
   ];
 
@@ -137,14 +137,17 @@ describe("the file of the checkout a logged path means (#257)", () => {
   it("ends in a path within a package", () => {
     assert.equal(
       matchFile(files, "src/app/page.tsx"),
-      "products/vita/src/app/page.tsx",
+      "products/vita/web/src/app/page.tsx",
     );
   });
 
   it("is the end of an absolute path on the runner", () => {
     assert.equal(
-      matchFile(files, "/builds/monocircuit/platform/products/vita/src/a.ts"),
-      "products/vita/src/a.ts",
+      matchFile(
+        files,
+        "/builds/monocircuit/platform/products/vita/web/src/a.ts",
+      ),
+      "products/vita/web/src/a.ts",
     );
   });
 

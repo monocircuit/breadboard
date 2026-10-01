@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { herdr, panesOf, spaces } from "../lib/herdr.mjs";
 import { quote } from "../lib/proc.mjs";
+import { ideFlag } from "./ide.mjs";
 import { featureOf, idlePaneOf } from "./tabs.mjs";
 import { mainDir, worktrees } from "./worktrees.mjs";
 
@@ -78,7 +79,7 @@ const LIVE_MS = 10 * 60_000;
 /**
  * Every conversation of the repo is kept in the project of the main checkout,
  * so `/resume` there lists them all, also those of a worktree long removed.
- * The project of a worktree (and of a directory below one, `…-products-vita`)
+ * The project of a worktree (and of a directory below one, `…-products-vita-web`)
  * is a link to it. claude follows the link, and EnterWorktree sees both as
  * the same place. A project that is a directory still is merged in and
  * replaced by the link, once none of its transcripts was written to lately;
@@ -303,7 +304,7 @@ export const resumeSession = (dir, workspace) => {
       "pane",
       "run",
       idle,
-      `${cwd === dir ? "" : `cd ${quote(cwd)} && `}claude --resume ${id}`,
+      `${cwd === dir ? "" : `cd ${quote(cwd)} && `}claude --resume ${id}${ideFlag(dir)}`,
     ]),
   );
 };
