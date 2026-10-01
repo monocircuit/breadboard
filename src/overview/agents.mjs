@@ -3,7 +3,7 @@
 // each issue that waits and why. No count holds an issue back any more, so
 // this says who works on what instead of how many slots are free.
 import { bold, cyan, dim, red } from "../lib/tty.mjs";
-import { focusSpace, waitsText } from "../worktree.mjs";
+import { focusSpace, waitsText, wasOf } from "../worktree.mjs";
 import { THRESHOLD, gb } from "../worktree/memory.mjs";
 import { closeBox, openBox } from "./boxes.mjs";
 import { toneOf } from "./herdr-tones.mjs";
@@ -35,8 +35,9 @@ const afterText = after =>
 
 /**
  * The rows of AGENTS: `{ agents, waiting }`. `agents` one per worktree an
- * agent is bound to, `{ issue, name, status, state, share, next }`,
- * `status` herdr's state of it (the colour of `state`, herdr-tones.mjs); `waiting` one
+ * agent is bound to, `{ issue, name, was, status, state, share, next }`,
+ * `was` its name before its last handover for a day (#251), `status`
+ * herdr's state of it (the colour of `state`, herdr-tones.mjs); `waiting` one
  * per worktree without an agent, `{ issue, text }`. The queued issues are
  * WORKTREES' queue (#250).
  * `known`: the record's workers (their names), `handovers`: the announced
@@ -48,7 +49,7 @@ export const agentRowsOf = (
   issues,
   of,
   agentStatus,
-  { known = {}, handovers = [], suggested = new Map() } = {},
+  { known = {}, handovers = [], suggested = new Map(), now = Date.now() } = {},
 ) => {
   const agents = issues
     .filter(issue => issue.tree?.claude)
@@ -56,7 +57,12 @@ export const agentRowsOf = (
       const { tree } = issue;
       const { claude } = tree;
       const name = known[claude.id]?.name ?? tree.name;
-      const announced = handovers.find(handover => handover.to === name);
+      const was = wasOf(known[claude.id], now);
+      // Announced under its name before the handover: the same agent.
+      const announced = handovers.find(
+        handover =>
+          handover.to === name || handover.to === known[claude.id]?.was,
+      );
       const offered = [...suggested].find(
         ([, { worker }]) => worker.name === name,
       );
@@ -64,6 +70,7 @@ export const agentRowsOf = (
       return {
         issue,
         name,
+        was,
         status,
         state: agentStateOf(tree, status, of(issue).mr),
         share: claude.window ? Math.min(claude.used / claude.window, 1) : null,
@@ -103,7 +110,7 @@ export const pushAgents = (lines, issues, of, agentStatus, context, free) => {
       ...agents.map(row => [
         "",
         toneOf(row.status)(row.state.text),
-        bold(row.name),
+        row.was ? `${bold(row.name)} ${dim(`was ${row.was}`)}` : bold(row.name),
         `#${row.issue.number}`,
         row.share === null ? "" : dim(`${Math.round(row.share * 100)} %`),
         row.next ? cyan(`→ ${row.next}`) : "",
