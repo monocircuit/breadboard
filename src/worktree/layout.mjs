@@ -224,7 +224,7 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
       .map(w => orchestrationOf(w.label))
       .filter(Boolean),
   );
-  for (const name of orchestrations) orchestratorSpace(name);
+  for (const name of orchestrations) orchestratorSpace(name, { shouldResume });
 
   const known = new Map(spaces().map(w => [w.label, w]));
   for (const { dir } of trees) {

@@ -8,6 +8,7 @@ import {
   freeLine,
   freeTab,
   freedEntry,
+  freeTabsOutside,
 } from "../worktree/free.mjs";
 import { removeMerged } from "./auto-actions.mjs";
 import { announcedOf } from "./handovers.mjs";
@@ -221,5 +222,40 @@ describe("a free agent and the next issue", () => {
     assert.equal(announced.tree.isFree, true);
     assert.equal(announced.tree.claude.id, "c9");
     assert.equal(announced.isDue, true);
+  });
+});
+
+describe("the end of the orchestration", () => {
+  it("closes the free agents moved out of its space, the rest go with it", () => {
+    const panes = [
+      {
+        pane_id: "p1",
+        tab_id: "t1",
+        workspace_id: "w-orch",
+        agent_session: { value: "c1" },
+      },
+      {
+        pane_id: "p2",
+        tab_id: "t2",
+        workspace_id: "w-other",
+        agent_session: { value: "c2" },
+      },
+      {
+        pane_id: "p3",
+        tab_id: "t3",
+        workspace_id: "w-other",
+        agent_session: { value: "c3" },
+      },
+      { pane_id: "p4", tab_id: "t4", workspace_id: "w-other" },
+    ];
+    assert.deepEqual(
+      freeTabsOutside([{ id: "c1" }, { id: "c2" }], panes, "w-orch"),
+      ["t2"],
+    );
+    // Without its space: every free agent's tab.
+    assert.deepEqual(
+      freeTabsOutside([{ id: "c1" }, { id: "c2" }], panes, null),
+      ["t1", "t2"],
+    );
   });
 });

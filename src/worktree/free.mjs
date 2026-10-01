@@ -97,6 +97,25 @@ export const freeAgent = (name, { id, agent, pane, dir, iid, files = [] }) => {
   ]);
   return { isFreed: true, isTold, why: null };
 };
+/**
+ * The tabs of the free agents `free` (`{ id }`) that stand outside the space
+ * `workspace` (moved by hand): the end of the orchestration closes them
+ * too, those inside go with the space. `panes`: herdr's pane list.
+ */
+export const freeTabsOutside = (free, panes, workspace) => {
+  const ids = new Set(free.map(({ id }) => id));
+  return [
+    ...new Set(
+      panes
+        .filter(
+          pane =>
+            ids.has(pane.agent_session?.value) &&
+            pane.workspace_id !== workspace,
+        )
+        .map(pane => pane.tab_id),
+    ),
+  ];
+};
 /** The record forgets a free agent: dismissed, handed an issue (`free: null`). */
 export const unfree = (name, id, fields = {}) =>
   writeWorker(name, id, { free: null, ...fields });

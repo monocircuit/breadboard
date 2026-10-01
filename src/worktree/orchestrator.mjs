@@ -13,6 +13,7 @@ import {
 import { git, quote, run } from "../lib/proc.mjs";
 import { CHANGELOG, CHANGES, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
+import { resumeFree } from "./free.mjs";
 import { exclusive } from "./lock.mjs";
 import {
   ORCHESTRATOR,
@@ -108,9 +109,10 @@ export const changesCommands = name => [
  * (what it got done, #248) and, with nvim on the PATH, `changes` (what
  * its MRs changed in the code, #256), in that order. The layout calls it for every
  * such space, so overview, changelog and changes come back after a herdr restart and
- * an older space gets them.
+ * an older space gets them; `shouldResume` (a restart) runs its free agents
+ * again in their tabs `free <agent>` (#289, free.mjs).
  */
-export const orchestratorSpace = name => {
+export const orchestratorSpace = (name, { shouldResume = false } = {}) => {
   const main = mainDir();
   // A new title (`wt:orchestrate <name> --title`): its space is renamed, what runs in it keeps running.
   const label = orchestratorLabel(name);
@@ -164,6 +166,8 @@ export const orchestratorSpace = name => {
       tabs,
     );
   keepOrder(workspace, orchestratorOrder());
+  // After a restart its free agents run again, in its checkout (#289).
+  if (shouldResume) resumeFree(name, workspace);
   return workspace;
 };
 /**
