@@ -75,6 +75,15 @@ What the OpenTUI tries found, each a thing the rewrite would live with:
    renderables a caller still holds; keeping them means a reconciler
    (`@opentui/solid` or `/react`) on top.
 
+What the user's try found on the ratatui prototype, and its headless tests
+could not: ratatui's `init()` installs a panic hook that restores the
+terminal. The prototype's BROKEN section panics on every draw (caught, drawn
+in place), and each panic took the terminal out of raw mode: the mouse
+reports showed up as text and clicks were lost. The fix is the hook a
+rewrite needs anyway (silent for a section's caught panic, restoring for a
+real crash). `TestBackend` has no tty; the gauntlet's pty does, and checks
+it now for any implementation (`hover.check.mjs`).
+
 What ratatui needed instead: the hit regions written by hand
 (`scene.rs`), and wrapping by hand (atoms). Both are small and, because the
 same code places text and regions, they cannot drift apart (the cause of
