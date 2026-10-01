@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { fit, table, tableRows, underRows, visible, wrap } from "./tty.mjs";
+import {
+  fit,
+  fitParts,
+  table,
+  tableRows,
+  underRows,
+  visible,
+  wrap,
+} from "./tty.mjs";
 
 const RED = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -154,5 +162,18 @@ describe("underRows", () => {
       assert.ok(visible(line) <= 30);
     }
     assert.ok(lines.at(-1).endsWith("…"));
+  });
+});
+
+describe("fitParts", () => {
+  it("drops the parts that don't fit whole, without …", () => {
+    const title = `ACTIONS 4 for you · ${RED}a button answers${RESET} · auto ones go`;
+    assert.equal(fitParts(title, 80), title);
+    assert.equal(
+      fitParts(title, 30).replace(/\x1b\[[0-9;]*m|\x1b\]8;;\x1b\\/g, ""),
+      "ACTIONS 4 for you",
+    );
+    // A first part too wide alone is cut with … still.
+    assert.equal(fitParts("ACTIONS 4 for you", 10), "ACTIONS 4…");
   });
 });

@@ -72,6 +72,7 @@ export {
   changeOf,
   claimAnswer,
   doneAction,
+  optionsOf,
   releaseAnswer,
   takeAnswers,
 } from "./worktree/actions.mjs";

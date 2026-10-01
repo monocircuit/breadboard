@@ -186,10 +186,26 @@ describe("mrRowLines", () => {
     const [lines] = plain(
       mrRowLines([row(256, { text: lacking })], { width: 80 }),
     );
-    assert.equal(lines.length, 3);
+    // Whole, no `…` at the edge (#273).
+    assert.ok(lines.length <= 7);
     assert.ok(lines.every(line => visible(line) <= 80));
     assert.ok(lines.slice(1).every(line => !/^\s*→/.test(line)));
-    assert.match(lines[2], /…$/);
+    assert.match(lines.join(" "), /2 commits not\s+pushed\s→\sagent$/);
+  });
+
+  it("gives a row without a status the room of the statuses for its title", () => {
+    const [open, merged] = plain(
+      mrRowLines(
+        [
+          row(256),
+          { ...row(254), title: "fix: short", status: "merged 2 h ago" },
+        ],
+        { width: 116 },
+      ),
+    );
+    assert.ok(!open[0].includes("…"), open[0]);
+    assert.ok(visible(open[0]) <= 116);
+    assert.match(merged[0], /fix: short +merged 2 h ago$/);
   });
 
   it("carries the lanes that go on below on its further lines", () => {

@@ -2,8 +2,10 @@
 // and status marks.
 import {
   ESCAPES,
+  columns,
   dim,
   fit,
+  fitParts,
   green,
   isColor,
   link,
@@ -21,7 +23,7 @@ import { LOGO_LINES, titleLogo } from "./logo.mjs";
  * never side by side: a click knows its row, not its column.
  */
 /** The boxes take the whole width of the pane: herdr's pane is the frame. */
-const boxWidth = () => process.stdout.columns || 120;
+const boxWidth = () => columns();
 /** Boxes follow each other without a blank line: their borders part them, and the view has to fit a pane. */
 export const openBox = lines => {
   lines.push("");
@@ -47,7 +49,10 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
       const line = isIndented ? lines[i].replace(/^ {2}/, "") : lines[i];
       lines[i] = onIsland(` ${pad(fit(line, inner), inner)} `);
     }
-    lines[start] = onIsland(` ${pad(fit(title, inner), inner)} `, ISLAND_HEAD);
+    lines[start] = onIsland(
+      ` ${pad(fitParts(title, inner), inner)} `,
+      ISLAND_HEAD,
+    );
     lines.push("");
     return;
   }
@@ -57,7 +62,7 @@ export const closeBox = (lines, start, title, { isIndented = true } = {}) => {
     const line = isIndented ? lines[i].replace(/^ {2}/, "") : lines[i];
     lines[i] = `${dim("│")} ${pad(fit(line, inner), inner)} ${dim("│")}`;
   }
-  const head = ` ${fit(title, width - 5)} `;
+  const head = ` ${fitParts(title, width - 5)} `;
   lines[start] =
     `${dim("╭─")}${head}${dim(`${"─".repeat(Math.max(0, width - 3 - visible(head)))}╮`)}`;
   lines.push(dim(`╰${"─".repeat(width - 2)}╯`));
@@ -161,6 +166,22 @@ export const button = (label, tone = "cyan") => {
   // Greyed out without colours: parentheses instead of brackets.
   return tone === "gray" ? `( ${label} )` : `[ ${label} ]`;
 };
+/**
+ * A chip: a label on a grey a step above the island's, in the colour of
+ * `tone`, not bold and not on a coloured ground, so it never reads as a
+ * button. Without colours the label alone.
+ */
+const CHIP_TONES = {
+  cyan: 36,
+  green: 32,
+  red: 31,
+  yellow: 33,
+  plain: 37,
+};
+export const chip = (label, tone = "plain") =>
+  isColor
+    ? `\x1b[${CHIP_TONES[tone] ?? 37};48;2;70;70;70m ${label} \x1b[0m`
+    : label;
 /** A pipeline (or its status alone) as a mark, linked to the pipeline when its url is known. */
 export const pipelineMark = pipeline =>
   link(pipeline?.web_url, statusMark(pipeline?.status ?? pipeline));
