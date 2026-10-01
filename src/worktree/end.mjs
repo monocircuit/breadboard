@@ -35,6 +35,7 @@ import {
   recordFile,
   recordOf,
 } from "./origins.mjs";
+import { freeAgentsOf, freeTabsOutside } from "./free.mjs";
 import { featureOf } from "./tabs.mjs";
 import { mainDir, worktrees } from "./worktrees.mjs";
 import { setupsDir } from "./setups.mjs";
@@ -88,8 +89,8 @@ export const keepConversation = (id, waitMs = 5000) => {
   return `the conversation ${id} into the main checkout's project`;
 };
 /**
- * Ends the orchestration `name`: its space closes (the orchestrator's claude
- * and the overview with it), each claude that ran in it is kept for
+ * Ends the orchestration `name`: its space closes (the orchestrator's claude,
+ * its free agents and the overview with it), each claude that ran in it is kept for
  * `/resume` in the main checkout, then its record and its checkout go (its
  * changelog stays, the log names where) — what
  * pruneOrchestrators does, without waiting for the orchestrator to end.
@@ -100,6 +101,20 @@ export const endOrchestration = name => {
   if (why) return { error: `${orchestratorLabel(name)} can't end, ${why}` };
   const done = [];
   const workspace = spaceOfOrchestration(name);
+  // Its free agents (#289) go with it: those moved out of its space too.
+  const free = freeAgentsOf(recordOf(name));
+  if (free.length && isInHerdr()) {
+    const panes = herdr(["pane", "list"])?.panes ?? [];
+    for (const tab of freeTabsOutside(
+      free,
+      panes,
+      workspace?.workspace_id ?? null,
+    ))
+      herdr(["tab", "close", tab]);
+    done.push(
+      `closed the free agent${free.length === 1 ? "" : "s"} ${free.map(agent => agent.name).join(", ")}`,
+    );
+  }
   if (workspace) {
     const ids = panesOf(workspace.workspace_id)
       .filter(p => p.agent === "claude" && p.agent_session?.value)

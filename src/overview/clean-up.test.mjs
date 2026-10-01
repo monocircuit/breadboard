@@ -82,7 +82,7 @@ describe("the clean-up after a handover (#252)", () => {
   it("waits while the handed-over agent still stands in its old worktree", () => {
     assert.deepEqual(cleanUpOf(old([agent]), { mr: merged }), {
       key: "waits",
-      why: "242-x has not entered its next worktree yet",
+      why: "242-x still stands in it",
     });
     // Also from a folder deeper in it.
     assert.equal(

@@ -228,7 +228,8 @@ export const layout = exclusive(async ({ shouldResume = false } = {}) => {
       .filter(Boolean),
   );
   for (const name of orchestrations) {
-    orchestratorSpace(name);
+    // After a restart its free agents run again too (#289).
+    orchestratorSpace(name, { shouldResume });
     const resumed = shouldResume ? restoreChat(name) : null;
     if (resumed) report.push(`${orchestratorLabel(name)}: ${resumed}`);
   }
