@@ -171,17 +171,36 @@ const factsOf = (issue, found, mr, hasRemote, handover) => {
     .join(" · ");
 };
 
+/** `→ 242-overview after !256` / `→ 242-overview now`: an announced handover's agent and what it waits for. */
+const takenText = ({ to, open, after }) => {
+  const mrs = open ?? after ?? [];
+  return `→ ${to} ${mrs.length ? `after ${mrs.map(iid => `!${iid}`).join(", ")}` : "now"}`;
+};
+/**
+ * What a queued issue waits for (#250): the agent the orchestrator announced
+ * (and after which MRs), the idle one UP NEXT suggests, else a start.
+ */
+const queuedText = (issue, announced, suggested) => {
+  const handover = announced.find(({ number }) => number === issue.number);
+  if (handover) return cyan(takenText(handover));
+  const worker = suggested.get(issue.number)?.worker;
+  if (worker) return cyan(`→ ${worker.name} once its MR is merged`);
+  return cyan("start: waits for an agent");
+};
+
 /**
  * The tree of an orchestration's issues, each numbered (numbering.mjs):
  * `live`, the worktrees there and the issues that never got one, by their
- * number, `removed`, the ones whose worktree is gone, the last removed
+ * number, `queued`, the issues that wait for an agent in the order they
+ * start: the work order, then when they were queued (#250), `removed`, the ones whose worktree is gone, the last removed
  * first. Each `{ issue, state, place, name, facts, title }`: `place` its
  * number in front of `name`, the feature in pink (bold while its worktree
  * is there); `facts` and `title` go below it.
  * `of(issue)`: its part of GitLab; `agents`: agentsOf(); `work`: the work
  * order of wt:plan; `merge`: the open MRs' issues in the computed merge order;
  * `announced`: the announced handovers (handovers.mjs); `holds`: dir → why
- * the clean-up of a worktree waits for a handover (workers.mjs).
+ * the clean-up of a worktree waits for a handover (workers.mjs);
+ * `suggested`: number → `{ worker }` of UP NEXT (workers.mjs).
  */
 export const treeOf = (
   issues,
@@ -192,6 +211,7 @@ export const treeOf = (
     merge = [],
     announced = [],
     holds = new Map(),
+    suggested = new Map(),
     hasRemote = true,
   } = {},
 ) => {
@@ -209,14 +229,16 @@ export const treeOf = (
       removal: tree && removalOf(tree.dir),
     });
     const state =
-      lifecycle.key === "removed" && issue.removedAt
-        ? {
-            ...lifecycle,
-            text: dim(
-              `${issue.mergedAt || mr?.state === "merged" ? "merged: " : ""}removed ${clock(issue.removedAt)}`,
-            ),
-          }
-        : lifecycle;
+      lifecycle.key === "queued"
+        ? { ...lifecycle, text: queuedText(issue, announced, suggested) }
+        : lifecycle.key === "removed" && issue.removedAt
+          ? {
+              ...lifecycle,
+              text: dim(
+                `${issue.mergedAt || mr?.state === "merged" ? "merged: " : ""}removed ${clock(issue.removedAt)}`,
+              ),
+            }
+          : lifecycle;
     return {
       issue,
       state,
@@ -227,10 +249,22 @@ export const treeOf = (
       title: dim(found?.title ?? issue.title ?? issue.branch),
     };
   });
+  const rank = row => {
+    const at = work.indexOf(row.issue.number);
+    return at === -1 ? Infinity : at;
+  };
   return {
     live: rows
-      .filter(row => row.state.key !== "removed")
+      .filter(row => !["removed", "queued"].includes(row.state.key))
       .toSorted((a, b) => a.number - b.number),
+    queued: rows
+      .filter(row => row.state.key === "queued")
+      .toSorted(
+        (a, b) =>
+          (rank(a) === rank(b) ? 0 : rank(a) < rank(b) ? -1 : 1) ||
+          (a.issue.queuedAt ?? "").localeCompare(b.issue.queuedAt ?? "") ||
+          a.number - b.number,
+      ),
     removed: rows
       .filter(row => row.state.key === "removed")
       .toSorted((a, b) =>
@@ -267,24 +301,40 @@ export const nodeLines = (row, { branch, stem, width }) => {
 const FOLD_OVER = 3;
 /** Whether the user unfolded (true) or folded (false) "done and removed", over redraws; null: by FOLD_OVER. */
 let isRemovedOpen = null;
+/** Whether the queue is folded under its divider, over redraws. */
+let isQueueFolded = false;
 
 /**
  * WORKTREES: the orchestration `name` at the root, a node per worktree with
- * its state, its facts and title below it, then "done and removed" with the
+ * its state, its facts and title below it, then the queue behind a divider
+ * like the merged ones' in MERGE REQUESTS (#250, a click folds it), each
+ * issue with what it waits for, then "done and removed" with the
  * gone ones, folded into one line when long (a click shows or folds them).
  * A click on any line of a node goes to the worktree's space, on a gone one
  * to its issue.
  */
 export const pushWorktrees = (
   lines,
-  { name, issues, of, agents, work, merge, announced, holds, hasRemote },
-) => {
-  const { live, removed } = treeOf(issues, of, {
+  {
+    name,
+    issues,
+    of,
     agents,
     work,
     merge,
     announced,
     holds,
+    suggested,
+    hasRemote,
+  },
+) => {
+  const { live, queued, removed } = treeOf(issues, of, {
+    agents,
+    work,
+    merge,
+    announced,
+    holds,
+    suggested,
     hasRemote,
   });
   const box = openBox(lines);
@@ -308,8 +358,27 @@ export const pushWorktrees = (
       screen.clicks[lines.length] = go(row.issue);
       lines.push(`  ${line}`);
     });
+  const queuedShown = isOnce || !isQueueFolded ? queued : [];
   live.forEach((row, i) =>
-    pushNode(row, i === live.length - 1 && removed.length === 0),
+    pushNode(
+      row,
+      i === live.length - 1 && queuedShown.length + removed.length === 0,
+    ),
+  );
+  if (queued.length) {
+    // The divider: a click folds the queue, another shows it again.
+    if (!isOnce)
+      screen.clicks[lines.length] = () => {
+        isQueueFolded = !isQueueFolded;
+        screen.redraw();
+      };
+    const text = ` queued (${queued.length}) · in the order they start${isOnce ? "" : ` · click to ${isQueueFolded ? "show" : "fold"}`} `;
+    lines.push(
+      dim(`  ──${text}${"─".repeat(Math.max(0, width - 2 - text.length))}`),
+    );
+  }
+  queuedShown.forEach((row, i) =>
+    pushNode(row, i === queuedShown.length - 1 && removed.length === 0),
   );
   if (removed.length) {
     const hint = isOnce ? "" : ` · click to ${isOpen ? "fold" : "show"}`;
@@ -330,7 +399,7 @@ export const pushWorktrees = (
       : "",
     count("ready") ? `${count("ready")} ready` : "",
     count("removable") ? `${count("removable")} will be removed` : "",
-    count("queued") ? `${count("queued")} queued` : "",
+    queued.length ? `${queued.length} queued` : "",
     removed.length ? `${removed.length} removed` : "",
   ];
   closeBox(

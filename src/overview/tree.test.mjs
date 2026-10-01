@@ -159,6 +159,39 @@ describe("treeOf", () => {
     assert.match(plain(removed[0].state.text), /^removed \d/);
   });
 
+  it("queues the issues without an agent: the work order, then when queued", () => {
+    const queued = (number, queuedAt) =>
+      issue(number, { tree: null, queued: true, queuedAt });
+    const { live, queued: queue } = treeOf(
+      [
+        issue(1),
+        queued(5, "2026-09-30T10:00:00Z"),
+        queued(4, "2026-09-30T09:00:00Z"),
+        queued(6, "2026-09-30T08:00:00Z"),
+        queued(7, "2026-09-30T07:00:00Z"),
+      ],
+      () => ({}),
+      {
+        work: [1, 6],
+        announced: [{ number: 4, to: "2-feature", open: [256] }],
+        suggested: new Map([[5, { worker: { name: "1-feature" } }]]),
+      },
+    );
+    assert.deepEqual(
+      live.map(row => row.issue.number),
+      [1],
+    );
+    assert.deepEqual(
+      queue.map(row => [row.issue.number, plain(row.state.text)]),
+      [
+        [6, "start: waits for an agent"],
+        [7, "start: waits for an agent"],
+        [4, "→ 2-feature after !256"],
+        [5, "→ 1-feature once its MR is merged"],
+      ],
+    );
+  });
+
   it("numbers every node: the work order first, then the rest", () => {
     const { live } = treeOf([issue(7), issue(3), issue(9)], () => ({}), {
       work: [3, 7],
@@ -270,6 +303,27 @@ describe("pushWorktrees", () => {
     );
     assert.match(text, / {3}└─ 2\. 2-feature +merged: removed .*3:40/);
     assert.match(text, /\n {9}#2 open · !211 merged .*3:12/);
+  });
+
+  it("shows the queue behind a divider, below the worktrees", () => {
+    const text = draw([issue(1), issue(2, { tree: null, queued: true })]);
+    const lines = text.split("\n");
+    const divider = lines.findIndex(line => /queued \(1\)/.test(line));
+    assert.match(
+      lines[divider],
+      /^\s*── queued \(1\) · in the order they start( · click to fold)? ─+$/,
+    );
+    assert.ok(lines.findIndex(line => /1\. 1-feature/.test(line)) < divider);
+    assert.match(lines[divider - 3], /├─ 1\. 1-feature/);
+    assert.match(
+      lines[divider + 1],
+      /└─ 2\. 2-feature +start: waits for an agent/,
+    );
+    assert.match(text, /WORKTREES.*1 queued/);
+  });
+
+  it("draws no divider with nothing queued", () => {
+    assert.doesNotMatch(draw([issue(1), issue(2)]), /queued/);
   });
 
   it("folds a long done and removed into one line", () => {

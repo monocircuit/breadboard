@@ -152,7 +152,14 @@ export function announceCommand(name, arg, { after, isDry }) {
     );
     return;
   }
-  writeRecord(name, [{ ...recordEntry(item), queued: true }]);
+  writeRecord(name, [
+    {
+      ...recordEntry(item),
+      queued: true,
+      // Its place in WORKTREES' queue (#250): a queued one keeps it.
+      queuedAt: known?.queuedAt ?? new Date().toISOString(),
+    },
+  ]);
   announceHandover(name, { number, to: worker.name, after });
   console.log(
     `\n✓ #${number} ${item.feature} goes to ${worker.name} once ${mrs} ${after.length > 1 ? "are" : "is"} merged: the overview of ${label} hands it over then (its worktree is kept until), shown on ${worker.name}'s node as → next #${number}`,
