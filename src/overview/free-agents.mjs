@@ -9,7 +9,7 @@ import { agentStateOf } from "./agent-state.mjs";
 import { button, closeBox, openBox } from "./boxes.mjs";
 import { paintOf } from "./herdr-tones.mjs";
 import { pink } from "./names.mjs";
-import { pushRows, screen } from "./screen.mjs";
+import { onButton, pushRows, screen } from "./screen.mjs";
 
 /** How long the first click keeps a dismiss armed. */
 const ARM_MS = 4000;
@@ -60,20 +60,24 @@ const clickDismiss = (name, agent, agents) => {
 export const pushFreeAgents = (lines, name, free, agents = new Map()) => {
   if (!free.length) return;
   const box = openBox(lines);
+  /** The label of an agent's dismiss button. */
+  const dismissOf = agent =>
+    armed.get(agent.id)?.isArmed
+      ? `✕ click again to dismiss ${agent.name}`
+      : "✕ dismiss";
   const rows = free.map(agent => {
     const { state, text } = freeRowOf(agent, agents.get(agent.id)?.status);
-    const dismiss = armed.get(agent.id)?.isArmed
-      ? button(`✕ click again to dismiss ${agent.name}`, "red")
-      : button("✕ dismiss", "red");
     return [
       `${paintOf(state.tone)(state.text)} ${pink(agent.name)}`,
-      `${dim(text)} ${dismiss}`,
+      `${dim(text)} ${button(dismissOf(agent), "red")}`,
     ];
   });
   pushRows(
     lines,
     rows,
-    free.map(agent => () => clickDismiss(name, agent, agents)),
+    free.map(agent =>
+      onButton(dismissOf(agent), () => clickDismiss(name, agent, agents)),
+    ),
   );
   closeBox(
     lines,

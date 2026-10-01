@@ -6,7 +6,7 @@
 // after a click the button turns into where the order stands (queued, merging
 // develop in, pushed) until GitLab no longer reports conflicts. The cell
 // leads the row's second line, before what else the MR lacks (mr-blockers.mjs).
-import { ESCAPES, dim, green, isColor, red, yellow } from "../lib/tty.mjs";
+import { dim, green, red, yellow } from "../lib/tty.mjs";
 import { deliverTo } from "./answers.mjs";
 import { button } from "./boxes.mjs";
 import { ago } from "./render-worktree.mjs";
@@ -194,22 +194,4 @@ export const noteTold = (mr, tree) =>
 export const forgetResolved = mrs => {
   const open = new Set(mrs.map(mr => mr.iid));
   for (const iid of clicks.keys()) if (!open.has(iid)) clicks.delete(iid);
-};
-
-/**
- * The columns (from 1, on screen) the button takes in `line`, a line of a
- * box as it is pushed (two columns of indent the box replaces), or null when
- * it isn't on it.
- */
-export const resolveColumns = line => {
-  const at = line.replace(ESCAPES, "").indexOf(RESOLVE);
-  if (at === -1) return null;
-  // The chip's blank (or `[ `) before the words, and after.
-  const pad = isColor ? 1 : 2;
-  // Inside a box: an island's margin, or the border and a blank, for the indent.
-  const shift = isColor ? 0 : 1;
-  return {
-    from: at - pad + shift,
-    to: at + RESOLVE.length + pad - 1 + shift,
-  };
 };
