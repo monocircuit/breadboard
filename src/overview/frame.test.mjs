@@ -3,7 +3,9 @@ import { beforeEach, describe, it } from "node:test";
 
 import { ESCAPES } from "../lib/tty.mjs";
 import { titleHeight } from "./boxes.mjs";
-import { frameUpdate, painter } from "./frame.mjs";
+import { EventEmitter } from "node:events";
+
+import { frameUpdate, painter, watchSize } from "./frame.mjs";
 import { renderOrchestration } from "./render-orchestration.mjs";
 import { screen } from "./screen.mjs";
 import { scrollBy } from "./scroll.mjs";
@@ -16,6 +18,7 @@ const terminal = () => {
   return {
     rows,
     write: text => {
+      if (text.startsWith("\x1b[2J")) rows.length = 0;
       for (const part of text.split(/(?=\x1b\[\d+;1H)/)) {
         const at = part.match(/^\x1b\[(\d+);1H(\x1b\[2K|\x1b\[J)([\s\S]*)$/);
         if (!at) continue;
@@ -138,6 +141,146 @@ describe("painter", () => {
     assert.equal(frame.actionAt(3)(), 3);
     flush();
     assert.equal(frame.actionAt(3)(), 12);
+  });
+});
+
+describe("a pane that changes size (#253)", () => {
+  beforeEach(() => {
+    screen.scroll = 0;
+  });
+  /** A pane whose size the test sets, and a view as wide as it, one line per row of 100. */
+  const pane = { columns: 40, rows: 10 };
+  const wide = () => {
+    screen.clicks = [];
+    screen.sticky = 1;
+    return Array.from({ length: 100 }, (_, i) =>
+      `${i}`.padEnd(pane.columns, "-"),
+    ).join("\n");
+  };
+  const sized = () => {
+    const screenOf = terminal();
+    let pending = null;
+    const frame = painter({
+      render: wide,
+      rows: () => pane.rows,
+      size: () => `${pane.columns}x${pane.rows}`,
+      write: screenOf.write,
+      now: () => 0,
+      later: paint => {
+        pending = paint;
+        return 1;
+      },
+    });
+    const flush = () => {
+      const paint = pending;
+      pending = null;
+      paint?.();
+    };
+    return { frame, flush, shown: screenOf.rows };
+  };
+
+  it("lays the view out at the new width after a resize, wider and narrower", () => {
+    pane.columns = 40;
+    pane.rows = 10;
+    const { frame, flush, shown } = sized();
+    frame.changed();
+    flush();
+    assert.equal(shown[1].length, 40);
+    pane.columns = 120;
+    frame.repaint();
+    flush();
+    assert.equal(shown[1].length, 120);
+    pane.columns = 30;
+    frame.repaint();
+    flush();
+    assert.equal(shown[1].length, 30);
+    assert.equal(shown.length, 10);
+  });
+
+  it("lays it out again when the size changed without a resize event", () => {
+    pane.columns = 40;
+    pane.rows = 10;
+    const { frame, flush, shown } = sized();
+    frame.changed();
+    flush();
+    pane.columns = 120;
+    scrollBy(1);
+    frame.scrolled();
+    flush();
+    assert.ok(shown.slice(0, 10).every(line => line.length === 120));
+  });
+
+  it("keeps the scroll position inside the view when the height changes", () => {
+    pane.columns = 40;
+    pane.rows = 10;
+    const { frame, flush, shown } = sized();
+    const lineOf = row => Number(shown[row].split("-")[0]);
+    frame.changed();
+    flush();
+    scrollBy(50);
+    frame.scrolled();
+    flush();
+    pane.rows = 4;
+    frame.repaint();
+    flush();
+    assert.deepEqual([0, 1, 2, 3].map(lineOf), [0, 51, 52, 53]);
+    scrollBy(Infinity);
+    frame.scrolled();
+    flush();
+    assert.equal(lineOf(3), 99);
+    pane.rows = 10;
+    frame.repaint();
+    flush();
+    // Scrolled to the end, a taller pane moves the window up instead of showing empty rows.
+    assert.equal(shown.length, 10);
+    assert.equal(lineOf(9), 99);
+    assert.equal(screen.scroll, 90);
+  });
+});
+
+describe("watchSize", () => {
+  /** A tty stream whose size the terminal changes behind Node's back. */
+  const tty = () => {
+    const stream = new EventEmitter();
+    stream.isTTY = true;
+    stream.columns = 40;
+    stream.rows = 10;
+    stream.actual = [40, 10];
+    stream._refreshSize = () => {
+      const [columns, rows] = stream.actual;
+      if (columns === stream.columns && rows === stream.rows) return;
+      stream.columns = columns;
+      stream.rows = rows;
+      stream.emit("resize");
+    };
+    return stream;
+  };
+
+  it("emits resize once the terminal's size differs from what Node knows", () => {
+    const stream = tty();
+    let tick = null;
+    watchSize(stream, { repeat: run => (tick = run) });
+    let resizes = 0;
+    stream.on("resize", () => resizes++);
+    tick();
+    assert.equal(resizes, 0);
+    stream.actual = [120, 30];
+    tick();
+    assert.equal(resizes, 1);
+    assert.equal(stream.columns, 120);
+    tick();
+    assert.equal(resizes, 1);
+  });
+
+  it("asks nothing of a stream that is no terminal", () => {
+    const stream = tty();
+    stream.isTTY = false;
+    assert.equal(
+      watchSize(stream, {
+        repeat: () => assert.fail("no timer for a pipe"),
+      }),
+      null,
+    );
   });
 });
 
