@@ -153,10 +153,14 @@ export const packageNameIn = top => dir => {
   }
 };
 
-/** The wt:check of `top` that passed on its HEAD, or null. */
+/**
+ * The wt:check of `top` that passed on its HEAD's tree, or null, with HEAD's
+ * sha: a check of uncommitted changes stamps the commit made of them.
+ */
 export function passedCheckOf(top) {
   const passed = readCheck(top).passed;
-  return passed && passed.tree === treeOf(top) ? passed : null;
+  if (!passed || passed.tree !== treeOf(top)) return null;
+  return { ...passed, sha: git(["rev-parse", "HEAD"], top).out };
 }
 
 /** The Tests lines of the branch in `top`. */
