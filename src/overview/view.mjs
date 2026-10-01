@@ -2,7 +2,12 @@
 // the view that fits the command line.
 import path from "node:path";
 
-import { leftIn, runningClaudes } from "../worktree/conversations.mjs";
+import {
+  contextShareOf,
+  leftIn,
+  runningClaudes,
+} from "../worktree/conversations.mjs";
+import { freeAgentsOf } from "../worktree/free.mjs";
 import { freeMemory } from "../worktree/memory.mjs";
 import { diffOf, filesOf } from "./diff.mjs";
 import { developOf, migrationsOf } from "./develop.mjs";
@@ -13,6 +18,7 @@ import {
   actionsOf,
   answeredOf,
   changeOf,
+  chatStatus,
   handoversOf,
   hasOwnCommits,
   isPortFree,
@@ -95,6 +101,11 @@ export const readView = async () => {
       title: titleOf(orchestration),
       // Each agent's name and what it worked on before (#217, worktree/workers.mjs).
       workers: recordOf(orchestration)?.workers ?? {},
+      // The agents free for the next issue, their worktree gone (#289, worktree/free.mjs).
+      freeAgents: freeAgentsOf(recordOf(orchestration)).map(agent => ({
+        ...agent,
+        share: contextShareOf(agent.id) ?? 0,
+      })),
       // The handovers the orchestrator announced (#227, worktree/handovers.mjs).
       handovers: handoversOf(recordOf(orchestration)),
       // For the head line of WORKTREES: whether a fresh agent would get its own stack (#229).
@@ -103,6 +114,8 @@ export const readView = async () => {
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and WORKTREES: what herdr says each agent does.
       agents: agentsOf(),
+      // Where the orchestrator's chat stands, for its button at the top (#287).
+      chat: chatStatus(orchestration),
     };
   }
   const tree = local.trees[0];

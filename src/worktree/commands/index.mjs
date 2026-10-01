@@ -12,6 +12,7 @@ import newCommand from "./new.mjs";
 import noteCommand from "./note.mjs";
 import orchestrateCommand from "./orchestrate.mjs";
 import planCommand from "./plan.mjs";
+import platformChangelogCommand from "./platform-changelog.mjs";
 import pruneCommand from "./prune.mjs";
 import removeCommand from "./remove.mjs";
 import stackCommand from "./stack.mjs";
@@ -36,4 +37,5 @@ export const commands = {
   control: controlCommand,
   remove: removeCommand,
   changelog: changelogCommand,
+  "platform-changelog": platformChangelogCommand,
 };
