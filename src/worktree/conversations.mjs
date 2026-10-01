@@ -237,6 +237,55 @@ export const isConversationRunning = id => {
     }
   });
 };
+/** Where a process stands: Linux's /proc, else the cwd claude wrote into its session file. */
+const cwdOf = (pid, written) => {
+  try {
+    return fs.readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return written ?? "";
+  }
+};
+/**
+ * The claudes running on this machine, from their files in ~/.claude/sessions:
+ * `[{ pid, id, name, cwd }]`, `cwd` where the process stands now (it follows
+ * EnterWorktree, the shell of its pane doesn't).
+ */
+export const runningClaudes = () => {
+  const sessions = path.join(claudeDir(), "sessions");
+  const files = fs.existsSync(sessions)
+    ? fs.readdirSync(sessions).filter(file => file.endsWith(".json"))
+    : [];
+  return files.flatMap(file => {
+    try {
+      const { pid, sessionId, name, cwd } = JSON.parse(
+        fs.readFileSync(path.join(sessions, file), "utf-8"),
+      );
+      process.kill(pid, 0);
+      return [{ pid, id: sessionId, name: name ?? null, cwd: cwdOf(pid, cwd) }];
+    } catch {
+      return [];
+    }
+  });
+};
+/**
+ * The claudes that stand in the worktree `dir` without being its agent: a
+ * handover bound their conversation to the next worktree (moveWorker), and
+ * they haven't entered it yet (#252). Removing `dir` now would leave them in
+ * a directory that is gone, where EnterWorktree fails. `bound`: the
+ * conversation bound to `dir`, which closes with its space.
+ */
+export const leftIn = (
+  dir,
+  claudes = runningClaudes(),
+  bound = boundSession(dir),
+) =>
+  claudes.filter(
+    ({ id, cwd }) =>
+      id !== bound && (cwd === dir || cwd.startsWith(`${dir}${path.sep}`)),
+  );
+/** `244-x`, `244-x, claude 1234`: the claudes leftIn() found. */
+export const leftText = left =>
+  left.map(({ name, pid }) => name ?? `claude ${pid}`).join(", ");
 /**
  * After a restart: the conversation bound to the space runs again in its
  * `<feature>` tab, if that tab idles, no claude runs anywhere in the space and

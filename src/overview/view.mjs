@@ -2,6 +2,7 @@
 // the view that fits the command line.
 import path from "node:path";
 
+import { leftIn, runningClaudes } from "../worktree/conversations.mjs";
 import { freeMemory } from "../worktree/memory.mjs";
 import { diffOf, filesOf } from "./diff.mjs";
 import { developOf, migrationsOf } from "./develop.mjs";
@@ -49,9 +50,12 @@ export const readView = async () => {
   const local = await readLocal();
   // An orchestration: its issues, the conversation of each worktree's agent and what it asks for.
   if (orchestration) {
+    const claudes = runningClaudes();
     const trees = local.trees.map(tree => ({
       ...tree,
       claude: readClaude(tree.dir),
+      // A handed-over agent that hasn't entered its next worktree: the clean-up waits for it (#252).
+      left: leftIn(tree.dir, claudes),
       actions: actionsOf(actionsFile(tree.dir)),
       // For the merge order (order.mjs): which MRs share files.
       files: filesOf(tree.dir),
