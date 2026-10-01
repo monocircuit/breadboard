@@ -129,7 +129,6 @@ name = "breadboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "breadboard-core",
  "crossterm",
  "futures-util",
  "ratatui",
