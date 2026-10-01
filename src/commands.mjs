@@ -26,6 +26,8 @@ const DESCRIPTIONS = {
     commands: "this list (--all: every package)",
     "check:agents":
       "every AGENTS.md, skill and subagent within 150 lines, every link in them resolves",
+    "check:leaf-parity":
+      "every *.web.tsx / *.native.tsx leaf has its X.types.ts, and its partner where the package declares native",
     herdr:
       "the pinned herdr with the repo's session and plugin (--reload new breadboard code, --stop)",
     "herdr:install":
@@ -111,6 +113,7 @@ const DESCRIPTIONS = {
   "packages/eslint-config": {
     build: "build the configs (dev) and types",
     "build:prod": "build the configs as the hooks and CI load them",
+    test: "the platform rules on fixtures (build:prod first)",
   },
 };
 
