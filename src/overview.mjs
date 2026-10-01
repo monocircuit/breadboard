@@ -52,6 +52,7 @@ import {
   layout,
   pruneSpaces,
   rememberSessions,
+  sortSpaces,
   syncStackTabs,
 } from "./worktree.mjs";
 
@@ -209,6 +210,8 @@ const keepInStep = async () => {
   try {
     rememberSessions();
     pruneSpaces();
+    // Cheap when the order stands: a plan or a handover may have changed it (#255).
+    await sortSpaces();
     reportStates(local, remote);
     await notifyChanges(local, remote);
     if (!before || [...now.keys()].join() !== [...before.keys()].join()) {
