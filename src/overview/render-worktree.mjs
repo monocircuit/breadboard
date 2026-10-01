@@ -45,6 +45,7 @@ import {
   pipelineMark,
   titleLines,
 } from "./boxes.mjs";
+import { editorTrouble, fileLine, openFile, pushFiles } from "./files.mjs";
 import { open, show } from "./io.mjs";
 import { KEYS, pushRows } from "./screen.mjs";
 
@@ -90,7 +91,7 @@ export const someFiles = (files, count = 3) =>
  * The section DIFF of a worktree (#114): how far its work is from develop,
  * where it lies, and where it collides with develop or another worktree.
  */
-const pushDiff = (lines, diff) => {
+const pushDiff = (lines, diff, dir) => {
   const counts = [
     `${diff.ahead} ahead`,
     diff.behind ? yellow(`${diff.behind} behind`) : dim("0 behind"),
@@ -121,9 +122,10 @@ const pushDiff = (lines, diff) => {
         green(`+${area.added}`),
         red(`−${area.removed}`),
         `${green(bar.added)}${red(bar.removed)}`,
-        dim(plural(area.files, "file")),
+        dim(`${plural(area.files, "file")} · ${path.basename(area.top)}`),
       ];
     });
+    const actions = shown.map(area => () => openFile(dir, area.top));
     if (rest.length > 0) {
       const sum = key => rest.reduce((total, area) => total + area[key], 0);
       rows.push([
@@ -135,25 +137,35 @@ const pushDiff = (lines, diff) => {
         dim(plural(sum("files"), "file")),
       ]);
     }
-    lines.push("", ...table(rows));
+    lines.push("");
+    pushRows(lines, rows, actions);
   }
 
   if (diff.withDevelop.length > 0 || diff.withWorktrees.length > 0)
     lines.push("");
   if (diff.withDevelop.length > 0) {
-    lines.push(
-      `  ${yellow("⚠")} also changed on develop: ${someFiles(diff.withDevelop)}  ${dim("merge develop in while it is small")}`,
+    pushFiles(
+      lines,
+      fileLine(`  ${yellow("⚠")} also changed on develop: `, diff.withDevelop, {
+        suffix: `  ${dim("merge develop in while it is small")}`,
+      }),
+      dir,
     );
   }
   for (const other of diff.withWorktrees) {
-    lines.push(
-      `  ${yellow("⚠")} also changed in ${bold(other.name)}: ${someFiles(other.files)}`,
+    pushFiles(
+      lines,
+      fileLine(
+        `  ${yellow("⚠")} also changed in ${bold(other.name)}: `,
+        other.files,
+      ),
+      dir,
     );
   }
   closeBox(
     lines,
     start,
-    `${bold("DIFF")} ${dim("against develop")}  ${counts.join(" · ")}`,
+    `${bold("DIFF")} ${dim("against develop")}  ${counts.join(" · ")}  ${dim("click a file: nvim at the change")}`,
   );
 };
 /**
@@ -204,6 +216,7 @@ export const renderWorktree = (local, remote, error) => {
     ),
   );
   lines.push(dim(` ${tree.dir}`));
+  if (editorTrouble) lines.push(yellow(` nvim: ${editorTrouble}`));
 
   const work = openBox(lines);
 
@@ -266,11 +279,12 @@ export const renderWorktree = (local, remote, error) => {
   pushWaiting(lines, remote?.waiting);
   pushAgent(lines, local.claude, local.agentStatus);
   pushIssue(lines, remote?.issue);
-  pushPipeline(lines, remote?.mr, remote?.jobs ?? []);
-  if (local.diff) pushDiff(lines, local.diff);
+  pushPipeline(lines, remote?.mr, remote?.jobs ?? [], tree.dir);
+  if (local.diff) pushDiff(lines, local.diff, tree.dir);
   // The project's URL, from any link GitLab gave: `https://…/platform/-/issues/158` → `https://…/platform`.
   pushDevelop(
     lines,
+    tree.dir,
     local.develop,
     (remote?.issue?.url ?? remote?.mr?.url)?.split("/-/")[0],
   );

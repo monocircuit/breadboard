@@ -23,6 +23,7 @@ ships; the package is private.
 | [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | `:Changes` and `:ChangesDiff` in a worktree's `nvim` tab |
+| `src/worktree/nvim.mjs` | the socket of an nvim tab (`.claude/nvim.sock`, relative to its checkout: a socket's path holds 107 bytes at most) and `nvim --server` to open `file:line` in it; the overview's clicks on files use it |
 
 The commands run from the root `package.json` (`node packages/breadboard/src/…`),
 so they work from every checkout without a `--filter`.

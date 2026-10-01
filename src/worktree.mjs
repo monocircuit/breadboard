@@ -106,7 +106,8 @@ export {
   herdrConfigText,
   sidebarConfig,
 } from "./worktree/sidebar.mjs";
-export { focusSpace, spaceLabel } from "./worktree/spaces.mjs";
+export { focusSpace, openInEditor, spaceLabel } from "./worktree/spaces.mjs";
+export { editorCommand, socketOf } from "./worktree/nvim.mjs";
 export { compose, isPortFree, offsetOf, readEnv } from "./worktree/stack.mjs";
 export { featureOf } from "./worktree/tabs.mjs";
 export { isWaiting, waitOf, waitsText } from "./worktree/wait.mjs";

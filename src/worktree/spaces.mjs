@@ -1,11 +1,10 @@
 // The herdr spaces: the main one, one per worktree, and where a checkout's
 // space is.
 import { spawnSync } from "node:child_process";
-import path from "node:path";
 
 import { canGroupTabs, openInGroup } from "../browser.mjs";
 import { herdr, isInHerdr, spaces, tabsOf } from "../lib/herdr.mjs";
-import { quote, step } from "../lib/proc.mjs";
+import { step } from "../lib/proc.mjs";
 import { CHANGELOG, EDITOR, OVERVIEW, ROOT, SPACE } from "./constants.mjs";
 import { resumeSession } from "./conversations.mjs";
 import {
@@ -17,6 +16,7 @@ import {
   keepOrder,
   markBranch,
 } from "./tabs.mjs";
+import { editorCommand, openOnSocket } from "./nvim.mjs";
 import { mainDir } from "./worktrees.mjs";
 import { overallChangelogTabCommand, overviewCommand } from "./tabs.mjs";
 
@@ -52,25 +52,59 @@ export const mainSpace = () => {
   return workspace;
 };
 let hasNvim = null;
+const canEdit = () =>
+  (hasNvim ??=
+    spawnSync("nvim", ["--version"], { stdio: "ignore" }).status === 0);
 /**
  * The tab `nvim` with nvim open in the worktree, on the files it changes
  * against develop (packages/breadboard/nvim/changes.lua: `:Changes`, `:ChangesDiff`; from
- * the checkout that builds the space, like the overview). Quit, its shell
- * idles and the next layout (a herdr restart, a worktree coming or going)
- * opens it again. Nothing without nvim on the PATH.
+ * the checkout that builds the space, like the overview), listening on
+ * `.claude/nvim.sock` (nvim.mjs). Quit, its shell idles and the next layout
+ * (a herdr restart, a worktree coming or going) opens it again. Nothing
+ * without nvim on the PATH.
  */
 export const ensureEditor = (workspace, dir, tabs) => {
-  hasNvim ??=
-    spawnSync("nvim", ["--version"], { stdio: "ignore" }).status === 0;
-  const changes = path.join(
-    import.meta.dirname,
-    "..",
-    "..",
-    "nvim",
-    "changes.lua",
-  );
-  const command = `nvim -c ${quote(`luafile ${changes}`)}`;
-  if (hasNvim) ensureTab(workspace, { label: EDITOR, cwd: dir, command }, tabs);
+  if (canEdit())
+    ensureTab(
+      workspace,
+      { label: EDITOR, cwd: dir, command: editorCommand(dir) },
+      tabs,
+    );
+};
+/**
+ * `file` (relative to `dir`) at `line` in the nvim tab `label` of
+ * `workspace`, listening on the socket of `name` (nvim.mjs), and that tab in
+ * front. A tab that isn't there, or whose shell idles, starts nvim on the
+ * file. Defaults: the tab `nvim` of the worktree `dir`. The orchestration's
+ * tab passes its `name`, `label`, space and the `commands` it starts with. An answer for the overview:
+ * `{ isOpened, why }`.
+ */
+export const openInEditor = (
+  dir,
+  file,
+  line,
+  { name = null, label = EDITOR, workspace = spaceOf(dir), commands } = {},
+) => {
+  if (!canEdit()) return { isOpened: false, why: "no nvim on the PATH" };
+  const isOpened =
+    openOnSocket(dir, file, line, name) ||
+    (Boolean(workspace) &&
+      ensureTab(workspace, {
+        label,
+        cwd: dir,
+        command: editorCommand(dir, { name, commands, file, line }),
+      }));
+  if (!isOpened)
+    return {
+      isOpened,
+      why: workspace
+        ? `the tab ${label} runs an nvim without its socket: quit it, the next one listens`
+        : "no herdr space to open nvim in",
+    };
+  const tab = tabsOf(workspace).find(t => t.label === label);
+  herdr(["workspace", "focus", workspace]);
+  if (tab) herdr(["tab", "focus", tab.tab_id]);
+  return { isOpened, why: null };
 };
 /**
  * The space of a worktree: `root`, its `overview`, the tab of its claude
