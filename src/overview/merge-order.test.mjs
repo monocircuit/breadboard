@@ -207,11 +207,17 @@ describe("holdUpOf", () => {
       [
         "draft",
         "2 work boxes open: UP NEXT row with … +1",
+        "1 acceptance box open: c",
         "pipeline failed",
         "conflicts with develop (13 behind)",
         "after !215 (shares view.mjs)",
       ],
     );
+  });
+
+  it("holds a ready MR while a try of its worktree is open (#280)", () => {
+    const tree = { actions: [{ id: 1, kind: "try", text: "the row" }] };
+    assert.deepEqual(holdUpOf({ ...entry(1, green), tree }), ["try #1 open"]);
   });
 
   it("is what mergeOrderOf puts on each open MR, with what it comes after", () => {

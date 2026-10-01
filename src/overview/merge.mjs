@@ -7,12 +7,23 @@
 // merged one shares files with is told to merge develop in, and `clean up`
 // offers the worktree (auto-actions.mjs).
 //
-// A merge its agent posted (`wt:action merge`) may be a draft: the click marks
-// it ready, then merges, once every box of the issue's Work section is
-// ticked. The acceptance criteria don't block: they are the human's checks
-// after the merge. While anything blocks, the row is grey and says what.
+// A merge is offered only when the work is done (#280): the pipeline passed,
+// every box of the issue's Work section and of its acceptance criteria is
+// ticked, and every `try` of its worktree was answered `looks good`. The one
+// exception are the checks that need the deployment: a `try --on test` and
+// an acceptance box marked `(after deploy …)` stay open across the merge.
+// A merge its agent posted (`wt:action merge`) may be a draft: the click
+// marks it ready, then merges. While anything blocks, the row is grey and
+// says what.
 import { dim, green, red } from "../lib/tty.mjs";
-import { boxesOf, doneAction, mainDir } from "../worktree.mjs";
+import {
+  actionsFile,
+  actionsOf,
+  answeredOf,
+  boxesOf,
+  doneAction,
+  mainDir,
+} from "../worktree.mjs";
 import { deliverTo } from "./answers.mjs";
 import { filesOf } from "./diff.mjs";
 import { exec, glab, sh, show } from "./io.mjs";
@@ -25,6 +36,8 @@ const NAMED_FILES = 3;
 
 /** How many words of a box name it in a row. */
 const BOX_WORDS = 4;
+/** How many open acceptance boxes a blocker names before `+n`. */
+const NAMED_BOXES = 2;
 /** What GitLab says while it works out whether an MR can be merged. */
 const CHECKING = new Set([
   "checking",
@@ -66,6 +79,58 @@ export const mergeStatusText = (
 /** The boxes of the issue's Work section, of its acceptance criteria. */
 export const isWork = box => /^work\b/i.test(box.heading ?? "");
 const isAcceptance = box => /acceptance/i.test(box.heading ?? "");
+/** A box only the deployment can check: `… (after deploy, try #3)`. */
+export const isAfterDeploy = box => /\bafter deploy/i.test(box.text);
+/** The kinds of action that are a try. */
+export const TRY_KINDS = new Set(["try", "browser-check"]);
+/**
+ * The tries of a worktree that still hold its merge, oldest first: one not
+ * answered `looks good` yet (a `broken` not delivered too), and one answered
+ * `broken` that no later try answered `looks good` (the fix tried again).
+ * A try on the test instance (`--on test`) never holds it: it needs the
+ * merge. `tree`: `{ actions, answered }`, as its actions file holds them.
+ */
+export const openTriesOf = tree => {
+  const isTry = action => TRY_KINDS.has(action.kind) && action.on !== "test";
+  const open = (tree?.actions ?? []).filter(isTry);
+  const answered = (tree?.answered ?? []).filter(isTry);
+  const good = [...answered, ...open].filter(
+    action => action.answer === "looks good",
+  );
+  return [
+    ...answered.filter(
+      action =>
+        action.answer === "broken" && !good.some(later => later.id > action.id),
+    ),
+    ...open.filter(action => action.answer !== "looks good"),
+  ].toSorted((a, b) => a.id - b.id);
+};
+/**
+ * What the human's checks still lack before a merge, each in a few words:
+ * the open tries (`try #1 open`, `try #2 broken`), the acceptance boxes
+ * not ticked but those after the deployment. None: they are all done.
+ */
+export const checksOf = (boxes = [], tree = null) => {
+  const open = boxes.filter(
+    box => isAcceptance(box) && !box.isTicked && !isAfterDeploy(box),
+  );
+  return [
+    ...openTriesOf(tree).map(
+      action =>
+        `try #${action.id} ${action.answer === "broken" ? "broken" : "open"}`,
+    ),
+    ...(open.length
+      ? [
+          `${open.length} acceptance box${open.length === 1 ? "" : "es"} open: ${open
+            .slice(0, NAMED_BOXES)
+            .map(wordsOf)
+            .join(
+              ", ",
+            )}${open.length > NAMED_BOXES ? ` +${open.length - NAMED_BOXES}` : ""}`,
+        ]
+      : []),
+  ];
+};
 /** The first words of a box, without its markdown. */
 export const wordsOf = box => {
   const words = box.text.replace(/[`*_]/g, "").split(/\s+/);
@@ -76,24 +141,28 @@ export const wordsOf = box => {
  * clicks merge it: only when GitLab says `mergeable`. `mr` as the overview
  * reads it (`isDraft`, `state`, `pipeline`, `hasConflicts`, `mergeStatus`)
  * or as GitLab answers it (`draft`, `head_pipeline`, `has_conflicts`,
- * `detailed_merge_status`); `boxes` those of its issue
- * (boxesOf). `canMarkReady`: its agent posted the merge, so a draft is marked
- * ready first, once every Work box is ticked.
+ * `detailed_merge_status`); `boxes` those of its issue (boxesOf), `tree`
+ * its worktree's actions (openTriesOf). Every Work box, every acceptance box
+ * and every try is done first (checksOf). `canMarkReady`: its agent posted
+ * the merge, so a draft is marked ready first.
  */
-export const blockersOf = (mr, boxes = [], { canMarkReady = false } = {}) => {
+export const blockersOf = (
+  mr,
+  boxes = [],
+  { canMarkReady = false, tree = null } = {},
+) => {
   if (!mr) return ["no merge request"];
   if (mr.state && mr.state !== "opened") return [`it is ${mr.state}`];
   const blockers = [];
   const isDraft = mr.isDraft ?? mr.draft;
   if (isDraft && !canMarkReady)
     blockers.push("draft: its agent posts the merge");
-  if (isDraft && canMarkReady) {
-    const open = boxes.filter(box => isWork(box) && !box.isTicked);
-    if (open.length)
-      blockers.push(
-        `${open.length} work box${open.length === 1 ? "" : "es"} open: ${open.map(wordsOf).join(", ")}`,
-      );
-  }
+  const open = boxes.filter(box => isWork(box) && !box.isTicked);
+  if (open.length)
+    blockers.push(
+      `${open.length} work box${open.length === 1 ? "" : "es"} open: ${open.map(wordsOf).join(", ")}`,
+    );
+  blockers.push(...checksOf(boxes, tree));
   const pipeline = mr.pipeline ?? mr.head_pipeline;
   const status = pipeline?.status ?? pipeline;
   const isPipelineBlocked = status !== "success";
@@ -107,9 +176,19 @@ export const blockersOf = (mr, boxes = [], { canMarkReady = false } = {}) => {
   }
   return blockers;
 };
-/** How many acceptance boxes are open: the human's checks after the merge. */
-export const toCheckOf = boxes =>
-  boxes.filter(box => isAcceptance(box) && !box.isTicked).length;
+/**
+ * How many checks wait for the deployment: the open acceptance boxes marked
+ * after deploy, the open tries on the test instance (`tree`'s actions).
+ */
+export const toCheckOf = (boxes, tree = null) =>
+  boxes.filter(box => isAcceptance(box) && !box.isTicked && isAfterDeploy(box))
+    .length +
+  (tree?.actions ?? []).filter(
+    action =>
+      TRY_KINDS.has(action.kind) &&
+      action.on === "test" &&
+      action.answer !== "looks good",
+  ).length;
 
 /** The files of `mine` the merged MR touched too, sorted. */
 export const sharedFiles = (merged, mine) =>
@@ -258,6 +337,14 @@ const readBoxes = async number =>
         (await glab(`projects/:fullpath/issues/${number}`)).description ?? "",
       )
     : [];
+/** The actions of the worktree `dir` fresh from its file, for openTriesOf; null without one. */
+const readTree = dir =>
+  dir
+    ? {
+        actions: actionsOf(actionsFile(dir)),
+        answered: answeredOf(actionsFile(dir)),
+      }
+    : null;
 /**
  * A draft marked ready (its title without `Draft:`), then read again until
  * GitLab worked out whether it can be merged.
@@ -280,8 +367,39 @@ const markReady = async fresh => {
 };
 
 /**
- * The merge itself, after the second click: the MR and its issue's boxes read
- * again (the overview's copy may be half a minute old), refused while
+ * Whether the answer `answer` to `action` puts the MR `mr` back to draft: a
+ * try (not one on the test instance) found broken while the MR is ready.
+ */
+export const shouldRedraft = (action, answer, mr) =>
+  TRY_KINDS.has(action.kind) &&
+  action.on !== "test" &&
+  answer === "broken" &&
+  mr?.state === "opened" &&
+  !mr.isDraft;
+/**
+ * A try answered `broken` (#280): its MR back to draft, until the fix is
+ * pushed, green and tried again, and the merge its agent posted withdrawn
+ * from `file`, its actions file. Nothing for any other answer.
+ */
+export const redraftOnBroken = async ({ action, answer, mr, file }) => {
+  if (!shouldRedraft(action, answer, mr)) return;
+  for (const merge of actionsOf(file).filter(other => other.kind === "merge"))
+    doneAction(file, merge.id);
+  try {
+    await glabWrite("PUT", `projects/:fullpath/merge_requests/${mr.iid}`, {
+      title: `Draft: ${mr.title.replace(/^(\[draft\]|\(draft\)|draft:)\s*/i, "")}`,
+    });
+  } catch {
+    // Its agent puts it back to draft too (the brief): the overview only spares it the step.
+  }
+  screen.refresh?.();
+  screen.redraw({ isReread: true });
+};
+
+/**
+ * The merge itself, after the second click: the MR, its issue's boxes and
+ * its worktree's tries read again (the overview's copy may be half a minute
+ * old), refused while
  * anything blocks, a draft its agent posted the merge for marked ready
  * first, then merged with its own squash setting, the source branch deleted,
  * and only at the commit whose pipeline passed.
@@ -296,13 +414,14 @@ const runMerge = async (context, state) => {
       readMr(mr.iid),
       readBoxes(issue.number),
     ]);
+    const tree = readTree(issue.tree?.dir);
     let fresh = first;
-    let blockers = blockersOf(fresh, boxes, { canMarkReady });
+    let blockers = blockersOf(fresh, boxes, { canMarkReady, tree });
     if (blockers.length)
       throw new Error(`can't merge: ${blockers.join(" · ")}`);
     if (fresh.draft) {
       fresh = await markReady(fresh);
-      blockers = blockersOf(fresh, boxes);
+      blockers = blockersOf(fresh, boxes, { tree });
       if (blockers.length)
         throw new Error(`marked ready, can't merge: ${blockers.join(" · ")}`);
     }
@@ -324,7 +443,7 @@ const runMerge = async (context, state) => {
       fresh = await readMr(mr.iid);
       if (fresh.detailed_merge_status !== "mergeable")
         throw new Error(
-          `can't merge: ${blockersOf(fresh, boxes).join(" · ") || reasonOf(error)}`,
+          `can't merge: ${blockersOf(fresh, boxes, { tree }).join(" · ") || reasonOf(error)}`,
         );
       await merge(fresh);
     }
@@ -346,15 +465,15 @@ const runMerge = async (context, state) => {
  * read them, the other open issues in the merge order, the actions file and
  * id of a merge the agent posted (a draft of such a one is marked ready
  * first; `canMarkReady` says so for one the overview found, #242). While anything
- * blocks it opens the MR; the first click arms it for ARM_MS, the second
- * merges.
+ * blocks (an open try of `issue.tree` too) it opens the MR; the first click
+ * arms it for ARM_MS, the second merges.
  */
 export const clickMerge = context => {
   const { mr, issue, boxes } = context;
   const state = merges.get(mr.iid);
   if (["running", "merged"].includes(state?.phase)) return;
   const canMarkReady = context.canMarkReady ?? Boolean(context.actionId);
-  if (blockersOf(mr, boxes, { canMarkReady }).length)
+  if (blockersOf(mr, boxes, { canMarkReady, tree: issue.tree }).length)
     return show(mr.url, issue.tree?.dir);
   if (state?.phase !== "armed") {
     const armed = { phase: "armed", error: null };
@@ -373,13 +492,14 @@ export const clickMerge = context => {
 /**
  * How a merge action reads after its `!N`: what two clicks do, or grey with
  * everything that blocks them in one line, or where the merge is.
- * `canMarkReady`: its agent posted it, a draft is marked ready first.
+ * `canMarkReady`: its agent posted it, a draft is marked ready first;
+ * `tree` its worktree, whose open tries block it.
  */
 export const mergeText = (
   mr,
   text,
   boxes = [],
-  { canMarkReady = false } = {},
+  { canMarkReady = false, tree = null } = {},
 ) => {
   const state = merges.get(mr.iid);
   const isDraft = Boolean(mr.isDraft);
@@ -388,12 +508,12 @@ export const mergeText = (
   if (state?.phase === "running")
     return `${isDraft ? "marking ready, " : ""}merging …${state.error ? ` ${dim(state.error)}` : ""}`;
   if (state?.phase === "armed") return red(`click again to ${verb} !${mr.iid}`);
-  const blockers = blockersOf(mr, boxes, { canMarkReady });
+  const blockers = blockersOf(mr, boxes, { canMarkReady, tree });
   if (blockers.length)
     return dim(
       `${text} · ${[isDraft && canMarkReady ? "draft" : "", ...blockers].filter(Boolean).join(" · ")}`,
     );
-  const toCheck = toCheckOf(boxes);
+  const toCheck = toCheckOf(boxes, tree);
   const after = toCheck ? ` · ${toCheck} to check after merge` : "";
   return `${text} ${state?.phase === "failed" ? red(state.error) : dim(`· two clicks ${verb}${after}`)}`;
 };
