@@ -68,7 +68,7 @@ export default function removeCommand(feature, flags) {
   const left = leftIn(dir);
   if (left.length)
     fail(
-      `${leftText(left)} still stands in ${feature} and has not entered its next worktree yet: again once it has`,
+      `${leftText(left)} still stands in ${feature} (it enters its next worktree, or as a free agent the orchestration's checkout): again once it left`,
     );
 
   // A start sets it up or moves its agent out of it (setups.mjs): git would

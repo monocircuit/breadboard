@@ -118,7 +118,7 @@ describe("an announced handover in the overview", () => {
     assert.match(plain(node.facts), /→ next #226 after !232$/);
   });
 
-  it("is a row of UP NEXT of its own and holds the agent's worktree", () => {
+  it("is a row of UP NEXT of its own and holds no worktree: its agent goes free (#289)", () => {
     const { actions, held, holds } = workerActionsOf(
       "orch",
       issues,
@@ -129,8 +129,8 @@ describe("an announced handover in the overview", () => {
     );
     assert.equal(actions.length, 1);
     assert.equal(plain(actions[0].text), "#226 → 224-x after !232 (announced)");
-    assert.ok(held.has("/w/224"));
-    assert.equal(holds.get("/w/224"), "its agent takes #226 after !232");
+    assert.equal(held.size, 0);
+    assert.equal(holds.size, 0);
   });
 });
 
