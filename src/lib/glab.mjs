@@ -89,45 +89,59 @@ export const remoteOf = url => {
     );
   return match ? { host: match[1], project: match[2] } : null;
 };
+/**
+ * A value of glab's config, null without one. Not synchronous: glab waits
+ * for its config's lock while another glab holds it, and an overview reads
+ * GitLab in the thread that draws.
+ */
 const config = (key, host) =>
-  spawnSync("glab", ["config", "get", key, "--host", host], {
+  execAsync("glab", ["config", "get", key, "--host", host], {
     cwd: mainDir(),
-    encoding: "utf-8",
-    stdio: "pipe",
-  }).stdout?.trim() || null;
+  }).then(
+    ({ stdout }) => stdout.trim() || null,
+    () => null,
+  );
 /** The token: GITLAB_TOKEN, else glab's, OAuth with its expiry. */
-const tokenOf = host => {
+const tokenOf = async host => {
   if (process.env.GITLAB_TOKEN)
     return { token: process.env.GITLAB_TOKEN, isOauth: false, expiresAt: null };
-  const isOauth = config("is_oauth2", host) === "true";
-  const expiry = isOauth
-    ? Date.parse(config("oauth2_expiry_date", host) ?? "")
-    : NaN;
+  const [token, oauth, expiry] = await Promise.all(
+    ["token", "is_oauth2", "oauth2_expiry_date"].map(key => config(key, host)),
+  );
+  const isOauth = oauth === "true";
+  const expiresAt = isOauth ? Date.parse(expiry ?? "") : NaN;
   return {
-    token: config("token", host),
+    token,
     isOauth,
-    expiresAt: Number.isNaN(expiry) ? null : expiry,
+    expiresAt: Number.isNaN(expiresAt) ? null : expiresAt,
   };
 };
-const connection = () => {
+/** Found once, the calls that come meanwhile wait for it. */
+let finding = null;
+const connection = async () => {
   if (found) return found;
-  const remote = remoteOf(
-    spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: mainDir(),
-      encoding: "utf-8",
-      stdio: "pipe",
-    }).stdout ?? "",
-  ) ?? { host: "gitlab.com", project: null };
-  const token = tokenOf(remote.host);
-  found = { ...remote, ...token, token: remote.project ? token.token : null };
-  return found;
+  finding ??= (async () => {
+    const remote = remoteOf(
+      spawnSync("git", ["remote", "get-url", "origin"], {
+        cwd: mainDir(),
+        encoding: "utf-8",
+        stdio: "pipe",
+      }).stdout ?? "",
+    ) ?? { host: "gitlab.com", project: null };
+    const token = await tokenOf(remote.host);
+    found = { ...remote, ...token, token: remote.project ? token.token : null };
+    finding = null;
+    return found;
+  })();
+  return finding;
 };
 /** One renewal at a time: glab renews an expired OAuth token on its next call. */
 let renewing = null;
 const renew = () =>
   (renewing ??= execAsync("glab", ["api", "user"], { cwd: mainDir() })
     .catch(() => null)
-    .then(() => Object.assign(found, tokenOf(found.host)))
+    .then(() => tokenOf(found.host))
+    .then(token => Object.assign(found, token))
     .finally(() => (renewing = null)));
 const isDue = ({ isOauth, expiresAt }) =>
   isOauth && expiresAt !== null && expiresAt - Date.now() < 60_000;
@@ -240,7 +254,7 @@ const viaGlab = async endpoint => {
  * `:id` alike), the body as text.
  */
 export const glabText = async endpoint => {
-  const { host, project, token } = connection();
+  const { host, project, token } = await connection();
   progress.asked++;
   stepped();
   try {
