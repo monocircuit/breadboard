@@ -4,7 +4,7 @@
 //! and what is open (`wt:note`). `wt:new` counts the same next to the stale
 //! worktrees: `stale_issues` is the one function both use.
 
-use super::args::{fail, main_dir, pad};
+use super::args::{Takes, fail, main_dir, pad};
 use super::gitlab;
 use breadboard_core::git::issue_of_branch;
 use breadboard_core::json::str_of;
@@ -15,6 +15,16 @@ use std::path::Path;
 use std::process::ExitCode;
 
 const CATCH_UP: &str = "  Catch one up: pnpm wt:tick <issue> (then the boxes the MR did), and a comment with the MR,\n  what is done and what is open: pnpm wt:note <issue> --message-file <f>";
+
+pub const TAKES: Takes = Takes {
+    valued: &[],
+    lists: &[],
+    optional: &[],
+    switches: &[],
+    words: 0,
+    about: "The issues of merged work nobody came back to: still open or a box left open, no comment since the merge.",
+    usage: "usage: pnpm wt:issues",
+};
 
 pub fn run() -> ExitCode {
     let main = match main_dir() {
@@ -194,10 +204,20 @@ fn order_of(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// Whether each checkbox of a description is ticked, in order (issues.mjs
-/// `boxesOf`): `- [ ]`, `* [x]`, `+ [X]`; a box in fenced code is an example.
-pub fn boxes_of(text: &str) -> Vec<bool> {
+/// A checkbox of an issue description (issues.mjs `boxesOf`): ticked or
+/// not, its text and the heading it stands under.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Box {
+    pub is_ticked: bool,
+    pub text: String,
+    pub heading: Option<String>,
+}
+
+/// The checkboxes of a description in order: `- [ ]`, `* [x]`, `+ [X]` and
+/// a space after; a box in fenced code is an example, not a task.
+pub fn boxes_with_headings(text: &str) -> Vec<Box> {
     let mut boxes = Vec::new();
+    let mut heading = None;
     let mut is_in_code = false;
     for line in text.split('\n') {
         let trimmed = line.trim_start();
@@ -207,6 +227,10 @@ pub fn boxes_of(text: &str) -> Vec<bool> {
         }
         if is_in_code {
             continue;
+        }
+        let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
+        if (1..=6).contains(&hashes) && line[hashes..].starts_with(char::is_whitespace) {
+            heading = Some(line[hashes..].trim().to_string());
         }
         let Some(after) = trimmed.strip_prefix(['-', '*', '+']) else {
             continue;
@@ -222,10 +246,19 @@ pub fn boxes_of(text: &str) -> Vec<bool> {
             && matches!(bytes[1], b' ' | b'x' | b'X')
             && (bytes[3] as char).is_whitespace()
         {
-            boxes.push(bytes[1] != b' ');
+            boxes.push(Box {
+                is_ticked: bytes[1] != b' ',
+                text: rest[3..].trim().to_string(),
+                heading: heading.clone(),
+            });
         }
     }
     boxes
+}
+
+/// Whether each checkbox of a description is ticked, in order.
+pub fn boxes_of(text: &str) -> Vec<bool> {
+    boxes_with_headings(text).iter().map(|found| found.is_ticked).collect()
 }
 
 /// The issues a description says it works on: `Closes #12`, `refs #12`,

@@ -16,11 +16,19 @@ pub use issues::{Stale, stale_issues};
 
 /// The command's exit code, or None when it isn't one of this group's.
 pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
-    match command {
-        "wt:list" => Some(list::run()),
-        "wt:plan" => Some(plan::run(args)),
-        "wt:issues" => Some(issues::run()),
-        "overview" => overview::run(args),
-        _ => None,
+    let takes = match command {
+        "wt:list" => &list::TAKES,
+        "wt:plan" => &plan::TAKES,
+        "wt:issues" => &issues::TAKES,
+        "overview" => return overview::run(args),
+        _ => return None,
+    };
+    if let Some(code) = args::check(args, takes) {
+        return Some(code);
     }
+    Some(match command {
+        "wt:list" => list::run(),
+        "wt:plan" => plan::run(args),
+        _ => issues::run(),
+    })
 }

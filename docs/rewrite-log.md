@@ -4,6 +4,79 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-01 23:05 · CLI / wt:list, wt:plan, wt:issues, overview --once · the command line
+Chose: the read commands check their command line as the write ones do:
+`--help` / `-h` prints what the command does and its usage (exit 0, no
+GitLab read); an unknown flag, a valued flag without its value
+(`overview --orchestration --once`), a word too many (`wt:list x`) is
+`✗ <problem>` and the usage, exit 1. `wt:plan x --work=3` is refused with
+`✗ --work takes its issues as separate arguments: --work 3`, `--work abc`
+with `✗ abc is no issue number`. `overview` checks only when it prints
+(the live view's flags are the TUI's); `--worktree` alone stays the cwd.
+Against: Node's silence (`wt:plan x --work=3` wrote nothing, exit 0;
+`wt:issues --help` read GitLab).
+Why: rule 3 over the letter of rule 5: the names and flags stay, a typo
+no longer passes as success. Hand parsing, one 60-line checker shared by
+the group (rule 4); the write group has the same one, they belong in one
+`cli/args.rs` once the groups meet.
+
+## 2026-10-01 23:00 · CLI / overview --orchestration --once · the frame the live view draws
+Chose: the printed view ports render-orchestration.mjs and what it draws
+from (merge-order, mr-blockers, tree, numbering, history, next,
+action-block, the auto actions, boxes and the title band) into
+`cli/read/overview/orchestration/`, painted as Node paints (`FORCE_COLOR`:
+islands, truecolor band, herdr's tones and pink, OSC 8 links). Every open
+MR has its second line (`checking for conflicts… · pipeline pending →
+GitLab · draft: mark ready → agent`), merged rows their pipeline, worktree
+nodes their issue state, merge time, `untested: 1 commit`, `agent: 2nd
+issue (#297 → #305 at 13%)` and wait, the state in the colour of whom it
+waits for; WORKTREES counts as Node (`7 wait for GitLab · 1 will be
+removed · 41 removed · 9.3 GB free …`, `agents 45 · issues 49 · reused 4,
+started at 13% · handovers failed 1`; #242, no worktree and no removedAt,
+counts as removed again). In the scenario world the output equals Node's
+but for the free memory and the two differences below. Against: the
+TUI's snapshot and section renderers, which aren't in this clone yet:
+when core's model lands the printing moves onto it, the layout code
+here is the reference for it.
+Why: rule 3 (spec §9: `--once` prints the frame the TUI draws). Two
+deliberate differences: nothing is cut with `…` (#304, rule 2): a long MR
+title wraps under itself (`!318 … (#305)`, the merged titles); and a
+wrapped line uses the box's full width (Node lost two columns to its
+indent strip: AGENTS' `dismiss ]`, the reasons of !316 and !318). Rule 7:
+171 ms and 11 GitLab calls against Node's 1.6 s and 157.
+
+## 2026-10-01 22:55 · CLI / overview --once · GitLab, read only, no cache
+Chose: an orchestration's GitLab read in lists side by side: open MRs,
+the MRs updated lately, the last 100 pipelines (head pipeline by commit),
+the issues by iid; then the links of the open issues, the jobs of failed
+pipelines only, single reads only for what the lists don't hold (an MR's
+pipeline, an awaited MR's state). No `.claude/gitlab-cache.json` is read
+or written. Against: Node's per-branch reads (157 calls cold) and its
+cache writes from `--once` (#305).
+Why: spec §9 says `--once` changes nothing; a print that writes a cache
+other overviews merge into is a write the user didn't ask for (rule 6 in
+spirit), and the cache belongs to core's GitLab client (plan step 1),
+which every view will share. Rule 7: 11 calls in the world, the jobs of a
+running pipeline aren't needed for any line it prints.
+
+## 2026-10-01 22:50 · CLI / overview --once · what the print can't know yet
+Chose: until core reads herdr and the agents' transcripts (its
+`conversations`, `check` and `wait` modules are in the snapshot but not
+compiled), the printed orchestration knows no agent's herdr state: a
+worktree whose agent has nothing to wait for says `no agent`, a free agent
+shows `0 %` of its context, there is no `at work` / `asks you`, no try
+state in an ACTIONS head, no `waits` action from an agent's question, no
+handover or start in UP NEXT (workers.mjs), no `being set up` (setups) and
+no clean-up held by an agent; GitLab's minute shows without the request
+rate. Each comes with core's reader; none is dropped. With GitLab down the
+error line under the band names the reason (`GitLab didn't answer 22:55
+(Error: connect ECONNREFUSED …), tried again`, the first meaningful line
+of glab's stderr, not its last `Node.js v25` line) and NEXT says `what is
+for you can't be told: GitLab didn't answer` instead of Node's progress
+counter.
+Why: rule 3: logged, not lost; rule 4: no second herdr and transcript
+reader next to core's.
+
 ## 2026-10-01 20:10 · CLI / wt:action, wt:tick, wt:note, wt:mr, wt:wait · the command line
 Chose: each command checks its whole command line before it reads or
 writes anything: an unknown flag (`✗ unknown flag --dryrun`), a valued flag

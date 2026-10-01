@@ -8,20 +8,39 @@
 //! open and merged MRs in two GitLab calls; the live view (`tui`) draws the
 //! full sections and will print this frame itself once it can.
 
+mod clock;
 mod frame;
+mod orchestration;
+mod paint;
+mod theme;
 mod views;
 
-use super::args::{cwd, fail};
+use super::args::{Takes, check, cwd, fail};
 use breadboard_core::git;
 use frame::Frame;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The command's exit code when it prints once, None for the live view.
+pub const TAKES: Takes = Takes {
+    valued: &["--orchestration"],
+    lists: &[],
+    optional: &["--worktree"],
+    switches: &["--once", "--herdr"],
+    words: 0,
+    about: "The overview: everything, one orchestration (--orchestration <name>) or one worktree (--worktree [<dir>]). Live in a terminal; printed once with --once or into a pipe (FORCE_COLOR keeps its colours).",
+    usage: "usage: pnpm overview [--orchestration <name> | --worktree [<dir>]] [--once] [--herdr]",
+};
+
+/// The command's exit code when it prints once (or its command line is
+/// refused, or asks for help), None for the live view.
 pub fn run(args: &[String]) -> Option<ExitCode> {
+    let is_help = args.iter().any(|arg| arg == "--help" || arg == "-h");
     let is_once = args.iter().any(|arg| arg == "--once") || !std::io::stdout().is_terminal();
-    is_once.then(|| print_once(args))
+    if !is_once && !is_help {
+        return None;
+    }
+    Some(check(args, &TAKES).unwrap_or_else(|| print_once(args)))
 }
 
 /// Which view: `--orchestration <name>`, `--worktree <dir>`, or everything.
@@ -70,9 +89,10 @@ fn print_once(args: &[String]) -> ExitCode {
     let here = std::env::var_os("INIT_CWD")
         .map(PathBuf::from)
         .unwrap_or_else(|| cwd.clone());
-    let mut frame = Frame::new(columns(), is_colour());
+    paint::set_colour(is_colour());
+    let mut frame = Frame::new(columns());
     match view_of(args, &cwd) {
-        View::Orchestration(name) => views::orchestration(&mut frame, &main, &name),
+        View::Orchestration(name) => orchestration::orchestration(&mut frame, &main, &name),
         View::Worktree(dir) => views::worktree(&mut frame, &main, &dir),
         View::Everything => views::everything(&mut frame, &main, &here),
     }

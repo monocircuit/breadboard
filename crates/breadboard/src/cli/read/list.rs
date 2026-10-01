@@ -3,7 +3,7 @@
 //! Worktrees on the shared stack all point at 3000 and which of them serves
 //! it can't be seen from outside, so they say that instead of claiming it.
 
-use super::args::{cwd, main_dir, pad};
+use super::args::{Takes, cwd, main_dir, pad};
 use breadboard_core::git::{self, Worktree};
 use std::fs;
 use std::net::TcpListener;
@@ -14,6 +14,16 @@ use std::thread;
 /// Where vita's app and its `.env.local` live in a checkout (constants.mjs `VITA`).
 const VITA: &str = "products/vita/web";
 const LEGEND: &str = "  ● answers  ○ nothing there  ⇒ shares the port of the main checkout  → you are here";
+
+pub const TAKES: Takes = Takes {
+    valued: &[],
+    lists: &[],
+    optional: &[],
+    switches: &[],
+    words: 0,
+    about: "Which version runs where: every worktree with its branch, its app and its stack.",
+    usage: "usage: pnpm wt:list",
+};
 
 pub fn run() -> ExitCode {
     let main = match main_dir() {
@@ -126,7 +136,7 @@ fn env_file_of(dir: &Path) -> PathBuf {
 
 /// The offset of a worktree's own stack: `POSTGRES_PORT - 5432` when the env
 /// names its own compose project, else 0, the shared stack (stack.mjs `offsetOf`).
-fn offset_of(env_file: &Path) -> i64 {
+pub(super) fn offset_of(env_file: &Path) -> i64 {
     let Ok(text) = fs::read_to_string(env_file) else {
         return 0;
     };
@@ -146,7 +156,7 @@ fn offset_of(env_file: &Path) -> i64 {
 }
 
 /// Whether something listens on the port: it can't be taken on 127.0.0.1 (stack.mjs `isPortFree`).
-fn port_answers(port: i64) -> bool {
+pub(super) fn port_answers(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_err())
 }
 

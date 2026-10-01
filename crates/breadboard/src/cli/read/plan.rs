@@ -3,7 +3,7 @@
 //! printed, and set with the flags. The overview's NEXT, WORKTREES and MERGE
 //! REQUESTS and herdr's space order read it from the record.
 
-use super::args::{fail, first, flag_value, main_dir};
+use super::args::{Takes, fail, first, flag_value, main_dir};
 use breadboard_core::lock::with_dir_lock;
 use breadboard_core::record::{self, Plan, is_name, record_file, record_of};
 use std::process::ExitCode;
@@ -12,6 +12,16 @@ use std::time::Duration;
 const USAGE: &str = "usage: pnpm wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]";
 /// How long the record's `<file>.lock` holds before another takes it over (as actions.json's).
 const LOCK_STALE: Duration = Duration::from_millis(5000);
+
+pub const TAKES: Takes = Takes {
+    valued: &["--why"],
+    lists: &["--work", "--merge"],
+    optional: &[],
+    switches: &[],
+    words: 1,
+    about: "The order an orchestration works and merges its issues in: printed, and set with the flags. A list flag without issues clears that list.",
+    usage: USAGE,
+};
 
 pub fn run(args: &[String]) -> ExitCode {
     let Some(name) = first(args) else { return fail(USAGE) };
@@ -28,8 +38,9 @@ pub fn run(args: &[String]) -> ExitCode {
     let Some(record) = record_of(&main, name) else {
         return fail(&format!("no orchestration {name} is recorded"));
     };
-    let (Ok(work), Ok(merge)) = (numbers_after(args, "--work"), numbers_after(args, "--merge")) else {
-        return fail(USAGE);
+    let (work, merge) = match (numbers_after(args, "--work"), numbers_after(args, "--merge")) {
+        (Ok(work), Ok(merge)) => (work, merge),
+        (Err(value), _) | (_, Err(value)) => return fail(&format!("{value} is no issue number\n{USAGE}")),
     };
     let why = flag_value(args, "--why");
 
@@ -99,14 +110,14 @@ fn hashes(numbers: &[i64], separator: &str) -> String {
 
 /// The issue numbers after `flag` up to the next flag (`#` allowed), None
 /// when it isn't given, an empty list when it is given bare (it clears);
-/// Err when one is no positive whole number.
-fn numbers_after(args: &[String], flag: &str) -> Result<Option<Vec<i64>>, ()> {
+/// Err the first that is no positive whole number.
+fn numbers_after(args: &[String], flag: &str) -> Result<Option<Vec<i64>>, String> {
     let Some(at) = args.iter().position(|arg| arg == flag) else {
         return Ok(None);
     };
     let values = args[at + 1..].iter().take_while(|arg| !arg.starts_with("--"));
     values
-        .map(|value| number_of(value).ok_or(()))
+        .map(|value| number_of(value).ok_or_else(|| value.clone()))
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
 }
@@ -131,9 +142,9 @@ mod tests {
         assert_eq!(numbers_after(&args, "--work"), Ok(Some(vec![3, 4])));
         assert_eq!(numbers_after(&args, "--merge"), Ok(Some(vec![])));
         assert_eq!(numbers_after(&args, "--other"), Ok(None));
-        assert_eq!(numbers_after(&strings(&["--work", "0"]), "--work"), Err(()));
-        assert_eq!(numbers_after(&strings(&["--work", "3a"]), "--work"), Err(()));
-        assert_eq!(numbers_after(&strings(&["--work", "2.5"]), "--work"), Err(()));
+        assert_eq!(numbers_after(&strings(&["--work", "0"]), "--work"), Err("0".into()));
+        assert_eq!(numbers_after(&strings(&["--work", "3a"]), "--work"), Err("3a".into()));
+        assert_eq!(numbers_after(&strings(&["--work", "2.5"]), "--work"), Err("2.5".into()));
         // The `=` form is no list (plan.mjs).
         assert_eq!(numbers_after(&strings(&["--work=3"]), "--work"), Ok(None));
     }

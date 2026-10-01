@@ -25,16 +25,59 @@ pub fn get(main: &Path, endpoint: &str) -> Result<Value, String> {
             _ => failed(&format!("glab did not start: {error}")),
         })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let last = stderr.trim().lines().last().unwrap_or("").trim().to_string();
-        let reason = if last.is_empty() {
-            format!("glab api exited with {}", output.status)
-        } else {
-            last
-        };
+        let reason = reason_of(&String::from_utf8_lossy(&output.stderr))
+            .unwrap_or_else(|| format!("glab api exited with {}", output.status));
         return Err(failed(&reason));
     }
     serde_json::from_slice(&output.stdout).map_err(|_| failed("its answer was no JSON"))
+}
+
+/// What a failed `glab api` says went wrong, in one line: glab's own
+/// (`glab: 502 Bad Gateway`), else the error a stack trace names (its cause
+/// first), else its first line that isn't the trace's frame.
+fn reason_of(stderr: &str) -> Option<String> {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let is_error = |line: &&&str| {
+        let line = line.trim_start_matches('[');
+        line.split_once(": ")
+            .is_some_and(|(name, _)| name.ends_with("Error") && name.chars().all(char::is_alphanumeric))
+    };
+    let found = lines
+        .iter()
+        .find(|line| line.starts_with("glab:") || line.starts_with("ERROR"))
+        .map(|line| line.to_string())
+        .or_else(|| {
+            lines
+                .iter()
+                .find_map(|line| line.strip_prefix("[cause]:"))
+                .map(|cause| cause.trim().to_string())
+        })
+        .or_else(|| {
+            lines.iter().find(is_error).map(|line| {
+                line.trim_start_matches('[')
+                    .trim_end_matches(['{', ' '])
+                    .trim_end_matches(']')
+                    .to_string()
+            })
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .find(|line| {
+                    !line.starts_with("node:")
+                        && !line.starts_with("at ")
+                        && !line.starts_with("Node.js ")
+                        && !line.starts_with('^')
+                        && !line.contains("triggerUncaughtException")
+                })
+                .map(|line| line.to_string())
+        })?;
+    // A long answer of GitLab's (its JSON) in its first words.
+    Some(if found.chars().count() > 160 {
+        format!("{}…", found.chars().take(159).collect::<String>())
+    } else {
+        found
+    })
 }
 
 /// A GET that must answer a list.
@@ -66,4 +109,31 @@ pub fn lists(main: &Path, endpoints: &[String]) -> Vec<Result<Vec<Value>, String
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_what_went_wrong_in_one_line() {
+        let trace = "node:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\n[TypeError: fetch failed] {\n  [cause]: Error: connect ECONNREFUSED 127.0.0.1:59999\n      at x (y)\n}\n\nNode.js v25.8.0\n";
+        assert_eq!(
+            reason_of(trace).as_deref(),
+            Some("Error: connect ECONNREFUSED 127.0.0.1:59999")
+        );
+        assert_eq!(
+            reason_of("glab: 502 Bad Gateway\n").as_deref(),
+            Some("glab: 502 Bad Gateway")
+        );
+        assert_eq!(
+            reason_of("x\n[TypeError: fetch failed] {\n}").as_deref(),
+            Some("TypeError: fetch failed")
+        );
+        assert_eq!(
+            reason_of("could not find the host\n").as_deref(),
+            Some("could not find the host")
+        );
+        assert_eq!(reason_of("\n"), None);
+    }
 }
