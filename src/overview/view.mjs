@@ -90,11 +90,11 @@ export const readView = async () => {
       workers: recordOf(orchestration)?.workers ?? {},
       // The handovers the orchestrator announced (#227, worktree/handovers.mjs).
       handovers: handoversOf(recordOf(orchestration)),
-      // For AGENTS: whether a fresh agent would get its own stack (#229).
+      // For the head line of WORKTREES: whether a fresh agent would get its own stack (#229).
       free: freeMemory(),
       ownActions: actionsOf(file),
       recordFile: file,
-      // For the automatic actions (auto-actions.mjs) and AGENTS: what herdr says each agent does.
+      // For the automatic actions (auto-actions.mjs) and WORKTREES: what herdr says each agent does.
       agents: agentsOf(),
     };
   }

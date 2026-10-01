@@ -57,7 +57,6 @@ import {
   forgetResolved,
   resolveColumns,
 } from "./resolve.mjs";
-import { pushAgents } from "./agents.mjs";
 import { ago } from "./render-worktree.mjs";
 import { workerActionsOf } from "./workers.mjs";
 import { KEYS, pushUnder, screen } from "./screen.mjs";
@@ -287,7 +286,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
       ...end,
       ...replan,
     ]),
-    // For AGENTS: which agent gets which queued issue next.
+    // For WORKTREES' queue: which agent gets which queued issue next.
     suggested: handovers.suggested,
   };
 };
@@ -458,7 +457,7 @@ const pushUpNext = (lines, upNext, of) => {
 
 /**
  * The view of one orchestration, for the space `⇶ <title>`: NEXT, ACTIONS,
- * AGENTS, its worktrees as a tree in the work order (tree.mjs), then
+ * its worktrees as a tree in the work order with their agents (tree.mjs), then
  * their merge requests in the merge order (`pnpm wt:plan`). An issue stays
  * after its worktree went with the merge (the record of wt:orchestrate).
  */
@@ -536,19 +535,6 @@ export const renderOrchestration = (local, remote, error) => {
   screen.sticky = lines.length;
   pushActions(lines, actions.actions, of);
   pushUpNext(lines, actions.upNext, of);
-  pushAgents(
-    lines,
-    issues,
-    of,
-    local.agents ?? new Map(),
-    {
-      known: local.workers,
-      handovers: announced,
-      suggested: actions.suggested,
-    },
-    local.free,
-  );
-
   pushWorktrees(lines, {
     name: orchestration,
     issues,
@@ -560,6 +546,8 @@ export const renderOrchestration = (local, remote, error) => {
     holds: actions.holds,
     suggested: actions.suggested,
     hasRemote: Boolean(remote),
+    known: local.workers,
+    free: local.free,
   });
 
   const byNumber = withMr;

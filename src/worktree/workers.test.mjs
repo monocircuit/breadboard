@@ -161,7 +161,7 @@ describe("the record of a handover", () => {
     assert.equal(same.renamed, at);
   });
 
-  it("names the old name in AGENTS for a day", () => {
+  it("names the old name in WORKTREES for a day", () => {
     const now = Date.parse(at);
     assert.equal(wasOf(first, now + 1000), "235-overview-actions");
     assert.equal(wasOf(first, now + WAS_FOR + 1), null);

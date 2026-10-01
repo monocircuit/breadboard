@@ -16,7 +16,7 @@ import { worktrees } from "./worktrees.mjs";
 
 /** The share of its context above which an agent gets no next issue: it would run out in the middle of it. */
 export const CONTEXT_LIMIT = 0.5;
-/** How long AGENTS names an agent's name before its last handover (`was <old>`): messages to that one can be explained. */
+/** How long WORKTREES names an agent's name before its last handover (`was <old>`): messages to that one can be explained. */
 export const WAS_FOR = 24 * 60 * 60 * 1000;
 
 /**
@@ -190,7 +190,7 @@ export const recordHandover = (name, worker, number, dir) => {
     ),
   );
 };
-/** Its name before the last handover, for AGENTS, while that was less than WAS_FOR ago; else null. */
+/** Its name before the last handover, for WORKTREES, while that was less than WAS_FOR ago; else null. */
 export const wasOf = (known, now = Date.now()) =>
   known?.was && now - Date.parse(known.renamed ?? "") < WAS_FOR
     ? known.was

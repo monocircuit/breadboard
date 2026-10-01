@@ -133,7 +133,7 @@ const percent = share => `${Math.round(share * 100)} %`;
  * (`holds`: dir → why), whose clean-up waits, it would close the agent with
  * the space. An agent nothing fits closes with its clean-up, its
  * conversation kept for `/resume`. `suggested`: number → `{ worker, shared
- * }`, for AGENTS (agents.mjs).
+ * }`, for the queue of WORKTREES (tree.mjs).
  *
  * `shouldHandOut` (the one live overview, once GitLab answered): a queued
  * issue goes to its suggested agent by itself once that one is merged.
