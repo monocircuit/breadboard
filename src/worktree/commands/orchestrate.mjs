@@ -152,9 +152,10 @@ export default async function orchestrateCommand(name, flags) {
       "nothing to start: every issue is closed, claimed or has its worktree already",
     );
   // No count holds one back (#229): each to an idle agent that knows its
-  // files, else to the idle one with the most room (#265), else to a fresh one at once, on the shared stack when memory is
-  // short (memory.mjs). `--queue` queues all of them for the overview,
-  // `--now` (the overview's own start) looks for no idle one: it looked already.
+  // files, else to the idle one with the most room (#265), else to a fresh
+  // one at once, on the shared stack when memory is short (memory.mjs).
+  // `--queue` queues all of them for the overview, `--now` (the overview's
+  // own start) looks for no idle one: it looked already.
   const toStart = plan.filter(item => !item.isSkipped);
   const isQueued = flags.has("--queue");
   const idle =
@@ -221,7 +222,7 @@ export default async function orchestrateCommand(name, flags) {
       });
       results.push(
         handed.status === 0
-          ? `✓ #${item.number} ${item.feature}: went to ${item.worker.name}, idle and knowing its files`
+          ? `✓ #${item.number} ${item.feature}: went to ${item.worker.name}, idle${item.shared.length ? " and knowing its files" : ", with the most room"}`
           : `✗ #${item.number} ${item.feature}: the handover to ${item.worker.name} failed (see above); a fresh agent: pnpm wt:orchestrate ${name} ${item.number} --now`,
       );
       continue;
