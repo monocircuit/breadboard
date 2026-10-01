@@ -2,15 +2,12 @@
 // agents ask for, its worktrees and their merge requests, the open ones in
 // the merge order the overview computes (merge-order.mjs), the merged below.
 import {
-  ESCAPES,
   bold,
-  cyan,
   dim,
   fit,
   green,
   link,
   red,
-  underRows,
   visible,
   wrap,
   yellow,
@@ -22,15 +19,10 @@ import {
   isInHerdr,
 } from "../worktree.mjs";
 import { writePlan } from "../worktree/origins.mjs";
-import {
-  answerCell,
-  clickAction,
-  deliversAnswers,
-  optionsText,
-} from "./answers.mjs";
+import { actionBlock, kindChip } from "./action-block.mjs";
+import { answerWith, clickAction, deliversAnswers } from "./answers.mjs";
 import { isOnce, orchestration } from "./args.mjs";
 import {
-  AUTO_KIND,
   autoActionsOf,
   removeMerged,
   notifyNewActions,
@@ -38,6 +30,7 @@ import {
   tellFailedPipelines,
 } from "./auto-actions.mjs";
 import {
+  CELL_START,
   boxInner,
   closeBox,
   openBox,
@@ -65,20 +58,6 @@ import { foldLine, pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
 import { tryStateOf } from "./try-state.mjs";
 
-/** How an action shows its kind. */
-const KIND = {
-  merge: green("merge"),
-  try: cyan("try"),
-  "browser-check": cyan("try"),
-  decide: yellow("decide"),
-  look: "look",
-  plan: cyan("plan"),
-  end: red("end"),
-  order: cyan("order"),
-  "hand over": cyan("hand over"),
-  start: cyan("start"),
-  ...AUTO_KIND,
-};
 /** The kinds whose click opens the spot to check; `browser-check` is stored before `try` came. */
 const TRY_KINDS = new Set(["try", "browser-check"]);
 /**
@@ -86,12 +65,8 @@ const TRY_KINDS = new Set(["try", "browser-check"]);
  * (herdr-tones.mjs): ready as done, waiting as working, failed as blocked.
  */
 const TRY_STATUS = { ready: "done", waits: "working", failed: "blocked" };
-/** A row that can't be done yet: grey, its own colours and links dropped. */
-const grey = text => dim(String(text).replace(ESCAPES, ""));
 /** Whether an item is a try that can't be tried yet: grey, no answer, NEXT skips it. */
 const isWaitingTry = item => item.tryState?.isReady === false;
-/** In place of the buttons of an automatic action: it goes by itself when its cause goes. */
-const AUTO = dim("auto");
 
 /**
  * Every open action, split by order.mjs: ACTIONS, what needs the user (the
@@ -310,14 +285,19 @@ const actionText = ({ action, issue, file }, of) => {
   return action.text;
 };
 /**
- * A click on an action: on a button (its first line) it answers, anywhere
- * else it is done. An automatic one has no buttons: a click does it; nor
- * has a try that isn't ready (its click opens a failed job, else nothing).
+ * What a click on a line of an action's block does (action-block.mjs `on`):
+ * on its buttons line a button answers, past them it does the action (the
+ * buttons from column `start`); on an option that option answers; anywhere
+ * else it does the action.
  */
-const clickOf = item => (column, lineOfRow) =>
-  item.isAuto || lineOfRow > 0 || isWaitingTry(item)
-    ? item.go()
-    : clickAction(item, column, () => screen.redraw({ isReread: true }));
+const clickOf =
+  (item, on, start = CELL_START) =>
+  column => {
+    const redraw = () => screen.redraw({ isReread: true });
+    if (on === "buttons") return clickAction(item, column, redraw, start);
+    if (typeof on === "number") return answerWith(item, on, redraw);
+    return item.go();
+  };
 
 /**
  * What there is to merge: every open MR nothing holds up (merge-order.mjs),
@@ -360,77 +340,68 @@ export const nextActionOf = (actions, upNext, hasMerge) =>
 const pushNext = (lines, local, { actions, upNext }, issues, of, remote) => {
   const merge = remote ? nextMerge(local, issues, of) : null;
   const first = nextActionOf(actions, upNext, Boolean(merge));
-  const line = first
-    ? `${KIND[first.action.kind] ?? first.action.kind} ${bold(first.who)}${first.action.at ? `  ${dim(ago(new Date(first.action.at)))}` : ""}`
-    : merge
-      ? dim("next to merge")
+  const why = local.plan?.merge?.length ? local.plan.why : null;
+  // The first action as the block it is in ACTIONS, under the label; the
+  // MR next to merge or that nothing waits after it; the plan's why under that.
+  const width = process.stdout.columns || 120;
+  const label = ` ${bold("NEXT")}  `;
+  const indent = " ".repeat(visible(label));
+  if (first) {
+    blockOf(first, of, width - indent.length).forEach(({ line, on }, i) => {
+      screen.clicks[lines.length] = clickOf(first, on, indent.length + 1);
+      lines.push(`${i === 0 ? label : indent}${line}`);
+    });
+  } else {
+    const text = merge
+      ? `${dim("next to merge")}  ${merge.line}`
       : dim(
           remote ? "nothing waits for you: the agents are at work" : "GitLab …",
         );
-  // NEXT has no ✓: a click on any of its lines always does it.
-  const go = first?.go ?? merge?.go;
-  const why = local.plan?.merge?.length ? local.plan.why : null;
-  // Its text under the kind, like in ACTIONS, a decide's options after it;
-  // the plan's why under that.
-  const width = process.stdout.columns || 120;
-  const head = [` ${bold("NEXT")}`, line];
-  const text = first
-    ? [
-        actionText(first, of),
-        first.action.kind === "decide" && optionsText(first.action),
-      ]
-        .filter(Boolean)
-        .join("  ")
-    : (merge?.line ?? "");
-  const [next] = underRows([{ head, text }], { width, under: 1 });
-  for (const nextLine of next) {
-    if (go) screen.clicks[lines.length] = () => go();
-    lines.push(nextLine);
+    wrap(text, width - indent.length).forEach((line, i) => {
+      if (merge) screen.clicks[lines.length] = () => merge.go();
+      lines.push(`${i === 0 ? label : indent}${line}`);
+    });
   }
   if (!why) return;
-  const indent = " ".repeat(visible(head[0]) + 2);
-  lines.push(...wrap(dim(why), width - indent.length).map(l => indent + l));
+  lines.push(
+    ...wrap(dim(why), width - indent.length).map(line => indent + line),
+  );
 };
 
 /**
- * A row of ACTIONS: its buttons, kind, agent and age on the first line, a
- * try's state after them (try-state.mjs), its text under the kind (pushUnder
- * with `under: 2`). A try that isn't ready is grey but for its state.
+ * The block of an action (action-block.mjs), `width` wide: a try with its
+ * state in the head (try-state.mjs), grey but for it while it isn't ready.
  */
-export const actionRow = (item, of) => {
-  const cells = [
-    "",
-    item.isAuto ? AUTO : answerCell(item.action),
-    KIND[item.action.kind] ?? item.action.kind,
-    bold(item.who),
-    dim(ago(new Date(item.action.at))),
-  ];
-  const text = actionText(item, of);
-  if (!item.tryState) return { head: cells, text };
-  const state = toneOf(TRY_STATUS[item.tryState.tone])(item.tryState.label);
-  if (!isWaitingTry(item)) return { head: [...cells, state], text };
-  return {
-    head: [...cells.map(cell => (cell ? grey(cell) : cell)), state],
-    text: grey(text),
-  };
-};
-/** ACTIONS: what needs the user, asked for with `pnpm wt:action` or found waiting. */
+export const blockOf = (item, of, width) =>
+  actionBlock(item, {
+    text: actionText(item, of),
+    width,
+    state: item.tryState
+      ? toneOf(TRY_STATUS[item.tryState.tone])(item.tryState.label)
+      : "",
+    isWaiting: isWaitingTry(item),
+  });
+/**
+ * ACTIONS: what needs the user, asked for with `pnpm wt:action` or found
+ * waiting, each a block of its own (#273), a thin line between them.
+ */
 const pushActions = (lines, actions, of) => {
   const box = openBox(lines);
+  const width = boxInner();
   if (actions.length === 0) {
     lines.push(dim("  none: an agent asks with pnpm wt:action <kind> <text>"));
-  } else {
-    pushUnder(
-      lines,
-      actions.map(item => actionRow(item, of)),
-      actions.map(clickOf),
-      { under: 2 },
-    );
   }
+  actions.forEach((item, i) => {
+    if (i > 0) lines.push(`  ${dim("─".repeat(width))}`);
+    for (const { line, on } of blockOf(item, of, width)) {
+      screen.clicks[lines.length] = clickOf(item, on);
+      lines.push(`  ${line}`);
+    }
+  });
   closeBox(
     lines,
     box,
-    `${bold("ACTIONS")} ${dim(actions.length ? `${actions.length} for you · a button answers, the rest of the row does it${actions.some(item => item.isAuto) ? ", auto ones go by themselves" : ""}` : "nothing waits for you")}`,
+    `${bold("ACTIONS")} ${dim(actions.length ? `${actions.length} for you · a button or an option answers, the rest of a block does it${actions.some(item => item.isAuto) ? " · auto ones go by themselves" : ""}` : "nothing waits for you")}`,
   );
 };
 /** UP NEXT: the automatic follow-ups, one click each; left out while there are none. */
@@ -442,7 +413,7 @@ const pushUpNext = (lines, upNext, of) => {
     upNext.map(item => ({
       head: [
         "",
-        KIND[item.action.kind] ?? item.action.kind,
+        kindChip(item.action.kind),
         bold(item.who),
         item.action.at ? dim(ago(new Date(item.action.at))) : "",
       ],
