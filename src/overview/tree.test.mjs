@@ -4,7 +4,13 @@ import { describe, it } from "node:test";
 import { ESCAPES } from "../lib/tty.mjs";
 import { withRemoved } from "../worktree/origins.mjs";
 import { numbersOf } from "./numbering.mjs";
-import { lifecycleOf, pushWorktrees, treeOf } from "./tree.mjs";
+import {
+  foldLine,
+  lifecycleOf,
+  pushWorktrees,
+  toggleQueue,
+  treeOf,
+} from "./tree.mjs";
 
 const plain = text => text.replace(ESCAPES, "");
 const tree = (fields = {}) => ({
@@ -305,21 +311,83 @@ describe("pushWorktrees", () => {
     assert.match(text, /\n {9}#2 open · !211 merged .*3:12/);
   });
 
-  it("shows the queue behind a divider, below the worktrees", () => {
-    const text = draw([issue(1), issue(2, { tree: null, queued: true })]);
+  it("shows the queue as a node of the tree, its issues under it", () => {
+    const text = draw([
+      issue(1),
+      issue(2, { tree: null, queued: true }),
+      issue(3, { tree: null }),
+    ]);
     const lines = text.split("\n");
-    const divider = lines.findIndex(line => /queued \(1\)/.test(line));
+    const at = lines.findIndex(line => /queued \(1\)/.test(line));
     assert.match(
-      lines[divider],
-      /^\s*── queued \(1\) · in the order they start( · click to fold)? ─+$/,
+      lines[at],
+      /^\s*├─ ▾ queued \(1\) · in the order they start\s*$/,
     );
-    assert.ok(lines.findIndex(line => /1\. 1-feature/.test(line)) < divider);
-    assert.match(lines[divider - 3], /├─ 1\. 1-feature/);
+    assert.match(lines[at - 3], /├─ 1\. 1-feature/);
+    assert.match(lines[at - 1], /^│ {5}/);
     assert.match(
-      lines[divider + 1],
-      /└─ 2\. 2-feature +start: waits for an agent/,
+      lines[at + 1],
+      /^│ {2}└─ 2\. 2-feature +start: waits for an agent/,
     );
+    assert.match(lines[at + 2], /^│ {8}#2/);
+    assert.match(text, /└─ ▾ done and removed \(1\)/);
     assert.match(text, /WORKTREES.*1 queued/);
+  });
+
+  it("ends the tree with the queue when nothing is removed", () => {
+    const lines = draw([
+      issue(1),
+      issue(2, { tree: null, queued: true }),
+    ]).split("\n");
+    const at = lines.findIndex(line => /queued \(1\)/.test(line));
+    assert.match(lines[at], /^\s*└─ ▾ queued \(1\)/);
+    assert.match(lines[at + 1], /^ {3}└─ 2\. 2-feature/);
+  });
+
+  it("folds the queue into its node", () => {
+    toggleQueue();
+    try {
+      const text = draw([issue(1), issue(2, { tree: null, queued: true })]);
+      assert.match(text, /└─ ▸ queued \(1\) · in the order they start/);
+      assert.doesNotMatch(text, /2-feature/);
+    } finally {
+      toggleQueue();
+    }
+  });
+
+  it("draws no row wider than the box, at any width", () => {
+    const columns = process.stdout.columns;
+    try {
+      for (const width of [30, 50, 80, 120]) {
+        process.stdout.columns = width;
+        const issues = [
+          issue(1),
+          issue(2, { tree: null, queued: true }),
+          issue(3, { tree: null }),
+        ];
+        const text = draw(issues);
+        for (const line of text.split("\n"))
+          assert.ok([...line].length <= width, `${width}: ${line}`);
+        assert.doesNotMatch(text, /─…/);
+        if (width >= 50) assert.doesNotMatch(text, /[▾▸] [^\n]*…/);
+        if (width >= 80) assert.doesNotMatch(text, /…/);
+      }
+    } finally {
+      process.stdout.columns = columns;
+    }
+  });
+
+  it("cuts a fold line to the width", () => {
+    const line = plain(
+      foldLine({
+        branch: "├─ ",
+        isOpen: false,
+        text: "queued (12) · in the order they start",
+        width: 20,
+      }),
+    );
+    assert.equal([...line].length, 20);
+    assert.match(line, /^├─ ▸ queued/);
   });
 
   it("draws no divider with nothing queued", () => {
