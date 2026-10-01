@@ -86,7 +86,9 @@ fn extra_for(name: &str, number: i64, given: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-/// The brief of `--brief` kept per issue (#247): a queued issue started later gets it, no other.
+/// The brief of `--brief` kept per issue (#247): a queued issue started later
+/// gets it, no other. `brief` is written as today too: the Node overview's
+/// queue starts read it while both run side by side (rule 5).
 fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     let main = repo::main_dir();
     let raw = breadboard_core::json::read(&record::record_file(&main, name)).unwrap_or(json!({}));
@@ -98,7 +100,7 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     for number in numbers {
         briefs.insert(number.to_string(), json!(text));
     }
-    let _ = record::update_record(&main, name, object(json!({ "briefs": briefs })));
+    let _ = record::update_record(&main, name, object(json!({ "brief": text, "briefs": briefs })));
 }
 
 pub fn command(args: &Args) -> ExitCode {
