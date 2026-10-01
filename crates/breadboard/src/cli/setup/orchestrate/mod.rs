@@ -24,7 +24,7 @@ use std::fs;
 use std::process::{Command, ExitCode, Stdio};
 use workers::{Start, WorkerInfo};
 
-const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end

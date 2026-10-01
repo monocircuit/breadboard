@@ -26,7 +26,7 @@ const TYPES: [(&str, &str); 6] = [
     ("security", "Security"),
 ];
 
-const USAGE: &str = "usage:
+pub const USAGE: &str = "usage:
   pnpm changelog:add [--type <t>] [--area <a>] \"<sentence>\"   a fragment for this branch's MR
   pnpm changelog:unreleased                                  what the next release would say
   pnpm changelog:release <X.Y.Z>                             fold the fragments into CHANGELOG.md

@@ -56,6 +56,51 @@ impl Args {
     }
 }
 
+/// The first flag on the command line that the command doesn't take
+/// (`--x=y` counts as `--x`), said with the one it is likely a typo of:
+/// `unknown flag --shraed: did you mean --shared?`. After `--` nothing counts.
+pub fn unknown_flag(all: &[String], known: &[&str]) -> Option<String> {
+    let name = all
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .filter(|arg| arg.starts_with("--"))
+        .map(|arg| arg.split_once('=').map_or(arg.as_str(), |(name, _)| name))
+        .find(|name| !known.contains(name))?;
+    let near = known
+        .iter()
+        .map(|flag| (distance(name, flag), flag))
+        .filter(|(far, _)| *far <= 2)
+        .min_by_key(|(far, _)| *far);
+    Some(match near {
+        Some((_, flag)) => format!("unknown flag {name}: did you mean {flag}?"),
+        None => format!("unknown flag {name}"),
+    })
+}
+
+/// Refuses a flag the command doesn't take before anything happens: the
+/// flag, the one it is likely a typo of, and the command's usage (exit 1).
+pub fn refuse_unknown(args: &Args, known: &[&str], usage: &str) {
+    if let Some(message) = unknown_flag(&args.all, known) {
+        fail(&format!("{message}\n{usage}"));
+    }
+}
+
+/// The edits from `a` to `b` (Levenshtein), for a typo's nearest flag.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, left) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1).min(row[j] + 1).min(diagonal + usize::from(left != *right));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
 static HINT: Mutex<String> = Mutex::new(String::new());
 /// Files this process holds and drops when it fails (setup claims).
 static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -267,6 +312,23 @@ mod tests {
 
     fn args(list: &[&str]) -> Args {
         Args::new(&list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn names_a_flag_the_command_doesnt_take() {
+        let known = ["--shared", "--fix", "--origin"];
+        let all = |list: &[&str]| args(list).all;
+        assert_eq!(unknown_flag(&all(&["12-x", "--shared", "--origin=b"]), &known), None);
+        assert_eq!(
+            unknown_flag(&all(&["12-x", "--shraed"]), &known).as_deref(),
+            Some("unknown flag --shraed: did you mean --shared?")
+        );
+        assert_eq!(
+            unknown_flag(&all(&["12-x", "--bogus=1"]), &known).as_deref(),
+            Some("unknown flag --bogus")
+        );
+        assert_eq!(unknown_flag(&all(&["x", "--", "--bogus"]), &known), None);
+        assert_eq!(distance("--fx", "--fix"), 1);
     }
 
     #[test]

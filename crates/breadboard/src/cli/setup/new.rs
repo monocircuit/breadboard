@@ -15,7 +15,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
-const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>]";
+pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>]";
 
 /// `34-…` claims issue 34: a branch of someone else carrying that number on
 /// origin means the issue is taken. The first such branch, or None.
