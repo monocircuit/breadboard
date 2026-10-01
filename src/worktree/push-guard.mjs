@@ -25,11 +25,11 @@ exit 0
 `;
 
 /**
- * The branches a push updates, from the lines git hands a pre-push hook
- * (`<local ref> <local sha> <remote ref> <remote sha>`). A deletion updates
- * nothing, and a tag is no branch.
+ * What a push updates, from the lines git hands a pre-push hook (`<local
+ * ref> <local sha> <remote ref> <remote sha>`): `[{ branch, sha }]`. A
+ * deletion updates nothing, and a tag is no branch.
  */
-export const pushedBranches = input =>
+export const pushedRefs = input =>
   input
     .split("\n")
     .map(line => line.trim().split(/\s+/))
@@ -39,7 +39,13 @@ export const pushedBranches = input =>
         !ZERO.test(localSha) &&
         remoteRef?.startsWith("refs/heads/"),
     )
-    .map(([, , remoteRef]) => remoteRef.slice("refs/heads/".length));
+    .map(([, sha, remoteRef]) => ({
+      branch: remoteRef.slice("refs/heads/".length),
+      sha,
+    }));
+/** The branches a push updates (pushedRefs). */
+export const pushedBranches = input =>
+  pushedRefs(input).map(({ branch }) => branch);
 
 /**
  * Why a push to `branch` is refused, or null. `mrs`: its merge requests,
