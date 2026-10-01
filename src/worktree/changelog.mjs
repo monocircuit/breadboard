@@ -61,6 +61,8 @@ export const summaryOf = (description, title = "") => {
         part =>
           part &&
           part !== title.trim() &&
+          // Another title (`feat(x): …`) says nothing more than the title.
+          !/^\w+(\([^)]*\))?!?: [^\n]*$/.test(part) &&
           !/^(closes|fixes|resolves|part of)\b/i.test(part) &&
           !/^[-*] \[[ x]\]/.test(part),
       ) ?? "";

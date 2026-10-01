@@ -26,6 +26,7 @@ import {
   waitsText,
   wasOf,
 } from "../worktree.mjs";
+import { historyText, reuseOf, reuseText } from "../worktree/history.mjs";
 import { THRESHOLD, gb } from "../worktree/memory.mjs";
 import { isOnce } from "./args.mjs";
 import { removalOf } from "./auto-actions.mjs";
@@ -181,7 +182,7 @@ const agentNameFact = (tree, known, now) => {
 };
 /**
  * The facts line of a node: issue, MR and pipeline, work, its agent's name
- * after a handover and its context, a wait (#216) its state doesn't name
+ * after a handover, which issue of its agent this is (#264) and its context, a wait (#216) its state doesn't name
  * already, a requested change and what isn't pushed (#228), the next issue
  * announced for its agent (#227). What doesn't apply is left out; a worktree
  * without an MR says so.
@@ -191,7 +192,7 @@ const factsOf = (
   found,
   mr,
   hasRemote,
-  { handover, state, agent, merged },
+  { handover, state, agent, history, merged },
 ) => {
   const { tree } = issue;
   const mergedAt = issue.mergedAt ?? mr?.mergedAt;
@@ -200,6 +201,7 @@ const factsOf = (
     tree ? mrFact(mr, mergedAt) || dim("no MR yet") : mrFact(mr, mergedAt),
     tree ? workFact(tree) : "",
     agent,
+    history ? dim(history) : "",
     tree ? agentFact(tree.claude) : "",
     tree?.wait && state.key !== "waitsForMr"
       ? yellow(waitsText(tree.wait, merged))
@@ -305,6 +307,7 @@ export const treeOf = (
         handover: handoverOf(tree),
         state,
         agent: agentNameFact(tree, known, now),
+        history: historyText(known, issue.number, tree?.claude),
         merged,
       }),
       title: dim(found?.title ?? issue.title ?? issue.branch),
@@ -454,6 +457,10 @@ export const pushWorktrees = (
   const box = openBox(lines);
   lines.push(
     `  ${bold(`${ORCHESTRATOR} ${name}`)}  ${dim(`.claude/orchestrations/${name}.json`)}`,
+  );
+  // How reuse works (#264), as the root's facts: agents, their issues, reused ones, failed handovers.
+  lines.push(
+    `  ${dim(fit(`${live.length + queued.length + removed.length ? "│" : " "}  ${reuseText(reuseOf(issues, known))}`, boxInner()))}`,
   );
   const isOpen = isRemovedOpen ?? removed.length <= FOLD_OVER;
   const shown = isOpen ? removed : [];

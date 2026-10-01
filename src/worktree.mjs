@@ -17,6 +17,8 @@
 //   pnpm wt:orchestrate <name> --changelog    its changelog (every merged MR) rewritten from record and
 //     [--watch]                               GitLab and printed; --watch: live, the tab `changelog`
 //   pnpm wt:orchestrate <name> --changes      what its MRs changed in the code, as JSON: the tab `changes`
+//   pnpm changelog [--since 30d|<date>]      what got into develop by product and package, rewritten
+//     [--watch]                               from GitLab and printed; --watch: live, the main space's tab
 //   pnpm wt:plan <name> [--work <n>…]         the order of an orchestration's issues and merges
 //     [--merge <n>…] [--why <text>]           for its overview (NEXT, WORKTREES, MERGE REQUESTS)
 //   pnpm wt:list                            every worktree: branch, url, stack, what runs
@@ -79,6 +81,10 @@ export {
   pushStateOf,
 } from "./worktree/change.mjs";
 export { isChangelogBehind, writeChangelog } from "./worktree/changelog.mjs";
+export {
+  isOverallBehind,
+  writeOverall,
+} from "./worktree/overall-changelog.mjs";
 export { endInBackground, endLog } from "./worktree/end.mjs";
 export { boxesOf } from "./worktree/issues.mjs";
 export { layout, startStorybook, syncStackTabs } from "./worktree/layout.mjs";
@@ -114,7 +120,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const flags = new Set([feature, ...rest].filter(a => a?.startsWith("--")));
   if (!commands[command])
     fail(
-      "usage: node packages/breadboard/src/worktree.mjs new|orchestrate|plan|stack|control|mr|note|tick|action|wait|issues|herdr|prune|list|remove …",
+      "usage: node packages/breadboard/src/worktree.mjs new|orchestrate|changelog|plan|stack|control|mr|note|tick|action|wait|issues|herdr|prune|list|remove …",
     );
   await commands[command](
     feature?.startsWith("--") ? undefined : feature,

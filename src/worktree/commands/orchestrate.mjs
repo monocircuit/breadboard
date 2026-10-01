@@ -32,6 +32,7 @@ import {
   writeRecord,
 } from "../origins.mjs";
 import { afterArgs, parseAfter } from "../handovers.mjs";
+import { recordStart } from "../history.mjs";
 import { idleWorkersNow } from "../workers.mjs";
 import handOverCommand, { announceCommand } from "./handover.mjs";
 
@@ -242,6 +243,14 @@ export default async function orchestrateCommand(name, flags) {
       continue;
     }
     const agent = startAgent(item.dir, briefOf({ ...item, name, peer, extra }));
+    // Its first issue in its history (#264): reuse is counted from there.
+    if (agent.isStarted)
+      recordStart(
+        name,
+        agent.id,
+        { number: Number(item.number), how: "fresh", context: 0 },
+        { name: item.feature },
+      );
     const note =
       made.status === 0 ? "" : " (wt:new failed after the setup, see above)";
     results.push(
