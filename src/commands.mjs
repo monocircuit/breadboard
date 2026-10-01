@@ -85,6 +85,8 @@ const DESCRIPTIONS = {
     "stack:up": "start Postgres, Keycloak and SeaweedFS of this checkout",
     "stack:down": "stop the containers of this checkout, data stays",
     "stack:reset": "throw away the data of this checkout and set it up again",
+    "routes:generate":
+      "the page.tsx files from core's route table (--check: only compare, CI check:routes)",
     "pg:generate":
       "generate a migration from src/server/db/schema.ts (skill db-migration)",
     "pg:migrate": "apply the migrations",
