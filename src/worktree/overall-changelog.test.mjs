@@ -27,7 +27,7 @@ const URL = "https://gitlab.test/monocircuit/platform/-";
 describe("groupsOf", () => {
   it("puts a path under its product or package, the rest under repo", () => {
     assert.equal(
-      groupOfPath("products/vita/src/app/page.tsx"),
+      groupOfPath("products/vita/web/src/app/page.tsx"),
       "products/vita",
     );
     assert.equal(
@@ -42,7 +42,7 @@ describe("groupsOf", () => {
   it("places an MR in every group whose paths it changes, once each", () => {
     assert.deepEqual(
       groupsOf([
-        "products/vita/a.ts",
+        "products/vita/web/a.ts",
         "packages/monolithium/b.tsx",
         "packages/monolithium/c.tsx",
         "package.json",
@@ -282,8 +282,8 @@ describe("readOverall", () => {
       },
       { old_path: "package.json", new_path: "package.json" },
       {
-        old_path: "products/vita/gone.ts",
-        new_path: "products/vita/gone.ts",
+        old_path: "products/vita/web/gone.ts",
+        new_path: "products/vita/web/gone.ts",
         deleted_file: true,
       },
     ],
@@ -344,7 +344,7 @@ describe("readOverall", () => {
       since: "30d",
       gitlab,
       now: new Date("2026-10-01T00:00:00Z"),
-      known: { 21: { paths: ["products/vita/a.ts"], changesets: [] } },
+      known: { 21: { paths: ["products/vita/web/a.ts"], changesets: [] } },
     });
     assert.ok(!asked.some(endpoint => endpoint.includes("/diffs")));
   });

@@ -139,7 +139,7 @@ export const claimedElsewhere = feature => {
     .map(line => line.split("refs/heads/")[1])
     .find(Boolean);
 };
-/** What `pnpm stack:<action>` runs in products/vita of the worktree it names. */
+/** What `pnpm stack:<action>` runs in products/vita/web of the worktree it names. */
 export const STACK_ACTIONS = {
   up: ["pnpm", ["stack:up"]],
   down: ["pnpm", ["stack:down"]],
