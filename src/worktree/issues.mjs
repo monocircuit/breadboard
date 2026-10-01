@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { run } from "../lib/proc.mjs";
+import { testLinesOf, withTests } from "./mr-tests.mjs";
 
 /**
  * The places of a merge request description nobody wrote: a bullet that stayed
@@ -119,7 +120,8 @@ export function shown(top, file) {
 }
 /**
  * No description written yet: the template goes into the worktree, so the
- * answer to the failure is "fill this in", not "find the template".
+ * answer to the failure is "fill this in", not "find the template". Its Tests
+ * section is filled from the branch: only the checks that apply (#302).
  */
 export function templateToFill(top, number) {
   const file = descriptionFile(top);
@@ -131,7 +133,9 @@ export function templateToFill(top, number) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(
       file,
-      `${template.trimEnd().replace(/Refs #$/, "")}Closes #${number}\n`,
+      `${withTests(template, testLinesOf(top))
+        .trimEnd()
+        .replace(/Refs #$/, "")}Closes #${number}\n`,
     );
   }
   return `a merge request needs a description written for this branch — the template is waiting in\n\n  ${shown(top, file)}\n\n  Fill every section (no empty bullets, no <!-- comments -->), then run pnpm wt:mr again.`;
