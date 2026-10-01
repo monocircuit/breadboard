@@ -8,10 +8,14 @@ import { ESCAPES } from "../lib/tty.mjs";
 import {
   conflictsOf,
   autoActionsOf,
+  failedPipelinesOf,
   newActionsOf,
   pendingOf,
+  pipelineLineOf,
   questionOf,
   sentFile,
+  sentOf,
+  tellFailedPipelines,
 } from "./auto-actions.mjs";
 
 const entry = (type, content, extra = {}) =>
@@ -212,7 +216,7 @@ describe("autoActionsOf", () => {
     );
   });
 
-  it("names the failed job, with a click for the agent when there is one", () => {
+  it("names the failed job, and why its line didn't reach an agent yet", () => {
     const of = () => ({
       mr: mr({ pipeline: { status: "failed" } }),
       jobs: [
@@ -220,11 +224,11 @@ describe("autoActionsOf", () => {
         { name: "check:vita", status: "failed", url: "j" },
       ],
     });
-    assert.deepEqual(kinds([issue()], of), [
-      ["pipeline", "!70 job check:vita failed"],
+    assert.deepEqual(kinds([issue({ tree: null })], of), [
+      ["pipeline", "!70 job check:vita failed: no agent to tell"],
     ]);
-    const agents = new Map([["c7", { pane: "p1", status: "working" }]]);
-    assert.deepEqual(kinds([issue()], of, agents), [
+    // Not tried yet (a --once print, a second overview): the click sends it.
+    assert.deepEqual(kinds([issue()], of), [
       ["pipeline", "!70 job check:vita failed: click to tell its agent"],
     ]);
   });
@@ -342,5 +346,172 @@ describe("conflictsOf", () => {
       ),
       [],
     );
+  });
+});
+
+describe("pipelineLineOf", () => {
+  const failed = {
+    iid: 70,
+    url: "u",
+    pipeline: { id: 41, status: "failed", web_url: "p" },
+  };
+  const jobs = [
+    { name: "lint", status: "success", url: "j1" },
+    {
+      name: "check:vita",
+      status: "failed",
+      url: "j2",
+      log: ["FAIL a.test.mjs", "1 failing"],
+    },
+  ];
+
+  it("names the failed job with its url and the end of its log", () => {
+    assert.equal(
+      pipelineLineOf(failed, jobs),
+      "[overview] the pipeline of !70 failed: job check:vita, j2: look into it; its log ends: FAIL a.test.mjs ⏎ 1 failing",
+    );
+  });
+
+  it("says a job develop fails too is not the MR's doing", () => {
+    const develop = { jobs: [{ name: "check:vita", status: "failed" }] };
+    assert.equal(
+      pipelineLineOf(failed, jobs, develop),
+      "[overview] the pipeline of !70 failed: job check:vita, j2: develop fails the same job: not yours, waits for the fix (say so in the MR)",
+    );
+    // develop passed that job: it is the MR's.
+    const passed = { jobs: [{ name: "check:vita", status: "success" }] };
+    assert.match(pipelineLineOf(failed, jobs, passed), /: look into it;/);
+  });
+
+  it("names develop's jobs apart when the MR fails one of its own too", () => {
+    const both = [
+      ...jobs,
+      { name: "scan:deps", status: "failed", url: "j3", log: [] },
+    ];
+    const develop = { jobs: [{ name: "scan:deps", status: "failed" }] };
+    assert.match(
+      pipelineLineOf(failed, both, develop),
+      /look into it \(develop fails scan:deps too: not yours\); its log ends: FAIL a\.test\.mjs/,
+    );
+  });
+
+  it("falls back to the pipeline's url without jobs", () => {
+    assert.equal(
+      pipelineLineOf(failed, []),
+      "[overview] the pipeline of !70 failed: p: look into it",
+    );
+  });
+});
+
+describe("failedPipelinesOf", () => {
+  const issue = {
+    branch: "feature/1-a",
+    tree: { dir: "/w/a", claude: { id: "c1" } },
+  };
+  const of = status => () => ({
+    mr: {
+      iid: 221,
+      state: "opened",
+      pipeline: { id: 9, status, web_url: "p" },
+    },
+    jobs: [],
+  });
+  const none = () => new Set();
+
+  it("finds the failed pipeline of an open MR whose agent wasn't told", () => {
+    assert.deepEqual(failedPipelinesOf([issue], of("failed"), none), [
+      {
+        dir: "/w/a",
+        key: "pipeline:!221:9",
+        id: "c1",
+        line: "[overview] the pipeline of !221 failed: p: look into it",
+      },
+    ]);
+  });
+
+  it("leaves out a passed one, one told already, one without an agent", () => {
+    assert.deepEqual(failedPipelinesOf([issue], of("success"), none), []);
+    const told = () => new Set(["pipeline:!221:9"]);
+    assert.deepEqual(failedPipelinesOf([issue], of("failed"), told), []);
+    const alone = { ...issue, tree: { dir: "/w/a", claude: null } };
+    assert.deepEqual(failedPipelinesOf([alone], of("failed"), none), []);
+  });
+});
+
+describe("tellFailedPipelines", () => {
+  // A herdr on PATH with one space whose agent has the state in `status`,
+  // writing down what it is asked to type: the real one is never called.
+  it("sends once per pipeline, and holds the line while the agent is blocked", () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "fake-herdr-"));
+    const typed = path.join(bin, "typed");
+    const statusFile = path.join(bin, "status");
+    const dir = path.join(bin, "zz-fake");
+    fs.mkdirSync(dir);
+    const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+const [what, verb, ...rest] = process.argv.slice(2);
+const status = fs.readFileSync(${JSON.stringify(statusFile)}, "utf-8").trim();
+const results = {
+  workspace: { workspaces: [{ label: "zz-fake", workspace_id: "w" }] },
+  tab: { tabs: [{ label: "zz-fake", tab_id: "t" }] },
+  pane: { panes: [{ tab_id: "t", pane_id: "p", agent: "claude", agent_status: status }] },
+};
+if (what === "agent" && verb === "prompt") fs.appendFileSync(${JSON.stringify(typed)}, rest[1] + "\\n");
+console.log(JSON.stringify({ result: results[what] ?? null }));
+`;
+    fs.writeFileSync(path.join(bin, "herdr"), script, { mode: 0o755 });
+    const issues = [
+      {
+        number: 7,
+        feature: "zz-fake",
+        branch: "feature/7-zz-fake",
+        tree: { dir, actions: [], claude: { id: "c7", transcript: "/nope" } },
+      },
+    ];
+    const of = () => ({
+      mr: {
+        iid: 70,
+        state: "opened",
+        url: "u",
+        pipeline: { id: 41, status: "failed", web_url: "p" },
+      },
+      jobs: [{ name: "scan:deps", status: "failed", url: "j" }],
+    });
+    const develop = { jobs: [{ name: "scan:deps", status: "failed" }] };
+    const agentsIn = status => new Map([["c7", { status }]]);
+    const typedLines = () =>
+      fs.existsSync(typed)
+        ? fs.readFileSync(typed, "utf-8").trim().split("\n")
+        : [];
+    const rows = status =>
+      autoActionsOf(issues, of, agentsIn(status), { develop })
+        .filter(action => action.kind === "pipeline")
+        .map(action => action.text);
+    const before = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${before}`;
+    try {
+      fs.writeFileSync(statusFile, "blocked");
+      tellFailedPipelines(issues, of, agentsIn("blocked"), develop);
+      assert.deepEqual(typedLines(), []);
+      assert.deepEqual(rows("blocked"), [
+        "!70 job scan:deps failed: its agent is at a question, the line follows once it answers",
+      ]);
+      // Still blocked: not tried again.
+      fs.writeFileSync(statusFile, "idle");
+      tellFailedPipelines(issues, of, agentsIn("blocked"), develop);
+      assert.deepEqual(typedLines(), []);
+      // Its state changed: the line gets in, its row goes.
+      tellFailedPipelines(issues, of, agentsIn("idle"), develop);
+      assert.deepEqual(typedLines(), [
+        "[overview] the pipeline of !70 failed: job scan:deps, j: develop fails the same job: not yours, waits for the fix (say so in the MR)",
+      ]);
+      assert.deepEqual(rows("idle"), []);
+      assert.ok(sentOf(dir).has("pipeline:!70:41"));
+      // Once per pipeline.
+      tellFailedPipelines(issues, of, agentsIn("working"), develop);
+      assert.equal(typedLines().length, 1);
+    } finally {
+      process.env.PATH = before;
+    }
   });
 });
