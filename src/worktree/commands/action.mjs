@@ -10,6 +10,7 @@ import {
   answersOf,
   decideProblem,
   doneAction,
+  splitOption,
   takeAnswers,
 } from "../actions.mjs";
 import { pushStateOf } from "../change.mjs";
@@ -18,7 +19,8 @@ import { mainDir } from "../worktrees.mjs";
 import changeCommand from "./change.mjs";
 
 const USAGE = `usage: pnpm wt:action <kind> <text> [--url <url>]   kind: ${ACTION_KINDS.join(", ")}
-       pnpm wt:action decide "<what is decided>?" --option "<what happens>" --option "<what happens>"… --recommend <option>
+       pnpm wt:action decide "<what is decided>?" --option "<label>" --why "<what happens>" --option …… --recommend <label>
+                (or --option "<label>: <what happens>", split at the first colon)
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action try <what to check> --on test --url <path>   on the test instance, ready once the MR is merged and deployed
        pnpm wt:action merge <what is in it> --orchestration <name> --mr !N   the orchestrator's merge of an MR
@@ -34,6 +36,7 @@ const VALUED = [
   "--done",
   "--orchestration",
   "--option",
+  "--why",
   "--recommend",
   "--mr",
   "--on",
@@ -51,30 +54,38 @@ const textOf = () => {
   return words.join(" ").trim();
 };
 
-/** Every value of a flag given more than once: `--option A --option B`. */
-const valuesOf = name => {
-  const argv = process.argv.slice(2);
-  return argv
-    .flatMap((arg, i) =>
-      arg === name
-        ? [argv[i + 1]]
-        : arg.startsWith(`${name}=`)
-          ? [arg.slice(name.length + 1)]
-          : [],
-    )
-    .filter(value => value && !value.startsWith("--"));
+/**
+ * The options of a decide, `{ label, description }`, in their order:
+ * each `--option`, with the `--why` right after it as what happens, or
+ * split at its first `: ` without one.
+ */
+export const optionsOfArgs = argv => {
+  const options = [];
+  const valueAt = (arg, i, name) =>
+    arg === name
+      ? argv[i + 1]
+      : arg.startsWith(`${name}=`)
+        ? arg.slice(name.length + 1)
+        : undefined;
+  argv.forEach((arg, i) => {
+    const option = valueAt(arg, i, "--option");
+    if (option && !option.startsWith("--")) options.push({ given: option });
+    const why = valueAt(arg, i, "--why");
+    if (why && !why.startsWith("--") && options.length)
+      options.at(-1).why = why;
+  });
+  return options.map(({ given, why }) => splitOption(given, why ?? ""));
 };
 
 /**
- * The option `--recommend` names, by its text or its number (from 1); null
- * without the flag.
+ * The label of the option `--recommend` names, by its label or its number
+ * (from 1); null without the flag.
  */
 const recommendOf = options => {
   const given = flagValue("--recommend");
   if (!given) return null;
-  return options.includes(given)
-    ? given
-    : (options[Number(given) - 1] ?? given);
+  const labels = options.map(({ label }) => label);
+  return labels.includes(given) ? given : (labels[Number(given) - 1] ?? given);
 };
 const checkDecide = (text, options, recommend) => {
   const problem = decideProblem(text, options, recommend);
@@ -116,7 +127,7 @@ export default function actionCommand(given, flags) {
 
   if (flags.has("--list")) {
     const row = a =>
-      `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.on ? `  on ${a.on}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.map(option => (option === a.recommend ? `★ ${option}` : option)).join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`;
+      `  ${a.id}  ${a.kind.padEnd(13)} ${a.text}${a.url ? `  ${a.url}` : ""}${a.on ? `  on ${a.on}` : ""}${a.run ? `  $ ${a.run}` : ""}${a.options?.length ? `  [${a.options.map(option => (option === a.recommend ? `${option} (Recommended)` : option)).join(" | ")}]` : ""}${a.answer ? `  → ${a.answer}` : ""}`;
     const actions = actionsOf(file);
     // The newest first: what was just decided is what gets relayed late.
     const answered = answeredOf(file).toReversed().slice(0, 10);
@@ -188,18 +199,21 @@ export default function actionCommand(given, flags) {
     fail("which MR does it merge? --mr !N");
   if (mr && kind !== "merge")
     fail("only a merge or a change names its MR: --mr !N");
-  const options = valuesOf("--option");
+  const options = optionsOfArgs(process.argv.slice(2));
   const recommend = recommendOf(options);
   if (kind === "decide") checkDecide(text, options, recommend);
-  else if (options.length || flagValue("--recommend"))
-    fail("only a decide has options: --option <answer> --recommend <option>");
+  else if (options.length || flagValue("--recommend") || flagValue("--why"))
+    fail(
+      "only a decide has options: --option <label> --why <what happens> --recommend <label>",
+    );
   const action = addAction(file, {
     kind,
     text,
     url,
     run,
     on,
-    options,
+    options: options.map(({ label }) => label),
+    descriptions: options.map(({ description }) => description),
     recommend,
     pane: process.env.HERDR_PANE_ID ?? null,
     mr,

@@ -14,8 +14,9 @@ import path from "node:path";
  *   (overview/try-state.mjs). `browser-check`
  *   is `try --url`, and is stored as a `try`.
  * - `decide`: a decision that is the human's: one question, the options
- *   the agent gave (`--option`, each saying what happens) and the one it
- *   recommends (`--recommend`, marked on its button); a click on one answers it.
+ *   the agent gave (`--option`, a short label, with `--why` what happens)
+ *   and the one it recommends (`--recommend`, marked `(Recommended)`); a
+ *   click on one answers it with its label.
  * - `look`: anything else to look at in the agent's space.
  * - `plan`: the agent's plan before larger work, for an `ok` or `different`.
  */
@@ -48,28 +49,60 @@ export const answersOf = action =>
     ? (action.options ?? [])
     : (ANSWERS[action.kind] ?? []);
 /**
+ * An option of a decide as `{ label, description }` (#273): the label is
+ * the answer, short; the description the consequence, what happens. Given
+ * as `--option "<label>" --why "<what happens>"`, or `--option "<label>:
+ * <what happens>"` split at its first `: `.
+ */
+export const splitOption = (option, description = "") => {
+  if (description) return { label: option.trim(), description };
+  const at = option.indexOf(": ");
+  return at > 0
+    ? {
+        label: option.slice(0, at).trim(),
+        description: option.slice(at + 2).trim(),
+      }
+    : { label: option.trim(), description: "" };
+};
+/**
+ * The options of a decide as `{ answer, label, description }`: `answer` the
+ * stored option, what a click answers; `label` and `description` as shown,
+ * the stored `descriptions`, or (stored before #273, one text each) the
+ * option split at its first `: `.
+ */
+export const optionsOf = action =>
+  (action.options ?? []).map((answer, i) => ({
+    answer,
+    ...splitOption(answer, action.descriptions?.[i] ?? ""),
+  }));
+/**
  * A decide the user can answer from its row: one question (what is decided,
  * in one sentence; a second one may say why the recommendation), at least
- * two options each saying what happens, not `A` / `B`, and the recommended one.
+ * two options (`{ label, description }`) each saying what happens, not
+ * `A` / `B`, and the recommended one.
  */
 export const decideProblem = (text, options, recommend) => {
   if (!text.includes("?"))
     return 'a decide asks one question: what is decided, in one sentence, ending in "?"';
   if (options.length < 2)
-    return 'a decide offers at least two options: --option "<what happens>" --option "<what happens>"';
-  const bare = options.filter(option => option.trim().split(/\s+/).length < 2);
+    return 'a decide offers at least two options: --option "<label>" --why "<what happens>"';
+  const words = text => text.trim().split(/\s+/).filter(Boolean).length;
+  const bare = options.filter(
+    ({ label, description }) => words(`${label} ${description}`) < 2,
+  );
   if (bare.length)
-    return `each option says what happens, in a few words, not just ${bare.map(option => `"${option}"`).join(", ")}: --option "keep both lines"`;
+    return `each option says what happens, not just ${bare.map(({ label }) => `"${label}"`).join(", ")}: --option "Go" --why "phases 2-4 build the painter"`;
   if (!recommend)
-    return "a decide names its recommendation: --recommend <option or its number>";
-  if (!options.includes(recommend))
-    return `--recommend ${recommend} is none of the options: ${options.map((option, i) => `${i + 1} "${option}"`).join(", ")}`;
+    return "a decide names its recommendation: --recommend <label or number>";
+  if (!options.some(({ label }) => label === recommend))
+    return `--recommend ${recommend} is none of the options: ${options.map(({ label }, i) => `${i + 1} "${label}"`).join(", ")}`;
   return null;
 };
 /**
  * Where a worktree keeps its actions, in its ignored `.claude/`. The
  * orchestrator's own go into the record of the orchestration (origins.mjs);
- * both hold them under `actions`: `[{ id, kind, text, url, run, on, options, recommend, pane, at }]`
+ * both hold them under `actions`: `[{ id, kind, text, url, run, on, options, descriptions, recommend, pane, at }]`
+ * (`options` a decide's labels, `descriptions` what each does, optionsOf),
  * (`on: "test"` only for a try on the test instance),
  * an answered one with `answer` and `answeredAt` until it is delivered, the
  * orchestrator's merge with the iid of its MR (`mr`). A delivered answer
@@ -178,6 +211,7 @@ export const addAction = (
     run = null,
     on = null,
     options = [],
+    descriptions = [],
     recommend = null,
     pane = null,
     mr = null,
@@ -198,6 +232,7 @@ export const addAction = (
       run,
       ...(on ? { on } : {}),
       options,
+      ...(descriptions.some(Boolean) ? { descriptions } : {}),
       recommend,
       pane,
       ...(mr ? { mr } : {}),

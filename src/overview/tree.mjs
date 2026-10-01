@@ -367,18 +367,28 @@ const MAX_BELOW = 3;
 /**
  * The lines of a node, `width` wide: the branch glyph, place and name with
  * its state at the right end, then its facts and title indented under the
- * name, `stem` in front (the tree's `│`, blanks at its last node).
+ * name, `stem` in front (the tree's `│`, blanks at its last node). A state
+ * too long to stand beside the name goes right under it, at the right end,
+ * whole (#273: never cut with `…` at the edge).
  */
 export const nodeLines = (row, { branch, stem, width }) => {
   const head = `${dim(branch)}${row.place}`;
   const room = width - visible(head);
-  const state = fit(row.state.text, Math.max(8, Math.floor(room / 2)));
-  const name = fit(row.name, Math.max(1, room - visible(state) - 2));
-  const first = `${head}${pad(name, room - visible(state))}${state}`;
   const indent = `${dim(stem)}${" ".repeat(visible(head) - visible(stem))}`;
   const below = Math.max(1, width - visible(indent));
+  const { text: state } = row.state;
+  const isBeside = visible(row.name) + 2 + visible(state) <= room;
+  const first = isBeside
+    ? `${head}${pad(row.name, room - visible(state))}${state}`
+    : `${head}${fit(row.name, Math.max(1, room))}`;
+  const stateLines = isBeside
+    ? []
+    : wrap(state, below, MAX_BELOW).map(
+        line => `${indent}${" ".repeat(below - visible(line))}${line}`,
+      );
   return [
     first,
+    ...stateLines,
     ...[row.facts, row.title]
       .filter(text => visible(text) > 0)
       .flatMap(text => wrap(text, below, MAX_BELOW))

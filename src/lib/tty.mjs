@@ -1,5 +1,8 @@
 // Text for the terminal: colours, links, visible width, fitting and tables.
 // FORCE_COLOR: the herdr plugin pipes output into less -R and popups.
+import fs from "node:fs";
+import tty from "node:tty";
+
 export const isColor =
   (process.stdout.isTTY || Boolean(process.env.FORCE_COLOR)) &&
   !process.env.NO_COLOR;
@@ -11,6 +14,37 @@ export const red = paint(31);
 export const green = paint(32);
 export const yellow = paint(33);
 export const cyan = paint(36);
+/**
+ * The width of the terminal a print piped into `less -R` (FORCE_COLOR) goes
+ * to: its stdout is a pipe without columns, the controlling terminal has
+ * them. Asked once; 0 without one.
+ */
+let ttyColumns;
+const pipedColumns = () => {
+  if (ttyColumns !== undefined) return ttyColumns;
+  ttyColumns = 0;
+  if (!process.env.FORCE_COLOR) return ttyColumns;
+  try {
+    const fd = fs.openSync("/dev/tty", "w");
+    try {
+      ttyColumns = new tty.WriteStream(fd).columns || 0;
+    } catch {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // No controlling terminal (CI, a detached process).
+  }
+  return ttyColumns;
+};
+/**
+ * The width of the view: the terminal's; piped, `$COLUMNS` or the
+ * controlling terminal's (pipedColumns); else 120.
+ */
+export const columns = () =>
+  process.stdout.columns ||
+  Number(process.env.COLUMNS) ||
+  pipedColumns() ||
+  120;
 /** A colour of the theme as herdr's config names it, `#FF79C6`: 24 bits, as herdr paints its sidebar. */
 export const hex = colour => {
   const [r, g, b] = [1, 3, 5].map(at =>
@@ -32,8 +66,11 @@ export const ESCAPES = new RegExp(ESCAPE, "g");
 export const visible = text => [...text.replace(ESCAPES, "")].length;
 export const pad = (text, width) =>
   text + " ".repeat(Math.max(0, width - visible(text)));
-/** Cut a painted line to `width` visible characters, keeping its colours. */
-export const fit = (line, width) => {
+/**
+ * Cut a painted line to `width` visible characters, keeping its colours,
+ * `mark` (`…`) at the end of a cut one.
+ */
+export const fit = (line, width, mark = "…") => {
   if (visible(line) <= width) return line;
   let out = "";
   let shown = 0;
@@ -42,14 +79,25 @@ export const fit = (line, width) => {
       out += token;
       continue;
     }
-    const room = width - 1 - shown;
+    const room = width - visible(mark) - shown;
     if (room <= 0) break;
     const characters = [...token];
     out += characters.slice(0, room).join("");
     shown += Math.min(characters.length, room);
   }
   // A cut can end inside a colour or a link: close both.
-  return `${out}…${isColor ? "\x1b[0m\x1b]8;;\x1b\\" : ""}`;
+  return `${out}${mark}${isColor ? "\x1b[0m\x1b]8;;\x1b\\" : ""}`;
+};
+/**
+ * A painted line of parts joined by `separator` (` · `) cut to `width`
+ * before the first part that doesn't fit whole, no `…`: a heading's counts.
+ * Cut with `…` only when its first part alone is too wide.
+ */
+export const fitParts = (line, width, separator = " · ") => {
+  if (visible(line) <= width) return line;
+  const plain = line.replace(ESCAPES, "");
+  const at = plain.lastIndexOf(separator, width);
+  return at > 0 ? fit(line, at, "") : fit(line, width);
 };
 /** The most lines a wrapped text takes; past them it ends in `…`. */
 export const MAX_LINES = 6;

@@ -20,7 +20,8 @@ import {
   releaseAnswer,
   takeAnswers,
 } from "./actions.mjs";
-import { decideProblem } from "./actions.mjs";
+import { decideProblem, optionsOf, splitOption } from "./actions.mjs";
+import { optionsOfArgs } from "./commands/action.mjs";
 
 const fileOf = () =>
   actionsFile(fs.mkdtempSync(path.join(os.tmpdir(), "actions-")));
@@ -212,27 +213,83 @@ describe("actions", () => {
 });
 
 describe("decideProblem", () => {
-  const options = ["keep both lines", "drop the old line"];
+  const options = ["keep both lines", "drop the old line"].map(label =>
+    splitOption(label),
+  );
 
   it("takes a question, options saying what happens and a recommendation", () => {
     assert.equal(
       decideProblem(
         "Which line stays? The old one is shorter.",
         options,
-        options[1],
+        options[1].label,
+      ),
+      null,
+    );
+    // A short label is fine with what happens next to it.
+    assert.equal(
+      decideProblem(
+        "Skia?",
+        [splitOption("Go", "phases 2-4"), splitOption("No-go: pixi stays")],
+        "Go",
       ),
       null,
     );
   });
 
   it("names what is missing", () => {
-    assert.match(decideProblem("A or B", options, options[0]), /question/);
     assert.match(
-      decideProblem("Which?", ["keep both lines"], null),
-      /two options/,
+      decideProblem("A or B", options, "keep both lines"),
+      /question/,
     );
-    assert.match(decideProblem("Which?", ["A", "B"], "A"), /"A", "B"/);
+    assert.match(decideProblem("Which?", [options[0]], null), /two options/);
+    assert.match(
+      decideProblem("Which?", [splitOption("A"), splitOption("B")], "A"),
+      /"A", "B"/,
+    );
     assert.match(decideProblem("Which?", options, null), /--recommend/);
     assert.match(decideProblem("Which?", options, "C"), /none of the options/);
+  });
+});
+
+describe("a decide's options", () => {
+  it("pairs each --option with the --why after it, else splits it at its first colon", () => {
+    assert.deepEqual(
+      optionsOfArgs([
+        "decide",
+        "Skia?",
+        "--option",
+        "Go",
+        "--why",
+        "phases 2-4 build the painter",
+        "--option=No-go: pixi stays, see wt:plan",
+        "--option",
+        "later",
+        "--recommend",
+        "1",
+      ]),
+      [
+        { label: "Go", description: "phases 2-4 build the painter" },
+        { label: "No-go", description: "pixi stays, see wt:plan" },
+        { label: "later", description: "" },
+      ],
+    );
+  });
+
+  it("shows a stored option split, its answer the whole stored text", () => {
+    assert.deepEqual(
+      optionsOf({
+        options: ["Go", "No-go: pixi stays"],
+        descriptions: ["phases 2-4", ""],
+      }),
+      [
+        { answer: "Go", label: "Go", description: "phases 2-4" },
+        {
+          answer: "No-go: pixi stays",
+          label: "No-go",
+          description: "pixi stays",
+        },
+      ],
+    );
   });
 });

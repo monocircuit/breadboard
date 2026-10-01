@@ -75,6 +75,7 @@ export {
   draftLine,
   draftWaits,
   isDraft,
+  optionsOf,
   releaseAnswer,
   takeAnswers,
 } from "./worktree/actions.mjs";

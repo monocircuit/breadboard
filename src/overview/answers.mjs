@@ -192,51 +192,33 @@ const labelsOf = action => {
   const answers = answersOf(action);
   return answers.length ? answers : ["✓"];
 };
-/** What marks the option a decide recommends (`--recommend`), on its button and in NEXT. */
-const RECOMMENDED = "★";
-const isRecommended = (action, label) =>
-  Boolean(action.recommend) && label === action.recommend;
-/** A label as its button shows it: the recommended one marked. */
-const shownLabel = (action, label) =>
-  isRecommended(action, label) ? `${RECOMMENDED} ${label}` : label;
 /** The cell of an action: its buttons, or the answer on its way. */
 export const answerCell = action =>
   action.answer
     ? `${yellow(`→ ${action.answer}`)} ${dim(action.waits ?? "at its next stop")}`
     : labelsOf(action)
-        .map(label =>
-          button(
-            shownLabel(action, label),
-            label === "✓" || isRecommended(action, label) ? "green" : "cyan",
-          ),
-        )
+        .map(label => button(label, label === "✓" ? "green" : "cyan"))
         .join(" ");
-/** A decide's options in a line, for NEXT (which has no buttons): the recommended one marked. */
-export const optionsText = action =>
-  answersOf(action).length
-    ? `${dim("options:")} ${answersOf(action)
-        .map(label => shownLabel(action, label))
-        .join(dim(" · "))}`
-    : "";
-/** The button at `column` (from 1), a column of slack after each; -1 past them. */
-export const buttonAt = (action, column) => {
-  let end = CELL_START - 1;
+/**
+ * The button at `column` (from 1) of a line whose buttons start at column
+ * `start`, a column of slack after each; -1 past them.
+ */
+export const buttonAt = (action, column, start = CELL_START) => {
+  let end = start - 1;
   const labels = labelsOf(action);
   for (let i = 0; i < labels.length; i++) {
-    end += visible(button(shownLabel(action, labels[i]))) + 1;
+    end += visible(button(labels[i])) + 1;
     if (column <= end) return i;
   }
   return -1;
 };
 /**
- * A click on an action row, `item`: `{ action, file, to, go }`. On a button
- * it answers (✓ ticks it off), the answer typed into the agent's pane at
- * once; past the buttons it does the action (`go`). An answered one only goes.
+ * The answer `at` (its index in answersOf) to the action of `item`: `{
+ * action, file, to }`; stored, typed into the agent's pane at once, ✓ (no
+ * answers) ticks it off.
  */
-export const clickAction = (item, column, redraw) => {
-  const { action, file, to, go } = item;
-  const at = action.answer ? -1 : buttonAt(action, column);
-  if (at === -1) return go();
+export const answerWith = (item, at, redraw) => {
+  const { action, file, to } = item;
   const answers = answersOf(action);
   if (answers.length === 0) doneAction(file, action.id);
   else {
@@ -245,4 +227,14 @@ export const clickAction = (item, column, redraw) => {
     deliverAnswers(file, to);
   }
   redraw();
+};
+/**
+ * A click on the buttons line of an action, `item`: `{ action, file, to, go
+ * }`, its buttons from column `start`. On a button it answers (answerWith);
+ * past the buttons it does the action (`go`). An answered one only goes.
+ */
+export const clickAction = (item, column, redraw, start = CELL_START) => {
+  const at = item.action.answer ? -1 : buttonAt(item.action, column, start);
+  if (at === -1) return item.go();
+  answerWith(item, at, redraw);
 };

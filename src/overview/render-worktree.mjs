@@ -6,6 +6,7 @@ import path from "node:path";
 import { canGroupTabs } from "../browser.mjs";
 import {
   bold,
+  columns,
   cyan,
   dim,
   fit,
@@ -196,7 +197,7 @@ const pushWaiting = (lines, waiting) => {
 };
 
 export const renderWorktree = (local, remote, error) => {
-  const width = process.stdout.columns || 120;
+  const width = columns();
   const tree = local.trees[0];
   const keys = isOnce ? "" : dim(KEYS);
   if (!tree)

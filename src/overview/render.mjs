@@ -3,6 +3,7 @@
 import {
   ESCAPES,
   bold,
+  columns,
   cyan,
   dim,
   fit,
@@ -26,7 +27,7 @@ import { open, show } from "./io.mjs";
 import { KEYS, pushRows } from "./screen.mjs";
 
 export const render = (local, remote, error) => {
-  const width = process.stdout.columns || 120;
+  const width = columns();
   const lines = [];
   const now = new Date().toLocaleTimeString();
   const develop = remote ? `develop ${pipelineMark(remote.develop)}` : "";
