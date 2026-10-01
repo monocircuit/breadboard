@@ -7,6 +7,7 @@ import {
   mainDir,
   originOf,
   recordOf,
+  waitOf,
   worktrees,
   writeChangelog,
 } from "../worktree.mjs";
@@ -174,17 +175,20 @@ export const readRemoteOfOrchestration = async name => {
     developPipelineOf().catch(() => null),
   ]);
   keepChangelog(name, found);
+  // Its worktrees, for the waits.
+  const dirs = worktrees()
+    .slice(1)
+    .filter(({ dir }) => originOf(dir)?.name === name)
+    .map(({ dir }) => dir);
   // With GitLab read anyway: the waits whose command is gone (waits.mjs).
-  await deliverWaits(
-    name,
-    worktrees()
-      .slice(1)
-      .filter(({ dir }) => originOf(dir)?.name === name)
-      .map(({ dir }) => dir),
-  );
-  // The MRs the announced handovers wait for (worktree/handovers.mjs), by iid.
+  await deliverWaits(name, dirs);
+  // The MRs the announced handovers (worktree/handovers.mjs) and the waits
+  // of its worktrees (wt:wait, #262) wait for, by iid.
   const iids = [
-    ...new Set(handoversOf(recordOf(name)).flatMap(({ after }) => after)),
+    ...new Set([
+      ...handoversOf(recordOf(name)).flatMap(({ after }) => after),
+      ...dirs.flatMap(dir => waitOf(dir)?.mrs ?? []),
+    ]),
   ];
   const awaited = new Map(
     await Promise.all(

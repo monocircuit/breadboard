@@ -104,6 +104,15 @@ describe("the lines", () => {
     assert.equal(listOf([1, 2, 3]), "!1, !2 and !3");
     assert.equal(waitsText(wait), "waits for !213, !217");
   });
+  it("shows only the MRs still open (#262)", () => {
+    const six = { mrs: [269, 270, 272, 273, 274, 275] };
+    const merged = new Set([269, 270, 272, 274, 275]);
+    assert.equal(waitsText(six, merged), "waits for !273 · 5 merged");
+    assert.equal(
+      waitsText(six, new Set([...merged, 273])),
+      "waits: all merged, wakes up",
+    );
+  });
   it("says what to do once they are merged", () => {
     const merged = { status: "merged", mrs: wait.mrs };
     assert.equal(

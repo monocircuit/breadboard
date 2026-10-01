@@ -60,7 +60,8 @@ const placeCell = (count, number) =>
  * gives it (its `tree` while the worktree is there, with `ownCommits`: commits
  * develop doesn't have), `mr` its merge request, `status` herdr's state of its
  * agent, `hold` why a handover holds the agent, `removal` the automatic
- * wt:remove's `{ isRunning, error }` (auto-actions.mjs). Merged comes first:
+ * wt:remove's `{ isRunning, error }` (auto-actions.mjs), `merged` the iids
+ * known merged (a wait names only the others, #262). Merged comes first:
  * what is left then is the clean-up (clean-up.mjs).
  * - `removable`: merged, nothing left in it: the overview removes it
  * - `kept`: merged, but changes or commits not in develop keep it
@@ -71,7 +72,10 @@ const placeCell = (count, number) =>
  * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
  */
-export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
+export const lifecycleOf = (
+  issue,
+  { mr, status, hold, removal, merged } = {},
+) => {
   const { tree } = issue;
   if (!tree)
     return issue.queued
@@ -108,7 +112,8 @@ export const lifecycleOf = (issue, { mr, status, hold, removal } = {}) => {
         `waits for you: ${[...new Set(open.map(action => action.kind))].join(", ")}`,
       ),
     };
-  if (tree.wait) return { key: "waitsForMr", text: tone(waitsText(tree.wait)) };
+  if (tree.wait)
+    return { key: "waitsForMr", text: tone(waitsText(tree.wait, merged)) };
   if (status === "working") return { key: "working", text: tone("at work") };
   const pipeline = mr?.pipeline?.status ?? mr?.pipeline;
   if (
@@ -181,7 +186,13 @@ const agentNameFact = (tree, known, now) => {
  * announced for its agent (#227). What doesn't apply is left out; a worktree
  * without an MR says so.
  */
-const factsOf = (issue, found, mr, hasRemote, { handover, state, agent }) => {
+const factsOf = (
+  issue,
+  found,
+  mr,
+  hasRemote,
+  { handover, state, agent, merged },
+) => {
   const { tree } = issue;
   const mergedAt = issue.mergedAt ?? mr?.mergedAt;
   return [
@@ -191,7 +202,7 @@ const factsOf = (issue, found, mr, hasRemote, { handover, state, agent }) => {
     agent,
     tree ? agentFact(tree.claude) : "",
     tree?.wait && state.key !== "waitsForMr"
-      ? yellow(waitsText(tree.wait))
+      ? yellow(waitsText(tree.wait, merged))
       : "",
     tree ? changeFact(tree, mr) : "",
     tree ? unpushedFact(tree) : "",
@@ -232,7 +243,8 @@ const queuedText = (issue, announced, suggested) => {
  * `announced`: the announced handovers (handovers.mjs); `holds`: dir → why
  * the clean-up of a worktree waits for a handover (workers.mjs);
  * `suggested`: number → `{ worker }` of UP NEXT (workers.mjs); `known`: the
- * record's workers by agent id (their names, #217).
+ * record's workers by agent id (their names, #217); `merged`: the iids known
+ * merged, left out of a wait (#262).
  */
 export const treeOf = (
   issues,
@@ -246,6 +258,7 @@ export const treeOf = (
     suggested = new Map(),
     hasRemote = true,
     known = {},
+    merged = new Set(),
     now = Date.now(),
   } = {},
 ) => {
@@ -261,6 +274,7 @@ export const treeOf = (
       status,
       hold: tree && holds.get(tree.dir),
       removal: tree && removalOf(tree.dir),
+      merged,
     });
     const state =
       lifecycle.key === "queued"
@@ -283,6 +297,7 @@ export const treeOf = (
         handover: handoverOf(tree),
         state,
         agent: agentNameFact(tree, known, now),
+        merged,
       }),
       title: dim(found?.title ?? issue.title ?? issue.branch),
     };
@@ -412,9 +427,11 @@ export const pushWorktrees = (
     hasRemote,
     known,
     free,
+    merged,
   },
 ) => {
   const { live, queued, removed } = treeOf(issues, of, {
+    merged,
     agents,
     work,
     merge,
