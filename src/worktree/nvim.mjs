@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 
 import { quote } from "../lib/proc.mjs";
+import { IDE_LUA } from "./ide.mjs";
 
 /** What an nvim tab of breadboard loads: `:Changes`, `:ChangesDiff`. */
 export const CHANGES_LUA = path.join(
@@ -32,18 +33,31 @@ export const socketOf = (name = null) =>
  * killed nvim) and would keep `--listen` from starting: it goes first.
  * `commands`: what nvim runs on start (`-c` each), by default `:Changes` and
  * `:ChangesDiff` loaded; the orchestration's tab loads its own.
+ * `ide`: the directory of claudecode.nvim (ide.mjs), started too: the
+ * worktree's claude connects to this nvim (#258).
  * `file`/`line`: opened at once, when the tab starts for a click. Plain `;`
  * and `||`: the line runs in bash, zsh and fish alike.
  */
 export const editorCommand = (
   dir,
-  { name = null, commands = [`luafile ${CHANGES_LUA}`], file, line } = {},
+  {
+    name = null,
+    commands = [`luafile ${CHANGES_LUA}`],
+    ide = null,
+    file,
+    line,
+  } = {},
 ) => {
   const socket = quote(socketOf(name));
-  const start = commands.map(c => ` -c ${quote(c)}`).join("");
+  const start = [...commands, ...(ide ? [ideCommand(ide)] : [])]
+    .map(c => ` -c ${quote(c)}`)
+    .join("");
   const open = file ? ` +${line || 1} ${quote(file)}` : "";
   return `cd ${quote(dir)}; nvim --server ${socket} --remote-expr 1 >/dev/null 2>&1 || rm -f ${socket}; nvim --listen ${socket}${start}${open}`;
 };
+/** The nvim command that starts nvim/ide.lua with the plugin in `plugin`: Lua strings as JSON writes them. */
+export const ideCommand = plugin =>
+  `lua dofile(${JSON.stringify(IDE_LUA)})(${JSON.stringify(plugin)})`;
 const remote = (dir, name, args) =>
   spawnSync("nvim", ["--server", socketOf(name), ...args], {
     cwd: dir,

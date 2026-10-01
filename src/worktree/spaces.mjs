@@ -16,6 +16,7 @@ import {
   keepOrder,
   markBranch,
 } from "./tabs.mjs";
+import { ideFor } from "./ide.mjs";
 import { editorCommand, openOnSocket } from "./nvim.mjs";
 import { mainDir } from "./worktrees.mjs";
 import { overviewCommand } from "./tabs.mjs";
@@ -54,17 +55,22 @@ export const canEdit = () =>
  * The tab `nvim` with nvim open in the worktree, on the files it changes
  * against develop (packages/breadboard/nvim/changes.lua: `:Changes`, `:ChangesDiff`; from
  * the checkout that builds the space, like the overview), listening on
- * `.claude/nvim.sock` (nvim.mjs). Quit, its shell idles and the next layout
+ * `.claude/nvim.sock` (nvim.mjs), with Claude Code's IDE integration unless
+ * it is off (ide.mjs, #258). Quit, its shell idles and the next layout
  * (a herdr restart, a worktree coming or going) opens it again. Nothing
  * without nvim on the PATH.
  */
 export const ensureEditor = (workspace, dir, tabs) => {
-  if (canEdit())
-    ensureTab(
-      workspace,
-      { label: EDITOR, cwd: dir, command: editorCommand(dir) },
-      tabs,
-    );
+  if (!canEdit()) return;
+  ensureTab(
+    workspace,
+    {
+      label: EDITOR,
+      cwd: dir,
+      command: editorCommand(dir, { ide: ideFor(dir, mainDir()) }),
+    },
+    tabs,
+  );
 };
 /**
  * `file` (relative to `dir`) at `line` in the nvim tab `label` of
@@ -87,7 +93,14 @@ export const openInEditor = (
       ensureTab(workspace, {
         label,
         cwd: dir,
-        command: editorCommand(dir, { name, commands, file, line }),
+        command: editorCommand(dir, {
+          name,
+          commands,
+          // The orchestration's tab is read only: no claude edits there.
+          ide: name ? null : ideFor(dir, mainDir()),
+          file,
+          line,
+        }),
       }));
   if (!isOpened)
     return {

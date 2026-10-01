@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { herdr, panesOf, spaces } from "../lib/herdr.mjs";
 import { quote } from "../lib/proc.mjs";
+import { ideFlag } from "./ide.mjs";
 import { featureOf, idlePaneOf } from "./tabs.mjs";
 import { mainDir, worktrees } from "./worktrees.mjs";
 
@@ -303,7 +304,7 @@ export const resumeSession = (dir, workspace) => {
       "pane",
       "run",
       idle,
-      `${cwd === dir ? "" : `cd ${quote(cwd)} && `}claude --resume ${id}`,
+      `${cwd === dir ? "" : `cd ${quote(cwd)} && `}claude --resume ${id}${ideFlag(dir)}`,
     ]),
   );
 };
