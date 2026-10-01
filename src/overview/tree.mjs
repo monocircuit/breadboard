@@ -35,6 +35,7 @@ import { toneOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
+import { checksOf } from "./merge.mjs";
 import { nextText } from "./handovers.mjs";
 import { pink } from "./names.mjs";
 import { numbersOf } from "./numbering.mjs";
@@ -69,7 +70,8 @@ const placeCell = (count, number) =>
  * - `held`: merged, its clean-up waits for its agent (at work, a handover)
  * - `asks`: its agent is blocked on you; `waits`: an action of it is open
  *   (`waits for you: <kinds>`); `waitsForMr`: it waits for MRs (wt:wait)
- * - `working`: its agent is at work; `ready`: the MR is ready, pipeline passed
+ * - `working`: its agent is at work; `ready`: the MR is ready, pipeline
+ *   passed, no try or acceptance box open (`checks`, merge.mjs checksOf)
  * - `idle`: none of those; `removed`: gone (`merged: removed 21:14`); `skipped`: never started, why;
  *   `queued`: waits for an agent (#217, workers.mjs)
  * - `setup`: no agent yet, a start sets it up for one (`setup`,
@@ -77,7 +79,7 @@ const placeCell = (count, number) =>
  */
 export const lifecycleOf = (
   issue,
-  { mr, status, hold, removal, merged, setup } = {},
+  { mr, status, hold, removal, merged, setup, checks = [] } = {},
 ) => {
   const { tree } = issue;
   if (!tree)
@@ -130,7 +132,8 @@ export const lifecycleOf = (
     mr?.state === "opened" &&
     !mr.isDraft &&
     pipeline === "success" &&
-    !isChangeOpen(tree, mr)
+    !isChangeOpen(tree, mr) &&
+    !checks.length
   )
     return { key: "ready", text: green("ready to merge") };
   return {
@@ -307,6 +310,7 @@ export const treeOf = (
       removal: tree && removalOf(tree.dir),
       merged,
       setup: tree && setups.find(setup => setup.dir === tree.dir),
+      checks: checksOf(found?.boxes ?? [], tree),
     });
     const state =
       lifecycle.key === "queued"
