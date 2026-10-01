@@ -16,6 +16,7 @@ import {
   table,
   yellow,
 } from "../lib/tty.mjs";
+import { checkRow } from "./check.mjs";
 import { barOf } from "./diff.mjs";
 import {
   ORCHESTRATOR,
@@ -281,6 +282,12 @@ export const renderWorktree = (local, remote, error) => {
         : ["", "mr", dim(isMain ? "—" : "none yet: pnpm wt:mr")],
     );
     actions.push(remote.mr && (() => show(remote.mr.url)));
+  }
+  // Whether its HEAD passed wt:check (#298): the pre-push hook wants it.
+  const tests = checkRow(tree.checked);
+  if (tests) {
+    rows.push(["", "tests", tests]);
+    actions.push(null);
   }
   pushRows(lines, rows, actions);
   if (!remote && !error) {

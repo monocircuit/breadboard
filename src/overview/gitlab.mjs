@@ -13,7 +13,7 @@ import {
 } from "../worktree.mjs";
 import { exec, glab } from "./io.mjs";
 import { readRemoteOf } from "./read.mjs";
-import { deployStateOf } from "./try-state.mjs";
+import { decidingDeployOf, deployStateOf } from "./try-state.mjs";
 import { deliverWaits } from "./waits.mjs";
 
 /** How many lines of a failed job's log the view shows. */
@@ -74,30 +74,65 @@ export const jobsOf = async pipeline => {
   );
   return jobs;
 };
-/** Deployments that won't change any more (try-state.mjs `isFinal`): merge commit → `{ pipeline, jobs }`. */
+/** Deployments that won't change any more (try-state.mjs `isFinal`): merge commit → `{ pipeline, jobs }` of its own pipeline. */
 const deploys = new Map();
+/** Merge commits whose failed pipeline a later one deployed (#275): merge commit → that one's `{ pipeline, jobs }`. */
+const superseded = new Map();
+/** A develop pipeline as GitLab lists it, with its jobs: what try-state.mjs reads. */
+const deployFrom = async found => ({
+  pipeline: found
+    ? {
+        id: found.id,
+        status: found.status,
+        url: found.web_url,
+        createdAt: found.created_at,
+      }
+    : null,
+  jobs: found ? await jobsOf(found.id) : [],
+});
 /**
- * The develop pipeline of the merge commit `sha` with its jobs, what a try
- * on the test instance waits for (try-state.mjs): `{ pipeline, jobs }`,
- * `pipeline` null while GitLab has none for it yet.
+ * The develop pipeline after pipeline `after` that deploys the merge commit
+ * `sha` when its own failed (#275), else null: the newest one that passed,
+ * else the newest one (it may still deploy), each only when its commit
+ * contains `sha`.
+ */
+const laterDeployOf = async (sha, after) => {
+  for (const filter of ["&status=success", ""]) {
+    const [found] = await glab(
+      `projects/:fullpath/pipelines?ref=develop${filter}&per_page=1`,
+    );
+    if (!found || found.id <= after) continue;
+    const base = await glab(
+      `projects/:fullpath/repository/merge_base?refs%5B%5D=${sha}&refs%5B%5D=${found.sha}`,
+    );
+    if (base?.id === sha) return deployFrom(found);
+  }
+  return null;
+};
+/**
+ * The develop pipeline that deploys the merge commit `sha` with its jobs,
+ * what a try on the test instance waits for (try-state.mjs): `{ pipeline,
+ * jobs }`, `pipeline` null while GitLab has none for it yet. Its own
+ * pipeline, or when that failed the newest develop pipeline containing it
+ * (`decidingDeployOf`): a failed one isn't final while a later one may come.
  */
 export const deployOf = async sha => {
-  if (deploys.has(sha)) return deploys.get(sha);
-  const [found] = await glab(
-    `projects/:fullpath/pipelines?ref=develop&sha=${sha}&per_page=1`,
+  if (superseded.has(sha)) return superseded.get(sha);
+  let own = deploys.get(sha);
+  if (!own) {
+    const [found] = await glab(
+      `projects/:fullpath/pipelines?ref=develop&sha=${sha}&per_page=1`,
+    );
+    own = await deployFrom(found);
+    if (deployStateOf(own).isFinal) deploys.set(sha, own);
+  }
+  if (deployStateOf(own).state !== "failed") return own;
+  const deploy = decidingDeployOf(
+    own,
+    await laterDeployOf(sha, own.pipeline.id),
   );
-  const deploy = {
-    pipeline: found
-      ? {
-          id: found.id,
-          status: found.status,
-          url: found.web_url,
-          createdAt: found.created_at,
-        }
-      : null,
-    jobs: found ? await jobsOf(found.id) : [],
-  };
-  if (deployStateOf(deploy).isFinal) deploys.set(sha, deploy);
+  if (deploy !== own && deployStateOf(deploy).state === "deployed")
+    superseded.set(sha, deploy);
   return deploy;
 };
 /**

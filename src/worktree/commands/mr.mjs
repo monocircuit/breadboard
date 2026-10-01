@@ -11,6 +11,11 @@ import {
   templateToFill,
   unfilled,
 } from "../issues.mjs";
+import {
+  fragmentFiles,
+  issueOfName,
+  NO_CHANGELOG,
+} from "../platform-changelog.mjs";
 import { installPushGuard } from "../push-guard.mjs";
 
 /**
@@ -148,4 +153,9 @@ export default function mrCommand(issue, flags) {
   console.log(
     `\n✓ draft merge request opened, closes #${number}, ${carried}\n  ${title}\n  ${created.out.split("\n").find(l => l.startsWith("http")) ?? ""}${boxes}\n`,
   );
+  // check:changelog fails the MR until it has an entry: say so now, not at the pipeline.
+  if (!fragmentFiles(top).some(found => issueOfName(found) === Number(number)))
+    console.log(
+      `  No changelog entry yet: pnpm changelog:add "<what users notice>" (or the label ${NO_CHANGELOG})\n`,
+    );
 }

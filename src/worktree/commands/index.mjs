@@ -2,6 +2,7 @@
 // `pnpm stack:*` through `control`.
 import actionCommand from "./action.mjs";
 import changelogCommand from "./changelog.mjs";
+import checkCommand from "./check.mjs";
 import controlCommand from "./control.mjs";
 import herdrCommand from "./herdr.mjs";
 import issuesCommand from "./issues.mjs";
@@ -11,6 +12,7 @@ import newCommand from "./new.mjs";
 import noteCommand from "./note.mjs";
 import orchestrateCommand from "./orchestrate.mjs";
 import planCommand from "./plan.mjs";
+import platformChangelogCommand from "./platform-changelog.mjs";
 import pruneCommand from "./prune.mjs";
 import removeCommand from "./remove.mjs";
 import stackCommand from "./stack.mjs";
@@ -22,6 +24,7 @@ export const commands = {
   orchestrate: orchestrateCommand,
   plan: planCommand,
   mr: mrCommand,
+  check: checkCommand,
   note: noteCommand,
   tick: tickCommand,
   action: actionCommand,
@@ -34,4 +37,5 @@ export const commands = {
   control: controlCommand,
   remove: removeCommand,
   changelog: changelogCommand,
+  "platform-changelog": platformChangelogCommand,
 };
