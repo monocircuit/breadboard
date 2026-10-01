@@ -2,8 +2,13 @@
 // an orchestration's mark and the branch, an agent its space, its repo and
 // what it waits for. Written by pnpm herdr into .herdr/config.toml and by pnpm
 // herdr:install into the marked block of your own config.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { ORIGIN_SLOTS, originToken } from "./origins.mjs";
 import { BRANCH_TOKEN } from "./tabs.mjs";
+import { mainDir } from "./worktrees.mjs";
 
 /** The token under a worktree's agent: `needs you`, `review · !192`, … (overview/agent-state.mjs). */
 export const STATE_TOKEN = "wt_state";
@@ -41,10 +46,21 @@ const sectionOf = (text, name) =>
  *   `rows_by_agent` already.
  */
 /** The hex of `colour` in the `[theme.custom]` of the config text `base`, else its fallback. */
-const colourIn = (base, { colour, fallback }) =>
+export const colourIn = (base, { colour, fallback }) =>
   (sectionOf(base, "theme.custom") ?? "").match(
     new RegExp(`^${colour}\\s*=\\s*"(#[0-9A-Fa-f]{6})"`, "m"),
   )?.[1] ?? fallback;
+/** The text of the config herdr runs with: the one it was started with, the repo's, your own; empty without one. */
+export const herdrConfigText = () => {
+  const file = [
+    process.env.HERDR_CONFIG_PATH,
+    path.join(mainDir(), ".herdr", "config.toml"),
+    path.join(os.homedir(), ".config", "herdr", "config.toml"),
+  ]
+    .filter(Boolean)
+    .find(candidate => fs.existsSync(candidate));
+  return file ? fs.readFileSync(file, "utf-8") : "";
+};
 /** The pink herdr's sidebar gives branches, from the config text `base`: the overview names worktrees in it too. */
 export const branchColourOf = base => colourIn(base, BRANCH_COLOUR);
 export const sidebarConfig = base => {

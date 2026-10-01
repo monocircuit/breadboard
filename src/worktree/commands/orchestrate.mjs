@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fail, flagValue, quote, step } from "../../lib/proc.mjs";
 import { isInHerdr, spaces } from "../../lib/herdr.mjs";
 import { ENTRY, NAME } from "../constants.mjs";
+import { changelogCommand } from "../changelog-view.mjs";
 import endCommand from "../end.mjs";
 import { startsOf } from "../fit.mjs";
 import { freeMemory } from "../memory.mjs";
@@ -42,7 +43,9 @@ import handOverCommand, { announceCommand } from "./handover.mjs";
  *
  * `--to <agent>` hands one issue to an idle agent of it instead
  * (handover.mjs), with `--after !<mr>…` once those MRs are merged (the
- * overview does it, handovers.mjs), `--end` ends it once its worktrees are gone (end.mjs).
+ * overview does it, handovers.mjs), `--end` ends it once its worktrees are gone (end.mjs),
+ * `--changelog` rewrites and prints its changelog, `--changelog --watch` shows it live
+ * (the tab `changelog` of its space, changelog-view.mjs).
  *
  * An issue is its number (the name comes from its title) or `<n>-<feature>`.
  * A worktree counts as made when it is there: wt:new may still fail after
@@ -50,11 +53,16 @@ import handOverCommand, { announceCommand } from "./handover.mjs";
  */
 export default async function orchestrateCommand(name, flags) {
   const usage =
-    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> --title <text>\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end";
+    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> --title <text>\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end\n       pnpm wt:orchestrate <name> --changelog [--watch]";
   // The end: its space, the orchestrator's claude, record and checkout (worktree/end.mjs).
   if (flags.has("--end")) {
     if (!name || !NAME.test(name)) fail(usage);
     return endCommand(name);
+  }
+  // What it got done (#248): rewritten from record and GitLab, or live in its tab.
+  if (flags.has("--changelog")) {
+    if (!name || !NAME.test(name)) fail(usage);
+    return changelogCommand(name, { isLive: flags.has("--watch") });
   }
   const argv = process.argv.slice(3);
   // The MRs an announced handover waits for (handovers.mjs): no issues.

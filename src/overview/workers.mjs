@@ -84,10 +84,11 @@ const runInBackground = (name, number, args) => {
   );
   fs.closeSync(out);
   child.unref();
-  const state = { isRunning: true, error: null };
+  const state = { isRunning: true, error: null, ended: 0 };
   running.set(number, state);
   child.on("exit", code => {
     state.isRunning = false;
+    state.ended = Date.now();
     if (code !== 0) {
       const last = fs.readFileSync(log, "utf-8").trim().split("\n").at(-1);
       state.error = last?.replace(/^✗ /, "") || `ended with ${code}`;
@@ -97,8 +98,28 @@ const runInBackground = (name, number, args) => {
   screen.redraw();
 };
 /** `worker`: `{ name }` of a free worker, or an announced handover's `{ to }`. */
-const handOver = (name, number, worker) =>
-  runInBackground(name, number, ["--to", worker.name ?? worker.to]);
+const handOver = (name, number, worker, run = runInBackground) =>
+  run(name, number, ["--to", worker.name ?? worker.to]);
+
+/** How long a failed announced handover waits before it is tried again. */
+export const RETRY_MS = 60_000;
+/**
+ * Whether the announced `handover` goes now: due, not running, and not
+ * tried yet, or failed at least RETRY_MS ago (`state`: its run, `now` ms).
+ * A try fails when the agent took up something during the minutes wt:new
+ * takes (#244); the worktree it made is taken as it is on the next one.
+ */
+export const isHandOverNow = (handover, state, now = Date.now()) =>
+  handover.isDue &&
+  (!state || (!state.isRunning && now - state.ended >= RETRY_MS));
+
+/** What an announced handover's row says after its issue and agent, the MRs merged. */
+const announcedText = (handover, state) => {
+  if (state?.error)
+    return `failed: ${red(state.error)}; tries again once ${handover.to} is idle`;
+  if (handover.why) return `waits: ${handover.why}`;
+  return handover.isDue ? "now" : "once it is idle";
+};
 /** A fresh agent for a queued issue, no idle one asked again: the overview found none that fits. */
 const startFresh = (name, number) => runInBackground(name, number, ["--now"]);
 
@@ -127,7 +148,7 @@ export const workerActionsOf = (
   of,
   agents,
   known,
-  { shouldHandOut = false, announced = [] } = {},
+  { shouldHandOut = false, announced = [], run = runInBackground } = {},
 ) => {
   const promised = new Set(announced.map(({ tree }) => tree?.dir));
   const free = freeWorkersOf(issues, of, agents, known).filter(
@@ -149,14 +170,14 @@ export const workerActionsOf = (
     // Not one started already, nor one that failed: it would fail again on every read, a click retries it.
     const waiting = queued.filter(({ number }) => !running.has(number));
     for (const { number, worker } of handOutOf(waiting, suggested))
-      handOver(name, number, worker);
+      handOver(name, number, worker, run);
   }
   const actions = [];
   for (const handover of announced) {
     const { number, to } = handover;
     const state = running.get(number);
-    if (shouldHandOut && handover.isDue && !state)
-      handOver(name, number, handover);
+    if (shouldHandOut && isHandOverNow(handover, state))
+      handOver(name, number, handover, run);
     actions.push({
       key: `hand over:#${number}:${to}`,
       kind: "hand over",
@@ -165,7 +186,7 @@ export const workerActionsOf = (
       at: handover.at ?? "",
       text: running.get(number)?.isRunning
         ? `#${number} → ${to}: handing over …`
-        : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : "once it is idle"} (announced)${state?.error ? `  ${red(state.error)}` : ""}`,
+        : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : announcedText(handover, state)} (announced)`,
       go: () => handOver(name, number, handover),
     });
   }
