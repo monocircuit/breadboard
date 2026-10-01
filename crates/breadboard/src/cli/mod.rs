@@ -3,6 +3,7 @@
 
 mod lifecycle;
 mod read;
+mod setup;
 mod write;
 
 use std::process::ExitCode;
@@ -15,6 +16,9 @@ pub fn main(command: &str, args: &[String]) -> ExitCode {
         return code;
     }
     if let Some(code) = lifecycle::run(command, args) {
+        return code;
+    }
+    if let Some(code) = setup::run(command, args) {
         return code;
     }
     eprintln!("{command}: not built yet");
