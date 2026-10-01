@@ -159,7 +159,7 @@ describe("rowBlockersOf", () => {
       "open discussions → you",
     ]);
     assert.deepEqual(reasonsOf({ mergeStatus: "checking" }), [
-      "GitLab is checking → GitLab",
+      "GitLab checks for conflicts → GitLab",
     ]);
   });
 });

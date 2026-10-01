@@ -54,7 +54,7 @@ import { nextOf, nothingText, staleOf, updatedPlan, whyOf } from "./next.mjs";
 import { orderActions, placeIn } from "./order.mjs";
 import {
   clickResolve,
-  conflictCell,
+  conflictStateOf,
   forgetResolved,
   resolveColumns,
 } from "./resolve.mjs";
@@ -336,14 +336,26 @@ const actionText = ({ action, issue, file }, of) => {
  * buttons from column `start`); on an option that option answers; anywhere
  * else it does the action.
  */
-const clickOf =
-  (item, on, start = CELL_START) =>
-  column => {
-    const redraw = () => screen.redraw({ isReread: true });
-    if (on === "buttons") return clickAction(item, column, redraw, start);
-    if (typeof on === "number") return answerWith(item, on, redraw);
-    return item.go();
-  };
+/**
+ * Whether a click on the body of `item` can do nothing (#290): a try that
+ * isn't ready and has no page to show why (try-state.mjs), a hand-over or
+ * start already under way. Its row says why; it takes no click.
+ */
+export const isInert = item =>
+  Boolean(
+    (item.tryState && !item.tryState.isReady && !item.tryState.url) ||
+    item.action?.isRunning,
+  );
+/** The click of a line of `item`'s block; none on the body of an inert one. */
+const clickOf = (item, on, start = CELL_START) =>
+  on !== "buttons" && typeof on !== "number" && isInert(item)
+    ? undefined
+    : column => {
+        const redraw = () => screen.redraw({ isReread: true });
+        if (on === "buttons") return clickAction(item, column, redraw, start);
+        if (typeof on === "number") return answerWith(item, on, redraw);
+        return item.go();
+      };
 
 /**
  * Each issue's state by its number, for the plan's staleness (next.mjs):
@@ -429,8 +441,9 @@ const pushNext = (
         ? merge.line
         : `${kindChip(item.action.kind)} ${bold(item.who)}  ${actionText(item, of)}`;
     const go = next.kind === "merge" ? merge.go : item.go;
+    const isLive = next.kind === "merge" || !isInert(item);
     wrap(text, width - indent.length).forEach((line, i) => {
-      screen.clicks[lines.length] = () => go();
+      if (isLive) screen.clicks[lines.length] = () => go();
       lines.push(`${i === 0 ? label : indent}${line}`);
     });
   } else {
@@ -503,7 +516,7 @@ const pushUpNext = (lines, upNext, of) => {
       ],
       text: actionText(item, of),
     })),
-    upNext.map(item => () => item.go()),
+    upNext.map(item => (isInert(item) ? null : () => item.go())),
     // Its text whole, never cut with `…` at the edge (#273).
     { under: 1, maxLines: 8 },
   );
@@ -656,6 +669,21 @@ export const renderOrchestration = (local, remote, error) => {
     forgetResolved(
       issues.map(issue => of(issue).mr).filter(mr => mr?.state === "opened"),
     );
+    const agents = local.agents ?? new Map();
+    // Once per row and frame: the state moves on as it is read.
+    const conflicts = new Map();
+    const conflictOf = item => {
+      if (!conflicts.has(item))
+        conflicts.set(
+          item,
+          conflictStateOf(of(item.issue).mr, {
+            tree: item.issue.tree,
+            agents,
+            behind: item.issue.tree?.behind ?? 0,
+          }),
+        );
+      return conflicts.get(item);
+    };
     const rowOf = item => {
       const { mr, jobs } = item.issue ? of(item.issue) : {};
       // A line of the graph alone, or (never again, #221) a row without its MR.
@@ -687,7 +715,7 @@ export const renderOrchestration = (local, remote, error) => {
         text: item.isMerged
           ? ""
           : [
-              conflictCell(mr, { behind: item.issue.tree?.behind ?? 0 }),
+              conflictOf(item).text,
               blockersText(reasons.filter(reason => !reason.isConflict)),
             ]
               .filter(Boolean)
@@ -716,15 +744,20 @@ export const renderOrchestration = (local, remote, error) => {
       }
       if (item.isMerged && !isMergedShown) return;
       for (const text of rows[i]) {
-        // On the button its agent gets the order, anywhere else the MR opens.
-        const resolve = item.isMerged ? null : resolveColumns(text);
+        // On the button its agent gets the order, anywhere else the MR opens;
+        // a grey one (or none) does nothing of its own.
+        const resolve =
+          item.isMerged || !conflictOf(item).canClick
+            ? null
+            : resolveColumns(text);
         if (item.issue)
           screen.clicks[lines.length] = column =>
             resolve && column >= resolve.from && column <= resolve.to
               ? clickResolve({
                   mr: of(item.issue).mr,
                   tree: item.issue.tree,
-                  agents: local.agents ?? new Map(),
+                  agents,
+                  behind: item.issue.tree?.behind ?? 0,
                 })
               : show(of(item.issue).mr.url, item.issue.tree?.dir);
         lines.push(text);
