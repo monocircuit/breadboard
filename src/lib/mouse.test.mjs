@@ -28,8 +28,16 @@ describe("mouseOf", () => {
     assert.equal(mouseOf("\x1b[<81;1;1M").by, 1);
   });
 
-  it("ignores releases, other buttons, modified clicks and keys", () => {
-    for (const key of ["\x1b[<0;7;3m", "\x1b[<2;7;3M", "\x1b[<16;7;3M", "j"])
+  it("reads the left button let go", () => {
+    assert.deepEqual(mouseOf("\x1b[<0;7;3m"), {
+      kind: "release",
+      row: 3,
+      column: 7,
+    });
+  });
+
+  it("ignores other buttons, their releases, modified clicks and keys", () => {
+    for (const key of ["\x1b[<2;7;3m", "\x1b[<2;7;3M", "\x1b[<16;7;3M", "j"])
       assert.equal(mouseOf(key), null);
   });
 });

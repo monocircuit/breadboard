@@ -22,7 +22,7 @@ import { toneOf } from "./herdr-tones.mjs";
 import { fileLine, logTargets, openFile, pushFiles } from "./files.mjs";
 import { show } from "./io.mjs";
 import { claudeLine, home, plural, someFiles } from "./render-worktree.mjs";
-import { pushRows, screen } from "./screen.mjs";
+import { onButton, pushRows, screen } from "./screen.mjs";
 
 /**
  * Stacks started from the overview: dir → { isRunning, log, error }. The
@@ -136,10 +136,11 @@ export const pushMigrations = (lines, dir, migrations) => {
   lines.push(
     `  ${dim("migrations")}  ${yellow(`⚠ ${plural(pending.length, "migration")} not applied:`)} ${someFiles(pending)}`,
   );
+  const label = state?.isRunning ? "◐ migrating …" : "▶ pnpm pg:migrate";
   const chip = state?.isRunning
-    ? `${button("◐ migrating …", "yellow")} ${dim(lastLine(state.log))}`
-    : `${button("▶ pnpm pg:migrate")}${state?.error ? `  ${red(state.error)}` : ""}`;
-  pushRows(lines, [["", "", chip]], [() => migrate(dir)]);
+    ? `${button(label, "yellow")} ${dim(lastLine(state.log))}`
+    : `${button(label)}${state?.error ? `  ${red(state.error)}` : ""}`;
+  pushRows(lines, [["", "", chip]], [onButton(label, () => migrate(dir))]);
 };
 /** The first line of a text, for a row: what someone said, not all of it. */
 const firstLine = text =>
@@ -353,12 +354,17 @@ const clickRemove = dir => {
 };
 /** The delete button of a worktree with nothing left in it. */
 export const pushRemoveButton = (lines, tree) => {
-  const chip = removing?.isRunning
-    ? `${button("◐ deleting …", "yellow")} ${dim(lastLine(removing.log))}`
+  const label = removing?.isRunning
+    ? "◐ deleting …"
     : removing?.isArmed
-      ? `${button(`✕ click again to delete ${tree.name}`, "red")} ${dim("worktree, branch and the data of its stack")}`
-      : `${button("✕ delete worktree", "red")} ${dim(isOnce ? `pnpm wt:remove ${tree.name}` : "nothing left in it: no changes, all of it in develop")}${removing?.error ? `  ${red(removing.error)}` : ""}`;
-  pushRows(lines, [["", chip]], [() => clickRemove(tree.dir)]);
+      ? `✕ click again to delete ${tree.name}`
+      : "✕ delete worktree";
+  const chip = removing?.isRunning
+    ? `${button(label, "yellow")} ${dim(lastLine(removing.log))}`
+    : removing?.isArmed
+      ? `${button(label, "red")} ${dim("worktree, branch and the data of its stack")}`
+      : `${button(label, "red")} ${dim(isOnce ? `pnpm wt:remove ${tree.name}` : "nothing left in it: no changes, all of it in develop")}${removing?.error ? `  ${red(removing.error)}` : ""}`;
+  pushRows(lines, [["", chip]], [onButton(label, () => clickRemove(tree.dir))]);
 };
 /**
  * The delete button while something would be lost, greyed out and without an
@@ -380,9 +386,10 @@ export const pushDisabledRemove = (lines, tree, ownCommits, mr) => {
 /** The button of a stack that is down, `what` naming it; it and `u` start it. */
 export const pushStackButton = (lines, dir, what) => {
   const state = starting.get(dir);
+  const label = state?.isRunning ? `◐ starting ${what} …` : `▶ start ${what}`;
   const chip = state?.isRunning
-    ? `${button(`◐ starting ${what} …`, "yellow")} ${dim(lastLine(state.log))}`
-    : `${button(`▶ start ${what}`)} ${dim(isOnce ? "pnpm stack:up" : "click or u")}${state?.error ? `  ${red(state.error)}` : ""}`;
-  pushRows(lines, [["", chip]], [() => startStack(dir)]);
+    ? `${button(label, "yellow")} ${dim(lastLine(state.log))}`
+    : `${button(label)} ${dim(isOnce ? "pnpm stack:up" : "click or u")}${state?.error ? `  ${red(state.error)}` : ""}`;
+  pushRows(lines, [["", chip]], [onButton(label, () => startStack(dir))]);
   screen.upTarget = dir;
 };

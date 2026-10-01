@@ -38,7 +38,7 @@ export const keyReader = () => {
 };
 /** The pane lost the focus: the pointer went elsewhere. */
 export const FOCUS_OUT = "\x1b[O";
-const REPORT = /^\x1b\[<(\d+);(\d+);(\d+)M$/;
+const REPORT = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
 /** The modifier bits of a mouse button (Shift, Alt, Ctrl). */
 const MODIFIERS = 4 | 8 | 16;
 /** The bit of a report that the pointer moved, a button held or not. */
@@ -48,12 +48,16 @@ const MOTION = 32;
  * the pointer moved (never a click, whatever button is held), `{ kind:
  * "wheel", by }` a notch up (-1) or down (1), with a modifier too, `{ kind:
  * "click" }` the left button pressed alone (no modifier, no motion, no
- * wheel); null for anything else (a key, a release, another button).
+ * wheel), `{ kind: "release" }` it let go (a release without its press
+ * tells of a click lost on the way, #303); null for anything else (a key,
+ * another button).
  */
 export const mouseOf = key => {
   const report = key.match(REPORT);
   if (!report) return null;
-  const [, button, column, row] = report.map(Number);
+  const [button, column, row] = report.slice(1, 4).map(Number);
+  if (report[4] === "m")
+    return button === 0 ? { kind: "release", row, column } : null;
   if (button & MOTION) return { kind: "move", row, column };
   const by = { 64: -1, 65: 1 }[button & ~MODIFIERS];
   if (by) return { kind: "wheel", by, row, column };

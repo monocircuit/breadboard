@@ -46,6 +46,7 @@ import {
   isSyncing,
   only,
 } from "./overview/args.mjs";
+import { logClick } from "./overview/clicks-log.mjs";
 import { guarded } from "./overview/guard.mjs";
 import { notifyChanges } from "./overview/notify.mjs";
 import { screen } from "./overview/screen.mjs";
@@ -115,10 +116,16 @@ const frame = painter({
   rows,
   size: () => `${process.stdout.columns}x${process.stdout.rows}`,
   write: text => process.stdout.write(text),
+  // Where each click landed and what ran (overview/clicks-log.mjs, #303).
+  log: logClick,
 });
 const draw = frame.changed;
+// A reread takes seconds: what a click changed in the view (an answer,
+// answers.mjs shownAction) is drawn at once, and again once it is read.
 screen.redraw = async ({ isReread = false } = {}) => {
-  if (isReread) local = await read();
+  draw();
+  if (!isReread) return;
+  local = await read();
   draw();
 };
 const fetchRemote = async () => {
@@ -147,6 +154,8 @@ const SCROLL = {
 };
 /** Lines per notch of the wheel. */
 const WHEEL = 3;
+/** Whether the left button was pressed and not let go yet. */
+let isPressed = false;
 const press = key => {
   if (key === "q" || key === "\u0003") leave();
   if (key === "r") fetchRemote();
@@ -163,7 +172,20 @@ const press = key => {
     scrollBy(mouse.by * WHEEL);
     frame.scrolled();
   }
-  if (mouse?.kind === "click") frame.clickAt(mouse.row - 1, mouse.column);
+  if (mouse?.kind === "click") {
+    isPressed = true;
+    frame.clickAt(mouse.row - 1, mouse.column);
+  }
+  if (mouse?.kind === "release") {
+    // Let go without a press: the press got lost on its way (#303).
+    if (!isPressed)
+      logClick({
+        row: mouse.row - 1,
+        column: mouse.column,
+        ran: "release without its press",
+      });
+    isPressed = false;
+  }
 };
 const leave = () => {
   process.stdout.write(`${MOUSE_OFF}${WRAP_ON}\x1b[?25h\x1b[?1049l`);

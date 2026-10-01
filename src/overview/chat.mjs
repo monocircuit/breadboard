@@ -6,7 +6,7 @@ import { dim, red } from "../lib/tty.mjs";
 import { restoreChat } from "../worktree.mjs";
 import { isOnce } from "./args.mjs";
 import { button } from "./boxes.mjs";
-import { pushRows, screen } from "./screen.mjs";
+import { onButton, pushRows, screen } from "./screen.mjs";
 
 /** How long the row shows what a click did, before it says again what one would do. */
 const SAID_MS = 8000;
@@ -46,14 +46,16 @@ export const chatText = status => {
 export const pushChatButton = (lines, name, status) => {
   if (isOnce || !status) return;
   const isAlive = status.state === "alive";
-  const chip = button(
-    isAlive ? "◉ orchestrator chat" : "▶ open orchestrator chat",
-    isAlive ? "green" : "cyan",
-  );
+  const label = isAlive ? "◉ orchestrator chat" : "▶ open orchestrator chat";
+  const chip = button(label, isAlive ? "green" : "cyan");
   const said = last
     ? last.startsWith("the conversation")
       ? red(last)
       : dim(last)
     : dim(chatText(status));
-  pushRows(lines, [["", `${chip} ${said}`]], [() => clickChat(name)]);
+  pushRows(
+    lines,
+    [["", `${chip} ${said}`]],
+    [onButton(label, () => clickChat(name))],
+  );
 };
