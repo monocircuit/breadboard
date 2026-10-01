@@ -37,7 +37,17 @@ const DESCRIPTIONS = {
     overview:
       "live: worktrees, stacks, merge requests and issues (q quits, --worktree <dir> for one, --orchestration <name> for its issues and MRs)",
     changelog:
-      "what got into develop, by product and package: rewritten from GitLab and printed (--since 30d|2w|<date>, --watch: live, the tab changelog of the main space)",
+      "the live view of what got into develop, by product and package: rewritten from GitLab and printed (--since 30d|2w|<date>, --watch: live, the tab changelog of the main space); not CHANGELOG.md",
+    "changelog:add":
+      '[--type <t>] [--area <a>] "<sentence>" an entry of this branch\'s MR for CHANGELOG.md, as .changelog/<issue>-<slug>.md',
+    "changelog:unreleased":
+      "what the next release's section of CHANGELOG.md would say, from .changelog/",
+    "changelog:release":
+      "<X.Y.Z> on the release branch: the fragments folded into CHANGELOG.md, vita's version set (skill release)",
+    "changelog:notes":
+      "<X.Y.Z> a release's section of CHANGELOG.md (the GitLab release's description)",
+    "changelog:check":
+      "every .changelog/ fragment valid; --mr: this MR adds one or carries no-changelog (CI check:changelog)",
     "stack:up":
       "start the vita stack — of the worktree on --port <p> / <feature>, else yours",
     "stack:down": "stop that stack, data stays",

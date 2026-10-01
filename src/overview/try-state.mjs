@@ -2,7 +2,9 @@
 // ready once its commits are pushed; one on the test instance (`wt:action try
 // --on test`) once its MR is merged and the develop pipeline of the merge
 // commit has deployed it: `waits for merge !N` → `deploying (publish, 3 min)`
-// → `ready`, or `deploy failed` with the job a click opens.
+// → `ready`, or `deploy failed` with the job a click opens. When the merge
+// commit's own pipeline failed, a later develop pipeline that contains it
+// decides (#275): a fix merged after it deploys it too.
 //
 // vita reports no build commit, so the instance itself can't be asked which
 // one it runs: `deploy:develop` passed plus DEPLOY_GRACE_MS counts as
@@ -70,11 +72,13 @@ export const deployStateOf = (deploy, now = Date.now()) => {
       isFinal: isDeployed,
     };
   }
-  // The pipeline ended without the deploying jobs passing, and none failed.
+  // The pipeline ended without the deploying jobs passing, and none failed:
+  // a job before them did (a check), that one says why.
   if (DONE.has(pipeline.status) && pipeline.status !== "success")
     return {
       state: "failed",
-      job: jobs.at(-1) ?? { name: "pipeline", url: pipeline.url },
+      job: (deploy.jobs ?? []).find(job => FAILED.has(job.status)) ??
+        jobs.at(-1) ?? { name: "pipeline", url: pipeline.url },
       since,
       isFinal: true,
     };
@@ -84,6 +88,14 @@ export const deployStateOf = (deploy, now = Date.now()) => {
     null;
   return { state: "deploying", job, since, isFinal: false };
 };
+
+/**
+ * Which develop pipeline decides a merge's deployment (#275): its own `own`,
+ * or, when that one failed, `later`, the newest develop pipeline that
+ * contains the merge commit (gitlab.mjs `deployOf`), null without one.
+ */
+export const decidingDeployOf = (own, later, now = Date.now()) =>
+  later?.pipeline && deployStateOf(own, now).state === "failed" ? later : own;
 
 /**
  * Whether the try `action` can be tried now, and what its row says in front
