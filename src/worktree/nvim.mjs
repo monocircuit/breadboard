@@ -30,13 +30,19 @@ export const socketOf = (name = null) =>
  * The shell line of an nvim tab in `dir`, listening on the socket of `name`
  * (socketOf). A socket nobody answers on is left over (herdr restarted and
  * killed nvim) and would keep `--listen` from starting: it goes first.
+ * `commands`: what nvim runs on start (`-c` each), by default `:Changes` and
+ * `:ChangesDiff` loaded; the orchestration's tab loads its own.
  * `file`/`line`: opened at once, when the tab starts for a click. Plain `;`
  * and `||`: the line runs in bash, zsh and fish alike.
  */
-export const editorCommand = (dir, { name = null, file, line } = {}) => {
+export const editorCommand = (
+  dir,
+  { name = null, commands = [`luafile ${CHANGES_LUA}`], file, line } = {},
+) => {
   const socket = quote(socketOf(name));
+  const start = commands.map(c => ` -c ${quote(c)}`).join("");
   const open = file ? ` +${line || 1} ${quote(file)}` : "";
-  return `cd ${quote(dir)}; nvim --server ${socket} --remote-expr 1 >/dev/null 2>&1 || rm -f ${socket}; nvim --listen ${socket} -c ${quote(`luafile ${CHANGES_LUA}`)}${open}`;
+  return `cd ${quote(dir)}; nvim --server ${socket} --remote-expr 1 >/dev/null 2>&1 || rm -f ${socket}; nvim --listen ${socket}${start}${open}`;
 };
 const remote = (dir, name, args) =>
   spawnSync("nvim", ["--server", socketOf(name), ...args], {

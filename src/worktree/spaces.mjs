@@ -70,14 +70,14 @@ export const ensureEditor = (workspace, dir, tabs) => {
  * `workspace`, listening on the socket of `name` (nvim.mjs), and that tab in
  * front. A tab that isn't there, or whose shell idles, starts nvim on the
  * file. Defaults: the tab `nvim` of the worktree `dir`. The orchestration's
- * tab passes its `name`, `label` and space. An answer for the overview:
+ * tab passes its `name`, `label`, space and the `commands` it starts with. An answer for the overview:
  * `{ isOpened, why }`.
  */
 export const openInEditor = (
   dir,
   file,
   line,
-  { name = null, label = EDITOR, workspace = spaceOf(dir) } = {},
+  { name = null, label = EDITOR, workspace = spaceOf(dir), commands } = {},
 ) => {
   if (!canEdit()) return { isOpened: false, why: "no nvim on the PATH" };
   const isOpened =
@@ -86,7 +86,7 @@ export const openInEditor = (
       ensureTab(workspace, {
         label,
         cwd: dir,
-        command: editorCommand(dir, { name, file, line }),
+        command: editorCommand(dir, { name, commands, file, line }),
       }));
   if (!isOpened)
     return {

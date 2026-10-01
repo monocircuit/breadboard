@@ -42,6 +42,19 @@ describe("the command line of an nvim tab (#257)", () => {
     );
   });
 
+  it("runs the commands it is given instead of loading changes.lua", () => {
+    const command = editorCommand(dir, {
+      name: "breadboard",
+      commands: ["luafile /o.lua", "OrchestrationChanges breadboard"],
+    });
+    assert.ok(
+      command.endsWith(
+        "nvim --listen '.claude/nvim-breadboard.sock' -c 'luafile /o.lua' -c 'OrchestrationChanges breadboard'",
+      ),
+    );
+    assert.doesNotMatch(command, /changes\.lua/);
+  });
+
   it("opens the clicked file at its line when it starts for a click", () => {
     assert.ok(
       editorCommand(dir, { file: "it's here.mjs", line: 12 }).endsWith(
