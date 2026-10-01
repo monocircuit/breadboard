@@ -9,8 +9,8 @@ const flatConfig = await new FlatConfigLoader({
 }).load();
 
 export default defineConfig([
-  // The spikes' build output and installs (#307).
-  { ignores: ["spikes/*/target/**", "spikes/*/node_modules/**"] },
+  // The spike's build output (#307).
+  { ignores: ["spikes/*/target/**"] },
   { extends: [flatConfig] },
   // Command line tools: the console is their output.
   { rules: { "no-console": "off" } },
