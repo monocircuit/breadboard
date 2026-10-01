@@ -2,6 +2,7 @@
 // orchestration runs wt:remove on its read once nothing is left in it (the
 // wt:prune check), its agent is idle and no handover is announced or
 // suggested for it. What stops it is named on its node instead.
+import { leftText } from "../worktree/conversations.mjs";
 
 /** `1 commit`, `3 commits`. */
 const counted = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -9,7 +10,8 @@ const counted = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 /**
  * Where the clean-up of a merged worktree stands: `{ key, why }`, `key`
  * - `kept`: changes or commits not in develop, wt:remove would refuse;
- * - `waits`: its agent is working or asks you, a try on the test instance
+ * - `waits`: a handed-over agent still stands in it (`tree.left`, #252),
+ *   its agent is working or asks you, a try on the test instance
  *   is open (its actions go with the worktree), or `hold` (why a handover
  *   holds its agent, handovers.mjs / workers.mjs);
  * - `due`: nothing stops it.
@@ -26,6 +28,11 @@ export const cleanUpOf = (issue, { mr, status, hold } = {}) => {
       : "",
   ].filter(Boolean);
   if (kept.length) return { key: "kept", why: kept.join(", ") };
+  if (tree.left?.length)
+    return {
+      key: "waits",
+      why: `${leftText(tree.left)} has not entered its next worktree yet`,
+    };
   if (status === "working")
     return { key: "waits", why: "its agent is working" };
   if (status === "blocked") return { key: "waits", why: "its agent asks you" };

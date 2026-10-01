@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { isInHerdr } from "../../lib/herdr.mjs";
 import { fail, git, run, step } from "../../lib/proc.mjs";
-import { sessionFile } from "../conversations.mjs";
+import { leftIn, leftText, sessionFile } from "../conversations.mjs";
 import { releaseSpace } from "../layout.mjs";
 import { markRemoved, originOf, pruneOrchestrators } from "../origins.mjs";
 import { hasOwnCommits, ownFiles } from "../prune.mjs";
@@ -35,6 +35,12 @@ export default function removeCommand(feature, flags) {
   if (!worktree) fail(`${dir} is not a worktree (pnpm wt:list)`);
   if (path.resolve(process.cwd()).startsWith(dir))
     fail(`run it from outside ${dir}`);
+  // A handed-over agent still in it: EnterWorktree fails once its directory is gone (#252).
+  const left = leftIn(dir);
+  if (left.length)
+    fail(
+      `${leftText(left)} still stands in ${feature} and has not entered its next worktree yet: again once it has`,
+    );
 
   if (git(["status", "--porcelain"], dir).out)
     fail(`${feature} has uncommitted changes, commit or discard them first`);
