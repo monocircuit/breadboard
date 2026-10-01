@@ -13,6 +13,7 @@ export const dim = paint(2);
 export const red = paint(31);
 export const green = paint(32);
 export const yellow = paint(33);
+export const blue = paint(34);
 export const cyan = paint(36);
 /**
  * The width of the terminal a print piped into `less -R` (FORCE_COLOR) goes

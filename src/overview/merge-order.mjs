@@ -44,14 +44,14 @@ const isBlocked = entry => progressOf(entry.mr) >= 2;
  * predecessors `{ iid, why }`.
  */
 export const holdUpOf = (entry, after = []) => {
-  const { mr, boxes = [], behind = 0 } = entry;
-  const blockers = blockersOf(mr, boxes, { canMarkReady: true }).map(
+  const { mr, boxes = [], behind = 0, tree = null } = entry;
+  const blockers = blockersOf(mr, boxes, { canMarkReady: true, tree }).map(
     blocker => {
       if (blocker === "conflicts with develop" && behind)
         return `${blocker} (${behind} behind)`;
-      // Of the open work boxes the first by name, the rest counted: one line.
+      // Of the open boxes the first by name, the rest counted: one line.
       const [head, ...more] = blocker.split(", ");
-      return /^\d+ work box/.test(blocker) && more.length
+      return /^\d+ (work|acceptance) box/.test(blocker) && more.length
         ? `${head} +${more.length}`
         : blocker;
     },
@@ -78,11 +78,11 @@ const filesText = files =>
 
 /**
  * The merge order. `entries`: the issues of the orchestration with an MR,
- * `{ number, mr, needs, files, boxes, behind }`, `mr` as the overview reads
+ * `{ number, mr, needs, files, boxes, behind, tree }`, `mr` as the overview reads
  * it (`iid`, `state`, `isDraft`, `pipeline`, `hasConflicts`, `mergedAt`),
  * `needs` the issue numbers it names as prerequisites, `files` what its work
  * touches, `boxes` its issue's (boxesOf), `behind` how many commits of
- * develop its branch lacks.
+ * develop its branch lacks, `tree` its worktree (its open tries hold it up).
  * `plan`: the merge order of `wt:plan`, issue numbers.
  * Returns
  * - `open`: the open MRs in the computed order, `{ number, reason, after,

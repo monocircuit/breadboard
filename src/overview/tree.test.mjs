@@ -37,6 +37,29 @@ const merged = { state: "merged", iid: 1, url: "u", mergedAt: null };
 const stateOf = (entry, facts) => lifecycleOf(entry, facts).key;
 
 describe("lifecycleOf", () => {
+  it("waits for your merge only once no try or acceptance box is open (#280)", () => {
+    const green = {
+      iid: 9,
+      state: "opened",
+      isDraft: false,
+      pipeline: { status: "success" },
+    };
+    assert.equal(
+      plain(lifecycleOf(issue(1), { mr: green, status: "idle" }).text),
+      "waits for you: merge",
+    );
+    assert.equal(
+      plain(
+        lifecycleOf(issue(1), {
+          mr: green,
+          status: "idle",
+          checks: ["try #1 broken"],
+        }).text,
+      ),
+      "checks open: try #1 broken",
+    );
+  });
+
   it("tells a merged worktree the clean-up takes from one it keeps", () => {
     assert.equal(stateOf(issue(1), { mr: merged }), "removable");
     const kept = lifecycleOf(issue(1, { tree: tree({ changed: 2 }) }), {
@@ -74,63 +97,39 @@ describe("lifecycleOf", () => {
     );
   });
 
-  it("reads the agent's state and its open actions", () => {
-    assert.equal(stateOf(issue(1), { status: "blocked" }), "asks");
-    assert.equal(stateOf(issue(1), { status: "working" }), "working");
-    const asked = issue(1, { tree: tree({ actions: [{ kind: "decide" }] }) });
-    assert.equal(stateOf(asked, { status: "working" }), "waits");
-    const answered = issue(1, {
-      tree: tree({ actions: [{ kind: "decide", answer: "A" }] }),
-    });
-    assert.equal(stateOf(answered, { status: "working" }), "working");
-  });
-
-  it("says the agent's state as text, what it waits for first (#260)", () => {
+  it("says what the agent waits for, in the words of agentStateOf (#288)", () => {
     const text = (entry, facts) => plain(lifecycleOf(entry, facts).text);
-    assert.equal(text(issue(1), { status: "blocked" }), "waits for you: asks");
+    assert.equal(text(issue(1), { status: "blocked" }), "asks you");
+    assert.equal(text(issue(1), { status: "working" }), "at work");
     const asked = issue(1, {
       tree: tree({
-        actions: [{ kind: "try" }, { kind: "merge" }, { kind: "try" }],
+        actions: [{ kind: "try", id: 4 }, { kind: "merge" }],
         wait: { mrs: [271] },
       }),
     });
-    assert.equal(text(asked, { status: "idle" }), "waits for you: try, merge");
+    assert.equal(
+      text(asked, { status: "idle" }),
+      "waits for you: try #4, merge",
+    );
     const waiting = issue(1, { tree: tree({ wait: { mrs: [271] } }) });
     assert.equal(stateOf(waiting, { status: "idle" }), "waitsForMr");
     assert.equal(text(waiting, { status: "idle" }), "waits for !271");
-    assert.equal(text(waiting, { status: "working" }), "waits for !271");
-    // Only the MRs still open, all merged: it wakes up (#262).
-    const six = issue(1, {
-      tree: tree({ wait: { mrs: [269, 270, 272, 273, 274, 275] } }),
-    });
-    const merged = new Set([269, 270, 272, 274, 275]);
-    assert.equal(
-      text(six, { status: "idle", merged }),
-      "waits for !273 · 5 merged",
-    );
-    assert.equal(
-      text(six, { status: "idle", merged: new Set([...merged, 273]) }),
-      "waits: all merged, wakes up",
-    );
-    assert.equal(text(issue(1), { status: "working" }), "at work");
-    assert.equal(text(issue(1), { status: "idle" }), "idle");
+    assert.equal(text(issue(1), { status: "idle" }), "free");
     assert.equal(
       text(issue(1, { tree: tree({ claude: null }) }), {}),
       "no agent",
     );
   });
 
-  it("is ready once the MR is ready and its pipeline passed", () => {
+  it("waits for the user's merge once the pipeline of its draft passed, not idle", () => {
     const mr = {
       state: "opened",
-      isDraft: false,
+      isDraft: true,
       pipeline: { status: "success" },
     };
-    assert.equal(stateOf(issue(1), { mr, status: "idle" }), "ready");
-    assert.equal(
-      stateOf(issue(1), { mr: { ...mr, isDraft: true }, status: "idle" }),
-      "idle",
-    );
+    const state = lifecycleOf(issue(1), { mr, status: "idle" });
+    assert.equal(plain(state.text), "waits for you: merge");
+    assert.equal(state.tone, "you");
   });
 
   it("is removed without a worktree, skipped with a reason", () => {
@@ -163,7 +162,7 @@ describe("treeOf", () => {
     );
   });
 
-  it("is not ready while a requested change blocks the MR", () => {
+  it("doesn't wait for a merge while a requested change blocks the MR", () => {
     const green = {
       state: "opened",
       isDraft: false,
@@ -172,8 +171,8 @@ describe("treeOf", () => {
     const changed = issue(1, {
       tree: tree({ change: { text: "x", head: "a" }, pushed: "a" }),
     });
-    assert.equal(stateOf(changed, { mr: green }), "idle");
-    assert.equal(stateOf(issue(1), { mr: green }), "ready");
+    assert.equal(stateOf(changed, { mr: green }), "change");
+    assert.equal(stateOf(issue(1), { mr: green }), "waits");
   });
 
   it("names the wait once: in the state, else in the facts", () => {
@@ -378,12 +377,16 @@ describe("numbersOf", () => {
 });
 
 describe("headOf", () => {
-  const rows = (...keys) => keys.map(key => ({ state: { key } }));
+  const rows = (...tones) =>
+    tones.map(tone => ({ state: { key: tone, tone } }));
 
-  it("counts the agents by their state, then queued and removed, then the memory", () => {
+  it("counts the agents by whom they wait for, then queued and removed, then the memory", () => {
     const head = headOf(
       {
-        live: rows("working", "asks", "waits", "waitsForMr", "waits", "idle"),
+        live: [
+          ...rows("work", "gitlab", "you", "gitlab", "you", "you", "free"),
+          { state: { key: "removable", tone: null } },
+        ],
         queued: rows("queued"),
         removed: rows(...Array(14).fill("removed")),
       },
@@ -391,21 +394,21 @@ describe("headOf", () => {
     );
     assert.equal(
       plain(head),
-      "1 working · 4 waiting · 1 idle · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)",
+      "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)",
     );
   });
 
   it("leaves out what is none, warns below the threshold", () => {
     const head = plain(
-      headOf({ live: rows("ready"), queued: [], removed: [] }, MEMORY.agent),
+      headOf({ live: rows("you"), queued: [], removed: [] }, MEMORY.agent),
     );
     assert.equal(
       head,
-      "1 ready · 0.5 GB free: fresh agents on the shared stack",
+      "1 wait for you · 0.5 GB free: fresh agents on the shared stack",
     );
     assert.equal(
-      plain(headOf({ live: rows("idle"), queued: [], removed: [] })),
-      "1 idle",
+      plain(headOf({ live: rows("free"), queued: [], removed: [] })),
+      "1 free",
     );
   });
 });
@@ -455,7 +458,7 @@ describe("pushWorktrees", () => {
     assert.match(lines[at + 1], /^│ {5}#1 open · no MR yet · 2 ahead\s*$/);
     assert.match(lines[at + 2], /^│ {5}the title of 1\s*$/);
     // The last node: no `│` below it.
-    assert.match(lines[at + 3], /└─ 2\. 2-feature +idle/);
+    assert.match(lines[at + 3], /└─ 2\. 2-feature +free/);
     assert.match(
       lines[at + 4],
       /^ {6}#2 open · no MR yet · agent: 1st issue · no answer yet/,
