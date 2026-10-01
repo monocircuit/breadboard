@@ -122,6 +122,10 @@ const DESCRIPTIONS = {
     "check-contrast": "contrast check of the built Storybook",
     tokens: "write tokens.css and theme.css from src/tokens/tokens.ts",
   },
+  "packages/breadboard-gauntlet": {
+    gauntlet:
+      "the black-box suite: breadboard in a pty against a recorded world (BREADBOARD_SUBJECT: a rewrite)",
+  },
   "packages/eslint-config": {
     build: "build the configs (dev) and types",
     "build:prod": "build the configs as the hooks and CI load them",
