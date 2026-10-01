@@ -104,7 +104,7 @@ export { editorCommand, socketOf } from "./worktree/nvim.mjs";
 export { compose, isPortFree, offsetOf, readEnv } from "./worktree/stack.mjs";
 export { featureOf } from "./worktree/tabs.mjs";
 export { isWaiting, waitOf, waitsText } from "./worktree/wait.mjs";
-export { CONTEXT_LIMIT, filesOf } from "./worktree/workers.mjs";
+export { CONTEXT_LIMIT, filesOf, wasOf } from "./worktree/workers.mjs";
 export { mainDir, worktrees } from "./worktree/worktrees.mjs";
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
