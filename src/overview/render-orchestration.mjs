@@ -760,7 +760,8 @@ export const renderOrchestration = (local, remote, error) => {
         // On the button its agent gets the order, anywhere else the MR opens;
         // a grey one (or none) does nothing of its own.
         const resolve =
-          item.isMerged || !conflictOf(item).canClick
+          // A line of the graph alone has no MR to resolve.
+          item.isMerged || !item.issue || !conflictOf(item).canClick
             ? null
             : resolveColumns(text);
         if (item.issue)
