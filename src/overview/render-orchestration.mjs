@@ -59,6 +59,7 @@ import {
   resolveColumns,
 } from "./resolve.mjs";
 import { ago } from "./render-worktree.mjs";
+import { pushFreeAgents } from "./free-agents.mjs";
 import { freeOnCleanUp, workerActionsOf } from "./workers.mjs";
 import { KEYS, pushUnder, screen } from "./screen.mjs";
 import { foldLine, pushWorktrees } from "./tree.mjs";
@@ -631,6 +632,8 @@ export const renderOrchestration = (local, remote, error) => {
     free: local.free,
     merged: mergedIids,
   });
+  // The free agents, their worktree gone (#289).
+  pushFreeAgents(lines, orchestration, local.freeAgents ?? [], local.agents);
 
   const byNumber = withMr;
   const afterOf = new Map(order.open.map(item => [item.number, item.after]));

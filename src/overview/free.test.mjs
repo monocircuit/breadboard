@@ -11,6 +11,7 @@ import {
   freeTabsOutside,
 } from "../worktree/free.mjs";
 import { removeMerged } from "./auto-actions.mjs";
+import { freeRowOf, pushFreeAgents } from "./free-agents.mjs";
 import { announcedOf } from "./handovers.mjs";
 import { freeOnCleanUp, freeWorkersOf, workerActionsOf } from "./workers.mjs";
 
@@ -257,5 +258,40 @@ describe("the end of the orchestration", () => {
       freeTabsOutside([{ id: "c1" }, { id: "c2" }], panes, null),
       ["t1", "t2"],
     );
+  });
+});
+
+describe("AGENTS", () => {
+  const agent = {
+    id: "c9",
+    name: "agent-a",
+    share: 0.18,
+    issues: [3, 7],
+    free: { at, from: "7-thing", mr: 31 },
+  };
+  const plain = text => text.replace(/\x1b\[[0-9;]*m/g, "");
+
+  it("shows a free agent as free, with its context and where it came from", () => {
+    const { state, text } = freeRowOf(agent, "idle");
+    assert.equal(state.key, "free");
+    assert.equal(state.tone, "free");
+    assert.equal(text, "18 % · from 7-thing (!31) · 2 issues");
+  });
+
+  it("says when it is at work on its line or asks", () => {
+    assert.equal(freeRowOf(agent, "working").state.text, "at work");
+    assert.equal(freeRowOf(agent, "blocked").state.text, "asks you");
+  });
+
+  it("is a box of its own only while there is a free agent", () => {
+    const none = [];
+    pushFreeAgents(none, "o", []);
+    assert.deepEqual(none, []);
+    const lines = [];
+    pushFreeAgents(lines, "o", [agent], new Map([["c9", { status: "idle" }]]));
+    const text = plain(lines.join("\n"));
+    assert.match(text, /AGENTS/);
+    assert.match(text, /free agent-a/);
+    assert.match(text, /dismiss/);
   });
 });
