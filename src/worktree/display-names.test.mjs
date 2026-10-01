@@ -1,13 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import {
-  FIRST,
-  LAST,
-  displayNameOf,
-  displayNamesOf,
-  pickName,
-} from "./display-names.mjs";
+import { FIRST, LAST, displayNamesOf, pickName } from "./display-names.mjs";
 
 const ids = Array.from(
   { length: 40 },
@@ -45,7 +39,6 @@ describe("the display name of an agent", () => {
 
   it("stays the same across a handover: the record keeps it", () => {
     const known = { [ids[3]]: { displayName: "Mira Albrecht", issues: [1] } };
-    assert.equal(displayNameOf(known, ids[3]), "Mira Albrecht");
     assert.equal(
       displayNamesOf(known, [ids[3], ids[4]]).get(ids[3]),
       "Mira Albrecht",

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { ESCAPES } from "../lib/tty.mjs";
-import { announcedOf, nextText, takesText } from "./handovers.mjs";
+import {
+  agentNamesOf,
+  announcedOf,
+  nextText,
+  takesText,
+} from "./handovers.mjs";
 import { treeOf } from "./tree.mjs";
 import { RETRY_MS, isHandOverNow, workerActionsOf } from "./workers.mjs";
 
@@ -212,5 +217,46 @@ describe("a due announced handover (#244)", () => {
       plain(actions[0].text),
       "#226 → 224-x waits: it waits for an answer (announced)",
     );
+  });
+});
+
+describe("agentNamesOf", () => {
+  const known = {
+    c224: { name: "224-x", was: "220-w", displayName: "Mira Albrecht" },
+  };
+  it("shows an agent by its display name under every name it goes by (#292)", () => {
+    const { byId, shown } = agentNamesOf(issues, known);
+    assert.equal(byId.get("c224"), "Mira Albrecht");
+    for (const who of ["224-x", "220-w"])
+      assert.equal(shown(who), "Mira Albrecht");
+    assert.equal(shown("999-z"), "999-z");
+  });
+
+  it("names the handover rows of UP NEXT and the queue by it", () => {
+    const [due] = announcedOf([handover], issues, {
+      known,
+      agents: new Map([["c224", { status: "idle" }]]),
+      awaited: new Map([[232, { state: "merged" }]]),
+    });
+    const { actions } = workerActionsOf(
+      "orch",
+      issues,
+      () => ({}),
+      new Map(),
+      known,
+      {
+        announced: [due],
+        shown: agentNamesOf(issues, known).shown,
+        run: () => {},
+      },
+    );
+    assert.equal(actions[0].who, "Mira Albrecht");
+    assert.match(plain(actions[0].text), /^#226 → Mira Albrecht /);
+    assert.equal(actions[0].key, "hand over:#226:224-x");
+    const { queued } = treeOf(issues, () => ({}), {
+      known,
+      announced: [due],
+    });
+    assert.match(plain(queued[0].state.text), /^→ Mira Albrecht now/);
   });
 });

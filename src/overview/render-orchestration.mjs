@@ -38,7 +38,7 @@ import {
   titleLines,
 } from "./boxes.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
-import { announcedOf } from "./handovers.mjs";
+import { agentNamesOf, announcedOf } from "./handovers.mjs";
 import { toneOf } from "./herdr-tones.mjs";
 import { open, show } from "./io.mjs";
 import {
@@ -85,6 +85,8 @@ const isWaitingTry = item => item.tryState?.isReady === false;
  */
 const actionsOf = (local, issues, of, remote, announced) => {
   const merge = local.order.numbers;
+  // The agents by the names the user knows them by (#292).
+  const names = agentNamesOf(issues, local.workers);
   const own = (local.ownActions ?? [])
     .map(action => {
       // A merge the orchestrator posted for an MR (`--mr !N`) is that MR's.
@@ -131,7 +133,9 @@ const actionsOf = (local, issues, of, remote, announced) => {
           action,
           issue,
           tryState,
-          who: issue.feature,
+          who: issue.tree.claude
+            ? `${names.byId.get(issue.tree.claude.id)} · #${issue.number}`
+            : issue.feature,
           file: actionsFile(issue.tree.dir),
           to: { dir: issue.tree.dir },
           rank: placeIn(merge, issue.number),
@@ -180,6 +184,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
       announced,
       awaited: remote?.awaited ?? null,
       work: local.plan?.work ?? [],
+      shown: names.shown,
     },
   );
   const workers = handovers.actions.map(

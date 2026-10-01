@@ -182,5 +182,3 @@ export const displayNamesOf = (known = {}, ids = []) => {
   for (const id of others) names.set(id, pickName(id, names.values()));
   return names;
 };
-/** The name of the agent `id` (displayNamesOf), for its first start: kept from then on. */
-export const displayNameOf = (known, id) => displayNamesOf(known, [id]).get(id);

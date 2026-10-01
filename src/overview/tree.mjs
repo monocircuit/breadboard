@@ -20,21 +20,21 @@ import {
   yellow,
 } from "../lib/tty.mjs";
 import { ORCHESTRATOR, focusSpace, waitsText, wasOf } from "../worktree.mjs";
-import { historyText, reuseOf, reuseText } from "../worktree/history.mjs";
+import { countsOf, reuseOf, reuseText } from "../worktree/history.mjs";
 import { THRESHOLD, gb } from "../worktree/memory.mjs";
 import { agentStateOf } from "./agent-state.mjs";
 import { isOnce } from "./args.mjs";
 import { removalOf } from "./auto-actions.mjs";
 import { boxInner, closeBox, openBox, pipelineMark } from "./boxes.mjs";
-import { paintOf } from "./herdr-tones.mjs";
+import { paintOf, toneOf } from "./herdr-tones.mjs";
 import { changeFact, unpushedFact } from "./change.mjs";
 import { cleanUpOf } from "./clean-up.mjs";
 import { show } from "./io.mjs";
 import { checksOf } from "./merge.mjs";
-import { nextText } from "./handovers.mjs";
+import { agentNamesOf, nextText } from "./handovers.mjs";
 import { pink } from "./names.mjs";
 import { numbersOf } from "./numbering.mjs";
-import { ago, mrState, tokens } from "./render-worktree.mjs";
+import { ago, mrState, plural, tokens } from "./render-worktree.mjs";
 import { screen } from "./screen.mjs";
 
 /** A time of today as `15:12`, an older one with its day. */
@@ -166,8 +166,19 @@ const agentNameFact = (tree, known, now) => {
     .join(" ");
 };
 /**
+ * The line of a node's agent under its name (#292): `● Mira Albrecht · 3
+ * issues · 2 MRs merged`, the dot in the colour of its state (whom it waits
+ * for, #288, else herdr's), the issues it worked on, this one included, and
+ * how many of their MRs are merged (countsOf). "" without an agent.
+ */
+export const agentLine = ({ name, state, status, issues, merged }) =>
+  name
+    ? `${(state?.tone ? paintOf(state.tone) : toneOf(status))("●")} ${bold(name)} ${dim(`· ${plural(issues, "issue")} · ${plural(merged, "MR")} merged`)}`
+    : "";
+
+/**
  * The facts line of a node: issue, MR and pipeline, work, its agent's name
- * after a handover, which issue of its agent this is (#264) and its context, a wait (#216) its state doesn't name
+ * after a handover and its context, a wait (#216) its state doesn't name
  * already, a requested change and what isn't pushed (#228), the next issue
  * announced for its agent (#227). What doesn't apply is left out; a worktree
  * without an MR says so.
@@ -177,7 +188,7 @@ const factsOf = (
   found,
   mr,
   hasRemote,
-  { handover, state, agent, history, merged },
+  { handover, state, agent, merged },
 ) => {
   const { tree } = issue;
   const mergedAt = issue.mergedAt ?? mr?.mergedAt;
@@ -186,7 +197,6 @@ const factsOf = (
     tree ? mrFact(mr, mergedAt) || dim("no MR yet") : mrFact(mr, mergedAt),
     tree ? workFact(tree) : "",
     agent,
-    history ? dim(history) : "",
     tree ? agentFact(tree.claude) : "",
     tree?.wait && state.key !== "waitsForMr"
       ? yellow(waitsText(tree.wait, merged))
@@ -201,18 +211,18 @@ const factsOf = (
 };
 
 /** `→ 242-overview after !256` / `→ 242-overview now`: an announced handover's agent and what it waits for. */
-const takenText = ({ to, open, after }) => {
+const takenText = ({ to, open, after }, shown) => {
   const mrs = open ?? after ?? [];
-  return `→ ${to} ${mrs.length ? `after ${mrs.map(iid => `!${iid}`).join(", ")}` : "now"}`;
+  return `→ ${shown(to)} ${mrs.length ? `after ${mrs.map(iid => `!${iid}`).join(", ")}` : "now"}`;
 };
 /**
  * What a queued issue waits for (#250): the agent the orchestrator announced
  * (and after which MRs), the free one UP NEXT suggests (`→ 3-x (free, 18 %)`),
  * else what its fresh start does (`fresh`, #265).
  */
-const queuedText = (issue, announced, suggested, fresh, merged) => {
+const queuedText = (issue, announced, suggested, fresh, merged, shown) => {
   const handover = announced.find(({ number }) => number === issue.number);
-  if (handover) return cyan(takenText(handover));
+  if (handover) return cyan(takenText(handover, shown));
   // `--queue --after` (#272): nothing starts before those MRs are merged.
   const open = (issue.after ?? []).filter(iid => !merged.has(iid));
   if (open.length)
@@ -228,8 +238,8 @@ const queuedText = (issue, announced, suggested, fresh, merged) => {
   if (worker)
     return cyan(
       worker.isMerged
-        ? `→ ${worker.name} (free, ${Math.round(worker.share * 100)} %)`
-        : `→ ${worker.name} once its MR is merged`,
+        ? `→ ${shown(worker.name)} (free, ${Math.round(worker.share * 100)} %)`
+        : `→ ${shown(worker.name)} once its MR is merged`,
     );
   return cyan(fresh.get(issue.number) ?? "start: waits for an agent");
 };
@@ -267,9 +277,17 @@ export const treeOf = (
     merged = new Set(),
     setups = [],
     now = Date.now(),
+    names = agentNamesOf(issues, known),
   } = {},
 ) => {
   const numbers = numbersOf(issues, { work, merge, of });
+  // Whether the MR of the issue `number` is merged, for an agent's counts (#292).
+  const isMerged = number => {
+    const issue = issues.find(candidate => candidate.number === number);
+    return Boolean(
+      issue && (issue.mergedAt || of(issue).mr?.state === "merged"),
+    );
+  };
   const handoverOf = tree =>
     tree && announced.find(handover => handover.tree?.dir === tree.dir);
   const rows = issues.map(issue => {
@@ -290,7 +308,14 @@ export const treeOf = (
       lifecycle.key === "queued"
         ? {
             ...lifecycle,
-            text: queuedText(issue, announced, suggested, fresh, merged),
+            text: queuedText(
+              issue,
+              announced,
+              suggested,
+              fresh,
+              merged,
+              names.shown,
+            ),
           }
         : lifecycle.key === "removed" && issue.removedAt
           ? {
@@ -306,11 +331,18 @@ export const treeOf = (
       number: numbers.get(issue),
       place: placeCell(issues.length, numbers.get(issue)),
       name: pink(tree ? bold(issue.feature) : issue.feature),
+      agent: tree?.claude
+        ? agentLine({
+            name: names.byId.get(tree.claude.id),
+            state,
+            status,
+            ...countsOf(known[tree.claude.id], issue.number, isMerged),
+          })
+        : "",
       facts: factsOf(issue, found, mr, hasRemote, {
         handover: handoverOf(tree),
         state,
         agent: agentNameFact(tree, known, now),
-        history: historyText(known, issue.number, tree?.claude),
         merged,
       }),
       title: dim(found?.title ?? issue.title ?? issue.branch),
@@ -367,7 +399,7 @@ export const nodeLines = (row, { branch, stem, width }) => {
   return [
     first,
     ...stateLines,
-    ...[row.facts, row.title]
+    ...[row.agent ?? "", row.facts, row.title]
       .filter(text => visible(text) > 0)
       .flatMap(text => wrap(text, below, MAX_BELOW))
       .map(line => `${indent}${line}`),
