@@ -6,7 +6,12 @@ import { fail, flagValue, run, step } from "../../lib/proc.mjs";
 import { VITA } from "../constants.mjs";
 import { syncStackTabs } from "../layout.mjs";
 import { isInside } from "../prune.mjs";
-import { STACK_ACTIONS, offsetOf, worktreeOnPort } from "../stack.mjs";
+import {
+  STACK_ACTIONS,
+  envFileOf,
+  offsetOf,
+  worktreeOnPort,
+} from "../stack.mjs";
 import { dirOf, mainDir, worktrees } from "../worktrees.mjs";
 
 /**
@@ -41,7 +46,7 @@ export default async function controlCommand(action, flags) {
   }
 
   const { dir } = tree;
-  if (!fs.existsSync(path.join(dir, VITA, ".env.local")))
+  if (!fs.existsSync(envFileOf(dir)))
     fail(`${path.basename(dir)} has no .env.local, so no stack`);
   const offset = dir === mainDir() ? 0 : offsetOf(dir);
   // A worktree on the shared stack acts on the one of the main checkout, and

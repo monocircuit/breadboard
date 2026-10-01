@@ -111,6 +111,7 @@ export { focusSpace, openInEditor, spaceLabel } from "./worktree/spaces.mjs";
 export { editorCommand, socketOf } from "./worktree/nvim.mjs";
 export {
   adoptEnv,
+  envFileOf,
   compose,
   isPortFree,
   offsetOf,

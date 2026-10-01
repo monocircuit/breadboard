@@ -42,9 +42,14 @@ export const adoptEnv = dir => {
   fs.renameSync(old, target);
   return true;
 };
+/** The .env.local of a checkout, moved over from products/vita first if it is still there. */
+export const envFileOf = dir => {
+  adoptEnv(dir);
+  return path.join(dir, VITA, ".env.local");
+};
 /** The offset of a worktree's own stack, 0 for the shared one. */
 export const offsetOf = dir => {
-  const env = readEnv(path.join(dir, VITA, ".env.local"));
+  const env = readEnv(envFileOf(dir));
   return env?.COMPOSE_PROJECT_NAME && env.POSTGRES_PORT
     ? Number(env.POSTGRES_PORT) - 5432
     : 0;
@@ -118,7 +123,7 @@ export const compose = (dir, args, options) =>
   );
 /** Moves a worktree from the shared stack to an own one and starts it. */
 export const createStack = async (dir, feature) => {
-  const source = path.join(mainDir(), VITA, ".env.local");
+  const source = envFileOf(mainDir());
   const target = path.join(dir, VITA, ".env.local");
   if (!fs.existsSync(source))
     fail(`${source} is missing, set up the main checkout first`);
