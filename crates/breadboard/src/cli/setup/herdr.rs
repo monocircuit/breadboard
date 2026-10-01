@@ -387,13 +387,25 @@ pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Value]) -> Option<Stri
     is_idle(&id).then_some(id)
 }
 
+/// What `ensure_tab` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    /// The tab was there and its command runs (or it has none).
+    Kept,
+    /// Created, or its idle shell given its command again: the command runs.
+    Started,
+    /// Created, but herdr gave it no pane: its command didn't start.
+    Empty,
+}
+
 /// A tab by its label, created unfocused with `command` in it if missing,
-/// `command` run again when its shell idles. True when either happened.
-pub fn ensure_tab(workspace: &str, label: &str, cwd: &Path, command: Option<&str>, tabs: &[Value]) -> bool {
+/// `command` run again when its shell idles.
+pub fn ensure_tab(workspace: &str, label: &str, cwd: &Path, command: Option<&str>, tabs: &[Value]) -> Tab {
     if tabs.iter().any(|tab| field(tab, "label") == label) {
-        let Some(command) = command else { return false };
-        return idle_pane_of(workspace, label, tabs)
-            .is_some_and(|idle| herdr(&["pane", "run", &idle, command]).is_some());
+        let Some(command) = command else { return Tab::Kept };
+        let is_run =
+            idle_pane_of(workspace, label, tabs).is_some_and(|idle| herdr(&["pane", "run", &idle, command]).is_some());
+        return if is_run { Tab::Started } else { Tab::Kept };
     }
     let cwd = cwd.to_string_lossy();
     let created = herdr(&[
@@ -407,12 +419,12 @@ pub fn ensure_tab(workspace: &str, label: &str, cwd: &Path, command: Option<&str
         label,
         "--no-focus",
     ]);
-    if let (Some(created), Some(command)) = (&created, command)
-        && let Some(pane) = created.get("root_pane")
-    {
-        herdr(&["pane", "run", field(pane, "pane_id"), command]);
-    }
-    created.is_some()
+    let Some(created) = created else { return Tab::Kept };
+    let Some(command) = command else { return Tab::Started };
+    let is_run = created
+        .get("root_pane")
+        .is_some_and(|pane| herdr(&["pane", "run", field(pane, "pane_id"), command]).is_some());
+    if is_run { Tab::Started } else { Tab::Empty }
 }
 
 /// The tabs `order` names at the left end of their space, in that order
@@ -693,10 +705,21 @@ pub fn sync_stack_tabs(dir: &Path, workspace: Option<String>) -> Vec<String> {
             if repo::is_port_free(studio) {
                 wanted.push((STUDIO.into(), format!("pnpm pg:studio --port {studio}")));
             }
+            let mut empty = Vec::new();
             for (label, command) in wanted {
-                if ensure_tab(&workspace, &label, &vita, Some(&command), &tabs) {
-                    changed.push(format!("+{label}"));
+                match ensure_tab(&workspace, &label, &vita, Some(&command), &tabs) {
+                    Tab::Started => changed.push(format!("+{label}")),
+                    Tab::Empty => empty.push(label),
+                    Tab::Kept => {}
                 }
+            }
+            // A tab herdr gave no pane runs nothing: said, not counted as running.
+            if !empty.is_empty() {
+                let dot = if changed.is_empty() { "" } else { "· " };
+                changed.push(format!(
+                    "{dot}{} opened empty: herdr gave no pane, nothing runs there",
+                    empty.join(" ")
+                ));
             }
             return changed;
         }
