@@ -42,7 +42,7 @@ export const rowBlockersOf = ({
   done = new Set(),
 }) => {
   const reasons = [];
-  const add = (text, who) => reasons.push({ text, who });
+  const add = (text, who, more = {}) => reasons.push({ text, who, ...more });
 
   const status = mr.pipeline?.status ?? mr.pipeline ?? null;
   if (!status) add("no pipeline yet", WHO.gitlab);
@@ -74,6 +74,8 @@ export const rowBlockersOf = ({
     add(
       `conflicts with develop${behind ? ` (${behind} behind)` : ""}: merge develop in`,
       WHO.agent,
+      // Its row shows the button that has the agent resolve them (resolve.mjs).
+      { isConflict: true },
     );
   else {
     const text = mergeStatusText(mr.mergeStatus, {

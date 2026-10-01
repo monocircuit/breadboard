@@ -39,7 +39,7 @@ import {
 import { guarded } from "./overview/guard.mjs";
 import { notifyChanges } from "./overview/notify.mjs";
 import { screen } from "./overview/screen.mjs";
-import { WRAP_OFF, WRAP_ON, painter } from "./overview/frame.mjs";
+import { WRAP_OFF, WRAP_ON, painter, watchSize } from "./overview/frame.mjs";
 import { pageOf, scrollBy } from "./overview/scroll.mjs";
 import { reader } from "./overview/reader.mjs";
 import {
@@ -102,6 +102,7 @@ const frame = painter({
     return text;
   },
   rows,
+  size: () => `${process.stdout.columns}x${process.stdout.rows}`,
   write: text => process.stdout.write(text),
 });
 const draw = frame.changed;
@@ -173,6 +174,8 @@ process.stdout.write(`\x1b[?1049h\x1b[?25l${WRAP_OFF}${MOUSE_ON}`);
 process.on("SIGINT", leave);
 process.on("SIGTERM", leave);
 process.stdout.on("resize", frame.repaint);
+// A resize the pane didn't signal (a hidden tab) still comes as one (#253).
+watchSize(process.stdout);
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdin.on("data", chunk => {
