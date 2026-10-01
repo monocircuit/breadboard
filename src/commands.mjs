@@ -108,6 +108,8 @@ const DESCRIPTIONS = {
     "storage:setup": "create the bucket in SeaweedFS",
     "startup-images":
       "the iOS launch screens per device, light and dark, from the logo",
+    "skia:fonts":
+      "the Skia timelines' fonts, subset from the app's (needs fonttools)",
     "screenshots:manifest":
       "the install dialog's screenshots of the atlas, from pnpm dev (Chromium)",
     "keycloak:setup":
