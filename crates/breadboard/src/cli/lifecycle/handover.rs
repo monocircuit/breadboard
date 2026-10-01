@@ -549,6 +549,8 @@ fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Mad
         .args(&args)
         .current_dir(&repo.main)
         .stdin(Stdio::null())
+        // Its steps show as they run; its failure is read from stderr.
+        .stdout(Stdio::inherit())
         .stderr(Stdio::piped())
         .output();
     let errors = made
