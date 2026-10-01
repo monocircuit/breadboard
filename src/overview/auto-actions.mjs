@@ -290,6 +290,102 @@ export const sendOnce = (dir, key, line) => {
   return true;
 };
 
+/** The key a failed pipeline of `mr` is sent under: once per pipeline. */
+const failedKeyOf = mr =>
+  `pipeline:!${mr.iid}:${mr.pipeline?.id ?? mr.pipeline?.finished_at ?? mr.pipeline?.updated_at}`;
+/** How long a log line may be in the line to the agent. */
+const LOG_LINE_CHARS = 200;
+/**
+ * The line that tells an agent its MR's pipeline failed: the failed jobs with
+ * their urls and the end of the first one's log. A job develop's last
+ * pipeline fails too (`develop`: `{ jobs }`) is not the MR's doing: the line
+ * says so instead of sending the agent to chase it.
+ */
+export const pipelineLineOf = (mr, jobs = [], develop = null) => {
+  const failed = jobs.filter(job => job.status === "failed");
+  const onDevelop = new Set(
+    (develop?.jobs ?? [])
+      .filter(job => job.status === "failed")
+      .map(job => job.name),
+  );
+  const own = failed.filter(job => !onDevelop.has(job.name));
+  const theirs = failed.filter(job => onDevelop.has(job.name));
+  const what = failed.length
+    ? failed.map(job => `job ${job.name}, ${job.url}`).join("; ")
+    : (mr.pipeline?.web_url ?? mr.url);
+  const names = theirs.map(job => job.name).join(", ");
+  const verdict =
+    failed.length && own.length === 0
+      ? `develop fails the same job${theirs.length === 1 ? "" : "s"}: not yours, waits for the fix (say so in the MR)`
+      : `look into it${theirs.length ? ` (develop fails ${names} too: not yours)` : ""}`;
+  const log = (own[0] ?? failed[0])?.log ?? [];
+  const end =
+    own.length && log.length
+      ? `; its log ends: ${log.map(line => line.slice(0, LOG_LINE_CHARS)).join(" ⏎ ")}`
+      : "";
+  return `[overview] the pipeline of !${mr.iid} failed: ${what}: ${verdict}${end}`;
+};
+/**
+ * What to send about failed pipelines: of each open MR whose pipeline failed,
+ * with a worktree and its agent, `{ dir, key, line, id }` while its agent
+ * wasn't told yet. `id`: the agent's conversation. `sentOf(dir)`: the keys
+ * the worktree remembers as sent.
+ */
+export const failedPipelinesOf = (issues, of, sentOf, develop = null) =>
+  issues.flatMap(issue => {
+    const { mr, jobs = [] } = of(issue);
+    const { tree } = issue;
+    if (!tree?.claude || mr?.state !== "opened") return [];
+    if (mr.pipeline?.status !== "failed") return [];
+    const key = failedKeyOf(mr);
+    if (sentOf(tree.dir).has(key)) return [];
+    return [
+      {
+        dir: tree.dir,
+        key,
+        id: tree.claude.id,
+        line: pipelineLineOf(mr, jobs, develop),
+      },
+    ];
+  });
+/**
+ * key → `{ status, why }` of a failed pipeline whose line didn't get in:
+ * herdr's state of its agent at that try, and why, for its row.
+ */
+const pipelineTries = new Map();
+/** Why the line of a failed pipeline didn't get in yet, for its row; null when it wasn't tried. */
+export const pipelineTryOf = key => pipelineTries.get(key)?.why ?? null;
+/**
+ * Tells each agent whose MR's pipeline failed, once per pipeline, without a
+ * click. A blocked agent takes no line: it is tried again once herdr's state
+ * of the agent changed (`agents`: agentsOf()), a busy one queues it. Only the
+ * live overview that delivers calls it (render-orchestration.mjs).
+ */
+export const tellFailedPipelines = (issues, of, agents, develop = null) => {
+  const due = failedPipelinesOf(issues, of, sentOf, develop);
+  const keys = new Set(due.map(({ key }) => key));
+  for (const key of pipelineTries.keys())
+    if (!keys.has(key)) pipelineTries.delete(key);
+  for (const { dir, key, line, id } of due) {
+    const status = agents.get(id)?.status ?? null;
+    const tried = pipelineTries.get(key);
+    if (tried && tried.status === status) continue;
+    if (sendOnce(dir, key, line)) {
+      pipelineTries.delete(key);
+      continue;
+    }
+    pipelineTries.set(key, {
+      status,
+      why:
+        status === "blocked"
+          ? "its agent is at a question, the line follows once it answers"
+          : status
+            ? "herdr didn't take the line: click to try again"
+            : "its agent isn't running: the line follows once it is",
+    });
+  }
+};
+
 // ---------------------------------------------------------------------------
 // The actions
 // ---------------------------------------------------------------------------
@@ -298,14 +394,15 @@ export const sendOnce = (dir, key, line) => {
  * The automatic actions of an orchestration's issues, as the overview lists
  * them: `{ key, kind, text, at, issue, go }`, `key` the same for as long as
  * the cause lasts. `of(issue)`: its part of GitLab (`{ mr, jobs, issue }`);
- * `agents`: agentsOf().
+ * `agents`: agentsOf(); `develop`: develop's last finished pipeline.
  * - `merge`: the MR is ready and its pipeline passed, unless the agent posted
  *   one or a requested change still blocks it (change.mjs); a draft of
  *   `readyDrafts` too (issue numbers: next in the merge order, green, every
  *   Work box ticked), whose agent could not mark it ready: its merge does;
  * - `push`: its worktree holds commits origin doesn't have for long;
- * - `pipeline`: the pipeline of the open MR failed; the click tells the agent
- *   which job, with its url;
+ * - `pipeline`: the pipeline of the open MR failed and its line didn't get
+ *   in to the agent yet (tellFailedPipelines sends it by itself), with why;
+ *   the click tries again, else opens the job;
  * - `clean up`: the MR is merged; the worktree to remove (two clicks) when
  *   the automatic removal failed, the issue's open boxes for the agent to tick;
  * a row whose click sent its line to the agent is gone (sendOnce);
@@ -316,7 +413,7 @@ export const autoActionsOf = (
   issues,
   of,
   agents,
-  { readyDrafts = new Set() } = {},
+  { readyDrafts = new Set(), develop = null } = {},
 ) =>
   issues.flatMap(issue => {
     const { mr, jobs = [], issue: found } = of(issue);
@@ -355,22 +452,23 @@ export const autoActionsOf = (
         () => show(mr.url, tree?.dir),
         { canMarkReady: isReadyDraft },
       );
-    const failed = `pipeline:!${mr?.iid}:${mr?.pipeline?.id ?? pipelineAt}`;
+    const failed = mr && failedKeyOf(mr);
     if (mr?.state === "opened" && status === "failed" && !sent.has(failed)) {
       const job = jobs.find(candidate => candidate.status === "failed");
       const what = job ? `job ${job.name} failed` : "failed";
+      // The live overview sent it by itself (tellFailedPipelines): the row
+      // stays only while it didn't get in, and says why.
+      const why = !tree?.claude
+        ? "no agent to tell"
+        : (pipelineTryOf(failed) ?? "click to tell its agent");
       add(
         "pipeline",
-        `!${mr.iid} ${what}${agent ? ": click to tell its agent" : ""}`,
+        `!${mr.iid} ${what}: ${why}`,
         pipelineAt,
         // An agent blocked at a question takes no line: the job then opens.
         () =>
-          (agent &&
-            sendOnce(
-              tree.dir,
-              failed,
-              `The pipeline of MR !${mr.iid} failed: ${job ? `job ${job.name}, ${job.url}` : mr.pipeline.web_url}`,
-            )) ||
+          (tree?.claude &&
+            sendOnce(tree.dir, failed, pipelineLineOf(mr, jobs, develop))) ||
           show(job?.url ?? mr.url, tree?.dir),
       );
     }

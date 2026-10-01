@@ -100,6 +100,23 @@ export const deployOf = async sha => {
   return deploy;
 };
 /**
+ * develop's last finished pipeline, `{ id, status, url, jobs }`, its jobs
+ * only when it failed: a job that fails there too is not an MR's doing
+ * (auto-actions.mjs `pipelineLineOf`). Null without one or when GitLab fails.
+ */
+const developPipelineOf = async () => {
+  const [found] = await glab(
+    "projects/:fullpath/pipelines?ref=develop&scope=finished&per_page=1",
+  );
+  if (!found) return null;
+  return {
+    id: found.id,
+    status: found.status,
+    url: found.web_url,
+    jobs: found.status === "failed" ? await jobsOf(found.id) : [],
+  };
+};
+/**
  * The branches of an orchestration: the ones its record lists (pnpm
  * wt:orchestrate), started or skipped, and those of worktrees started for it
  * by hand (`wt:new --origin`).
@@ -142,13 +159,20 @@ const keepChangelog = (name, found) => {
 };
 /**
  * Of every branch of an orchestration: its merge request (merged ones too)
- * with its pipeline, and its issue. Delivers the lines of the waits that
- * ended without their command, and keeps its changelog up to date.
+ * with its pipeline, and its issue; develop's last finished pipeline.
+ * Delivers the lines of the waits that ended without their command, and
+ * keeps its changelog up to date.
  */
 export const readRemoteOfOrchestration = async name => {
-  const found = await Promise.all(
-    branchesOf(name).map(async branch => [branch, await readRemoteOf(branch)]),
-  );
+  const [found, develop] = await Promise.all([
+    Promise.all(
+      branchesOf(name).map(async branch => [
+        branch,
+        await readRemoteOf(branch),
+      ]),
+    ),
+    developPipelineOf().catch(() => null),
+  ]);
   keepChangelog(name, found);
   // With GitLab read anyway: the waits whose command is gone (waits.mjs).
   await deliverWaits(
@@ -173,7 +197,7 @@ export const readRemoteOfOrchestration = async name => {
       ]),
     ),
   );
-  return { of: new Map(found), awaited, at: new Date() };
+  return { of: new Map(found), awaited, develop, at: new Date() };
 };
 /**
  * The issues of an orchestration, each with its worktree while that is there
