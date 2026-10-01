@@ -156,6 +156,46 @@ pub fn strip(text: &str) -> String {
         .collect()
 }
 
+/// `text` cut after `columns` visible columns, no `…`: every colour and link
+/// it opens is closed as in the whole text (its escapes are all kept).
+pub fn cut(text: &str, columns: usize) -> String {
+    let mut left = columns;
+    let mut out = String::new();
+    for piece in pieces(text) {
+        match piece {
+            Piece::Escape(escape) => out.push_str(escape),
+            Piece::Text(text) => {
+                for character in text.chars() {
+                    let width = char_width(character);
+                    if width > left {
+                        left = 0;
+                        break;
+                    }
+                    left -= width;
+                    out.push(character);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `text` without its ` · ` parts from the first that doesn't fit `width`
+/// whole (tty.mjs `fitParts`): a heading keeps its counts and drops what
+/// follows them. None when even its first part is too wide.
+pub fn fit_parts(text: &str, width: usize) -> Option<String> {
+    if visible(text) <= width {
+        return Some(text.to_string());
+    }
+    let plain = strip(text);
+    let end = plain
+        .match_indices(" · ")
+        .map(|(at, _)| visible(&plain[..at]))
+        .filter(|columns| *columns > 0 && *columns <= width)
+        .last()?;
+    Some(cut(text, end))
+}
+
 /// Columns a character takes on screen.
 fn char_width(character: char) -> usize {
     if character.is_ascii() {
@@ -318,6 +358,19 @@ pub fn table_rows(rows: &[Vec<String>], width: usize) -> Vec<Vec<String>> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn a_heading_drops_the_parts_that_do_not_fit() {
+        let title = "WORKTREES 1 at work · 41 removed · 9.3 GB free (shared stack below 1.5 GB)";
+        assert_eq!(fit_parts(title, 200).as_deref(), Some(title));
+        assert_eq!(
+            fit_parts(title, 40).as_deref(),
+            Some("WORKTREES 1 at work · 41 removed")
+        );
+        assert_eq!(fit_parts(title, 20).as_deref(), Some("WORKTREES 1 at work"));
+        assert_eq!(fit_parts(title, 10), None);
+        assert_eq!(cut("ab\x1b[2mcd\x1b[22m", 3), "ab\x1b[2mc\x1b[22m");
+    }
 
     /// `run` with colour on, off again after it.
     pub fn coloured<T>(run: impl FnOnce() -> T) -> T {

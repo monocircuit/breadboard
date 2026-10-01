@@ -7,6 +7,7 @@
 use super::local::Tree;
 use super::remote::{Job, Mr};
 use crate::cli::read::issues::Box as IssueBox;
+use crate::cli::read::overview::agents::Agents;
 use crate::cli::read::overview::paint::{button, dim, yellow};
 use std::collections::{BTreeSet, HashSet};
 
@@ -790,7 +791,7 @@ pub fn blockers_text(reasons: &[Reason]) -> String {
 /// (resolve.mjs `conflictStateOf`, without the clicks of a live view): GitLab
 /// still checking, none, or the button that has its agent resolve them,
 /// grey with why when a click couldn't reach it.
-pub fn conflict_text(mr: &Mr, tree: Option<&Tree>, behind: u64) -> String {
+pub fn conflict_text(mr: &Mr, tree: Option<&Tree>, behind: u64, agents: &Agents) -> String {
     if !is_conflict_settled(mr, tree) {
         return dim("checking for conflicts…");
     }
@@ -799,18 +800,41 @@ pub fn conflict_text(mr: &Mr, tree: Option<&Tree>, behind: u64) -> String {
     }
     let label = "resolve merge conflicts".replace(' ', "\u{a0}");
     let grey = |why: &str| format!("{} {}", button(&label, "gray"), dim(why));
-    let Some(tree) = tree else {
-        return grey("no worktree, so no agent: merge develop in yourself");
-    };
-    if tree.unpushed > 0 {
+    if let Some(tree) = tree
+        && tree.unpushed > 0
+    {
         return grey(&format!(
             "conflicts as of the pushed commits · {} not pushed: its agent pushes first",
             tree.unpushed
         ));
     }
-    // The printed view knows no agent of a worktree yet: a click can't reach one.
-    let _ = behind;
-    grey("no agent in its worktree")
+    if let Some(why) = no_agent_of(tree, agents) {
+        return grey(why);
+    }
+    let behind = if behind > 0 {
+        format!(" {}", yellow(&format!("{behind} behind")))
+    } else {
+        String::new()
+    };
+    format!("{}{behind}", button(&label, "yellow"))
+}
+
+/// Why a click can't reach the agent of `tree`, None when it can (resolve.mjs `noAgentOf`).
+fn no_agent_of(tree: Option<&Tree>, agents: &Agents) -> Option<&'static str> {
+    let Some(tree) = tree else {
+        return Some("no worktree, so no agent: merge develop in yourself");
+    };
+    let Some(claude) = &tree.claude else {
+        return Some("no agent in its worktree");
+    };
+    if agents.is_empty() {
+        return None;
+    }
+    match agents.get(&claude.id) {
+        None => Some("its agent isn't running"),
+        Some(agent) if agent.status == "blocked" => Some("its agent is at a question: answer it first"),
+        Some(_) => None,
+    }
 }
 
 #[cfg(test)]

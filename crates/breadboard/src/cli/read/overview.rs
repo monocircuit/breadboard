@@ -8,6 +8,7 @@
 //! open and merged MRs in two GitLab calls; the live view (`tui`) draws the
 //! full sections and will print this frame itself once it can.
 
+mod agents;
 mod clock;
 mod everything;
 mod frame;
@@ -41,7 +42,25 @@ pub fn run(args: &[String]) -> Option<ExitCode> {
     if !is_once && !is_help {
         return None;
     }
-    Some(check(args, &TAKES).unwrap_or_else(|| print_once(args)))
+    Some(
+        check(args, &TAKES)
+            .or_else(|| exclusive(args))
+            .unwrap_or_else(|| print_once(args)),
+    )
+}
+
+/// One view at a time: `--orchestration` and `--worktree` refused together.
+fn exclusive(args: &[String]) -> Option<ExitCode> {
+    let has = |flag: &str| {
+        args.iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    };
+    (has("--orchestration") && has("--worktree")).then(|| {
+        fail(&format!(
+            "--orchestration and --worktree exclude each other: one view at a time\n{}",
+            TAKES.usage
+        ))
+    })
 }
 
 /// Which view: `--orchestration <name>`, `--worktree <dir>`, or everything.
@@ -94,7 +113,11 @@ fn print_once(args: &[String]) -> ExitCode {
     let mut frame = Frame::new(columns());
     match view_of(args, &cwd) {
         View::Orchestration(name) => orchestration::orchestration(&mut frame, &main, &name),
-        View::Worktree(dir) => worktree::worktree(&mut frame, &main, &dir),
+        View::Worktree(dir) => {
+            if let Err(why) = worktree::worktree(&mut frame, &main, &dir) {
+                return fail(&why);
+            }
+        }
         View::Everything => everything::everything(&mut frame, &main, &here),
     }
     print!("{}", frame.text());

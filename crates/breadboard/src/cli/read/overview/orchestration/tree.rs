@@ -9,17 +9,19 @@ use super::View;
 use super::local::{Check, Item, Tree};
 use super::merge::{RUNNING, checks_of, is_change_open};
 use super::remote::Mr;
+use super::workers::{Announced, Workers, agent_name_of, next_text, queued_text, status_of};
+use crate::cli::read::overview::agents::{Claude, question_of, tokens};
 use crate::cli::read::overview::clock::node_time;
 use crate::cli::read::overview::paint::{bold, cyan, dim, green, link, pad, red, visible, wrap, yellow};
 use crate::cli::read::overview::theme::{paint_tone, pink};
 use breadboard_core::record::{ORCHESTRATOR, Worker};
-use breadboard_core::time::parse_iso;
+use breadboard_core::time::{ago, parse_iso};
 use std::collections::HashSet;
 
 /// Past this many, "done and removed" is folded into its one line.
 const FOLD_OVER: usize = 3;
 /// What a worktree's own stack and an agent take: below it a fresh agent gets the shared stack (memory.mjs).
-const THRESHOLD: f64 = 1.5 * 1024.0 * 1024.0 * 1024.0;
+pub const THRESHOLD: f64 = 1.5 * 1024.0 * 1024.0 * 1024.0;
 /// How long unpushed commits may sit before someone is needed (change.mjs).
 const UNPUSHED_MS: i64 = 10 * 60_000;
 
@@ -54,11 +56,30 @@ pub fn waits_text(mrs: &[i64], merged: &HashSet<i64>) -> String {
     format!("waits for {}{done}", open.join(", "))
 }
 
-/// What an agent waits for, first match wins (agent-state.mjs `agentStateOf`),
-/// for a worktree whose agent the printed view doesn't know (no herdr state).
-pub fn agent_state_of(tree: &Tree, mr: Option<&Mr>, merged: &HashSet<i64>, checks: &[String]) -> State {
-    let is_open = mr.is_some_and(Mr::is_open);
+/// What the agent of a worktree waits for, first match wins
+/// (agent-state.mjs `agentStateOf`): `status` herdr's state of it, `handover`
+/// the next issue announced for it.
+pub fn agent_state_of(
+    tree: &Tree,
+    mr: Option<&Mr>,
+    merged: &HashSet<i64>,
+    checks: &[String],
+    status: Option<&str>,
+    handover: Option<&Announced>,
+) -> State {
+    if status == Some("working") {
+        return state("working", "at work".into(), Some("work"));
+    }
+    let asks = tree
+        .claude
+        .as_ref()
+        .and_then(|claude| claude.answer.as_deref())
+        .and_then(question_of);
+    if status == Some("blocked") || asks.is_some() {
+        return state("asks", "asks you".into(), Some("you"));
+    }
     let status = mr.and_then(Mr::status);
+    let is_open = mr.is_some_and(Mr::is_open);
     let sha = mr
         .and_then(|mr| mr.pipeline.as_ref())
         .and_then(|pipeline| pipeline.sha.as_ref());
@@ -93,6 +114,9 @@ pub fn agent_state_of(tree: &Tree, mr: Option<&Mr>, merged: &HashSet<i64>, check
     if let Some(mrs) = &tree.wait {
         return state("waitsForMr", waits_text(mrs, merged), Some("gitlab"));
     }
+    if let Some(handover) = handover {
+        return state("next", next_text(handover), Some("gitlab"));
+    }
     if is_change_open(Some(tree), mr) {
         return state("change", "change requested".into(), Some("you"));
     }
@@ -107,17 +131,48 @@ pub fn agent_state_of(tree: &Tree, mr: Option<&Mr>, merged: &HashSet<i64>, check
     state("free", "free".into(), Some("free"))
 }
 
-/// Where a worktree stands in its life (tree.mjs `lifecycleOf`).
-fn lifecycle_of(view: &View, item: &Item, mr: Option<&Mr>, merged: &HashSet<i64>) -> State {
+/// The handover announced for the agent of `tree`.
+fn handover_of<'a>(view: &View, workers: &'a Workers, tree: &Tree) -> Option<&'a Announced> {
+    workers
+        .announced
+        .iter()
+        .find(|handover| handover.tree.is_some_and(|at| view.trees[at].dir == tree.dir))
+}
+
+/// herdr's state of the agent of a worktree.
+fn tree_status<'a>(view: &'a View, tree: &Tree) -> Option<&'a str> {
+    tree.claude.as_ref().and_then(|claude| status_of(view, &claude.id))
+}
+
+/// Where a worktree stands in its life (tree.mjs `lifecycleOf`): merged
+/// first, what is left then is the clean-up; else what its agent waits for.
+fn lifecycle_of(view: &View, workers: &Workers, at: usize, mr: Option<&Mr>, merged: &HashSet<i64>) -> State {
+    let item = &view.items[at];
     let Some(tree) = item.tree.map(|at| &view.trees[at]) else {
         return if item.entry.is_queued {
-            state("queued", cyan("queued: waits for an agent"), None)
+            state("queued", cyan(&queued_text(view, workers, at)), None)
         } else if let Some(why) = &item.entry.why {
             state("skipped", yellow(why), None)
         } else {
             state("removed", dim("removed"), None)
         };
     };
+    let status = tree_status(view, tree);
+    if tree.claude.is_none()
+        && let Some(setup) = view
+            .setups
+            .iter()
+            .find(|setup| setup.dir.as_deref() == Some(tree.dir.as_path()))
+    {
+        return state(
+            "setup",
+            cyan(&format!(
+                "being set up for {} (wt:new) …, leave it",
+                setup.to.as_deref().unwrap_or("a fresh agent")
+            )),
+            None,
+        );
+    }
     if mr.is_some_and(Mr::is_merged) {
         let mut kept = Vec::new();
         if tree.changed > 0 {
@@ -130,12 +185,23 @@ fn lifecycle_of(view: &View, item: &Item, mr: Option<&Mr>, merged: &HashSet<i64>
         if !kept.is_empty() {
             return state("kept", yellow(&format!("kept: {}", kept.join(", "))), None);
         }
-        if tree
+        let held = if !tree.left.is_empty() {
+            Some(format!("{} still stands in it", tree.left.join(", ")))
+        } else if status == Some("working") {
+            Some("its agent is working".into())
+        } else if status == Some("blocked") {
+            Some("its agent asks you".into())
+        } else if tree
             .actions
             .iter()
             .any(|action| action.on.as_deref() == Some("test") && action.answer.is_none())
         {
-            return state("held", yellow("waits: its try on the test instance is open"), None);
+            Some("its try on the test instance is open".into())
+        } else {
+            workers.holds.get(&tree.dir).cloned()
+        };
+        if let Some(why) = held {
+            return state("held", yellow(&format!("waits: {why}")), None);
         }
         return state("removable", cyan("merged: will be removed"), None);
     }
@@ -144,15 +210,67 @@ fn lifecycle_of(view: &View, item: &Item, mr: Option<&Mr>, merged: &HashSet<i64>
         .and_then(|found| found.issue.as_ref())
         .map(|issue| issue.boxes.as_slice());
     let checks = checks_of(boxes.unwrap_or_default(), Some(tree));
-    let agent = agent_state_of(tree, mr, merged, &checks);
-    // No agent the view knows of and nothing to do: nobody stands in it.
-    if agent.key == "free" {
+    let handover = handover_of(view, workers, tree);
+    let agent = agent_state_of(tree, mr, merged, &checks, status, handover);
+    // No agent and nothing to do: nobody stands in it.
+    if agent.key == "free" && tree.claude.is_none() && status.is_none() {
         return state("none", dim("no agent"), None);
     }
     State {
         text: paint_tone(view.theme, agent.tone, &agent.text),
         ..agent
     }
+}
+
+/// An agent: how full its context is and when it last answered (tree.mjs `agentFact`).
+fn agent_fact(claude: &Claude, now: i64) -> String {
+    let Some(at) = claude.at else {
+        return dim("no answer yet");
+    };
+    let share = claude.share();
+    let percent = format!("{}%", (share * 100.0).round() as i64);
+    let tone = if share >= 0.8 {
+        red(&percent)
+    } else if share >= 0.5 {
+        yellow(&percent)
+    } else {
+        green(&percent)
+    };
+    format!(
+        "{tone} {}",
+        dim(&format!("of {} · {}", tokens(claude.window), ago(at, now)))
+    )
+}
+
+/// How long the name before a handover is shown (workers.mjs `WAS_FOR`).
+const WAS_FOR: i64 = 24 * 60 * 60 * 1000;
+
+/// The agent of a worktree by its name when that isn't the worktree's (a
+/// handover, #251), its name before for a day (tree.mjs `agentNameFact`).
+fn agent_name_fact(view: &View, tree: &Tree) -> String {
+    let Some(worker) = tree
+        .claude
+        .as_ref()
+        .and_then(|claude| view.record.workers.iter().find(|worker| worker.id == claude.id))
+    else {
+        return String::new();
+    };
+    let was = worker.was.as_ref().filter(|_| {
+        worker
+            .renamed
+            .as_deref()
+            .and_then(parse_iso)
+            .is_some_and(|renamed| view.now - renamed < WAS_FOR)
+    });
+    let name = agent_name_of(view, tree);
+    [
+        (worker.name.is_some() && name != tree.name).then(|| format!("agent {}", bold(&name))),
+        was.map(|was| dim(&format!("was {was}"))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// `✓ tested 1a2b3c4d` / `untested: 2 commits` / … (check.mjs `checkFact`).
@@ -337,7 +455,14 @@ struct Node {
 /// The facts line of a node (tree.mjs `factsOf`): issue, MR and pipeline,
 /// work, whether its HEAD is tested, which issue of its agent this is, a
 /// wait its state doesn't name, a requested change, what isn't pushed.
-fn facts_of(view: &View, item: &Item, mr: Option<&Mr>, state: &State, merged: &HashSet<i64>) -> String {
+fn facts_of(
+    view: &View,
+    workers: &Workers,
+    item: &Item,
+    mr: Option<&Mr>,
+    state: &State,
+    merged: &HashSet<i64>,
+) -> String {
     let tree = item.tree.map(|at| &view.trees[at]);
     let found = view.found(item).and_then(|found| found.issue.as_ref());
     let mut facts: Vec<String> = Vec::new();
@@ -400,9 +525,13 @@ fn facts_of(view: &View, item: &Item, mr: Option<&Mr>, state: &State, merged: &H
         .collect();
         facts.push(work.join(" · "));
         facts.push(check_fact(&tree.check));
+        facts.push(agent_name_fact(view, tree));
     }
     facts.push(dim(&history_text(&view.record.workers, item.number())));
     if let Some(tree) = tree {
+        if let Some(claude) = &tree.claude {
+            facts.push(agent_fact(claude, view.now));
+        }
         if let Some(mrs) = &tree.wait
             && state.key != "waitsForMr"
         {
@@ -426,6 +555,11 @@ fn facts_of(view: &View, item: &Item, mr: Option<&Mr>, state: &State, merged: &H
             );
             let is_long = tree.unpushed_at.is_some_and(|at| view.now - at >= UNPUSHED_MS);
             facts.push(if is_long { red(&text) } else { yellow(&text) });
+        }
+        if let Some(handover) = handover_of(view, workers, tree)
+            && state.key != "next"
+        {
+            facts.push(cyan(&next_text(handover)));
         }
     }
     facts.retain(|fact| visible(fact) > 0);
@@ -491,12 +625,12 @@ fn node_lines(node: &Node, count: usize, branch: &str, stem: &str, width: usize)
 }
 
 /// `9.3 GB`.
-fn gb(bytes: f64) -> String {
+pub fn gb(bytes: f64) -> String {
     format!("{:.1} GB", bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
 /// The memory free for a new process: Linux's `MemAvailable`.
-fn free_memory() -> Option<f64> {
+pub fn free_memory() -> Option<f64> {
     let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = meminfo.lines().find(|line| line.starts_with("MemAvailable:"))?;
     let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
@@ -504,7 +638,7 @@ fn free_memory() -> Option<f64> {
 }
 
 /// WORKTREES: the title and the lines inside its box, `width` wide.
-pub fn worktrees(view: &View, width: usize) -> (String, Vec<String>) {
+pub fn worktrees(view: &View, workers: &Workers, width: usize) -> (String, Vec<String>) {
     let merged = view.merged_iids();
     let work = view
         .record
@@ -519,7 +653,7 @@ pub fn worktrees(view: &View, width: usize) -> (String, Vec<String>) {
         .enumerate()
         .map(|(at, item)| {
             let mr = view.mr(item);
-            let lifecycle = lifecycle_of(view, item, mr, &merged);
+            let lifecycle = lifecycle_of(view, workers, at, mr, &merged);
             let state = if lifecycle.key == "removed" && item.entry.removed_at.is_some() {
                 let was_merged = item.entry.merged_at.is_some() || mr.is_some_and(Mr::is_merged);
                 let when = item
@@ -544,7 +678,7 @@ pub fn worktrees(view: &View, width: usize) -> (String, Vec<String>) {
                 .unwrap_or_default();
             Node {
                 item: at,
-                facts: facts_of(view, item, mr, &state, &merged),
+                facts: facts_of(view, workers, item, mr, &state, &merged),
                 state,
                 number: numbers[at],
                 name: pink(

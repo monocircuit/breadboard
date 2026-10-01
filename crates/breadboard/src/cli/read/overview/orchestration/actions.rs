@@ -7,7 +7,11 @@
 
 use super::View;
 use super::merge::{checks_of, is_change_open, merge_text};
-use crate::cli::read::overview::paint::{bold, button, chip, dim, green, link, red, visible, wrap, yellow};
+use super::try_state::{TryMr, TryState, try_state_of};
+use super::workers::Workers;
+use crate::cli::read::overview::agents::{first_line, pending_of_file, question_of};
+use crate::cli::read::overview::paint::{bold, button, chip, dim, green, link, red, strip, visible, wrap, yellow};
+use crate::cli::read::overview::theme::paint_tone;
 use breadboard_core::actions::{Action, answers_of, options_of};
 use breadboard_core::json;
 use breadboard_core::record::ORCHESTRATOR;
@@ -42,6 +46,15 @@ pub struct Item {
     pub item: Option<usize>,
     /// Posted by an agent or the orchestrator (`wt:action merge`): a draft is marked ready first.
     pub can_mark_ready: bool,
+    /// A try's state: whether it can be tried now (try-state.mjs).
+    pub try_state: Option<TryState>,
+}
+
+impl Item {
+    /// A try that can't be tried yet: grey, no answer, NEXT skips it.
+    pub fn is_waiting(&self) -> bool {
+        self.try_state.as_ref().is_some_and(|state| !state.is_ready)
+    }
 }
 
 /// ACTIONS and UP NEXT.
@@ -83,7 +96,7 @@ fn sent_of(dir: &std::path::Path) -> Vec<String> {
 }
 
 /// Every open action of the orchestration, split into ACTIONS and UP NEXT.
-pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed {
+pub fn actions_of(view: &View, workers: &Workers, stale: &[String], has_next_merge: bool) -> Listed {
     let merge_order = view.open_order();
     let rank_of = |at: usize| {
         view.items[at]
@@ -109,6 +122,7 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
             rank: -1,
             item: issue,
             can_mark_ready: true,
+            try_state: None,
         });
     }
     // The agents' own.
@@ -118,6 +132,21 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
             if action.kind == "merge" && !is_merge_offered(view, at) {
                 continue;
             }
+            let try_state = action.is_try().then(|| {
+                let mr = view.mr(entry).map(|mr| TryMr {
+                    iid: mr.iid,
+                    state: &mr.state,
+                    deploy: mr.deploy.as_ref(),
+                });
+                try_state_of(
+                    action,
+                    tree.unpushed,
+                    mr,
+                    view.test_origin.as_deref(),
+                    view.remote.is_some(),
+                    view.now,
+                )
+            });
             items.push(Item {
                 action: action.clone(),
                 who: entry.feature.clone(),
@@ -125,6 +154,7 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
                 rank: rank_of(at),
                 item: Some(at),
                 can_mark_ready: true,
+                try_state,
             });
         }
     }
@@ -138,54 +168,72 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
         .filter(|placed| placed.hold_up == ["draft"])
         .map(|placed| placed.number)
         .collect();
+    let auto_item = |kind: &str, text: String, at: Option<i64>, item: usize, can_mark_ready: bool| Item {
+        action: auto(kind, text, at),
+        who: view.items[item].feature.clone(),
+        is_auto: true,
+        rank: rank_of(item),
+        item: Some(item),
+        can_mark_ready,
+        try_state: None,
+    };
     for (at, entry) in view.items.iter().enumerate() {
-        let Some(mr) = view.mr(entry) else { continue };
+        let mr = view.mr(entry);
         let tree = view.tree(entry);
         let found = view.found(entry);
         let boxes = found
             .and_then(|found| found.issue.as_ref())
-            .map(|issue| issue.boxes.as_slice());
-        let status = mr.status();
-        let is_ready_draft = mr.is_draft && entry.number().is_some_and(|number| ready_drafts.contains(&number));
-        if mr.is_open()
-            && (!mr.is_draft || is_ready_draft)
-            && status == Some("success")
-            && (mr.merge_status.as_deref() == Some("mergeable") || is_ready_draft)
-            && !tree.is_some_and(|tree| tree.actions.iter().any(|action| action.kind == "merge"))
-            && !is_change_open(tree, Some(mr))
-            && checks_of(boxes.unwrap_or_default(), tree).is_empty()
-        {
-            let text = if is_ready_draft {
-                "pipeline passed, every box and try done, still a draft"
-            } else {
-                "ready, pipeline passed"
-            };
-            items.push(Item {
-                action: auto("merge", text.into(), None),
-                who: entry.feature.clone(),
-                is_auto: true,
-                rank: rank_of(at),
-                item: Some(at),
-                can_mark_ready: is_ready_draft,
-            });
-        }
+            .map(|issue| issue.boxes.as_slice())
+            .unwrap_or_default();
         let sent = tree.map(|tree| sent_of(&tree.dir)).unwrap_or_default();
-        let failed_key = format!(
-            "pipeline:!{}:{}",
-            mr.iid,
-            mr.pipeline.as_ref().map_or(0, |pipeline| pipeline.id)
-        );
-        if mr.is_open() && status == Some("failed") && !sent.contains(&failed_key) {
-            let job = found.and_then(|found| found.jobs.iter().find(|job| job.status == "failed"));
-            let what = job.map_or("failed".to_string(), |job| format!("job {} failed", job.name));
-            items.push(Item {
-                action: auto("pipeline", format!("!{} {what}: no agent to tell", mr.iid), None),
-                who: entry.feature.clone(),
-                is_auto: true,
-                rank: rank_of(at),
-                item: Some(at),
-                can_mark_ready: false,
-            });
+        let agent = tree
+            .and_then(|tree| tree.claude.as_ref())
+            .and_then(|claude| view.agents.get(&claude.id));
+        if let Some(mr) = mr {
+            let status = mr.status();
+            let pipeline_at = mr
+                .pipeline
+                .as_ref()
+                .and_then(|pipeline| pipeline.finished_at.as_deref())
+                .and_then(parse_iso);
+            let is_ready_draft = mr.is_draft && entry.number().is_some_and(|number| ready_drafts.contains(&number));
+            if mr.is_open()
+                && (!mr.is_draft || is_ready_draft)
+                && status == Some("success")
+                && (mr.merge_status.as_deref() == Some("mergeable") || is_ready_draft)
+                && !tree.is_some_and(|tree| tree.actions.iter().any(|action| action.kind == "merge"))
+                && !is_change_open(tree, Some(mr))
+                && checks_of(boxes, tree).is_empty()
+            {
+                let text = if is_ready_draft {
+                    "pipeline passed, every box and try done, still a draft"
+                } else {
+                    "ready, pipeline passed"
+                };
+                items.push(auto_item("merge", text.into(), pipeline_at, at, is_ready_draft));
+            }
+            let failed_key = format!(
+                "pipeline:!{}:{}",
+                mr.iid,
+                mr.pipeline.as_ref().map_or(0, |pipeline| pipeline.id)
+            );
+            if mr.is_open() && status == Some("failed") && !sent.contains(&failed_key) {
+                let job = found.and_then(|found| found.jobs.iter().find(|job| job.status == "failed"));
+                let what = job.map_or("failed".to_string(), |job| format!("job {} failed", job.name));
+                // The live overview tells the agent by itself; a print only names who would be told.
+                let why = if tree.is_some_and(|tree| tree.claude.is_some()) {
+                    "click to tell its agent"
+                } else {
+                    "no agent to tell"
+                };
+                items.push(auto_item(
+                    "pipeline",
+                    format!("!{} {what}: {why}", mr.iid),
+                    pipeline_at,
+                    at,
+                    false,
+                ));
+            }
         }
         if let Some(tree) = tree
             && tree.unpushed > 0
@@ -208,19 +256,76 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
                     " (no remote branch)"
                 }
             );
-            items.push(Item {
-                action: auto(
-                    "push",
-                    format!("{} for {long}: click to tell its agent", red(&fact)),
-                    Some(since),
-                ),
-                who: entry.feature.clone(),
-                is_auto: true,
-                rank: rank_of(at),
-                item: Some(at),
-                can_mark_ready: false,
-            });
+            let key = format!(
+                "unpushed:{}:{}:{}",
+                entry.branch().unwrap_or_default(),
+                tree.unpushed,
+                tree.pushed.as_deref().unwrap_or("none")
+            );
+            let then = if sent.contains(&key) {
+                "its agent was told"
+            } else {
+                "click to tell its agent"
+            };
+            items.push(auto_item(
+                "push",
+                format!("{} for {long}: {then}", red(&fact)),
+                Some(since),
+                at,
+                false,
+            ));
         }
+        // Merged: the issue's open boxes for its agent to tick.
+        if let Some(mr) = mr.filter(|mr| mr.is_merged())
+            && agent.is_some()
+            && let Some(issue) = found.and_then(|found| found.issue.as_ref())
+        {
+            let open = boxes.iter().filter(|each| !each.is_ticked).count();
+            if open > 0 && !sent.contains(&format!("boxes:!{}", mr.iid)) {
+                items.push(auto_item(
+                    "clean up",
+                    format!(
+                        "#{} has {open} open boxes: click to have its agent tick the done ones",
+                        issue.iid
+                    ),
+                    mr.merged_at.as_deref().and_then(parse_iso),
+                    at,
+                    false,
+                ));
+            }
+        }
+        // The agent asks something: a question, a permission, or it stopped on a question.
+        if let (Some(agent), Some(claude)) = (agent, tree.and_then(|tree| tree.claude.as_ref())) {
+            let answer = claude.answer.as_deref().unwrap_or_default();
+            let question = match agent.status.as_str() {
+                "blocked" => Some(pending_of_file(&claude.transcript).unwrap_or_else(|| {
+                    let line = first_line(answer);
+                    if line.is_empty() { "needs you".into() } else { line }
+                })),
+                "working" => None,
+                _ => question_of(answer),
+            };
+            if let Some(question) = question {
+                items.push(auto_item("waits", question, claude.at, at, false));
+            }
+        }
+    }
+    // The next issue to an idle agent that knows its code, else a fresh one (workers.mjs).
+    for row in &workers.rows {
+        items.push(Item {
+            action: Action {
+                kind: row.kind.into(),
+                text: row.text.clone(),
+                at: row.at.clone(),
+                ..Action::default()
+            },
+            who: row.who.clone(),
+            is_auto: true,
+            rank: -1,
+            item: row.item,
+            can_mark_ready: false,
+            try_state: None,
+        });
     }
     // The end, once all is merged and no worktree is left.
     if view.remote.is_some()
@@ -239,6 +344,7 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
             rank: i64::MAX,
             item: None,
             can_mark_ready: false,
+            try_state: None,
         });
     }
     // A stale plan: its click would write the computed merge order (wt:plan).
@@ -266,6 +372,7 @@ pub fn actions_of(view: &View, stale: &[String], has_next_merge: bool) -> Listed
             rank: -1,
             item: None,
             can_mark_ready: false,
+            try_state: None,
         });
     }
     order_actions(items)
@@ -405,12 +512,25 @@ fn answer_cell(action: &Action) -> String {
 /// The lines of an action as a block `width` wide (action-block.mjs `actionBlock`).
 pub fn block_of(view: &View, item: &Item, width: usize) -> Vec<String> {
     let action = &item.action;
+    // A try that can't be tried yet is grey but for its state.
+    let is_waiting = item.is_waiting();
+    let tone = |text: String| if is_waiting { dim(&strip(&text)) } else { text };
+    // Its state in herdr's colours: ready as done, waiting as working, failed as blocked.
+    let state = item.try_state.as_ref().map(|state| {
+        let colour = match state.tone {
+            "ready" => "free",
+            "waits" => "work",
+            _ => "you",
+        };
+        paint_tone(view.theme, Some(colour), &state.label)
+    });
     let head: Vec<String> = [
-        kind_chip(&action.kind, item.is_auto),
-        bold(&item.who),
+        tone(kind_chip(&action.kind, item.is_auto)),
+        tone(bold(&item.who)),
         parse_iso(&action.at)
             .map(|at| dim(&ago(at, view.now)))
             .unwrap_or_default(),
+        state.unwrap_or_default(),
     ]
     .into_iter()
     .filter(|part| visible(part) > 0)
@@ -427,9 +547,9 @@ pub fn block_of(view: &View, item: &Item, width: usize) -> Vec<String> {
             lines.extend(wrap(&dim(&why), width));
         }
     } else {
-        lines.extend(wrap(&text, width));
+        lines.extend(wrap(&tone(text), width));
     }
-    if item.is_auto {
+    if item.is_auto || is_waiting {
         return lines;
     }
     if action.answer.is_none() && action.kind == "decide" && !action.options.is_empty() {
@@ -486,6 +606,7 @@ mod tests {
             rank,
             item: None,
             can_mark_ready: false,
+            try_state: None,
         };
         let listed = order_actions(vec![
             item("look", 0),

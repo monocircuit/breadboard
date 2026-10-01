@@ -5,6 +5,7 @@
 //! worktree while that is there, and a worktree the record doesn't list.
 
 use crate::cli::read::list::{offset_of, port_answers};
+use crate::cli::read::overview::agents::{Claude, Running, left_in, read_claude, running_claudes};
 use breadboard_core::actions::{Action, Change, actions_file, actions_of, answered_of, change_in};
 use breadboard_core::git::{self, Worktree, git, issue_of_branch};
 use breadboard_core::json::{self, int_of, ints_of, str_of, strs_of};
@@ -61,6 +62,10 @@ pub struct Tree {
     pub has_env: bool,
     pub offset: i64,
     pub is_up: bool,
+    /// The conversation bound to its space, None without one.
+    pub claude: Option<Claude>,
+    /// The claudes still standing in it after a handover bound them elsewhere (#252).
+    pub left: Vec<String>,
 }
 
 /// The worktrees of `worktrees` (not the main checkout) whose origin is `name`, read side by side.
@@ -70,17 +75,20 @@ pub fn trees_of(main: &Path, worktrees: &[Worktree], name: &str) -> Vec<Tree> {
         .skip(1)
         .filter(|tree| origin_of(&tree.dir).is_some_and(|origin| origin.name == name))
         .collect();
+    let claudes = running_claudes();
+    let claudes = &claudes;
     thread::scope(|scope| {
         let handles: Vec<_> = ours
             .iter()
-            .map(|tree| scope.spawn(move || tree_of(main, tree)))
+            .map(|tree| scope.spawn(move || tree_of(main, tree, claudes)))
             .collect();
         handles.into_iter().filter_map(|handle| handle.join().ok()).collect()
     })
 }
 
-fn tree_of(main: &Path, worktree: &Worktree) -> Tree {
+fn tree_of(main: &Path, worktree: &Worktree, claudes: &[Running]) -> Tree {
     let dir = &worktree.dir;
+    let claude = read_claude(dir);
     let branch = worktree.branch.clone().unwrap_or_else(|| "(detached)".into());
     let file = json::read(&actions_file(dir)).unwrap_or(Value::Null);
     let push = git::push_state(dir, worktree.branch.as_deref());
@@ -113,6 +121,8 @@ fn tree_of(main: &Path, worktree: &Worktree) -> Tree {
             0
         },
         branch,
+        left: left_in(dir, claudes, claude.as_ref().map(|claude| claude.id.as_str())),
+        claude,
         dir: dir.clone(),
     }
 }

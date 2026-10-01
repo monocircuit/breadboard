@@ -4,18 +4,20 @@
 //! PIPELINE with its jobs and a failed one's log, DIFF against develop,
 //! DEVELOP since the branch started, WHERE and STACK.
 
+use super::agents::{Claude, agents_of, first_line, read_claude, tokens};
 use super::clock::{band_time, minute};
 use super::everything::{compose_projects, env_of, mark_of};
 use super::frame::Frame;
 use super::orchestration::{Check, check_fact, check_of};
 use super::paint::{bold, button, cyan, dim, green, link, red, table_rows, yellow};
+use super::theme::{Theme, paint_tone, theme};
 use crate::cli::read::gitlab;
 use crate::cli::read::issues::{Box as IssueBox, boxes_with_headings};
 use crate::cli::read::list::{offset_of, port_answers};
 use breadboard_core::git::{self, Worktree, git, issue_of_branch};
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record::{ORCHESTRATOR, SPACE, origin_of};
-use breadboard_core::time::now_ms;
+use breadboard_core::time::{ago, now_ms};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -628,7 +630,83 @@ fn containers_of(dir: &Path) -> Vec<(String, String, String)> {
         .collect()
 }
 
-pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
+/// How long the context bar is.
+const BAR: usize = 20;
+
+/// A path with the home directory as `~`.
+fn home(path: &Path) -> String {
+    let text = path.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && text.starts_with(&home) => format!("~{}", &text[home.len()..]),
+        _ => text,
+    }
+}
+
+/// The conversation of the space as a line (render-worktree.mjs `claudeLine`):
+/// a bar of its context, then model, its last answer and its id.
+fn claude_line(claude: &Claude, now: i64) -> String {
+    let short: String = claude.id.chars().take(8).collect();
+    let Some(at) = claude.at else {
+        return dim(&format!("{short} · no answer yet"));
+    };
+    let share = claude.share();
+    let tone = |text: &str| {
+        if share >= 0.8 {
+            red(text)
+        } else if share >= 0.5 {
+            yellow(text)
+        } else {
+            green(text)
+        }
+    };
+    let filled = ((share * BAR as f64).round() as usize).min(BAR);
+    let model = claude.model.as_deref().unwrap_or_default();
+    format!(
+        "{}{} {} {} of {}  {}",
+        tone(&"█".repeat(filled)),
+        dim(&"░".repeat(BAR - filled)),
+        tone(&format!("{}%", (share * 100.0).round() as i64)),
+        tokens(claude.used),
+        tokens(claude.window),
+        dim(&format!(
+            "{} · {} · {short}",
+            model.strip_prefix("claude-").unwrap_or(model),
+            ago(at, now)
+        ))
+    )
+}
+
+/// AGENT (actions.mjs `pushAgent`): the conversation bound to the space, what
+/// herdr says it does, its context, how to get it back when herdr or its tab is gone.
+fn agent_box(frame: &mut Frame, theme: &Theme, claude: &Claude, status: Option<&str>, now: i64) {
+    let state = match status {
+        Some("working") => paint_tone(theme, Some("work"), "◐ at work"),
+        Some("blocked") => paint_tone(theme, Some("you"), "● asks you something"),
+        Some("idle") => paint_tone(theme, Some("free"), "waiting for you"),
+        Some("done") => paint_tone(theme, Some("free"), "✓ done, waiting for you"),
+        _ => String::new(),
+    };
+    frame.boxed("AGENT", &format!("{} {state}", bold("AGENT")), |width| {
+        let mut rows = vec![
+            vec![dim("context"), claude_line(claude, now)],
+            vec![
+                dim("resume"),
+                dim(&format!("cd {} && claude --resume {}", home(&claude.cwd), claude.id)),
+            ],
+            vec![dim("stored"), dim(&home(&claude.transcript))],
+        ];
+        if let Some(prompt) = &claude.prompt {
+            rows.push(vec![dim("asked"), first_line(prompt)]);
+        }
+        if let Some(answer) = &claude.answer {
+            rows.push(vec![dim("said"), first_line(answer)]);
+        }
+        table_rows(&rows, width).into_iter().flatten().collect()
+    });
+}
+
+/// The view of the worktree `dir` lies in; Err says why there is none.
+pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) -> Result<(), String> {
     let now = now_ms();
     let worktrees = git::worktrees(main);
     // The worktree the directory lies in, the innermost.
@@ -638,16 +716,10 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
         .max_by_key(|tree| tree.dir.as_os_str().len())
         .cloned();
     let Some(found) = found else {
-        let name = dir
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        frame.push(format!(
-            "{}  {}",
-            bold(&name),
-            red(&format!("is not a worktree of the repo any more ({})", dir.display()))
+        return Err(format!(
+            "{} is not a worktree of the repo: pnpm wt:list shows them",
+            dir.display()
         ));
-        return;
     };
     let tree_dir = found.dir.clone();
     let is_main = worktrees.first().is_some_and(|first| first.dir == tree_dir);
@@ -714,10 +786,7 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
         if let Some(error) = &error {
             let reason = error.strip_prefix("GitLab: ").unwrap_or(error);
             let reason = reason.rfind(" (projects/").map_or(reason, |at| &reason[..at]);
-            lines.push(red(&format!(
-                "GitLab didn't answer {} ({reason}), tried again",
-                minute(now)
-            )));
+            lines.push(red(&format!("GitLab didn't answer {} ({reason})", minute(now))));
         }
         let mut rows: Vec<Vec<String>> = Vec::new();
         if diff.is_none() {
@@ -816,37 +885,43 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
         lines
     });
 
+    if let Some(remote) = &remote
+        && let Some(next) = remote.waiting.first()
+    {
+        let title = format!(
+            "{} {}",
+            bold("WAITING FOR"),
+            dim(&format!(
+                "merge in this order; next: !{}, then this branch goes on",
+                next.iid
+            ))
+        );
+        frame.boxed("WAITING FOR", &title, |width| {
+            let rows: Vec<Vec<String>> = remote
+                .waiting
+                .iter()
+                .enumerate()
+                .map(|(at, mr)| {
+                    vec![
+                        dim(&format!("{}.", at + 1)),
+                        format!(
+                            "{}{}",
+                            link(mr.url.as_deref(), &format!("!{}", mr.iid)),
+                            mr.state_text()
+                        ),
+                        mark_of(mr.pipeline.as_ref()),
+                        mr.title.clone(),
+                    ]
+                })
+                .collect();
+            table_rows(&rows, width).into_iter().flatten().collect()
+        });
+    }
+    if !is_main && let Some(claude) = read_claude(&tree_dir) {
+        let status = agents_of().get(&claude.id).map(|agent| agent.status.clone());
+        agent_box(frame, theme(main), &claude, status.as_deref(), now);
+    }
     if let Some(remote) = &remote {
-        if let Some(next) = remote.waiting.first() {
-            let title = format!(
-                "{} {}",
-                bold("WAITING FOR"),
-                dim(&format!(
-                    "merge in this order; next: !{}, then this branch goes on",
-                    next.iid
-                ))
-            );
-            frame.boxed("WAITING FOR", &title, |width| {
-                let rows: Vec<Vec<String>> = remote
-                    .waiting
-                    .iter()
-                    .enumerate()
-                    .map(|(at, mr)| {
-                        vec![
-                            dim(&format!("{}.", at + 1)),
-                            format!(
-                                "{}{}",
-                                link(mr.url.as_deref(), &format!("!{}", mr.iid)),
-                                mr.state_text()
-                            ),
-                            mark_of(mr.pipeline.as_ref()),
-                            mr.title.clone(),
-                        ]
-                    })
-                    .collect();
-                table_rows(&rows, width).into_iter().flatten().collect()
-            });
-        }
         if let Some(issue) = remote.issue.as_ref().filter(|issue| !issue.boxes.is_empty()) {
             let done = issue.boxes.iter().filter(|found| found.is_ticked).count();
             let total = issue.boxes.len();
@@ -1095,7 +1170,7 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
         frame.boxed("STACK", &bold("STACK"), |_| {
             vec![yellow("no .env.local: no stack, the app can't run here")]
         });
-        return;
+        return Ok(());
     };
     let offset = if is_main { 0 } else { offset_of(&env_file) };
     let is_shared = !is_main && offset == 0;
@@ -1239,6 +1314,7 @@ pub fn worktree(frame: &mut Frame, main: &Path, dir: &Path) {
     frame.push(dim(
         " pnpm stack:up|down|reset · pnpm wt:mr --update · pnpm overview (everything)",
     ));
+    Ok(())
 }
 
 #[cfg(test)]

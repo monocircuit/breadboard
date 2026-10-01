@@ -7,6 +7,7 @@
 //! didn't have. Read only, nothing cached on disk (the cache comes with
 //! core's GitLab client).
 
+use super::try_state::Deploy;
 use crate::cli::read::gitlab;
 use crate::cli::read::issues::{Box as IssueBox, boxes_with_headings};
 use breadboard_core::git::issue_of_branch;
@@ -25,6 +26,8 @@ pub struct Pipeline {
     pub status: String,
     pub url: Option<String>,
     pub sha: Option<String>,
+    /// When it finished, else when it last changed: the age of an action about it.
+    pub finished_at: Option<String>,
 }
 
 impl Pipeline {
@@ -34,6 +37,9 @@ impl Pipeline {
             status: str_of(value, "status")?.to_string(),
             url: str_of(value, "web_url").map(String::from),
             sha: str_of(value, "sha").map(String::from),
+            finished_at: str_of(value, "finished_at")
+                .or_else(|| str_of(value, "updated_at"))
+                .map(String::from),
         })
     }
 }
@@ -56,6 +62,10 @@ pub struct Mr {
     pub url: Option<String>,
     pub source_branch: String,
     pub pipeline: Option<Pipeline>,
+    /// The commit a merged one put on develop.
+    pub merge_sha: Option<String>,
+    /// Merged: the develop pipeline that deploys it, read for a try on the test instance only.
+    pub deploy: Option<Deploy>,
 }
 
 impl Mr {
@@ -79,6 +89,10 @@ impl Mr {
             url: str_of(value, "web_url").map(String::from),
             source_branch: str_of(value, "source_branch").unwrap_or_default().to_string(),
             pipeline: value.get("head_pipeline").and_then(Pipeline::from_value),
+            merge_sha: str_of(value, "merge_commit_sha")
+                .or_else(|| str_of(value, "squash_commit_sha"))
+                .map(String::from),
+            deploy: None,
         })
     }
 
@@ -102,6 +116,7 @@ pub struct Job {
     pub name: String,
     pub status: String,
     pub url: Option<String>,
+    pub finished_at: Option<String>,
 }
 
 /// An issue as the view uses it (read.mjs `issueOf`).
@@ -114,6 +129,8 @@ pub struct Issue {
     pub boxes: Vec<IssueBox>,
     /// The issues it names as prerequisites or is blocked by.
     pub needs: Vec<i64>,
+    /// The files it names: the agent that knows them is suggested for it (fit.mjs `pathsOf`).
+    pub paths: Vec<String>,
 }
 
 /// What GitLab has for one branch.
@@ -150,6 +167,23 @@ static PREREQUISITE: LazyLock<regex::Regex> = LazyLock::new(|| {
     .expect("the prerequisite pattern")
 });
 
+/// A file path an issue names: with a folder or not, with an extension of the repo's files.
+static PATH: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?:[\w@.-]+/)*[\w@-][\w@.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|json|md|css|scss|sql|toml|ya?ml)\b")
+        .expect("the path pattern")
+});
+
+/// The file paths a description names, each once (fit.mjs `pathsOf`).
+pub fn paths_of(text: &str) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for found in PATH.find_iter(text) {
+        if !paths.iter().any(|path| path == found.as_str()) {
+            paths.push(found.as_str().to_string());
+        }
+    }
+    paths
+}
+
 /// The issues a description names as prerequisites, each once.
 pub fn needs_of(text: &str) -> Vec<i64> {
     let mut needs = Vec::new();
@@ -184,6 +218,7 @@ fn issue_of(value: &Value, links: &[Value]) -> Option<Issue> {
         state: str_of(value, "state").unwrap_or_default().to_string(),
         boxes: boxes_with_headings(description),
         needs,
+        paths: paths_of(description),
     })
 }
 
@@ -332,6 +367,7 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
                     name: str_of(job, "name").unwrap_or_default().to_string(),
                     status: str_of(job, "status").unwrap_or_default().to_string(),
                     url: str_of(job, "web_url").map(String::from),
+                    finished_at: str_of(job, "finished_at").map(String::from),
                 })
                 .collect();
             (*id, jobs)
@@ -389,6 +425,14 @@ mod tests {
         );
         assert_eq!(needs_of("needs #5, needs #5"), vec![5]);
         assert_eq!(needs_of("no #4 here"), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn finds_the_files_an_issue_names() {
+        assert_eq!(
+            paths_of("see src/overview/tree.mjs and tree.mjs, README.md, not v1.2 or a.rs"),
+            vec!["src/overview/tree.mjs", "tree.mjs", "README.md"]
+        );
     }
 
     #[test]

@@ -10,7 +10,10 @@ mod local;
 mod merge;
 mod remote;
 mod tree;
+mod try_state;
+mod workers;
 
+use super::agents::{Agents, agents_of, context_share_of};
 use super::clock::{band_time, minute};
 use super::frame::Frame;
 use super::paint::{bold, button, dim, green, link, pad, red, table_rows, visible, wrap};
@@ -42,6 +45,14 @@ pub struct View<'a> {
     pub order: Order,
     /// The issues with an MR, by number: the last of a number wins (#221).
     pub with_mr: HashMap<i64, usize>,
+    /// What herdr says each agent does, by its conversation's id.
+    pub agents: Agents,
+    /// The starts running now (#272).
+    pub setups: Vec<workers::Setup>,
+    /// How much of its context each free agent (#289) used, by its id.
+    pub free_shares: HashMap<String, f64>,
+    /// The test instance a try `--on test` opens on.
+    pub test_origin: Option<String>,
 }
 
 impl View<'_> {
@@ -110,8 +121,10 @@ pub fn orchestration(frame: &mut Frame, main: &Path, name: &str) {
     };
 
     let worktrees = git::worktrees(main);
-    let (trees, remote) = thread::scope(|scope| {
+    let (trees, remote, agents) = thread::scope(|scope| {
         let trees = scope.spawn(|| trees_of(main, &worktrees, name));
+        // herdr's state of every agent: one call, read only.
+        let agents = scope.spawn(agents_of);
         // The branches: the record's, and those of worktrees started for it by hand.
         let mut branches: Vec<String> = record.issues.iter().filter_map(|issue| issue.branch.clone()).collect();
         let awaited = awaited_of(&record, &worktrees, name);
@@ -126,13 +139,26 @@ pub fn orchestration(frame: &mut Frame, main: &Path, name: &str) {
             }
         }
         let remote = remote::read(main, &branches, &awaited);
-        (trees.join().unwrap_or_default(), remote)
+        (
+            trees.join().unwrap_or_default(),
+            remote,
+            agents.join().unwrap_or_default(),
+        )
     });
-    let (remote, error) = match remote {
+    let (mut remote, error) = match remote {
         Ok(remote) => (Some(remote), None),
         Err(reason) => (None, Some((reason, now_ms()))),
     };
     let items = items_of(&record.issues, &trees);
+    let test_origin = try_state::test_origin(main);
+    if let Some(remote) = remote.as_mut() {
+        read_deploys(main, remote, &items, &trees, now);
+    }
+    let free_shares = record
+        .free_agents()
+        .into_iter()
+        .map(|agent| (agent.id.clone(), context_share_of(&agent.id).unwrap_or(0.0)))
+        .collect();
     let mut view = View {
         name: name.to_string(),
         record,
@@ -144,6 +170,10 @@ pub fn orchestration(frame: &mut Frame, main: &Path, name: &str) {
         theme: theme(main),
         order: Order::default(),
         with_mr: HashMap::new(),
+        agents,
+        setups: workers::setups_of(main, name),
+        free_shares,
+        test_origin,
     };
     view.with_mr = view
         .items
@@ -187,6 +217,34 @@ pub fn orchestration(frame: &mut Frame, main: &Path, name: &str) {
     let order = merge_order_of(&entries, &plan_merge);
     view.order = order;
     draw(frame, &view);
+}
+
+/// Where the deployment of a merged MR stands, for a try of its worktree on
+/// the test instance that is still open: only those, the print asks nothing more.
+fn read_deploys(main: &Path, remote: &mut Remote, items: &[Item], trees: &[Tree], now: i64) {
+    for item in items {
+        let Some(tree) = item.tree.map(|at| &trees[at]) else {
+            continue;
+        };
+        let is_open_test_try = tree
+            .actions
+            .iter()
+            .any(|action| action.is_try() && action.on.as_deref() == Some("test") && action.answer.is_none());
+        if !is_open_test_try {
+            continue;
+        }
+        let Some(mr) = item
+            .branch()
+            .and_then(|branch| remote.of.get_mut(branch))
+            .and_then(|found| found.mr.as_mut())
+            .filter(|mr| mr.is_merged())
+        else {
+            continue;
+        };
+        if let Some(sha) = mr.merge_sha.clone() {
+            mr.deploy = try_state::deploy_of(main, &sha, now);
+        }
+    }
 }
 
 /// The MRs the handovers, the queued issues and the waits of its worktrees name.
@@ -369,13 +427,14 @@ fn stale_of(view: &View) -> Vec<String> {
     .collect()
 }
 
-/// `GitLab didn't answer 22:29 (reason), tried again` (gitlab-status.mjs `errorText`).
+/// `GitLab didn't answer 22:29 (reason)` (gitlab-status.mjs `errorText`, without
+/// its `tried again`: a print asks once).
 fn error_text(reason: &str, at: i64) -> String {
     // The reason alone: the read says it is GitLab's, the call isn't the reader's business.
     let reason = reason.lines().next().unwrap_or_default();
     let reason = reason.strip_prefix("GitLab: ").unwrap_or(reason);
     let reason = reason.rfind(" (projects/").map_or(reason, |at| &reason[..at]);
-    format!("GitLab didn't answer {} ({reason}), tried again", minute(at))
+    format!("GitLab didn't answer {} ({reason})", minute(at))
 }
 
 fn draw(frame: &mut Frame, view: &View) {
@@ -390,7 +449,8 @@ fn draw(frame: &mut Frame, view: &View) {
         Vec::new()
     };
     let merge = view.remote.as_ref().and(next_merge(view));
-    let listed = actions_of(view, &stale, merge.is_some());
+    let workers = workers::workers_of(view, tree::free_memory().unwrap_or(0.0));
+    let listed = actions_of(view, &workers, &stale, merge.is_some());
     frame.blank();
     draw_next(frame, view, &listed, merge.as_ref(), &stale);
     frame.blank();
@@ -431,7 +491,7 @@ fn draw(frame: &mut Frame, view: &View) {
         frame.boxed("UP NEXT", &title, |width| up_next_lines(view, &listed.up_next, width));
     }
 
-    let (title, lines) = match super::frame::guarded(|| tree::worktrees(view, inner)) {
+    let (title, lines) = match super::frame::guarded(|| tree::worktrees(view, &workers, inner)) {
         Ok(drawn) => drawn,
         Err(message) => (
             bold("WORKTREES"),
@@ -469,12 +529,19 @@ fn draw(frame: &mut Frame, view: &View) {
                             if agent.issues.len() == 1 { "" } else { "s" }
                         )
                     });
-                    // How much of its context it used: the transcript is core's to read (not yet), 0 % until then.
-                    let text: Vec<String> = [Some("0 %".to_string()), from, issues].into_iter().flatten().collect();
+                    let share = view.free_shares.get(&agent.id).copied().unwrap_or(0.0);
+                    let percent = format!("{} %", (share * 100.0).round() as i64);
+                    let text: Vec<String> = [Some(percent), from, issues].into_iter().flatten().collect();
+                    // Its state as for an agent without a worktree: at work while it takes its line, asks you, else free.
+                    let (state, tone) = match view.agents.get(&agent.id).map(|agent| agent.status.as_str()) {
+                        Some("working") => ("at work", "work"),
+                        Some("blocked") => ("asks you", "you"),
+                        _ => ("free", "free"),
+                    };
                     vec![
                         format!(
                             "{} {}",
-                            paint_tone(view.theme, Some("free"), "free"),
+                            paint_tone(view.theme, Some(tone), state),
                             pink(view.theme, &name)
                         ),
                         format!("{} {}", dim(&text.join(" · ")), button("✕ dismiss", "red")),
@@ -529,7 +596,10 @@ fn draw_next(frame: &mut Frame, view: &View, listed: &actions::Listed, merge: Op
     let width = frame.width();
     let label = format!(" {}  ", bold("NEXT"));
     let indent = " ".repeat(visible(&label));
-    let action = listed.actions.iter().find(|item| item.action.answer.is_none());
+    let action = listed
+        .actions
+        .iter()
+        .find(|item| item.action.answer.is_none() && !item.is_waiting());
     let lines: Vec<String> = if let Some(item) = action {
         block_of(view, item, width - indent.len())
     } else if let Some(item) = listed.up_next.first() {
@@ -556,7 +626,22 @@ fn draw_next(frame: &mut Frame, view: &View, listed: &actions::Listed, merge: Op
                     format!(" · next merge: !{}{once}", merge.iid)
                 })
                 .unwrap_or_default();
-            format!("nothing for you{merge}")
+            let at_work = view
+                .trees
+                .iter()
+                .filter_map(|tree| tree.claude.as_ref())
+                .filter(|claude| {
+                    view.agents
+                        .get(&claude.id)
+                        .is_some_and(|agent| agent.status == "working")
+                })
+                .count();
+            let at_work = match at_work {
+                0 => String::new(),
+                1 => " · 1 agent at work".into(),
+                count => format!(" · {count} agents at work"),
+            };
+            format!("nothing for you{at_work}{merge}")
         } else {
             "what is for you can't be told: GitLab didn't answer".into()
         };
@@ -690,7 +775,7 @@ fn draw_mrs(frame: &mut Frame, view: &View) {
                         tree,
                         &done_iids,
                     );
-                    let text: Vec<String> = [conflict_text(mr, tree, behind), blockers_text(&reasons)]
+                    let text: Vec<String> = [conflict_text(mr, tree, behind, &view.agents), blockers_text(&reasons)]
                         .into_iter()
                         .filter(|part| visible(part) > 0)
                         .collect();
@@ -857,7 +942,7 @@ mod tests {
             0,
         );
         assert!(text.starts_with("GitLab didn't answer "), "{text}");
-        assert!(text.ends_with(" (glab: 502 Bad Gateway), tried again"), "{text}");
+        assert!(text.ends_with(" (glab: 502 Bad Gateway)"), "{text}");
     }
 
     #[test]

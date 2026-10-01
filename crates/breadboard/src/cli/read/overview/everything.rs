@@ -458,10 +458,7 @@ pub fn everything(frame: &mut Frame, main: &Path, here: &Path) {
         let reason = reason.rfind(" (projects/").map_or(reason, |at| &reason[..at]);
         frame.text_at(
             0,
-            &red(&format!(
-                "GitLab didn't answer {} ({reason}), tried again",
-                minute(now_ms())
-            )),
+            &red(&format!("GitLab didn't answer {} ({reason})", minute(now_ms()))),
         );
     }
     if let Some(remote) = &remote {

@@ -36,7 +36,11 @@ pub fn run() -> ExitCode {
             print!("{}", text_of(&stale));
             ExitCode::SUCCESS
         }
-        Err(error) => fail(&format!("GitLab could not be read: {error}")),
+        // The reason once: `GitLab: <reason> (<call>)` says GitLab already.
+        Err(error) => fail(&format!(
+            "GitLab could not be read: {}",
+            error.strip_prefix("GitLab: ").unwrap_or(&error)
+        )),
     }
 }
 

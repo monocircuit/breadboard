@@ -159,10 +159,12 @@ fn on_island(line: &str, ground: &str) -> String {
 }
 
 /// The lines of a box's title: as many of its ` · ` parts as fit `first`
-/// columns on the first, the rest wrapped at `rest` below (never cut).
+/// columns, the rest dropped (a heading's tail would read as the box's
+/// content, boxes.mjs `fitParts`); wrapped at `rest` only when even its
+/// first part is too wide.
 fn title_lines(title: &str, rest: usize, first: usize) -> Vec<String> {
-    if visible(title) <= first {
-        return vec![title.to_string()];
+    if let Some(fitted) = paint::fit_parts(title, first) {
+        return vec![fitted];
     }
     let mut lines = wrap(title, first);
     if lines.len() > 1 {
@@ -218,16 +220,20 @@ mod tests {
     }
 
     #[test]
-    fn a_long_title_goes_on_inside_the_box() {
+    fn a_long_title_keeps_its_counts_and_drops_its_tail() {
         let mut frame = Frame::new(40);
         frame.boxed(
             "X",
             "WORKTREES 7 wait for GitLab · 1 will be removed · 41 removed",
-            |_| vec![],
+            |_| vec!["a".to_string()],
         );
-        let text = frame.text();
-        assert!(text.contains("╭─ WORKTREES 7 wait for GitLab · 1 ────╮"), "{text}");
-        assert!(text.contains("│ will be removed · 41 removed         │"), "{text}");
+        let lines: Vec<String> = frame.text().lines().map(String::from).collect();
+        assert_eq!(lines[0], "╭─ WORKTREES 7 wait for GitLab ────────╮");
+        assert_eq!(lines[1], "│ a                                    │");
+        // Too narrow even for its first part: wrapped, never cut.
+        let mut frame = Frame::new(40);
+        frame.boxed("X", "WORKTREES seven of them wait for GitLab now", |_| vec![]);
+        assert!(frame.text().contains("│ GitLab now "), "{}", frame.text());
     }
 
     #[test]

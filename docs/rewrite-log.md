@@ -68,6 +68,66 @@ failed after the setup, see above)`, as fresh starts do.
 Why: rule 3 + the bar (lazygit names the files; a silent 20 s wait reads as
 hung); the ✗ line other processes parse is unchanged.
 
+## 2026-10-01 23:55 · CLI / overview --once · GitLab's call budget waits for core's client
+Chose: the printed orchestration keeps its 11 GitLab calls (4 lists, then
+the links of each open issue) and reads no disk cache, until the core
+snapshot carries core's GitLab client (`crates/core/src/gitlab` of the
+branch: one GraphQL query for the links, final things in
+`.claude/gitlab-cache.json`); the print then moves onto it. `wt:issues`
+keeps its notes per issue the same way; its error names GitLab once
+(`✗ GitLab could not be read: Error: bad port (projects/…)`).
+Against: a second HTTP and GraphQL client in the read group.
+Why: rule 4, one GitLab client; `glab api graphql` is no way around it
+in the world (the fake glab sends it to the REST routes), and the fake's
+`blockedByIssues` is a list where real GitLab has a connection
+(`{ nodes { iid } }`), which the suite should match.
+
+## 2026-10-01 23:50 · CLI / overview --once · headings, refusals, what a print says
+Chose: a box heading too long for its line drops its ` · ` parts from
+the end, its counts first stay (boxes.mjs `fitParts`, no `…`): at 80
+columns `WORKTREES 7 wait for GitLab · 1 will be removed · 41 removed`,
+`AGENTS 3 free`, `MERGE REQUESTS 7 open · 42 merged`; only a first part
+too wide for the line wraps. Round one wrapped the tail into the box,
+where it read as the box's first line. `overview --worktree <dir>` of a
+directory in no worktree is `✗ <dir> is not a worktree of the repo: pnpm
+wt:list shows them` on stderr, exit 1 (Node printed `null` or the name
+and went on, exit 0); `--orchestration` with `--worktree` is `✗
+--orchestration and --worktree exclude each other: one view at a time`
+and the usage, exit 1 (Node silently took the orchestration, round one
+the worktree). GitLab's error line ends after its reason: a print asks
+once, `tried again` was not true.
+Why: rule 3 with rule 2 (#304: no `…`); rule 5 keeps the flags, the
+input that can't be shown is refused instead of drawn.
+
+## 2026-10-01 23:45 · CLI / overview --once · agents and tries as the live view knows them
+Chose: the printed orchestration reads herdr once (`herdr pane list`,
+inside herdr only, read only) and the conversation bound to each worktree
+(`.claude/herdr-session`, its transcript's tail): WORKTREES says `at work`,
+`asks you`, `→ next #N after !M`, `being set up for … (wt:new) …, leave
+it`, `waits: its agent is working` / `<claude> still stands in it` for a
+merged one, and per node `agent <name>`, `was <name>`, its context (`30%
+of 200k · 5 min ago`); ACTIONS gets the `waits` of an agent's question or
+permission prompt, `clean up` of a merged issue's open boxes, a failed
+pipeline's `click to tell its agent`; a try shows its state in its head
+(`ready`, `not pushed`, `waits for merge !N`, `deploying (publish, 3
+min)`, `deploy failed (job)`, the deploy read only for an open try on the
+test instance) and one not ready is grey, without buttons, skipped by
+NEXT; UP NEXT the handovers (announced, or to the free agent that knows
+the issue's files, else the one with most room) and fresh starts
+(memory permitting); AGENTS each free agent's state and context; NEXT
+`· 2 agents at work`; the resolve button only when a click reaches the
+agent; `--worktree` the AGENT section. In a world with sessions and
+transcripts the output equals Node's but for the heading (above) and
+the uncut titles (#304); 1 herdr call where Node makes 4 (it reads the
+orchestrator's tabs and panes for a chat button `--once` doesn't draw).
+A print starts nothing: a due handover or fresh start is named, not run.
+Not yet: STACK's migrations line (psql).
+Against: waiting for core: its `conversations.rs` is in the snapshot but
+not compiled; `cli/read/overview/agents.rs` is a trimmed copy of it and
+goes once core exports it.
+Why: rule 3, the critic's biggest gap (the 22:50 entry's lost lines);
+rule 6, herdr is only read.
+
 ## 2026-10-01 23:40 · CLI / wt:orchestrate --to · one handover
 Chose: `wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…]`, the
 call people and the overview make, runs the lifecycle group's handover
