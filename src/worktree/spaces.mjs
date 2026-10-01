@@ -46,7 +46,8 @@ export const mainSpace = () => {
   return workspace;
 };
 let hasNvim = null;
-const canEdit = () =>
+/** Whether nvim is on the PATH: without it no nvim tab. */
+export const canEdit = () =>
   (hasNvim ??=
     spawnSync("nvim", ["--version"], { stdio: "ignore" }).status === 0);
 /**

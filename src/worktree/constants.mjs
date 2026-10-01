@@ -26,6 +26,8 @@ export const SPACE = "Monocircuit/Platform";
 export const OVERVIEW = "overview";
 /** The tab of an orchestration's space that shows its changelog, live (changelog.mjs). */
 export const CHANGELOG = "changelog";
+/** The tab of an orchestration's space with nvim on what its MRs changed in the code (nvim/orchestration.lua). */
+export const CHANGES = "changes";
 /** A shell in the checkout of its space, the leftmost tab of every space: the main one's is where the next `claude` starts. */
 export const ROOT = "root";
 /** The tab of a worktree's space with nvim open in the worktree, after the conversation's tab. */

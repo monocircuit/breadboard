@@ -11,7 +11,7 @@ import {
   tabsOf,
 } from "../lib/herdr.mjs";
 import { git, quote, run } from "../lib/proc.mjs";
-import { CHANGELOG, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
+import { CHANGELOG, CHANGES, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
 import { exclusive } from "./lock.mjs";
 import {
@@ -22,7 +22,8 @@ import {
   orchestratorLabel,
   slotOf,
 } from "./origins.mjs";
-import { mainSpace, spaceOf } from "./spaces.mjs";
+import { editorCommand } from "./nvim.mjs";
+import { canEdit, mainSpace, spaceOf } from "./spaces.mjs";
 import {
   dropDuplicates,
   ensureSpace,
@@ -81,15 +82,30 @@ export const orchestratorOrder = () => [
   OVERVIEW,
   ORCHESTRATOR_TAB,
   CHANGELOG,
+  CHANGES,
 ];
 /** What the tab `changelog` runs: the changelog of the orchestration, live (changelog-view.mjs). */
 export const changelogTabCommand = name =>
   `node ${quote(ENTRY)} orchestrate ${name} --changelog --watch`;
+/** What nvim/orchestration.lua is: the tab `changes` loads it. */
+export const ORCHESTRATION_LUA = path.join(
+  import.meta.dirname,
+  "..",
+  "..",
+  "nvim",
+  "orchestration.lua",
+);
+/** What the nvim of the tab `changes` runs on start (editorCommand, openInEditor): what the MRs of `name` changed. */
+export const changesCommands = name => [
+  `luafile ${ORCHESTRATION_LUA}`,
+  `OrchestrationChanges ${name}`,
+];
 /**
  * The space `⇶ <name>`: `root`, its `overview` (the issues and merge
  * requests of the orchestration), the orchestrator's tab and `changelog`
- * (what it got done, #248), in that order. The layout calls it for every
- * such space, so overview and changelog come back after a herdr restart and
+ * (what it got done, #248) and, with nvim on the PATH, `changes` (what
+ * its MRs changed in the code, #256), in that order. The layout calls it for every
+ * such space, so overview, changelog and changes come back after a herdr restart and
  * an older space gets them.
  */
 export const orchestratorSpace = name => {
@@ -134,6 +150,17 @@ export const orchestratorSpace = name => {
     { label: CHANGELOG, cwd: main, command: changelogTabCommand(name) },
     tabs,
   );
+  // On the orchestration's own socket in the main checkout (nvim.mjs), so a click can open a file in it.
+  if (canEdit())
+    ensureTab(
+      workspace,
+      {
+        label: CHANGES,
+        cwd: main,
+        command: editorCommand(main, { name, commands: changesCommands(name) }),
+      },
+      tabs,
+    );
   keepOrder(workspace, orchestratorOrder());
   return workspace;
 };
