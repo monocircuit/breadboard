@@ -2,11 +2,13 @@
 // one does, and how the answer reaches the agent — typed into its pane as one
 // line, so it goes on without polling. What doesn't get in (the agent is
 // blocked, herdr is away) waits in the actions file for the agent's next stop
-// (.claude/hooks/stop-answers.mjs) or for its pane to change state.
+// (.claude/hooks/stop-answers.mjs) or for its pane to change state. A
+// `broken` or `different` (isDraft) is only written into the agent's input,
+// its tab focused, for the user to complete and send.
 import os from "node:os";
 import path from "node:path";
 
-import { herdrDid, panesOf, spaces, tabsOf } from "../lib/herdr.mjs";
+import { herdrDid, paneText, panesOf, spaces, tabsOf } from "../lib/herdr.mjs";
 import { dim, visible, yellow } from "../lib/tty.mjs";
 import {
   ORCHESTRATOR_TAB,
@@ -16,8 +18,10 @@ import {
   answersOf,
   claimAnswer,
   doneAction,
+  draftLine,
+  draftWaits,
   featureOf,
-  focusSpace,
+  isDraft,
   orchestratorLabel,
   releaseAnswer,
   spaceLabel,
@@ -72,21 +76,81 @@ export const deliverTo = (dir, line) => deliver({ dir }, line);
 export const deliverToOrchestrator = (name, line) =>
   deliver({ orchestration: name }, line);
 
+/** The agent's tab `to` addresses focused, its space first; true when herdr did. */
+const focusAgent = to => {
+  const pane = agentPaneOf(to);
+  return Boolean(
+    pane &&
+    herdrDid(["workspace", "focus", pane.workspace_id]) &&
+    herdrDid(["tab", "focus", pane.tab_id]),
+  );
+};
+/** The prompt mark of Claude Code at the start of its input line. */
+const PROMPT = "❯";
+/**
+ * What `screen` (the last lines of an agent's pane) has in Claude Code's input:
+ * the text after the last `❯` up to the rule below it; "" when empty, null
+ * without an input line.
+ */
+export const inputIn = screen => {
+  const lines = screen.split("\n");
+  const start = lines.findLastIndex(line =>
+    line.trimStart().startsWith(PROMPT),
+  );
+  if (start === -1) return null;
+  const end = lines.findIndex((line, i) => i > start && /^\s*─{3,}/.test(line));
+  return lines
+    .slice(start, end === -1 ? undefined : end)
+    .join("\n")
+    .trimStart()
+    .slice(PROMPT.length)
+    .trim();
+};
+/** Whether the user has typed into the input of `pane` (an unreadable one counts as empty). */
+const hasInput = pane => {
+  const screen = paneText(pane.pane_id, 30);
+  return Boolean(screen && inputIn(screen));
+};
+/**
+ * The draft of `action` written into the input of `pane`, unsent: the user
+ * adds what is wrong and sends it. One that waited for a blocked pane is
+ * dropped when the user typed meanwhile: they said it themselves. True when
+ * it is done with.
+ */
+const writeDraft = (pane, action) =>
+  (action.waits && hasInput(pane)) ||
+  herdrDid(["pane", "send-text", pane.pane_id, draftLine(action)]);
+/** Why a draft waits, on its row: the agent is at a question, or has no pane. */
+const draftWaitsFor = pane =>
+  pane
+    ? "the agent is at a question: the draft follows once it's answered"
+    : "no agent in its tab: the draft follows once there is one";
 /** file → the state of its agent's pane at the last try. */
 const tried = new Map();
 /**
  * The answers of `file` delivered to `to`, each claimed in the file before
  * it is typed and taken out once it got in: a second overview and the Stop
- * hook skip a claimed one, so none arrives twice.
+ * hook skip a claimed one, so none arrives twice. A draft (isDraft) is
+ * written, not submitted, and is delivered once written.
  */
-const deliverAnswers = (file, to) => {
+export const deliverAnswers = (file, to) => {
   const pane = agentPaneOf(to);
   tried.set(file, pane?.agent_status ?? null);
-  if (!canType(pane)) return;
-  for (const { id } of actionsOf(file).filter(action => action.answer)) {
+  const answered = actionsOf(file).filter(action => action.answer);
+  if (!canType(pane)) {
+    // Text written now would land in the question's dialog.
+    const waits = draftWaitsFor(pane);
+    for (const action of answered.filter(isDraft))
+      if (action.waits !== waits) draftWaits(file, action.id, waits);
+    return;
+  }
+  for (const { id } of answered) {
     const action = claimAnswer(file, id);
     if (!action) continue;
-    if (typeInto(pane, answerLine(action))) doneAction(file, id);
+    const isIn = isDraft(action)
+      ? writeDraft(pane, action)
+      : typeInto(pane, answerLine(action));
+    if (isIn) doneAction(file, id);
     else releaseAnswer(file, id);
   }
 };
@@ -123,8 +187,6 @@ export const retryAnswers = (name, targets) => {
   }
 };
 
-/** Answers after which the human has more to say: the click also goes to the agent's space. */
-const GOES_ON = new Set(["broken", "different"]);
 /** The buttons of an action: its answers, ✓ alone when it has none. */
 const labelsOf = action => {
   const answers = answersOf(action);
@@ -140,7 +202,7 @@ const shownLabel = (action, label) =>
 /** The cell of an action: its buttons, or the answer on its way. */
 export const answerCell = action =>
   action.answer
-    ? `${yellow(`→ ${action.answer}`)} ${dim("at its next stop")}`
+    ? `${yellow(`→ ${action.answer}`)} ${dim(action.waits ?? "at its next stop")}`
     : labelsOf(action)
         .map(label =>
           button(
@@ -179,9 +241,8 @@ export const clickAction = (item, column, redraw) => {
   if (answers.length === 0) doneAction(file, action.id);
   else {
     answerAction(file, action.id, answers[at]);
+    if (isDraft({ ...action, answer: answers[at] })) focusAgent(to);
     deliverAnswers(file, to);
-    // The orchestrator's tab is next to this overview already.
-    if (GOES_ON.has(answers[at]) && to.dir) focusSpace(to.dir);
   }
   redraw();
 };

@@ -20,6 +20,15 @@ export const herdr = args => {
 /** `herdr <args>` for its effect: true when herdr did it (some answer with no result). */
 export const herdrDid = args =>
   spawnSync("herdr", args, { encoding: "utf-8", stdio: "pipe" }).status === 0;
+/** The last `lines` lines on the screen of `pane`, as plain text; null when herdr can't read it. */
+export const paneText = (pane, lines) => {
+  const result = spawnSync(
+    "herdr",
+    ["pane", "read", pane, "--source", "visible", "--lines", String(lines)],
+    { encoding: "utf-8", stdio: "pipe" },
+  );
+  return result.status === 0 ? result.stdout : null;
+};
 export const spaces = () => herdr(["workspace", "list"])?.workspaces ?? [];
 export const tabsOf = workspace =>
   herdr(["tab", "list", "--workspace", workspace])?.tabs ?? [];
