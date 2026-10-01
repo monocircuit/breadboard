@@ -301,15 +301,31 @@ export const nodeLines = (row, { branch, stem, width }) => {
 const FOLD_OVER = 3;
 /** Whether the user unfolded (true) or folded (false) "done and removed", over redraws; null: by FOLD_OVER. */
 let isRemovedOpen = null;
-/** Whether the queue is folded under its divider, over redraws. */
+/** Whether the user folded the queue's node, over redraws. */
 let isQueueFolded = false;
+/** Fold the queue's node, or show it again (its click). */
+export const toggleQueue = () => {
+  isQueueFolded = !isQueueFolded;
+};
+
+/**
+ * A node that folds what it holds, like "done and removed": `▾` open, `▸`
+ * folded, the hint for its click (none in --once), cut to `width`.
+ */
+export const foldLine = ({ branch, isOpen, text, width }) =>
+  dim(
+    fit(
+      `${branch}${isOpen ? "▾" : "▸"} ${text}${isOnce ? "" : ` · click to ${isOpen ? "fold" : "show"}`}`,
+      width,
+    ),
+  );
 
 /**
  * WORKTREES: the orchestration `name` at the root, a node per worktree with
- * its state, its facts and title below it, then the queue behind a divider
- * like the merged ones' in MERGE REQUESTS (#250, a click folds it), each
- * issue with what it waits for, then "done and removed" with the
- * gone ones, folded into one line when long (a click shows or folds them).
+ * its state, its facts and title below it, then the queue as a node of the
+ * tree (#259, a click folds it) with each issue and what it waits for under
+ * it, then "done and removed" with the gone ones, folded into one line when
+ * long (a click shows or folds them).
  * A click on any line of a node goes to the worktree's space, on a gone one
  * to its issue.
  */
@@ -358,36 +374,44 @@ export const pushWorktrees = (
       screen.clicks[lines.length] = go(row.issue);
       lines.push(`  ${line}`);
     });
-  const queuedShown = isOnce || !isQueueFolded ? queued : [];
   live.forEach((row, i) =>
     pushNode(
       row,
-      i === live.length - 1 && queuedShown.length + removed.length === 0,
+      i === live.length - 1 && queued.length + removed.length === 0,
     ),
   );
   if (queued.length) {
-    // The divider: a click folds the queue, another shows it again.
+    const isLast = removed.length === 0;
     if (!isOnce)
       screen.clicks[lines.length] = () => {
-        isQueueFolded = !isQueueFolded;
+        toggleQueue();
         screen.redraw();
       };
-    const text = ` queued (${queued.length}) · in the order they start${isOnce ? "" : ` · click to ${isQueueFolded ? "show" : "fold"}`} `;
     lines.push(
-      dim(`  ──${text}${"─".repeat(Math.max(0, width - 2 - text.length))}`),
+      `  ${foldLine({
+        branch: isLast ? "└─ " : "├─ ",
+        isOpen: !isQueueFolded,
+        text: `queued (${queued.length}) · in the order they start`,
+        width,
+      })}`,
+    );
+    const queuedShown = isQueueFolded ? [] : queued;
+    queuedShown.forEach((row, i) =>
+      pushNode(row, i === queuedShown.length - 1, isLast ? "   " : "│  "),
     );
   }
-  queuedShown.forEach((row, i) =>
-    pushNode(row, i === queuedShown.length - 1 && removed.length === 0),
-  );
   if (removed.length) {
-    const hint = isOnce ? "" : ` · click to ${isOpen ? "fold" : "show"}`;
     screen.clicks[lines.length] = () => {
       isRemovedOpen = !isOpen;
       screen.redraw();
     };
     lines.push(
-      `  ${dim("└─ ")}${dim(`${isOpen ? "▾" : "▸"} done and removed (${removed.length})${hint}`)}`,
+      `  ${foldLine({
+        branch: "└─ ",
+        isOpen,
+        text: `done and removed (${removed.length})`,
+        width,
+      })}`,
     );
   }
   shown.forEach((row, i) => pushNode(row, i === shown.length - 1, "   "));

@@ -62,7 +62,7 @@ import { pushAgents } from "./agents.mjs";
 import { ago } from "./render-worktree.mjs";
 import { workerActionsOf } from "./workers.mjs";
 import { KEYS, pushUnder, screen } from "./screen.mjs";
-import { pushWorktrees } from "./tree.mjs";
+import { foldLine, pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
 import { tryStateOf } from "./try-state.mjs";
 
@@ -644,17 +644,19 @@ export const renderOrchestration = (local, remote, error) => {
     const isMergedShown = isOnce || !isMergedFolded;
     shown.forEach((item, i) => {
       if (item.isMerged && shown[i - 1] && !shown[i - 1].isMerged) {
-        // The divider: a click folds the merged ones, another shows them again.
+        // The heading of the merged ones: a click folds them, another shows them again.
         if (!isOnce)
           screen.clicks[lines.length] = () => {
             isMergedFolded = !isMergedFolded;
             screen.redraw();
           };
-        const text = ` ${doneMrs.length} merged${isOnce ? "" : ` · click to ${isMergedFolded ? "show" : "fold"}`} `;
         lines.push(
-          dim(
-            `  ──${text}${"─".repeat(Math.max(0, boxInner() - 2 - text.length))}`,
-          ),
+          `  ${foldLine({
+            branch: "",
+            isOpen: isMergedShown,
+            text: `${doneMrs.length} merged`,
+            width: boxInner(),
+          })}`,
         );
       }
       if (item.isMerged && !isMergedShown) return;

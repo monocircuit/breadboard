@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { herdrDid, panesOf, spaces, tabsOf } from "../lib/herdr.mjs";
-import { dim, isColor, visible, yellow } from "../lib/tty.mjs";
+import { dim, visible, yellow } from "../lib/tty.mjs";
 import {
   ORCHESTRATOR_TAB,
   actionsOf,
@@ -24,7 +24,7 @@ import {
 } from "../worktree.mjs";
 import { holds } from "../worktree/lock.mjs";
 import { isOnce } from "./args.mjs";
-import { button } from "./boxes.mjs";
+import { CELL_START, button } from "./boxes.mjs";
 
 /**
  * Where a line for an agent goes: `{ dir }` a worktree's agent, the tab
@@ -156,8 +156,6 @@ export const optionsText = action =>
         .map(label => shownLabel(action, label))
         .join(dim(" · "))}`
     : "";
-/** Where the cell starts on screen (from 1): after the island's margin, or the border and a blank. */
-const CELL_START = isColor ? 2 : 3;
 /** The button at `column` (from 1), a column of slack after each; -1 past them. */
 export const buttonAt = (action, column) => {
   let end = CELL_START - 1;
