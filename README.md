@@ -22,7 +22,8 @@ ships; the package is private.
 | `src/commands.mjs` | `pnpm commands`: every script with what it is for |
 | [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
-| `nvim/changes.lua` | `:Changes` and `:ChangesDiff` in a worktree's `nvim` tab |
+| `nvim/changes.lua` | `:Changes`, `:ChangesDiff` and the changes inline (`:ChangesInline` toggles) in a worktree's `nvim` tab |
+| `nvim/colours.lua` | the colours the nvim tabs mark changes in, readable on any theme |
 | `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 | `src/worktree/ide.mjs` | the plugin pinned and cloned into `.claude/nvim/` of the main checkout, its switch, `claude --ide` |
@@ -42,6 +43,11 @@ own, so every worktree's claude connects to its own nvim. With that
   diff in a new tab: `:w` or `<leader>aa` accepts it (your changes to it
   included), `:q` or `<leader>ad` rejects it. The prompt in claude's tab
   works as before. In auto mode claude asks about no edit, so no diff opens;
+- what the worktree changed against develop shows in every file it opens,
+  claude's accepted edits included: added lines green, a changed line's old
+  version in red above it with the changed characters marked in both,
+  removed lines in red where they were (`:ChangesInline` hides and shows
+  them, without claudecode.nvim too);
 - claude sees the open file and the selection: select lines, then ask about
   "this" in claude's tab; `<leader>as` sends the selection as a reference.
 
