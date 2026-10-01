@@ -18,6 +18,8 @@ import {
   readIssue,
   recordEntry,
   startAgent,
+  startEntry,
+  undoStart,
 } from "../orchestrator.mjs";
 import {
   ORCHESTRATOR,
@@ -33,6 +35,7 @@ import {
 } from "../origins.mjs";
 import { afterArgs, parseAfter } from "../handovers.mjs";
 import { recordStart } from "../history.mjs";
+import { claimSetup, setupText } from "../setups.mjs";
 import { idleWorkersNow } from "../workers.mjs";
 import handOverCommand, { announceCommand } from "./handover.mjs";
 
@@ -56,7 +59,7 @@ import handOverCommand, { announceCommand } from "./handover.mjs";
  */
 export default async function orchestrateCommand(name, flags) {
   const usage =
-    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue] [--dry-run]\n       pnpm wt:orchestrate <name> --title <text>\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end\n       pnpm wt:orchestrate <name> --changelog [--watch]\n       pnpm wt:orchestrate <name> --changes";
+    "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]\n       pnpm wt:orchestrate <name> --title <text>\n       pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]\n       pnpm wt:orchestrate <name> --end\n       pnpm wt:orchestrate <name> --changelog [--watch]\n       pnpm wt:orchestrate <name> --changes";
   // The end: its space, the orchestrator's claude, record and checkout (worktree/end.mjs).
   if (flags.has("--end")) {
     if (!name || !NAME.test(name)) fail(usage);
@@ -112,14 +115,21 @@ export default async function orchestrateCommand(name, flags) {
   const extra = extraFile
     ? fs.readFileSync(extraFile, "utf-8")
     : (record?.brief ?? "");
+  // The MRs queued issues wait for (#272): `--after` without --to needs --queue.
+  const parsedAfter = after ? parseAfter(after.values) : null;
+  if (parsedAfter?.error) fail(parsedAfter.error);
+  if (after && !flags.has("--to") && !flags.has("--queue"))
+    fail(
+      "--after needs --queue (the issues wait in the queue for the MRs) or --to (a handover announced)",
+    );
   // The next issue to an agent that has one done (workers.mjs).
   if (flags.has("--to")) {
     if (wanted.length !== 1) fail("--to hands over one issue at a time");
-    if (after) {
-      const parsed = parseAfter(after.values);
-      if (parsed.error) fail(parsed.error);
-      return announceCommand(name, wanted[0], { after: parsed.after, isDry });
-    }
+    if (after)
+      return announceCommand(name, wanted[0], {
+        after: parsedAfter.after,
+        isDry,
+      });
     return handOverCommand(name, wanted[0], {
       peer,
       extra,
@@ -197,17 +207,29 @@ export default async function orchestrateCommand(name, flags) {
   });
   // After the space, which keeps it from being pruned; the overview in there reads it from now on.
   const queuedAt = new Date().toISOString();
+  // Their entries before: an issue the overview starts from the queue stays queued until its agent runs.
+  const known = new Map(
+    (recordOf(name)?.issues ?? []).map(issue => [issue.number, issue]),
+  );
+  const waitsFor = parsedAfter?.after ?? [];
   writeRecord(
     name,
     plan.map(item =>
       queued.includes(item)
-        ? { ...recordEntry(item), queued: true, queuedAt }
-        : recordEntry(item),
+        ? {
+            ...recordEntry(item),
+            queued: true,
+            queuedAt,
+            ...(waitsFor.length && { after: waitsFor }),
+          }
+        : item.isSkipped
+          ? recordEntry(item)
+          : startEntry(item, known.get(Number(item.number))),
     ),
   );
   if (queued.length)
     step(
-      `queued ${queued.map(item => `#${item.number}`).join(", ")} (--queue). The overview of ${label} hands each to an idle agent that knows its code once its MR is merged (UP NEXT), a click there starts a fresh one; by hand: pnpm wt:orchestrate ${name} <issue> --to <agent>`,
+      `queued ${queued.map(item => `#${item.number}`).join(", ")} (--queue${waitsFor.length ? `, after ${waitsFor.map(iid => `!${iid}`).join(", ")}` : ""}). The overview of ${label} hands each to a free agent${waitsFor.length ? " once those MRs are merged" : ""}, in the work order of wt:plan, else starts a fresh one (UP NEXT); by hand: pnpm wt:orchestrate ${name} <issue> --to <agent>`,
     );
 
   const results = [];
@@ -228,6 +250,15 @@ export default async function orchestrateCommand(name, flags) {
       continue;
     }
     if (item.stack.why) step(`memory: ${item.stack.why}`);
+    // One start of an issue at a time (#272, setups.mjs).
+    const claim = claimSetup(name, item.number, { dir: item.dir });
+    if (claim.holder) {
+      results.push(
+        `✗ #${item.number} ${item.feature}: set up already, ${setupText(claim.holder)}`,
+      );
+      continue;
+    }
+    const before = known.get(Number(item.number));
     step(
       `pnpm wt:new ${item.feature} --origin ${name}${item.stack.isShared ? " --shared" : ""}`,
     );
@@ -237,13 +268,32 @@ export default async function orchestrateCommand(name, flags) {
       results.push(
         `✗ #${item.number} ${item.feature}: ${failed ?? "no worktree"}`,
       );
-      if (!isThere)
-        writeRecord(name, [
-          recordEntry(item, `failed: ${failed ?? "no worktree"}`),
-        ]);
+      // The overview's own start leaves no worktree without its agent either.
+      if (!isThere || flags.has("--now"))
+        undoStart(name, item, {
+          known: before,
+          why: `its worktree failed: ${failed ?? "no worktree"}`,
+          release: claim.release,
+        });
+      claim.release();
       continue;
     }
     const agent = startAgent(item.dir, briefOf({ ...item, name, peer, extra }));
+    // The overview's own start (--now) has no one to run the command by
+    // hand: its worktree goes again, a queued issue back to the queue.
+    if (!agent.isStarted && flags.has("--now")) {
+      undoStart(name, item, {
+        known: before,
+        why: "its claude did not start (no idle pane in its space)",
+        release: claim.release,
+      });
+      results.push(
+        `✗ #${item.number} ${item.feature}: its claude did not start, the worktree is removed again`,
+      );
+      continue;
+    }
+    writeRecord(name, [recordEntry(item, null)]);
+    claim.release();
     // Its first issue in its history (#264): reuse is counted from there.
     if (agent.isStarted)
       recordStart(

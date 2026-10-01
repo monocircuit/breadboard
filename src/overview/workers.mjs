@@ -12,6 +12,7 @@ import { red } from "../lib/tty.mjs";
 import { CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
 import { suggestionsOf } from "../worktree/fit.mjs";
 import { THRESHOLD, freeMemory, gb } from "../worktree/memory.mjs";
+import { setupsOf } from "../worktree/setups.mjs";
 import { takesText } from "./handovers.mjs";
 import { screen } from "./screen.mjs";
 
@@ -82,7 +83,7 @@ const runInBackground = (
   name,
   number,
   args,
-  { dir = null, isFresh = false } = {},
+  { dir = null, isFresh = false, to = null } = {},
 ) => {
   if (running.get(number)?.isRunning) return;
   const log = path.join(os.tmpdir(), `overview-start-${name}-${number}.log`);
@@ -97,7 +98,7 @@ const runInBackground = (
   );
   fs.closeSync(out);
   child.unref();
-  const state = { isRunning: true, error: null, ended: 0, dir, isFresh };
+  const state = { isRunning: true, error: null, ended: 0, dir, isFresh, to };
   running.set(number, state);
   child.on("exit", code => {
     state.isRunning = false;
@@ -114,6 +115,7 @@ const runInBackground = (
 const handOver = (name, number, worker, run = runInBackground) =>
   run(name, number, ["--to", worker.name ?? worker.to], {
     dir: worker.dir ?? worker.tree?.dir ?? null,
+    to: worker.name ?? worker.to,
   });
 
 /** How long a failed announced handover waits before it is tried again. */
@@ -158,6 +160,31 @@ export const freshOf = (unsuggested, { free, reserved = 0 }) => {
   return { starts, left };
 };
 
+/**
+ * The MRs of `after` (iids) a queued issue still waits for (#272): not
+ * merged, or not known yet (`awaited`: iid → `{ state }`, null before GitLab
+ * answered). Such an issue goes to no agent, nor starts a fresh one.
+ */
+export const openAfterOf = (after, awaited) =>
+  (after ?? []).filter(iid => awaited?.get(iid)?.state !== "merged");
+/**
+ * The queued issues in the order they start: the work order of wt:plan
+ * (`work`), then when they were queued (#250), then by number; the queue of
+ * WORKTREES shows the same order (tree.mjs).
+ */
+export const queueOrder = (queued, work = []) => {
+  const rank = ({ number }) => {
+    const at = work.indexOf(number);
+    return at === -1 ? Infinity : at;
+  };
+  return queued.toSorted(
+    (a, b) =>
+      (rank(a) === rank(b) ? 0 : rank(a) < rank(b) ? -1 : 1) ||
+      (a.issue.queuedAt ?? "").localeCompare(b.issue.queuedAt ?? "") ||
+      a.number - b.number,
+  );
+};
+
 /** How much of its context an agent has used, for a row: `18 %`. */
 const percent = share => `${Math.round(share * 100)} %`;
 /** `free, shares a.mjs, 18 %` / `once its MR is merged, 18 %`: why a suggested agent, and when. */
@@ -188,6 +215,12 @@ const workerText = ({ worker, shared }) =>
  * `announced` (overview/handovers.mjs): the handovers the orchestrator
  * announced (#227). Their issues and agents are no one else's; each is a
  * row of its own, done by itself once due, and its agent's worktree is held.
+ *
+ * `setups` (worktree/setups.mjs): the starts running now, from any process
+ * (#272). Their agents are no one else's either, their issues not queued
+ * any more, and the worktrees their agents leave are held. `awaited`: iid →
+ * `{ state }` of the MRs queued issues wait for (`--queue --after`), `work`:
+ * the work order of wt:plan, the order the queue starts in.
  */
 export const workerActionsOf = (
   name,
@@ -200,23 +233,53 @@ export const workerActionsOf = (
     announced = [],
     run = runInBackground,
     memory = freeMemory(),
+    setups = setupsOf(name),
+    awaited = null,
+    work = [],
   } = {},
 ) => {
-  const promised = new Set(announced.map(({ tree }) => tree?.dir));
+  // An agent a start moves takes nothing else meanwhile: the queue gave
+  // the agent of #268 both #267 and #269 while wt:new ran (#272).
+  const promised = new Set([
+    ...announced.map(({ tree }) => tree?.dir),
+    ...setups.map(setup => setup.from),
+    ...[...running.values()]
+      .filter(state => state.isRunning)
+      .map(state => state.dir),
+  ]);
   const free = freeWorkersOf(issues, of, agents, known).filter(
     worker => !promised.has(worker.dir),
   );
-  const queued = issues
-    .filter(
-      issue =>
-        issue.queued &&
-        !announced.some(({ number }) => number === issue.number),
+  const settingUp = new Set(setups.map(setup => setup.number));
+  for (const issue of issues) {
+    const state = running.get(issue.number);
+    // Queued again since its start failed (by hand): the old failure is over.
+    if (
+      state &&
+      !state.isRunning &&
+      Date.parse(issue.queuedAt ?? "") > state.ended
     )
-    .map(issue => ({
-      number: issue.number,
-      issue,
-      paths: of(issue).issue?.paths ?? [],
-    }));
+      running.delete(issue.number);
+  }
+  const all = queueOrder(
+    issues
+      .filter(
+        issue =>
+          issue.queued &&
+          !announced.some(({ number }) => number === issue.number) &&
+          // Set up by another process: its worktree's node says so.
+          !(settingUp.has(issue.number) && !running.has(issue.number)),
+      )
+      .map(issue => ({
+        number: issue.number,
+        issue,
+        paths: of(issue).issue?.paths ?? [],
+        open: openAfterOf(issue.after, awaited),
+      })),
+    work,
+  );
+  // One that needs an open MR waits for it, for an agent and a fresh start alike.
+  const queued = all.filter(({ open }) => open.length === 0);
   const suggested = suggestionsOf(queued, free);
   // Not one started already, nor one that failed: it would fail again on every read, a click retries it.
   const waiting = queued.filter(({ number }) => !running.has(number));
@@ -232,6 +295,7 @@ export const workerActionsOf = (
     { free: memory, reserved },
   );
   if (shouldHandOut) for (const number of starts) startFresh(name, number, run);
+  // One that waits for an MR is no row: nothing to do; its queue node says what it waits for (tree.mjs).
   const actions = [];
   for (const handover of announced) {
     const { number, to } = handover;
@@ -260,7 +324,7 @@ export const workerActionsOf = (
       state?.isRunning
         ? "starting a fresh agent …"
         : state?.error
-          ? `its fresh agent failed: ${red(state.error)}; a click tries again`
+          ? `${state.isFresh ? "its fresh agent" : `its handover to ${state.to}`} failed: ${red(state.error)}; a click tries again`
           : starts.includes(number)
             ? "starts a fresh agent"
             : `waits for an agent to get free: ${gb(Math.max(0, left))} free, below ${gb(THRESHOLD)} for a fresh one; a click starts one on the shared stack`,
@@ -269,6 +333,19 @@ export const workerActionsOf = (
   for (const { number, issue } of queued) {
     const found = suggested.get(number);
     const state = running.get(number);
+    // Queued until its agent moved in (#272): its handover's row meanwhile.
+    if (state?.isRunning && state.to) {
+      actions.push({
+        key: `hand over:#${number}:${state.to}`,
+        kind: "hand over",
+        who: state.to,
+        issue,
+        at: "",
+        text: `#${number} → ${state.to}: handing over …`,
+        go: () => {},
+      });
+      continue;
+    }
     if (!found) {
       actions.push({
         key: `start:#${number}`,
@@ -304,6 +381,9 @@ export const workerActionsOf = (
     ...[...running]
       .filter(([, state]) => state.isRunning && state.dir)
       .map(([number, state]) => [state.dir, `its agent takes #${number} now`]),
+    ...setups
+      .filter(setup => setup.from)
+      .map(setup => [setup.from, `its agent takes #${setup.number} now`]),
     ...announced
       .filter(({ tree }) => tree)
       .map(handover => [handover.tree.dir, takesText(handover)]),
@@ -314,5 +394,6 @@ export const workerActionsOf = (
     holds,
     suggested,
     fresh,
+    setups,
   };
 };
