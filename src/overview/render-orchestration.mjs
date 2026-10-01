@@ -164,6 +164,8 @@ const actionsOf = (local, issues, of, remote, announced) => {
     {
       shouldHandOut: Boolean(remote) && deliversAnswers(orchestration),
       announced,
+      awaited: remote?.awaited ?? null,
+      work: local.plan?.work ?? [],
     },
   );
   const workers = handovers.actions.map(
@@ -267,6 +269,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
     // For WORKTREES' queue: which agent gets which queued issue next.
     suggested: handovers.suggested,
     fresh: handovers.fresh,
+    setups: handovers.setups,
   };
 };
 /** Whether the merged MRs are folded under their divider, over redraws. */
@@ -541,6 +544,7 @@ export const renderOrchestration = (local, remote, error) => {
     holds: actions.holds,
     suggested: actions.suggested,
     fresh: actions.fresh,
+    setups: actions.setups,
     hasRemote: Boolean(remote),
     known: local.workers,
     free: local.free,

@@ -6,7 +6,9 @@ import {
   freeWorkersOf,
   freshOf,
   handOutOf,
+  openAfterOf,
   pathsOf,
+  queueOrder,
   sharedOf,
   suggestionsOf,
   workerActionsOf,
@@ -254,6 +256,137 @@ describe("workerActionsOf without shared files (#265)", () => {
         ["start", "32-a"],
         ["start", "33-b"],
       ],
+    );
+  });
+});
+
+describe("workerActionsOf after a merge (#272)", () => {
+  const GIB = 1024 ** 3;
+  const claude = { id: "c268", used: 40_000, window: 200_000 };
+  const merged268 = {
+    number: 268,
+    feature: "268-tokens",
+    tree: {
+      dir: "/nonexistent/platform-268-tokens",
+      name: "268-tokens",
+      claude,
+    },
+    mr: { state: "merged" },
+  };
+  const queued = (number, extra = {}) => ({
+    number,
+    feature: `${number}-q`,
+    queued: true,
+    queuedAt: `2026-10-01T09:0${number % 10}:00Z`,
+    paths: [],
+    ...extra,
+  });
+  const of = issue => ({ mr: issue.mr, issue: { paths: issue.paths } });
+  const idle = new Map([["c268", { status: "idle" }]]);
+  const calls = [];
+  const run = (name, number, args) => calls.push([number, ...args]);
+  const read = (issues, options) =>
+    workerActionsOf(
+      "o",
+      issues,
+      of,
+      idle,
+      {},
+      {
+        shouldHandOut: true,
+        run,
+        memory: 0,
+        setups: [],
+        ...options,
+      },
+    );
+
+  it("gives the free agent one queued issue, the next one none while its handover runs", () => {
+    calls.length = 0;
+    read([merged268, queued(194), queued(267), queued(269)]);
+    assert.deepEqual(calls, [[194, "--to", "268-tokens"]]);
+    // The next read, wt:new still at work: #194 stays queued in the record
+    // until the agent moved in, the setup claims it and its agent.
+    calls.length = 0;
+    const setup = {
+      number: 194,
+      dir: "/nonexistent/platform-194-q",
+      to: "268-tokens",
+      from: merged268.tree.dir,
+      pid: 1,
+      at: "",
+    };
+    const { actions, holds, suggested } = read(
+      [merged268, queued(194), queued(267), queued(269)],
+      { setups: [setup] },
+    );
+    assert.deepEqual(calls, [], "no second issue, no second start of #194");
+    assert.equal(suggested.size, 0);
+    assert.deepEqual(
+      actions.map(({ kind, issue }) => [kind, issue.number]),
+      [
+        ["start", 267],
+        ["start", 269],
+      ],
+    );
+    assert.equal(holds.get(merged268.tree.dir), "its agent takes #194 now");
+    assert.equal(
+      cleanUpOf(merged268, {
+        mr: merged268.mr,
+        status: "idle",
+        hold: holds.get(merged268.tree.dir),
+      }).key,
+      "waits",
+      "the clean-up doesn't close the agent before it moved",
+    );
+  });
+
+  it("starts nothing that waits for an open MR, the queue in the work order", () => {
+    calls.length = 0;
+    const issues = [
+      merged268,
+      queued(267, { after: [282] }),
+      queued(269, { after: [282] }),
+      queued(194),
+    ];
+    const { suggested } = read(issues, { memory: 4 * GIB, work: [194, 267] });
+    assert.deepEqual(calls, [[194, "--to", "268-tokens"]]);
+    assert.deepEqual([...suggested.keys()], [194]);
+    // Merged: #267 comes first by the work order, #269 starts a fresh agent.
+    calls.length = 0;
+    read(
+      [merged268, queued(267, { after: [282] }), queued(269, { after: [282] })],
+      {
+        memory: 4 * GIB,
+        work: [194, 267],
+        awaited: new Map([[282, { iid: 282, state: "merged" }]]),
+      },
+    );
+    assert.deepEqual(calls, [
+      [267, "--to", "268-tokens"],
+      [269, "--now"],
+    ]);
+  });
+});
+
+describe("openAfterOf and queueOrder (#272)", () => {
+  it("counts an MR GitLab didn't answer for as open", () => {
+    assert.deepEqual(openAfterOf([282, 283], null), [282, 283]);
+    assert.deepEqual(
+      openAfterOf([282, 283], new Map([[282, { state: "merged" }]])),
+      [283],
+    );
+    assert.deepEqual(openAfterOf(undefined, null), []);
+  });
+
+  it("orders by the work order, then by when they were queued", () => {
+    const item = (number, queuedAt) => ({ number, issue: { queuedAt } });
+    assert.deepEqual(
+      queueOrder(
+        [item(9, "b"), item(8, "a"), item(7, "c"), item(6, "c")],
+        [7],
+      ).map(({ number }) => number),
+      [7, 8, 9, 6],
     );
   });
 });

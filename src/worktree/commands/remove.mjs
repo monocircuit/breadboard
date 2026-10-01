@@ -8,6 +8,7 @@ import { leftIn, leftText, sessionFile } from "../conversations.mjs";
 import { releaseSpace } from "../layout.mjs";
 import { markRemoved, originOf, pruneOrchestrators } from "../origins.mjs";
 import { hasOwnCommits, ownFiles } from "../prune.mjs";
+import { setupAt, setupText, setupsOf } from "../setups.mjs";
 import { compose, offsetOf } from "../stack.mjs";
 import { dirOf, mainDir, worktrees } from "../worktrees.mjs";
 
@@ -28,6 +29,33 @@ const mergedAtOf = branch => {
   }
 };
 
+/**
+ * Whether the claim of `branch` on origin can go with its worktree (#272):
+ * it is there, carries no commit develop lacks and no open MR builds on it.
+ * Then the issue can start again; a claim left behind refuses it
+ * (`claimed by …`). Null when it can't, else the reason it goes.
+ */
+export const emptyClaimOf = ({ isOnOrigin, hasOwnCommits, openMrs }) =>
+  isOnOrigin && !hasOwnCommits && openMrs === 0
+    ? "nothing on it develop lacks, no open MR"
+    : null;
+/** How many open MRs `branch` has, Infinity when GitLab does not answer: then it stays. */
+const openMrsOf = branch => {
+  const { ok: isOk, out } = run(
+    "glab",
+    [
+      "api",
+      `projects/:fullpath/merge_requests?state=opened&source_branch=${encodeURIComponent(branch)}`,
+    ],
+    { cwd: mainDir(), quiet: true, allowFail: true },
+  );
+  try {
+    return isOk ? JSON.parse(out).length : Infinity;
+  } catch {
+    return Infinity;
+  }
+};
+
 export default function removeCommand(feature, flags) {
   if (!feature)
     fail("usage: pnpm wt:remove <feature> [--keep-branch] [--close-space]");
@@ -41,6 +69,15 @@ export default function removeCommand(feature, flags) {
   if (left.length)
     fail(
       `${leftText(left)} still stands in ${feature} and has not entered its next worktree yet: again once it has`,
+    );
+
+  // A start sets it up or moves its agent out of it (setups.mjs): git would
+  // pull the directory from under wt:new or the agent (#272).
+  const origin = originOf(dir);
+  const setup = origin && setupAt(setupsOf(origin.name), dir);
+  if (setup)
+    fail(
+      `${setupText(setup)} ${setup.dir === dir ? "sets up" : "moves its agent out of"} ${feature}: again once it is done`,
     );
 
   if (git(["status", "--porcelain"], dir).out)
@@ -58,8 +95,7 @@ export default function removeCommand(feature, flags) {
     }
   }
 
-  // The origin goes with the directory: read before, noted in the record after.
-  const origin = originOf(dir);
+  // The origin goes with the directory: read before (above), noted in the record after.
   if (offsetOf(dir)) {
     step(`stop the own stack of ${feature} and delete its data`);
     compose(dir, ["down", "-v"]);
@@ -86,9 +122,36 @@ export default function removeCommand(feature, flags) {
       retryDelay: 100,
     });
   }
+  // What the removal left behind, once git let go: ignored folders a process
+  // still wrote into (node_modules of #268), nothing of anyone's work.
+  if (fs.existsSync(dir) && ownFiles(dir).length === 0)
+    fs.rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  else if (fs.existsSync(dir))
+    step(`left in ${dir}: ${ownFiles(dir).join(", ")}`);
   if (branch && isMerged && !flags.has("--keep-branch")) {
     step(`delete ${branch} (all of it is in develop)`);
     run("git", ["branch", "-D", branch]);
+    // Its claim on origin too, while empty: the issue can start again (#272).
+    const remote = `refs/remotes/origin/${branch}`;
+    const isOnOrigin = git(["rev-parse", "--verify", "--quiet", remote]).ok;
+    const claim =
+      isOnOrigin &&
+      emptyClaimOf({
+        isOnOrigin,
+        hasOwnCommits: hasOwnCommits(remote, mainDir()),
+        openMrs: openMrsOf(branch),
+      });
+    if (claim) {
+      step(`delete ${branch} on origin (${claim})`);
+      run("git", ["push", "--quiet", "origin", "--delete", branch], {
+        allowFail: true,
+      });
+    }
   }
   // The overview of the orchestration lists it under "done and removed", with the times.
   if (origin && branch)

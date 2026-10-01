@@ -21,6 +21,7 @@ import {
   orchestrationOf,
   orchestratorLabel,
   slotOf,
+  writeRecord,
 } from "./origins.mjs";
 import { ideFlag } from "./ide.mjs";
 import { editorCommand } from "./nvim.mjs";
@@ -276,6 +277,37 @@ export const recordEntry = (item, why = item.why || null) => ({
   branch: item.branch,
   why,
 });
+/**
+ * The record's entry of an issue whose start runs or failed (#272): one
+ * that was queued (`known`, its entry before) stays queued at its place,
+ * with `requeued` why it is back when its start failed; any other gets
+ * `why`, as recordEntry.
+ */
+export const startEntry = (item, known, why = null) =>
+  known?.queued
+    ? {
+        ...recordEntry(item, null),
+        queued: true,
+        queuedAt: known.queuedAt ?? new Date().toISOString(),
+        ...(why && { requeued: why }),
+      }
+    : recordEntry(item, why && `failed: ${why}`);
+/**
+ * A start that failed once its worktree was made (#272): no worktree stays
+ * without its agent. wt:remove takes it and its empty claim on origin, so
+ * the issue can start again; a queued one goes back to the queue (startEntry).
+ * `release`: the claim of the setup (setups.mjs), given up first, or
+ * wt:remove would refuse the worktree it names.
+ */
+export const undoStart = (name, item, { known, why, release = () => {} }) => {
+  release();
+  if (worktrees().some(({ dir }) => dir === item.dir))
+    spawnSync(process.execPath, [ENTRY, "remove", item.feature], {
+      cwd: mainDir(),
+      stdio: "inherit",
+    });
+  writeRecord(name, [startEntry(item, known, why)]);
+};
 /**
  * `wt:new <feature> --origin <name>` for an issue of readIssue, its output
  * shown. `{ isThere, failed, status }`: whether the worktree exists, the

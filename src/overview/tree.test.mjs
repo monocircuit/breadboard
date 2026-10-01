@@ -287,6 +287,47 @@ describe("treeOf", () => {
     );
   });
 
+  it("says what a queued issue waits for: its MR, or why it is back (#272)", () => {
+    const { queued: queue } = treeOf(
+      [
+        issue(267, { tree: null, queued: true, after: [282, 283] }),
+        issue(269, {
+          tree: null,
+          queued: true,
+          requeued: "after the setup, 268-x no claude runs it",
+        }),
+      ],
+      () => ({}),
+      {
+        merged: new Set([283]),
+        fresh: new Map([[269, "starts a fresh agent"]]),
+      },
+    );
+    assert.deepEqual(
+      queue.map(row => plain(row.state.text)),
+      [
+        "waits for !282 to be merged",
+        "back in the queue: after the setup, 268-x no claude runs it; starts a fresh agent",
+      ],
+    );
+  });
+
+  it("shows a worktree a start sets up as such, not as one without an agent (#272)", () => {
+    const made = issue(267, { tree: tree({ dir: "/w-267", claude: null }) });
+    const setup = { number: 267, dir: "/w-267", to: "268-x", pid: 1 };
+    const { live } = treeOf([made], () => ({}), { setups: [setup] });
+    assert.equal(live[0].state.key, "setup");
+    assert.equal(
+      plain(live[0].state.text),
+      "being set up for 268-x (wt:new) …, leave it",
+    );
+    assert.equal(
+      plain(lifecycleOf(made, {}).text),
+      "no agent",
+      "without a setup it has none",
+    );
+  });
+
   it("numbers every node: the work order first, then the rest", () => {
     const { live } = treeOf([issue(7), issue(3), issue(9)], () => ({}), {
       work: [3, 7],

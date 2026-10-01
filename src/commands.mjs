@@ -26,6 +26,8 @@ const DESCRIPTIONS = {
     commands: "this list (--all: every package)",
     "check:agents":
       "every AGENTS.md, skill and subagent within 150 lines, every link in them resolves",
+    "check:leaf-parity":
+      "every *.web.tsx / *.native.tsx leaf has its X.types.ts, and its partner where the package declares native",
     herdr:
       "the pinned herdr with the repo's session and plugin (--reload new breadboard code, --stop)",
     "herdr:install":
@@ -44,7 +46,7 @@ const DESCRIPTIONS = {
     "wt:new":
       "<feature> a worktree on a new branch with its own stack (--shared, --fix, --origin <orchestration>)",
     "wt:orchestrate":
-      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --title <text> what it shows instead of its name; <name> --end ends it once its worktrees are gone; <name> --changelog [--watch] its changelog",
+      "<name> <issue>… a space ⇶ <name> for this session, per issue a worktree with a briefed claude (--dry-run, --queue [--after !<mr>…]); <name> <issue> --to <agent> hands it to an idle agent (--after !<mr>…: once they are merged); <name> --title <text> what it shows instead of its name; <name> --end ends it once its worktrees are gone; <name> --changelog [--watch] its changelog",
     "wt:plan":
       "<name> [--work <n>…] [--merge <n>…] [--why <t>] the order of an orchestration's issues and merges, for its overview",
     "wt:stack": "give the worktree you are in its own stack",
@@ -111,6 +113,7 @@ const DESCRIPTIONS = {
   "packages/eslint-config": {
     build: "build the configs (dev) and types",
     "build:prod": "build the configs as the hooks and CI load them",
+    test: "the platform rules on fixtures (build:prod first)",
   },
 };
 

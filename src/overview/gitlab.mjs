@@ -187,6 +187,10 @@ export const readRemoteOfOrchestration = async name => {
   const iids = [
     ...new Set([
       ...handoversOf(recordOf(name)).flatMap(({ after }) => after),
+      // And the queued issues (`--queue --after`, #272).
+      ...(recordOf(name)?.issues ?? [])
+        .filter(issue => issue.queued)
+        .flatMap(issue => issue.after ?? []),
       ...dirs.flatMap(dir => waitOf(dir)?.mrs ?? []),
     ]),
   ];

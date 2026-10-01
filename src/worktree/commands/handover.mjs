@@ -6,6 +6,8 @@ import {
   makeWorktree,
   readIssue,
   recordEntry,
+  startEntry,
+  undoStart,
   writeBrief,
 } from "../orchestrator.mjs";
 import {
@@ -29,6 +31,7 @@ import {
 } from "../workers.mjs";
 import { announceHandover, dropHandover, handoversOf } from "../handovers.mjs";
 import { recordFailure, recordStart } from "../history.mjs";
+import { claimSetup, setupText } from "../setups.mjs";
 import { worktrees } from "../worktrees.mjs";
 
 /**
@@ -77,6 +80,20 @@ export default function handOverCommand(
     fail(`${worker.name} gets no next issue: ${reason}`);
   };
   if (refusal) failed(refusal);
+  // One start of an issue at a time (#272): an announced handover and the
+  // queue both fired for #194, and the second agent took the worktree the
+  // first one was set up in.
+  const claim = isDry
+    ? { release: () => {} }
+    : claimSetup(name, number, {
+        dir: item.dir,
+        to: worker.name,
+        from: worker.dir,
+      });
+  if (claim.holder)
+    fail(`#${number} is set up already: ${setupText(claim.holder)}`);
+  // Its entry before: a queued issue stays queued until its agent moved in.
+  const known = recordOf(name)?.issues.find(issue => issue.number === number);
   // A worktree of this orchestration without an agent: an earlier try made it.
   const isMade =
     worktrees().some(({ dir }) => dir === item.dir) &&
@@ -99,34 +116,34 @@ export default function handOverCommand(
   }
 
   if (!isMade) {
-    writeRecord(name, [recordEntry(item, null)]);
+    writeRecord(name, [startEntry(item, known)]);
     step(`pnpm wt:new ${item.feature} --origin ${name}`);
     const made = makeWorktree(item, name, { isShared });
     if (!made.isThere) {
-      writeRecord(name, [
-        recordEntry(item, `failed: ${made.failed ?? "no worktree"}`),
-      ]);
-      recordFailure(
-        name,
-        worker.id,
-        number,
-        `its worktree failed: ${made.failed ?? "no worktree"}`,
-      );
+      const why = `its worktree failed: ${made.failed ?? "no worktree"}`;
+      undoStart(name, item, { known, why, release: claim.release });
+      recordFailure(name, worker.id, number, why);
       fail(`#${item.number} ${item.feature}: ${made.failed ?? "no worktree"}`);
     }
   }
-  writeBrief(item.dir, brief);
-  // Again: the setup took minutes, and the agent may have started on something meanwhile.
+  // Again: the setup took minutes, and the agent may have started on
+  // something meanwhile, or gone. Its worktree goes again then (#272): no
+  // worktree is left without its agent, the issue waits in the queue.
   const pane = paneOfConversation(worker.id);
   const now = refusalOf({ pane, share: null });
   if (now) {
+    const why = `after the setup, ${worker.name} ${now.replace(/^it /, "")}`;
+    undoStart(name, item, { known, why, release: claim.release });
     recordFailure(name, worker.id, number, `after the setup, ${now}`);
     fail(
-      `the worktree of #${item.number} is ready, but ${worker.name} ${now.replace(/^it /, "")} now: run the same command again once it is idle`,
+      `${why}: the worktree of #${item.number} is removed again${known?.queued ? ", the issue is back in the queue" : ""}; run the same command again once it is idle`,
     );
   }
+  writeBrief(item.dir, brief);
   const { isMoved, isTold } = moveWorker(worker, pane, item.number, item.dir);
   recordHandover(name, worker, number, item.dir);
+  writeRecord(name, [recordEntry(item, null)]);
+  claim.release();
   // Announced before (--after): done now, by the overview or by hand.
   const isAnnounced = handoversOf(recordOf(name)).some(
     handover => handover.number === number,
