@@ -279,12 +279,29 @@ impl<A: Clone> Scene<A> {
     }
 }
 
-/// A heading: the name bold, the note's parts dim after it.
+/// A heading: the name bold, the note's parts dim after it, on one line as
+/// Node's `fitParts`: the parts after the last ` · ` that fits are left out,
+/// so a title never wraps or ends on a dangling `·`. Only a first part
+/// wider than the line wraps, as words.
 pub(super) fn heading<A: Clone>(scene: &mut Scene<A>, name: &str, note: Option<&str>) {
     scene.atom(vec![Span::styled(name.to_string(), theme::bold())]);
-    if let Some(note) = note {
-        let parts: Vec<&str> = note.split(" · ").collect();
-        scene.parts(&parts, theme::dim());
+    let Some(note) = note else { return };
+    let mut shown = String::new();
+    for part in note.split(" · ") {
+        let next = if shown.is_empty() {
+            part.to_string()
+        } else {
+            format!("{shown} · {part}")
+        };
+        if !shown.is_empty() && scene.x() + 1 + Span::raw(next.as_str()).width() as u16 > scene.width() {
+            break;
+        }
+        shown = next;
+    }
+    if scene.x() + 1 + Span::raw(shown.as_str()).width() as u16 <= scene.width() {
+        scene.atom(vec![Span::styled(shown, theme::dim())]);
+    } else {
+        scene.text(&shown, theme::dim());
     }
 }
 
@@ -292,35 +309,52 @@ pub(super) fn width_of(spans: &[Span]) -> u16 {
     spans.iter().map(|span| span.width() as u16).sum()
 }
 
-/// `spans` in pieces of at most `first` columns, then at most `rest`; every
-/// piece holds at least one character, so a line too narrow still advances.
+/// `spans` in pieces of at most `first` columns, then at most `rest`: each
+/// piece ends after the last `-`, `/`, `_`, `:`, `.` or space that fits
+/// (`303-overview-every-drawn-` / `button-works`), else where the room
+/// ends; every piece holds at least one character, so a line too narrow
+/// still advances.
 fn split(spans: Vec<Span<'static>>, first: u16, rest: u16) -> Vec<(Vec<Span<'static>>, u16)> {
+    let cells: Vec<(char, Style, u16)> = spans
+        .iter()
+        .flat_map(|span| {
+            span.content.chars().map(move |ch| {
+                let mut buffer = [0u8; 4];
+                (ch, span.style, Span::raw(&*ch.encode_utf8(&mut buffer)).width() as u16)
+            })
+        })
+        .collect();
     let mut pieces = vec![];
-    let mut piece: Vec<Span<'static>> = vec![];
-    let mut text = String::new();
-    let mut width = 0u16;
+    let mut at = 0;
     let mut room = first.max(1);
-    for span in spans {
-        for ch in span.content.chars() {
-            let mut buffer = [0u8; 4];
-            let w = Span::raw(&*ch.encode_utf8(&mut buffer)).width() as u16;
-            if width > 0 && width + w > room {
-                if !text.is_empty() {
-                    piece.push(Span::styled(std::mem::take(&mut text), span.style));
-                }
-                pieces.push((std::mem::take(&mut piece), width));
-                width = 0;
-                room = rest.max(1);
-            }
-            text.push(ch);
+    while at < cells.len() {
+        // As many cells as fit, at least one.
+        let mut end = at;
+        let mut width = 0u16;
+        while end < cells.len() && (end == at || width + cells[end].2 <= room) {
+            width += cells[end].2;
+            end += 1;
+        }
+        // Back to a break after a separator, if the piece has one past its start.
+        let is_break =
+            |i: usize| "-/_:. ".contains(cells[i - 1].0) && cells[at..i].iter().any(|cell| !cell.0.is_whitespace());
+        if end < cells.len()
+            && let Some(cut) = (at + 1..=end).rev().find(|&i| is_break(i))
+        {
+            end = cut;
+        }
+        let mut piece: Vec<Span<'static>> = vec![];
+        let mut width = 0;
+        for &(ch, style, w) in &cells[at..end] {
             width += w;
+            match piece.last_mut() {
+                Some(last) if last.style == style => last.content.to_mut().push(ch),
+                _ => piece.push(Span::styled(ch.to_string(), style)),
+            }
         }
-        if !text.is_empty() {
-            piece.push(Span::styled(std::mem::take(&mut text), span.style));
-        }
-    }
-    if !piece.is_empty() {
         pieces.push((piece, width));
+        at = end;
+        room = rest.max(1);
     }
     pieces
 }
@@ -355,6 +389,22 @@ mod tests {
         for line in &scene.lines {
             assert!(line.width() <= 6);
         }
+    }
+
+    #[test]
+    fn an_atom_wider_than_a_line_breaks_after_a_dash_where_it_can() {
+        let mut scene = Scene::<u8>::new(38);
+        scene.text("303-overview-every-drawn-button-works-on-every-cell", Style::new());
+        scene.finish();
+        assert_eq!(
+            text(&scene),
+            ["303-overview-every-drawn-button-works-", "on-every-cell"]
+        );
+        let mut scene = Scene::<u8>::new(20);
+        scene.button("wt:remove 303-overview-every-drawn-button", Tone::Cyan, 1);
+        scene.finish();
+        assert_eq!(text(&scene), [" wt:remove 303-", "overview-every-", "drawn-button "]);
+        assert_eq!(scene.regions.len(), 3);
     }
 
     #[test]
@@ -397,6 +447,33 @@ mod tests {
         scene.parts(&["3 open", "1 draft", "2 ready"], Style::new());
         scene.finish();
         assert_eq!(text(&scene), ["3 open · 1 draft ·", "2 ready"]);
+    }
+
+    #[test]
+    fn a_heading_leaves_out_the_parts_that_dont_fit() {
+        let mut scene = Scene::<u8>::new(40);
+        heading(
+            &mut scene,
+            "WORKTREES",
+            Some("7 wait for GitLab · 1 will be removed · 41 removed"),
+        );
+        scene.finish();
+        assert_eq!(text(&scene), ["WORKTREES 7 wait for GitLab"]);
+        let mut scene = Scene::<u8>::new(80);
+        heading(
+            &mut scene,
+            "WORKTREES",
+            Some("7 wait for GitLab · 1 will be removed · 41 removed"),
+        );
+        scene.finish();
+        assert_eq!(
+            text(&scene),
+            ["WORKTREES 7 wait for GitLab · 1 will be removed · 41 removed"]
+        );
+        let mut scene = Scene::<u8>::new(16);
+        heading(&mut scene, "NEXT", Some("a first part too wide · b"));
+        scene.finish();
+        assert_eq!(text(&scene), ["NEXT a first", "part too wide"]);
     }
 
     #[test]

@@ -13,7 +13,8 @@
 //! - one worktree: `worktree_view`; everything: `everything`.
 //!
 //! A click's `Act` goes to `act`, the one place the overview does anything;
-//! what it does by itself after a read too (`actor/`).
+//! what it does by itself after a read too (`actor/`; the repo's changelog:
+//! `overall`).
 
 mod act;
 mod actions;
@@ -25,6 +26,7 @@ mod header;
 mod look;
 mod merge_requests;
 mod next;
+mod overall;
 mod worktree_view;
 mod worktrees;
 
@@ -417,7 +419,6 @@ impl App for Overview {
             }),
             Some(Model::Orchestration(model)) => {
                 header::build(page, model, &ctx);
-                actor::view::log(page, &ctx);
                 if model.is_empty {
                     next::empty(page, model);
                     return;
@@ -428,14 +429,15 @@ impl App for Overview {
                 agents::build(page, model, &ctx);
                 merge_requests::build(page, model, &ctx);
                 footer::build(page, model, &ctx);
+                actor::view::done(page, &ctx);
             }
             Some(Model::Worktree(model)) => {
-                actor::view::log(page, &ctx);
                 worktree_view::build(page, model, &ctx, &self.worktree);
+                actor::view::done(page, &ctx);
             }
             Some(Model::Everything(model)) => {
-                actor::view::log(page, &ctx);
                 everything::build(page, model, &ctx);
+                actor::view::done(page, &ctx);
             }
         }
     }

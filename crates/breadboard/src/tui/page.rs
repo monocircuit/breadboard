@@ -156,6 +156,11 @@ impl<A: Clone> Page<A> {
         self.width.saturating_sub(2).max(1)
     }
 
+    /// The rows the sections added so far take, the blank after each included.
+    pub fn rows(&self) -> u16 {
+        (self.top.rows.len() + self.rest.rows.len()).min(usize::from(u16::MAX)) as u16
+    }
+
     /// A section: `build` writes its lines into a scene as wide as the inside
     /// of its island. A panic in it is caught: the section shows its name and
     /// why, the others draw as usual.

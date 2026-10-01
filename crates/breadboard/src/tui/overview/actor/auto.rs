@@ -189,8 +189,7 @@ fn tell(app: &mut Overview, tells: &[Tell], agents: &HashMap<String, Agent>) {
                             app.actor.auto.sent.insert(key.clone());
                             app.actor.auto.pipeline_status.remove(&key);
                             app.state.pipeline_tries.remove(&key);
-                            app.actor
-                                .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                            app.actor.log(Paint::Green, format!("told {who}: {line}"));
                             if key.starts_with("conflicts:") {
                                 // Its MR row shows where the order stands, as after a click.
                                 let mr = app.mr_of_dir(&dir).filter(|mr| mr.iid == iid);
@@ -237,16 +236,12 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
             if is_in {
                 app.actor.auto.sent.insert(key.clone());
                 app.state.pipeline_tries.remove(&key);
-                app.actor
-                    .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                app.actor.log(Paint::Green, format!("told {who}: {line}"));
                 app.redraw();
             } else {
                 app.actor.log(
                     Paint::Yellow,
-                    format!(
-                        "the line didn't get in to the agent of {who}: {}",
-                        fallback_text(&fallback)
-                    ),
+                    format!("{who} didn't take the line: {}", fallback_text(&fallback)),
                 );
                 super::super::act::go_to(app, fallback);
             }
@@ -299,6 +294,10 @@ fn start_run(
     let mut argv = vec!["wt:orchestrate".to_string(), name.to_string(), number.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
     let shown = format!("pnpm {}", argv.join(" "));
+    let what = match to {
+        Some(to) => format!("handing #{number} to {to}"),
+        None => format!("a fresh agent for #{number}"),
+    };
     let poster = app.actor.poster();
     let started = spawn::start(
         Background {
@@ -335,8 +334,10 @@ fn start_run(
     };
     app.state.runs.insert(number, run);
     match started {
-        Ok(()) => app.actor.log(Paint::Yellow, format!("started {shown} …")),
-        Err(why) => app.actor.log(Paint::Red, format!("{shown} didn't start: {why}")),
+        Ok(()) => app.actor.log(Paint::Yellow, format!("{what}: {shown} …")),
+        Err(why) => app
+            .actor
+            .log(Paint::Red, format!("#{number} didn't start: {why} ({shown})")),
     }
     true
 }
@@ -423,7 +424,10 @@ fn free_then_remove(
                 Err(why) => {
                     app.actor.log(
                         Paint::Dim,
-                        format!("its agent not freed ({why}): it goes with the worktree"),
+                        format!(
+                            "the agent of {} not freed: {why}, it goes with its worktree",
+                            feature_of(&app.actor.main, &dir)
+                        ),
                     );
                     remove_worktree(app, &dir);
                     app.redraw();
@@ -546,12 +550,8 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
                     removal.error = error.clone();
                 }
                 match error {
-                    None => app
-                        .actor
-                        .log(Paint::Green, format!("removed the worktree {done_feature}")),
-                    Some(why) => app
-                        .actor
-                        .log(Paint::Red, format!("the worktree {done_feature} stays: {why}")),
+                    None => app.actor.log(Paint::Green, format!("removed {done_feature}")),
+                    Some(why) => app.actor.log(Paint::Red, format!("{done_feature} stays: {why}")),
                 }
                 app.redraw();
             });
@@ -573,7 +573,7 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
     if started.is_ok() {
         app.actor.log(
             Paint::Yellow,
-            format!("removing the worktree {feature}: pnpm wt:remove {feature} --close-space"),
+            format!("removing {feature}: pnpm wt:remove {feature} --close-space"),
         );
     }
 }
@@ -676,8 +676,7 @@ fn deliver_waits(app: &mut Overview, local: &OrchestrationLocal, remote: &Remote
                 app.actor.auto.waits_in_flight.remove(&dir);
                 if let Some(line) = delivered {
                     let who = feature_of(&app.actor.main, &dir);
-                    app.actor
-                        .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                    app.actor.log(Paint::Green, format!("told {who}: {line}"));
                 }
             }) as Effect)
         });

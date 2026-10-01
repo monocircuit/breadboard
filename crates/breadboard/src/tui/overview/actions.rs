@@ -15,14 +15,15 @@
 use super::actor::{self, Actor, glab, herdr};
 use super::{Act, Ctx, Overview, look};
 use crate::tui::theme::{self, Tone};
-use crate::tui::{Flow, Page, Scene};
+use crate::tui::{Flow, KeyEvent, Page, Scene};
 use breadboard_core::actions::{self as stored, Action};
 use breadboard_core::herdr::Pane;
 use breadboard_core::model::Paint;
-use breadboard_core::model::orchestration::{ActionsSection, OrchestrationModel};
+use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Item, MergeOffer, Target};
 use breadboard_core::reader::{Model, RemoteOf};
 use breadboard_core::time::{ago, parse_iso};
+use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use std::collections::HashMap;
@@ -36,7 +37,8 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         Ok(section) => section,
         Err(why) => return page.failed("ACTIONS", why),
     };
-    page.section("ACTIONS", |scene| actions(scene, section, ctx));
+    let in_next = in_next(model).map(|item| item.key.as_str());
+    page.section("ACTIONS", |scene| actions(scene, section, in_next, ctx));
     if !section.up_next.is_empty() {
         page.section("UP NEXT", |scene| {
             scene.note(format!(
@@ -50,7 +52,17 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     }
 }
 
-fn actions(scene: &mut Scene<Act>, section: &ActionsSection, ctx: &Ctx) {
+/// The action NEXT shows as its block, if it shows one.
+fn in_next(model: &OrchestrationModel) -> Option<&Item> {
+    match &model.next.as_ref().ok()?.band {
+        NextBand::Action(item) => Some(item),
+        _ => None,
+    }
+}
+
+/// ACTIONS: each action a block between rules; the one NEXT shows (always on
+/// screen, above) only by its head and where it is, not twice in full.
+fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&str>, ctx: &Ctx) {
     let items = &section.actions;
     if items.is_empty() {
         scene.note("nothing waits for you");
@@ -68,7 +80,24 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, ctx: &Ctx) {
         if i > 0 {
             scene.rule();
         }
-        action_block(scene, item, ctx);
+        if in_next == Some(item.key.as_str()) {
+            shown_in_next(scene, item, ctx);
+        } else {
+            action_block(scene, item, ctx, false);
+        }
+    }
+}
+
+/// The action NEXT shows, in ACTIONS: its head and a pointer up; a click does the action.
+fn shown_in_next(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+    let draw = |scene: &mut Scene<Act>| {
+        head(scene, item, ctx, true);
+        look::say(scene, "↑ in NEXT: answer it there", theme::dim());
+        scene.end_line();
+    };
+    match click_of(item) {
+        Some(act) => scene.block(act, draw),
+        None => draw(scene),
     }
 }
 
@@ -105,12 +134,13 @@ fn head(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_chip_auto: bool) {
     scene.end_line();
 }
 
-/// An action as its block (action-block.mjs): the head, its text, its answers.
-pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
+/// An action as its block (action-block.mjs): the head, its text, its
+/// answers. `is_keyed`: NEXT's, whose answers the digit keys give too (`key`).
+pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_keyed: bool) {
     let draw = |scene: &mut Scene<Act>| {
         head(scene, item, ctx, true);
         text(scene, item, ctx);
-        answers(scene, item);
+        answers(scene, item, is_keyed);
     };
     match click_of(item) {
         Some(act) => scene.block(act, draw),
@@ -150,10 +180,10 @@ fn text(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
             Some(at) => item.text.split_at(at + 1),
             None => (item.text.as_str(), ""),
         };
-        look::say(scene, question, theme::bold());
+        lines(scene, question, theme::bold());
         if !rest.trim().is_empty() {
             scene.end_line();
-            look::say(scene, rest.trim(), theme::dim());
+            lines(scene, rest.trim(), theme::dim());
         }
     } else if let Some(word) = actor::view::word(ctx, &item.key) {
         look::flow(scene, &look::spans(word));
@@ -163,12 +193,26 @@ fn text(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
     } else {
         let (text, spot) = spot_of(item);
         let style = if item.is_waiting() { theme::dim() } else { Style::new() };
-        look::say(scene, text, style);
+        lines(scene, text, style);
         if !spot.is_empty() {
             flow_after(scene, &[look::dim(spot)], 2);
         }
     }
     scene.end_line();
+}
+
+/// Text whose lines stay lines and whose empty lines stay empty (a plan's paragraphs).
+fn lines(scene: &mut Scene<Act>, text: &str, style: Style) {
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            scene.end_line();
+        }
+        if line.trim().is_empty() {
+            scene.newline();
+        } else {
+            look::say(scene, line, style);
+        }
+    }
 }
 
 /// What a merge's two clicks need (merge.mjs `mergeText`): its blockers, dim, or the clicks.
@@ -196,18 +240,17 @@ fn merge_text(scene: &mut Scene<Act>, text: &str, offer: &MergeOffer) {
     look::say(scene, &format!("· two clicks {verb}{after}"), theme::dim());
 }
 
-/// Whether option `at` (from 0) is the one recommended: by its stored text, its label or its number.
-fn is_recommended(action: &Action, option: &stored::DecideOption, at: usize) -> bool {
-    action.recommend.as_deref().is_some_and(|recommend| {
-        let recommend = recommend.trim();
-        recommend == option.answer || recommend == option.label || recommend == (at + 1).to_string()
-    })
+/// Whether `option` is the one recommended: `wt:action` stores its label,
+/// a number given resolved (action-block.mjs: the stored option, exactly).
+fn is_recommended(action: &Action, option: &stored::DecideOption) -> bool {
+    action.recommend.as_deref() == Some(option.answer.as_str())
 }
 
 /// The answer area: none for an automatic item or a waiting try; the answer
 /// on its way; a decide's options, numbered like a menu, each answering on
-/// all of its lines; else a button per answer, a green ✓ alone.
-fn answers(scene: &mut Scene<Act>, item: &Item) {
+/// all of its lines; else a button per answer, a green ✓ alone. Keyed (in
+/// NEXT): the numbers are keys, cyan, and each button carries its own.
+fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool) {
     let (Some(action), Some(file)) = (&item.action, &item.file) else {
         return;
     };
@@ -216,7 +259,7 @@ fn answers(scene: &mut Scene<Act>, item: &Item) {
     }
     if let Some((answer, waits)) = shown_answer(item) {
         scene.atom(vec![look::span(format!("→ {answer}"), theme::tone(Tone::Yellow))]);
-        look::say(scene, &format!("· {waits}"), theme::dim());
+        look::say(scene, &waits, theme::dim());
         scene.end_line();
         return;
     }
@@ -230,12 +273,16 @@ fn answers(scene: &mut Scene<Act>, item: &Item) {
         for (at, option) in options.iter().enumerate() {
             scene.block(answer(&option.answer), |scene| {
                 let number = format!("{}.", at + 1);
-                let style = theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD);
+                let style = if is_keyed {
+                    theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new()
+                };
                 scene.atom(vec![look::span(&number, style)]);
                 // The label and its description hang under the label's start.
                 scene.indent(number.len() as u16 + 1);
                 look::say(scene, &option.label, theme::bold());
-                if is_recommended(action, option, at) {
+                if is_recommended(action, option) {
                     look::say(scene, "(Recommended)", theme::tone(Tone::Green));
                 }
                 if !option.description.is_empty() {
@@ -249,12 +296,74 @@ fn answers(scene: &mut Scene<Act>, item: &Item) {
     }
     let labels = stored::answers_of(action);
     if labels.is_empty() {
-        scene.button("✓", Tone::Green, answer("✓"));
+        let label = if is_keyed { "1 ✓" } else { "✓" };
+        scene.button(label, Tone::Green, answer("✓"));
     }
-    for label in &labels {
-        scene.button(label, Tone::Cyan, answer(label));
+    for (at, label) in labels.iter().enumerate() {
+        let shown = if is_keyed {
+            format!("{} {label}", at + 1)
+        } else {
+            label.clone()
+        };
+        scene.button(&shown, Tone::Cyan, answer(label));
     }
     scene.end_line();
+}
+
+/// The answers the digit keys give for `item` in NEXT, key 1 first: its
+/// options or its buttons as drawn; none once it is answered, for an
+/// automatic item or a waiting try.
+pub fn keyed(item: &Item) -> Vec<String> {
+    let Some(action) = &item.action else { return vec![] };
+    if item.file.is_none() || item.is_auto || item.is_waiting() || shown_answer(item).is_some() {
+        return vec![];
+    }
+    let answers = stored::answers_of(action);
+    if answers.is_empty() {
+        vec!["✓".into()]
+    } else {
+        answers
+    }
+}
+
+/// The key of the option Enter gives: a decide's recommended one, from 0.
+/// Never a button: a try's first is `looks good`, said only once it was tried.
+pub fn recommended(item: &Item) -> Option<usize> {
+    let action = item.action.as_ref().filter(|action| action.kind == "decide")?;
+    stored::options_of(action)
+        .iter()
+        .position(|option| is_recommended(action, option))
+}
+
+/// What NEXT says under a block the keys answer: which keys, what Enter does.
+pub fn key_hint(item: &Item) -> Option<String> {
+    let count = keyed(item).len();
+    let keys = match count {
+        0 => return None,
+        1 => "press 1 to answer".to_string(),
+        n => format!("press 1-{n} to answer"),
+    };
+    let enter = recommended(item).map_or(String::new(), |at| format!(" · enter: {} (Recommended)", at + 1));
+    Some(format!("{keys}{enter} · or click"))
+}
+
+/// A digit or Enter (`act::key`): the answer it gives the action NEXT
+/// shows, through the click's path; any other key, or one NEXT has no
+/// answer for, is left to the others.
+pub fn key(app: &mut Overview, key: KeyEvent) -> Option<Flow> {
+    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        return None;
+    }
+    let item = app.orchestration().and_then(in_next)?.clone();
+    let answers = keyed(&item);
+    let at = match key.code {
+        KeyCode::Char(digit @ '1'..='9') => digit as usize - '1' as usize,
+        KeyCode::Enter => recommended(&item)?,
+        _ => return None,
+    };
+    let answer_of = answers.get(at)?;
+    let (file, id) = (item.file.clone()?, item.action.as_ref()?.id);
+    Some(answer(app, &file, id, answer_of))
 }
 
 /// A row of UP NEXT in NEXT (next.mjs): kind and who, its text right after
@@ -630,7 +739,7 @@ mod tests {
             words: actor::view::no_words(),
         };
         let mut scene = Scene::new(width);
-        action_block(&mut scene, item, &ctx);
+        action_block(&mut scene, item, &ctx, false);
         scene.finish();
         let text = scene
             .lines
@@ -727,7 +836,7 @@ mod tests {
         let item = item_with(action.clone());
         let file = item.file.clone().unwrap();
         remember(&file, 77, "Rust + ratatui", TYPING);
-        let typing = "→ Rust + ratatui · typing it into its agent's pane …";
+        let typing = "→ Rust + ratatui typing it into its agent's pane …";
         let (text, scene) = drawn(&item, 60);
         assert_eq!(text.last().unwrap(), typing);
         assert!(
@@ -743,8 +852,72 @@ mod tests {
         // Once the delivery is done with, a read that has the answer takes over, with why it waits.
         remember(&file, 77, "Rust + ratatui", "at its next stop");
         let (text, _) = drawn(&item_with(action), 60);
-        assert_eq!(text.last().unwrap(), "→ Rust + ratatui · at its next stop");
+        assert_eq!(text.last().unwrap(), "→ Rust + ratatui at its next stop");
         assert!(!locked(&CLICKED).contains_key(&(file, 77)));
+    }
+
+    #[test]
+    fn in_next_the_digits_answer_what_is_drawn_and_enter_the_recommended() {
+        let item = item_with(decide());
+        assert_eq!(keyed(&item), ["Rust + ratatui", "Bun: flexbox"]);
+        assert_eq!(recommended(&item), Some(0));
+        assert_eq!(
+            key_hint(&item).as_deref(),
+            Some("press 1-2 to answer · enter: 1 (Recommended) · or click")
+        );
+        // A recommendation by number is resolved by wt:action; the overview matches the stored option only.
+        let by_number = item_with(Action {
+            recommend: Some("2".into()),
+            ..decide()
+        });
+        assert_eq!(recommended(&by_number), None);
+        let try_item = item_with(Action {
+            id: 5,
+            kind: "try".into(),
+            text: "the spike".into(),
+            ..Default::default()
+        });
+        assert_eq!(keyed(&try_item), ["looks good", "broken"]);
+        assert_eq!(recommended(&try_item), None, "enter never says a try looks good");
+        assert_eq!(key_hint(&try_item).as_deref(), Some("press 1-2 to answer · or click"));
+        let gitlab = super::super::GitlabState::default();
+        let mut scene = Scene::new(60);
+        let ctx = Ctx {
+            is_once: false,
+            folds: Default::default(),
+            gitlab: &gitlab,
+            now: 0,
+            main_name: "platform",
+            actor: actor::idle(),
+            words: actor::view::no_words(),
+        };
+        action_block(&mut scene, &try_item, &ctx, true);
+        scene.finish();
+        let last: String = scene.lines[2].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(last, " 1 looks good   2 broken ");
+        assert_eq!(answered_at(&scene, 1, 2).as_deref(), Some("looks good"));
+        let merge = item_with(Action {
+            id: 6,
+            kind: "merge".into(),
+            text: "ready".into(),
+            ..Default::default()
+        });
+        assert_eq!(keyed(&merge), ["✓"]);
+        let mut auto = item_with(decide());
+        auto.is_auto = true;
+        assert!(keyed(&auto).is_empty() && key_hint(&auto).is_none());
+    }
+
+    #[test]
+    fn a_plan_keeps_its_empty_lines() {
+        let plan = item_with(Action {
+            id: 8,
+            kind: "plan".into(),
+            text: "core first\n\nsee docs/rewrite-plan.md".into(),
+            ..Default::default()
+        });
+        let (text, _) = drawn(&plan, 60);
+        assert_eq!(text[1..4], ["core first", "", "see docs/rewrite-plan.md"]);
     }
 
     #[test]

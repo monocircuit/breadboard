@@ -189,21 +189,32 @@ pub fn say<A: Clone>(scene: &mut Scene<A>, text: &str, style: Style) {
     }
 }
 
-/// Facts parted by a dim ` · `: the separator ends the line before a break.
+/// Facts parted by a dim ` · `, each whole on a line when it fits one
+/// (`untested: 1 commit` never splits): the separator ends the line before a break.
 pub fn facts<A: Clone>(scene: &mut Scene<A>, facts: &[Fact]) {
-    let facts: Vec<&Fact> = facts
+    let parts: Vec<Vec<Span<'static>>> = facts
         .iter()
         .filter(|fact| !model::text_of(fact).trim().is_empty())
+        .map(|fact| spans(fact))
         .collect();
-    for (i, fact) in facts.iter().enumerate() {
-        let mut words = words_of(&spans(fact));
-        if i + 1 < facts.len()
-            && let Some(last) = words.last_mut()
-        {
-            last.push(dim(" ·"));
+    let room = scene.width();
+    whole(scene, &parts, room);
+}
+
+/// Parts parted by a dim ` · `, each whole on a line when `room` holds it,
+/// else at its words; the separator ends the line before a break, never starts one.
+pub fn whole<A: Clone>(scene: &mut Scene<A>, parts: &[Vec<Span<'static>>], room: u16) {
+    for (i, part) in parts.iter().enumerate() {
+        let mut atom = part.clone();
+        if i + 1 < parts.len() {
+            atom.push(dim(" ·"));
         }
-        for word in words {
-            scene.atom(word);
+        if width_of(&atom) <= room {
+            scene.atom(atom);
+        } else {
+            for word in words_of(&atom) {
+                scene.atom(word);
+            }
         }
     }
 }
@@ -315,17 +326,22 @@ mod tests {
     }
 
     #[test]
-    fn facts_wrap_at_words_with_the_separator_at_the_end() {
+    fn facts_stay_whole_with_the_separator_at_the_end() {
         let mut scene = Scene::<u8>::new(20);
         facts(
             &mut scene,
             &[
                 vec![model::Span::plain("#305"), model::Span::plain(" open")],
-                vec![model::Span::plain("waits for !316, !314")],
+                vec![model::Span::plain("untested: 1 commit")],
+                vec![model::Span::plain("waits for !316, !314, !318")],
             ],
         );
         scene.finish();
-        assert_eq!(text(&scene), ["#305 open · waits", "for !316, !314"]);
+        // A fact wider than a line wraps at its words.
+        assert_eq!(
+            text(&scene),
+            ["#305 open ·", "untested: 1 commit ·", "waits for !316,", "!314, !318"]
+        );
     }
 
     #[test]

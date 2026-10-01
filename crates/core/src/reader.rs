@@ -534,14 +534,17 @@ impl RemoteReader {
             }
             RemoteAsk::Everything => {
                 let main = self.main.clone();
-                let heads: Vec<String> = tokio::task::spawn_blocking(move || {
-                    git::remote_heads(&main).into_iter().map(|(_, branch)| branch).collect()
-                })
-                .await
-                .unwrap_or_default();
+                let refs = tokio::task::spawn_blocking(move || git::remote_heads(&main))
+                    .await
+                    .unwrap_or_default();
+                let head = refs
+                    .iter()
+                    .find(|(_, branch)| branch == "develop")
+                    .map(|(sha, _)| sha.clone());
+                let heads: Vec<String> = refs.into_iter().map(|(_, branch)| branch).collect();
                 read::read_everything(&self.gitlab, &heads)
                     .await
-                    .map(RemoteOf::Everything)
+                    .map(|remote| RemoteOf::Everything(EverythingRemote { head, ..remote }))
             }
         }
     }

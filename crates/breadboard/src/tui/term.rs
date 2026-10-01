@@ -4,7 +4,9 @@
 
 use super::page;
 use crossterm::event::{DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{
+    DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -29,7 +31,8 @@ impl Drop for Guard {
 }
 
 /// Takes the terminal over. crossterm's mouse capture asks for SGR reports
-/// (?1006) and any-motion tracking (?1003).
+/// (?1006) and any-motion tracking (?1003). Autowrap off (?7l), as Node: a
+/// glyph the terminal draws wider than we measure never wraps or scrolls.
 pub fn enter() -> io::Result<(Tty, Guard)> {
     IS_UI.with(|flag| flag.set(true));
     install_hook();
@@ -38,6 +41,7 @@ pub fn enter() -> io::Result<(Tty, Guard)> {
     execute!(
         io::stdout(),
         EnterAlternateScreen,
+        DisableLineWrap,
         EnableMouseCapture,
         EnableFocusChange,
         cursor::Hide
@@ -52,6 +56,7 @@ pub fn restore() {
         io::stdout(),
         DisableFocusChange,
         DisableMouseCapture,
+        EnableLineWrap,
         LeaveAlternateScreen,
         cursor::Show
     );

@@ -243,9 +243,36 @@ fn float_new_window(host: &str, before: &[(String, String)]) {
     hyprctl(&["--batch", &batch]);
 }
 
+/// A page of GitLab's (an MR, an issue, a job, a pipeline) as a popup next
+/// to the terminal (io.mjs `show`); any other page, an app's or a try's, in
+/// the tab group of its space (`open`).
+pub fn show_or_open(main: &Path, url: &str, group: &str) {
+    if is_gitlab_page(url) {
+        open_popup(main, url, group);
+    } else {
+        open_in_group(main, url, group);
+    }
+}
+
+/// Whether a url is a page of GitLab's that the overview shows as a popup.
+fn is_gitlab_page(url: &str) -> bool {
+    ["/-/merge_requests/", "/-/issues/", "/-/jobs/", "/-/pipelines/"]
+        .iter()
+        .any(|part| url.contains(part))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shows_gitlabs_pages_as_popups() {
+        assert!(is_gitlab_page(
+            "https://gitlab.com/monocircuit/platform/-/merge_requests/316"
+        ));
+        assert!(is_gitlab_page("https://gitlab.com/monocircuit/platform/-/jobs/9"));
+        assert!(!is_gitlab_page("http://localhost:3000/atlas"));
+    }
 
     #[test]
     fn escapes_a_query_as_url_search_params_does() {

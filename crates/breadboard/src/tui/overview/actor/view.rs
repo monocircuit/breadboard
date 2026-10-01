@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// How long a thing done stays in the log under the band.
-const SHOWN_MS: i64 = 120_000;
+const SHOWN_MS: i64 = 60_000;
 /// How many things done the log shows.
 const SHOWN: usize = 3;
 
@@ -217,20 +217,73 @@ pub fn button(scene: &mut Scene<Act>, ctx: &Ctx, label: &str, tone: Tone, act: A
     false
 }
 
-/// The log under the band: the last things done, newest first, for two minutes.
-pub fn log(page: &mut Page<Act>, ctx: &Ctx) {
-    let shown: Vec<_> = ctx
+/// The log in the band, right of the view's name: the newest thing done in
+/// the last minute and how many more, one row, so the rows under the band
+/// never move when it comes or goes (frame-scroll critic).
+pub fn log(header: crate::tui::Header, ctx: &Ctx) -> crate::tui::Header {
+    let mut shown = ctx
         .actor
         .did
         .iter()
         .filter(|did| ctx.now - did.at < SHOWN_MS)
-        .take(SHOWN)
-        .collect();
-    let Some(oldest) = shown.last() else { return };
-    let left = SHOWN_MS - (ctx.now - oldest.at);
-    page.section(Section::new("DONE").sticky().plain(), |scene| {
-        scene.redraw_in(Duration::from_millis(left.max(0) as u64 + 50));
-        for did in &shown {
+        .take(SHOWN);
+    let Some(newest) = shown.next() else { return header };
+    let more: Vec<_> = shown.collect();
+    let oldest = more.last().copied().unwrap_or(newest);
+    let left = Duration::from_millis((SHOWN_MS - (ctx.now - oldest.at)).max(0) as u64 + 50);
+    let (mark, tone) = match newest.paint {
+        Paint::Green => ("✓", Some(Tone::Green)),
+        Paint::Red => ("✗", Some(Tone::Red)),
+        Paint::Yellow => ("◐", Some(Tone::Yellow)),
+        _ => ("·", None),
+    };
+    let style = tone.map_or_else(theme::dim, theme::tone);
+    // No time here, the room is short: DONE at the end has it.
+    let entry = vec![
+        look::span(format!("{mark} "), style),
+        // A few words, so the band never cuts it: DONE at the end has it whole.
+        look::span(short_of(&newest.text), ratatui::style::Style::new()),
+    ];
+    header.log(entry, more.len(), left)
+}
+
+/// A thing done in a few words: what comes before its `: `, a worktree named by its issue (`#305`).
+pub fn short_of(text: &str) -> String {
+    let text = text.split(" · ").next().unwrap_or(text);
+    let mut parts = text.split(": ");
+    let mut head = parts.next().unwrap_or(text).to_string();
+    // `try #1` says too little: what happened to it too.
+    if head.chars().count() < 12
+        && let Some(next) = parts.next()
+    {
+        head = format!("{head}: {next}");
+    }
+    head.split(' ')
+        .map(|word| {
+            let digits = word.chars().take_while(char::is_ascii_digit).count();
+            if digits > 0 && word[digits..].starts_with('-') && word.len() > digits + 1 {
+                format!("#{}", &word[..digits])
+            } else {
+                word.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// DONE at the end of the page, lazygit's command log: everything this
+/// overview did, newest first, each with its time and in full; at the end,
+/// so it never moves a row above it. Nothing in a print.
+pub fn done(page: &mut Page<Act>, ctx: &Ctx) {
+    if ctx.actor.did.is_empty() {
+        return;
+    }
+    page.section(Section::new("DONE"), |scene| {
+        scene.note(format!(
+            "{} · what this overview did, newest first",
+            breadboard_core::model::counted(ctx.actor.did.len() as u64, "thing")
+        ));
+        for did in &ctx.actor.did {
             let (mark, tone) = match did.paint {
                 Paint::Green => ("✓", Some(Tone::Green)),
                 Paint::Red => ("✗", Some(Tone::Red)),
@@ -238,17 +291,17 @@ pub fn log(page: &mut Page<Act>, ctx: &Ctx) {
                 _ => ("·", None),
             };
             let style = tone.map_or_else(theme::dim, theme::tone);
-            scene.pad_to(1);
             let seconds = (did.at / 1000).rem_euclid(60);
             scene.atom(vec![look::dim(format!("{}:{seconds:02}", hm(did.at)))]);
             scene.atom(vec![look::span(mark, style)]);
-            scene.indent(12);
+            scene.indent(11);
+            scene.pad_to(11);
             let text = if tone.is_some() {
-                look::span(&did.text, ratatui::style::Style::new())
+                ratatui::style::Style::new()
             } else {
-                look::dim(&did.text)
+                theme::dim()
             };
-            look::flow(scene, &[text]);
+            look::flow(scene, &[look::span(&did.text, text)]);
             scene.indent(0);
             scene.end_line();
         }
@@ -258,6 +311,19 @@ pub fn log(page: &mut Page<Act>, ctx: &Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_a_thing_done_in_a_few_words() {
+        assert_eq!(
+            short_of("typed into the agent of 305-overview-gitlab-refresh: [overview] x: y"),
+            "typed into the agent of #305"
+        );
+        assert_eq!(short_of("merged !316"), "merged !316");
+        assert_eq!(
+            short_of("removing the worktree 303-a-b: pnpm wt:remove 303-a-b"),
+            "removing the worktree #303"
+        );
+    }
 
     #[test]
     fn says_where_the_end_stands() {

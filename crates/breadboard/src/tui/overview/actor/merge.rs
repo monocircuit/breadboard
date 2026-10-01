@@ -298,11 +298,10 @@ impl Running {
             self.poster.post(move |app: &mut Overview| {
                 for (who, line, is_in) in told {
                     if is_in {
-                        app.actor
-                            .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                        app.actor.log(Paint::Green, format!("told {who}: {line}"));
                     } else {
                         app.actor
-                            .log(Paint::Yellow, format!("the agent of {who} gets once it can: {line}"));
+                            .log(Paint::Yellow, format!("{who} gets it once it can: {line}"));
                     }
                 }
             });
@@ -518,8 +517,7 @@ pub fn retry_lines(actor: &Actor, dirs: Vec<PathBuf>) {
         (!typed.is_empty()).then(|| {
             Box::new(move |app: &mut Overview| {
                 for (who, line) in typed {
-                    app.actor
-                        .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                    app.actor.log(Paint::Green, format!("told {who}: {line}"));
                 }
             }) as super::Effect
         })

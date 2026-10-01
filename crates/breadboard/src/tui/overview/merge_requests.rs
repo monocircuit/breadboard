@@ -6,10 +6,12 @@
 //! title's, nothing is cut (#304). Hover lights a whole row (#296); a click
 //! opens the MR, its buttons resolve conflicts or merge on two clicks.
 
+use super::actor::merge::{Merge, Phase};
 use super::{Act, Ctx, Fold, look};
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Page, Scene};
+use breadboard_core::model::Paint;
 use breadboard_core::model::mr_blockers::{Progress, Reason};
 use breadboard_core::model::orchestration::{MergeRequests, MrFacts, MrRow, OrchestrationModel};
 use breadboard_core::model::order::Go;
@@ -23,11 +25,12 @@ use ratatui::text::{Line, Span};
 const MIN_TITLE: u16 = 24;
 /// The fewest columns the bar keeps before its counts go (#294 `MIN_BAR`).
 const MIN_BAR: u16 = 8;
-/// The most: a gauge a glance reads, not a rule across the row (#294's sketch: 26).
-const MAX_BAR: u16 = 24;
 /// The status of an open MR nothing holds up, and its button.
 const READY: &str = "ready to merge";
 const MERGE: &str = "merge";
+/// The button once a first click armed it: as wide as `ready to merge` and its
+/// button, so nothing on the row moves (merge.mjs `mergeText`'s armed words).
+const ARMED: &str = "click again to merge";
 /// Below this many columns for the title the row is one flow of words, no columns.
 const MIN_COLUMNS: u16 = 16;
 
@@ -87,8 +90,8 @@ impl Columns {
             // Two columns between the lanes and the iids, as the Node overview.
             graph: if lanes > 0 { lanes + 2 } else { 0 },
             iid: facts().map(|mr| width(&format!("!{}", mr.iid))).max().unwrap_or(0),
-            mark: facts().map(|mr| width(&mr.pipeline.text)).max().unwrap_or(0),
-            status: facts().map(|mr| width_of(&status_of(mr))).max().unwrap_or(0),
+            mark: facts().map(|mr| width_of(&mark_of(mr))).max().unwrap_or(0),
+            status: facts().map(|mr| width_of(&status_of(mr, None))).max().unwrap_or(0),
             title: facts().map(|mr| width(&mr.title)).max().unwrap_or(0),
         }
     }
@@ -137,7 +140,7 @@ fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
         let Some(mr) = &row.mr else { continue };
         let lanes = vec![Span::raw(" ".repeat(columns.graph as usize))];
         scene.block(Act::Go(show(mr)), |scene| {
-            look::gutter(scene, lanes.clone(), lanes, |scene| head(scene, mr, &columns));
+            look::gutter(scene, lanes.clone(), lanes, |scene| head(scene, mr, &columns, None));
         });
     }
 }
@@ -165,7 +168,7 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
     let rest = vec![look::dim(format!("{:<width$}", row.below))];
     scene.block(Act::Go(show(mr)), |scene| {
         look::gutter(scene, first, rest, |scene| {
-            head(scene, mr, columns);
+            head(scene, mr, columns, merge_of(ctx, mr));
             let at = columns.title_at();
             if let Some(progress) = mr.progress {
                 let beside = if columns.status > 0 { columns.status + 2 } else { 0 };
@@ -177,7 +180,7 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
                     scene.end_line();
                 }
             }
-            if mr.conflict.is_some() || !mr.reasons.is_empty() {
+            if mr.conflict.is_some() || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
                 let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
                 scene.indent(at);
                 scene.pad_to(at);
@@ -211,34 +214,67 @@ fn node(graph: &str, mr: &MrFacts, width: usize) -> Vec<Span<'static>> {
     vec![look::dim(before), Span::styled("●", style), look::dim(after)]
 }
 
+/// The column after `!iid`: the MR's pipeline mark, a merged one's too
+/// (§11.3): GitLab merges on a red pipeline as well, and that must still
+/// show under `N merged`.
+fn mark_of(mr: &MrFacts) -> Vec<Span<'static>> {
+    look::spans(std::slice::from_ref(&mr.pipeline))
+}
+
+/// The overview's merge of an MR: armed, running, merged or failed.
+fn merge_of<'a>(ctx: &'a Ctx, mr: &MrFacts) -> Option<&'a Merge> {
+    ctx.actor.merges.of.get(&mr.iid)
+}
+
+/// Why the overview's last merge of an MR failed.
+fn failed_of<'a>(ctx: &'a Ctx, mr: &MrFacts) -> Option<&'a str> {
+    merge_of(ctx, mr)
+        .filter(|merge| merge.phase == Phase::Failed)
+        .and_then(|merge| merge.error.as_deref())
+}
+
 /// What an MR's status says, at the right of its head: `merged 2 h ago`, or
-/// `ready to merge` and the button that merges on two clicks.
-fn status_of(mr: &MrFacts) -> Vec<Span<'static>> {
-    let Some(status) = &mr.status else { return vec![] };
+/// `ready to merge` and the button that merges on two clicks; once the first
+/// click armed it, the button says so in red, then `merging …`, `merged`.
+fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static>> {
+    let Some(status) = mr.status.as_ref() else {
+        return vec![];
+    };
     let mut spans = look::spans(std::slice::from_ref(status));
-    if is_ready(mr) {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(format!(" {MERGE} "), Tone::Green.button()));
+    if !is_ready(mr) {
+        return spans;
     }
+    match merge.map(|merge| merge.phase) {
+        Some(Phase::Armed) => return vec![Span::styled(format!(" {ARMED} "), Tone::Red.button())],
+        Some(Phase::Running) => return vec![look::span("merging …", theme::tone(Tone::Yellow))],
+        Some(Phase::Merged) => return vec![look::span("merged", theme::tone(Tone::Green))],
+        Some(Phase::Failed) | None => {}
+    }
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(format!(" {MERGE} "), Tone::Green.button()));
     spans
 }
 
 /// `!iid  mark  title  status`: the title wraps in its column, the status at
-/// the right of its first line; a narrow row is one flow of words.
-fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
+/// the right of its first line; a narrow row is one flow of words. The
+/// layout is the one of the status before any click: arming, merging never
+/// move the row.
+fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&Merge>) {
     let iid = if mr.is_merged {
         look::dim(format!("!{}", mr.iid))
     } else {
         look::bold(format!("!{}", mr.iid))
     };
     let title = title_spans(&mr.title, mr.is_merged);
-    // A merged one's pipeline passed long ago: quiet, as the rest of its row.
-    let mark = if mr.is_merged {
-        vec![look::dim(&mr.pipeline.text)]
-    } else {
-        look::spans(std::slice::from_ref(&mr.pipeline))
+    let mark = mark_of(mr);
+    let status = {
+        let mut status = status_of(mr, merge);
+        let short = width_of(&status_of(mr, None)).saturating_sub(width_of(&status));
+        if short > 0 {
+            status.insert(0, Span::raw(" ".repeat(short as usize)));
+        }
+        status
     };
-    let status = status_of(mr);
     if mr.is_merged {
         look::ticks(scene);
     }
@@ -250,7 +286,9 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
         scene.end_line();
         scene.indent(2);
         scene.atom(vec![iid]);
-        scene.atom(mark);
+        for rect in scene.atom(mark) {
+            pipeline_region(scene, mr, rect);
+        }
         look::flow(scene, &title);
         if !status.is_empty() {
             let x = scene.x();
@@ -258,6 +296,7 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
             merge_region(
                 scene,
                 mr,
+                merge,
                 &status,
                 rects.first().map(|rect| rect.x).unwrap_or(x),
                 scene.y(),
@@ -276,6 +315,7 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
     let mut left = Scene::<Act>::new(at + span);
     left.atom(vec![iid]);
     left.pad_to(columns.iid + 2);
+    let mark_width = width_of(&mark);
     left.atom_gap(mark, 0);
     left.pad_to(at);
     left.indent(at);
@@ -283,6 +323,7 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
     left.finish();
     scene.end_line();
     let top = scene.y();
+    pipeline_region(scene, mr, Rect::new(columns.iid + 2, top, mark_width, 1));
     let status_width = width_of(&status);
     let is_beside = !status.is_empty() && at + span + 2 + status_width <= width;
     for (i, line) in left.lines.into_iter().enumerate() {
@@ -291,7 +332,7 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
             let x = width - status_width;
             pad(&mut spans, x);
             spans.extend(status.iter().cloned());
-            merge_region(scene, mr, &status, x, top);
+            merge_region(scene, mr, merge, &status, x, top);
         }
         scene.lines.push(Line::from(spans));
     }
@@ -301,9 +342,35 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns) {
         let mut spans = Vec::new();
         pad(&mut spans, x);
         spans.extend(status.iter().cloned());
-        merge_region(scene, mr, &status, x, scene.y());
+        merge_region(scene, mr, merge, &status, x, scene.y());
         scene.lines.push(Line::from(spans));
     }
+}
+
+/// An MR's pipeline mark opens its pipeline (§3: `!iid` and the mark are
+/// links), a merged one's too: a failed one's page is a click away from its
+/// row; the rest of the row opens the MR.
+fn pipeline_region(scene: &mut Scene<Act>, mr: &MrFacts, area: Rect) {
+    let Some(url) = mr.pipeline.url.as_ref() else {
+        return;
+    };
+    let tone = match mr.pipeline.paint {
+        Paint::Green => Tone::Green,
+        Paint::Red => Tone::Red,
+        Paint::Yellow => Tone::Yellow,
+        _ => Tone::Gray,
+    };
+    scene.regions.push(Region {
+        area,
+        target: Target::Button {
+            label: mr.pipeline.text.clone(),
+            tone,
+            action: Act::Go(Go::Show {
+                url: url.clone(),
+                dir: mr.dir.clone(),
+            }),
+        },
+    });
 }
 
 /// An open MR nothing holds up: its status offers the merge.
@@ -320,19 +387,24 @@ fn pad(spans: &mut Vec<Span<'static>>, x: u16) {
 }
 
 /// The region of the merge button in a status drawn at `x`, line `y`: two
-/// clicks merge (merge.mjs `clickMerge`), the actor arms and merges.
-fn merge_region(scene: &mut Scene<Act>, mr: &MrFacts, status: &[Span<'static>], x: u16, y: u16) {
+/// clicks merge (merge.mjs `clickMerge`), the actor arms and merges; none
+/// while it merges.
+fn merge_region(scene: &mut Scene<Act>, mr: &MrFacts, merge: Option<&Merge>, status: &[Span<'static>], x: u16, y: u16) {
     if !is_ready(mr) {
         return;
     }
-    let label = format!(" {MERGE} ");
-    let width = Span::raw(label.as_str()).width() as u16;
+    let (label, tone) = match merge.map(|merge| merge.phase) {
+        Some(Phase::Armed) => (ARMED, Tone::Red),
+        Some(Phase::Running | Phase::Merged) => return,
+        Some(Phase::Failed) | None => (MERGE, Tone::Green),
+    };
+    let width = Span::raw(format!(" {label} ")).width() as u16;
     let at = x + width_of(status) - width;
     scene.regions.push(Region {
         area: Rect::new(at, y, width, 1),
         target: Target::Button {
-            label: MERGE.into(),
-            tone: Tone::Green,
+            label: label.into(),
+            tone,
             action: Act::Go(Go::Merge {
                 branch: mr.branch.clone(),
                 action: None,
@@ -387,8 +459,7 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
     let size = match &label {
         Some(label) => width - Span::raw(label.as_str()).width() as u16 - 2,
         None => width,
-    }
-    .min(MAX_BAR) as usize;
+    } as usize;
     let filled = (size * ticked + total / 2).checked_div(total).unwrap_or(0);
     let open = total - ticked;
     let is_only_acceptance = open > 0 && acceptance.1 - acceptance.0 == open;
@@ -409,6 +480,12 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
 /// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
 fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     let mut parts: Vec<Vec<Span<'static>>> = Vec::new();
+    if let Some(error) = failed_of(ctx, mr) {
+        parts.push(vec![look::span(
+            format!("merge failed: {error}"),
+            theme::tone(Tone::Red),
+        )]);
+    }
     let button = "resolve\u{a0}merge\u{a0}conflicts";
     match &mr.conflict {
         None => {}
@@ -508,15 +585,10 @@ mod tests {
         let wide = text(&bar(progress, 50));
         assert!(wide.ends_with("  9/12 boxes · work 9/9 · acceptance 0/3"), "{wide}");
         assert_eq!(Span::raw(wide.as_str()).width(), 50);
-        // Wider than that: the bar stays a gauge, the counts follow it.
-        assert_eq!(
-            text(&bar(progress, 120)),
-            format!(
-                "{}{}  9/12 boxes · work 9/9 · acceptance 0/3",
-                "━".repeat(18),
-                "─".repeat(6)
-            )
-        );
+        // Wider: the bar takes the room it is given, the counts at its end (#294).
+        let wide = text(&bar(progress, 80));
+        assert_eq!(Span::raw(wide.as_str()).width(), 80);
+        assert!(wide.starts_with(&"━".repeat(30)), "{wide}");
         assert!(text(&bar(progress, 20)).ends_with("  9/12 boxes"));
         assert!(text(&bar(progress, 15)).ends_with("  9/12"));
         assert_eq!(text(&bar(progress, 8)), "━━━━━━──");
@@ -603,7 +675,7 @@ mod tests {
         };
         let columns = Columns::of(&mrs);
         let mut scene = Scene::<Act>::new(70);
-        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns);
+        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
         scene.finish();
         let lines = lines(&scene);
         assert!(lines[0].starts_with("!311  ✓ passed  feat(x): one two"), "{lines:?}");
@@ -617,7 +689,7 @@ mod tests {
         assert_eq!(button.area, Rect::new(63, 0, 7, 1));
         // Too narrow beside the title: the status on a line of its own, the button with it.
         let mut scene = Scene::<Act>::new(60);
-        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns);
+        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
         scene.finish();
         let lines = self::lines(&scene);
         assert!(
@@ -650,17 +722,113 @@ mod tests {
         };
         let columns = Columns::of(&mrs);
         let mut scene = Scene::<Act>::new(80);
-        head(&mut scene, mrs.merged[0].mr.as_ref().unwrap(), &columns);
+        head(&mut scene, mrs.merged[0].mr.as_ref().unwrap(), &columns, None);
         scene.finish();
         let lines = lines(&scene);
-        assert!(lines[0].ends_with("merged 25 h ago"), "{lines:?}");
+        // Its pipeline as an open one's, `merged <ago>` dim at the right (§11.3).
+        assert!(
+            lines[0].starts_with("!311  ✓ passed  fix(breadboard): the orchestrator"),
+            "{lines:?}"
+        );
+        assert!(lines[0].ends_with("  merged 25 h ago"), "{lines:?}");
         assert!(lines.len() > 1 && lines[1].starts_with(&" ".repeat(columns.title_at() as usize)));
+        assert!(lines.iter().all(|line| Span::raw(line.as_str()).width() <= 80));
         let title: Vec<&str> = lines
             .iter()
-            .map(|line| line.trim_end().trim_end_matches("merged 25 h ago"))
+            .map(|line| {
+                line.trim_end()
+                    .trim_end_matches("merged 25 h ago")
+                    .trim_start_matches("!311  ✓ passed")
+            })
             .flat_map(str::split_whitespace)
             .collect();
         assert!(title.join(" ").contains(long), "{lines:?}");
         assert!(scene.regions.is_empty());
+    }
+
+    #[test]
+    fn an_armed_merge_says_so_on_its_button_and_moves_nothing() {
+        assert_eq!(
+            Span::raw(format!("{READY}  {MERGE} ")).width(),
+            Span::raw(format!(" {ARMED} ")).width()
+        );
+        let ready = breadboard_core::model::Span::new(READY, breadboard_core::model::Paint::Green);
+        let mrs = MergeRequests {
+            open: vec![MrRow {
+                number: Some(302),
+                graph: "●".into(),
+                below: String::new(),
+                mr: Some(facts("feat(x): one two three four five six seven", Some(ready))),
+            }],
+            ..Default::default()
+        };
+        let columns = Columns::of(&mrs);
+        let mr = mrs.open[0].mr.as_ref().unwrap();
+        let draw = |phase: Option<Phase>| {
+            let merge = phase.map(|phase| Merge {
+                phase,
+                error: None,
+                seq: 0,
+            });
+            let mut scene = Scene::<Act>::new(70);
+            head(&mut scene, mr, &columns, merge.as_ref());
+            scene.finish();
+            scene
+        };
+        let (before, armed, running) = (draw(None), draw(Some(Phase::Armed)), draw(Some(Phase::Running)));
+        let armed_lines = lines(&armed);
+        assert!(armed_lines[0].ends_with(" click again to merge "), "{armed_lines:?}");
+        // The title wraps where it did: only the status changed.
+        for scene in [&armed, &running] {
+            let lines = lines(scene);
+            assert_eq!(lines.len(), self::lines(&before).len());
+            assert_eq!(lines[1..], self::lines(&before)[1..]);
+            assert_eq!(lines[0][..40], self::lines(&before)[0][..40]);
+        }
+        let button = armed.regions.iter().find(|region| region.is_button()).expect("armed");
+        assert_eq!(button.area, Rect::new(48, 0, 22, 1));
+        assert!(matches!(&button.target, Target::Button { label, tone: Tone::Red, .. } if label == ARMED));
+        assert!(running.regions.iter().all(|region| !region.is_button()));
+        assert!(lines(&running)[0].trim_end().ends_with("merging …"));
+    }
+
+    #[test]
+    fn the_pipeline_mark_opens_its_pipeline() {
+        // A merged MR's too: GitLab merges on a red pipeline as well.
+        for is_merged in [false, true] {
+            let mut mr = facts(
+                "fix(x): y",
+                is_merged.then(|| breadboard_core::model::Span::dim("merged 2 h ago")),
+            );
+            mr.is_merged = is_merged;
+            mr.pipeline.url = Some("https://gitlab/pipelines/9".into());
+            let mrs = MergeRequests {
+                open: vec![MrRow {
+                    number: Some(302),
+                    graph: String::new(),
+                    below: String::new(),
+                    mr: Some(mr),
+                }],
+                ..Default::default()
+            };
+            let columns = Columns::of(&mrs);
+            for width in [70, 20] {
+                let mut scene = Scene::<Act>::new(width);
+                head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
+                scene.finish();
+                let found = scene
+                    .regions
+                    .iter()
+                    .find(|region| region.is_button())
+                    .expect("its mark");
+                let line = &lines(&scene)[found.area.y as usize];
+                let x = line.chars().take_while(|ch| *ch != '✓').count() as u16;
+                assert_eq!((found.area.x, found.area.width), (x, 8), "{width}: {line}");
+                assert!(
+                    matches!(found.action(), Act::Go(Go::Show { url, .. }) if url.ends_with("/pipelines/9")),
+                    "{width}"
+                );
+            }
+        }
     }
 }

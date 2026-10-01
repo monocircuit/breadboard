@@ -5,13 +5,13 @@
 //! section on its own (#306); a click on a row opens what it names.
 
 mod acts;
+mod diff;
 mod editor;
 mod started;
 
 pub use acts::State;
 
 use super::{Act, Ctx, Overview, look};
-use crate::tui::scene::{Region, Target};
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Flow, KeyEvent, Page, Scene, Section};
 use breadboard_core::check::CheckState;
@@ -22,7 +22,6 @@ use breadboard_core::herdr;
 use breadboard_core::model::Tree;
 use breadboard_core::model::counted;
 use breadboard_core::model::develop::{Develop, Migrations};
-use breadboard_core::model::diff::{Area, Change, Diff, bar_of};
 use breadboard_core::model::tree::{check_fact, mr_state, pipeline_mark, tokens};
 use breadboard_core::model::worktree::{IssueBoxes, PipelineSection, WhereRow, WorktreeModel};
 use breadboard_core::reader::Model;
@@ -34,16 +33,8 @@ use std::path::Path;
 
 /// The labels' column of the tables (WORK, AGENT, migrations).
 const LABEL: u16 = 8;
-/// How many areas DIFF names, the rest summed up.
-const AREAS: usize = 6;
 /// How many merges DEVELOP names.
 const MERGES: usize = 6;
-/// The bars of DIFF, at their widest.
-const BAR: u64 = 24;
-/// How many files of an area DIFF lists under it.
-const FILES: usize = 5;
-/// Where a file's path starts in DIFF: after its letter.
-const FILE_AT: u16 = 5;
 
 /// A click in the view: what it starts is kept in the app's state of the view.
 pub fn act(app: &mut Overview, act: Act) -> Flow {
@@ -143,14 +134,19 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
         Err(why) => page.failed("PIPELINE", why),
     }
     if let Some(diff) = &local.diff {
-        page.section("DIFF", |scene| diff_of(scene, diff, &local.dir));
+        page.section("DIFF", |scene| {
+            scene.note(diff::note(diff));
+            diff::diff_of(scene, diff, &local.dir);
+        });
     }
     if let Some(develop) = local
         .develop
         .as_ref()
         .filter(|develop| !develop.merges.is_empty() || develop.direct > 0)
     {
-        page.section("DEVELOP", |scene| develop_of(scene, develop, model, &local.dir));
+        page.section("DEVELOP", |scene| {
+            develop_of(scene, develop, model.project_url.as_deref(), &local.dir)
+        });
     }
     if !tree.has_env {
         page.section("STACK", |scene| {
@@ -199,13 +195,16 @@ fn open_mr(scene: &mut Scene<Act>, mr: &OpenMr) {
         _ if mr.is_draft => (" draft", theme::dim()),
         _ => (" ready", theme::tone(Tone::Green)),
     };
-    scene.atom(vec![
-        look::span(format!("!{}", mr.iid), Style::new()),
-        look::span(state, style),
-    ]);
-    scene.atom(look::spans(&[pipeline_mark(mr.pipeline.as_ref())]));
-    scene.indent(scene.x() + 1);
-    look::say(scene, &mr.title, Style::new());
+    scene.atom_gap(
+        vec![
+            look::span(format!("!{}", mr.iid), Style::new()),
+            look::span(state, style),
+        ],
+        2,
+    );
+    scene.atom_gap(look::spans(&[pipeline_mark(mr.pipeline.as_ref())]), 2);
+    scene.indent(scene.x() + 2);
+    say_gap(scene, &mr.title, Style::new(), 2);
     scene.indent(0);
 }
 
@@ -337,7 +336,7 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
             };
             look::say(scene, &hint, theme::dim());
             if let Some(error) = removal.and_then(|removal| removal.error("wt:remove")) {
-                look::say(scene, &error, theme::tone(Tone::Red));
+                say_gap(scene, &error, theme::tone(Tone::Red), 2);
             }
         });
         return;
@@ -449,8 +448,7 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
 }
 
 fn issue(scene: &mut Scene<Act>, boxes: &IssueBoxes) {
-    let all = if boxes.done == boxes.total { " ✓" } else { "" };
-    scene.note(format!("#{} · {}/{} done{all}", boxes.iid, boxes.done, boxes.total));
+    scene.note(format!("#{}  {}/{} done", boxes.iid, boxes.done, boxes.total));
     for group in &boxes.groups {
         scene.atom(vec![look::bold(group.heading.as_deref().unwrap_or("—"))]);
         let count = format!("{}/{}", group.done, group.total);
@@ -527,9 +525,8 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
         scene.end_line();
         for (line, target) in &log.lines {
             let draw = |scene: &mut Scene<Act>| {
-                scene.pad_to(6);
                 scene.indent(6);
-                look::say(scene, line, if target.is_some() { Style::new() } else { theme::dim() });
+                spaced(scene, line, if target.is_some() { Style::new() } else { theme::dim() });
                 scene.indent(0);
             };
             match target {
@@ -548,304 +545,9 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
     }
 }
 
-/// `█` added green, `░` removed red, scaled so `max` fills `BAR`.
-fn bar(added: u64, removed: u64, max: u64, cells: u64) -> Vec<Span<'static>> {
-    let (plus, minus) = bar_of(added, removed, max, cells);
-    vec![
-        look::span("█".repeat(plus), theme::tone(Tone::Green)),
-        look::span("░".repeat(minus), theme::tone(Tone::Red)),
-    ]
-}
-
-fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
-    scene.note("against develop · click a file: nvim at the change");
-    let mut facts = vec![
-        vec![look::span(format!("{} ahead", diff.ahead), Style::new())],
-        vec![look::span(
-            format!("{} behind", diff.behind),
-            if diff.behind > 0 {
-                theme::tone(Tone::Yellow)
-            } else {
-                theme::dim()
-            },
-        )],
-    ];
-    if diff.uncommitted > 0 {
-        facts.push(vec![look::span(
-            format!("{} uncommitted", diff.uncommitted),
-            theme::tone(Tone::Yellow),
-        )]);
-    }
-    look::parted(scene, &facts);
-    scene.end_line();
-    if diff.files == 0 {
-        scene.text("nothing changed yet", theme::dim());
-        return;
-    }
-    scene.atom(vec![added_span(diff.added), Span::raw(" "), removed_span(diff.removed)]);
-    scene.text(&format!("in {}", counted(diff.files as u64, "file")), Style::new());
-    scene.atom_gap(bar(diff.added, diff.removed, diff.added + diff.removed, BAR), 2);
-    scene.blank();
-    let shown = &diff.areas[..diff.areas.len().min(AREAS)];
-    // A table: an area's row, its files under it by their path below the area's folder.
-    let files_of = |area: &'_ Area| -> Vec<(String, Change)> {
-        let folder = common_folder(area.changes.iter().map(|change| change.file.as_str()));
-        let mut files: Vec<(String, Change)> = area
-            .changes
-            .iter()
-            .take(FILES)
-            .map(|change| (change.file[folder.len()..].to_string(), change.clone()))
-            .collect();
-        // A file at the top is its own area: its row says it all.
-        files.retain(|(path, _)| *path != area.name);
-        files
-    };
-    let tables: Vec<(&Area, Vec<(String, Change)>)> = shown.iter().map(|area| (area, files_of(area))).collect();
-    let mut name = 0u16;
-    for (area, files) in &tables {
-        name = name.max(width(&area.name));
-        for (path, _) in files {
-            name = name.max(FILE_AT + width(path));
-        }
-    }
-    // Paths too long for a column: they wrap, the counts follow them.
-    let name = name.min(scene.width().saturating_sub(40).max(16));
-    let number = |text: String| width(&text);
-    let plus = tables
-        .iter()
-        .flat_map(|(area, files)| std::iter::once(area.added).chain(files.iter().map(|(_, change)| change.added)))
-        .map(|added| number(format!("+{added}")))
-        .max()
-        .unwrap_or(0);
-    let minus = tables
-        .iter()
-        .flat_map(|(area, files)| std::iter::once(area.removed).chain(files.iter().map(|(_, change)| change.removed)))
-        .map(|removed| number(format!("−{removed}")))
-        .max()
-        .unwrap_or(0);
-    let columns = Columns {
-        plus: name + 2,
-        minus: name + 2 + plus + 2,
-        rest: name + 2 + plus + 2 + minus + 2,
-    };
-    let biggest = shown.iter().map(|area| area.added + area.removed).max().unwrap_or(0);
-    // The bars narrower in a narrow pane, so `N files` stays on their line.
-    let cells = (scene.width().saturating_sub(columns.rest + 11) as u64).clamp(6, BAR);
-    for (area, files) in &tables {
-        let open = Act::OpenFile {
-            dir: dir.to_path_buf(),
-            file: area.top.clone(),
-            line: None,
-        };
-        scene.block(open, |scene| {
-            scene.atom_gap(vec![look::bold(&area.name)], 0);
-            counts(scene, &columns, area.added, area.removed);
-            scene.atom_gap(bar(area.added, area.removed, biggest, cells), 0);
-            let mut last = counted(area.files as u64, "file");
-            let is_uncommitted = area.changes.iter().any(|change| change.is_uncommitted);
-            if files.is_empty() && area.changes.len() == 1 && is_uncommitted {
-                last.push_str(" · uncommitted");
-            }
-            scene.atom_gap(vec![look::dim(last)], 2);
-            scene.indent(0);
-        });
-        for (path, change) in files {
-            file_row(scene, path, change, &columns, dir);
-        }
-        if area.changes.len() > FILES {
-            scene.pad_to(FILE_AT);
-            scene.text(
-                &format!("… {} more in {}", area.changes.len() - FILES, area.name),
-                theme::dim(),
-            );
-            scene.end_line();
-        }
-    }
-    if diff.areas.len() > AREAS {
-        let rest = &diff.areas[AREAS..];
-        let added: u64 = rest.iter().map(|area| area.added).sum();
-        let removed: u64 = rest.iter().map(|area| area.removed).sum();
-        let files: usize = rest.iter().map(|area| area.files).sum();
-        scene.text(
-            &format!(
-                "… {} +{added} −{removed} · {}",
-                counted(rest.len() as u64, "area"),
-                counted(files as u64, "file")
-            ),
-            theme::dim(),
-        );
-        scene.end_line();
-    }
-    if !diff.with_develop.is_empty() {
-        collision(
-            scene,
-            "also changed on develop:",
-            &diff.with_develop,
-            Some("merge develop in while it is small"),
-            dir,
-        );
-    }
-    for other in &diff.with_worktrees {
-        scene.atom(vec![look::span("⚠", theme::tone(Tone::Yellow))]);
-        scene.atom(vec![look::span("also changed in", Style::new())]);
-        scene.atom(vec![look::bold(format!("{}:", other.name))]);
-        files(scene, &other.files, None, dir);
-    }
-}
-
-/// git's letter of a file in its colour, as lazygit's files panel: new
-/// green, changed yellow, gone red, moved cyan.
-fn status_mark(status: char) -> Span<'static> {
-    let tone = match status {
-        'A' | '?' => Tone::Green,
-        'D' => Tone::Red,
-        'R' | 'C' => Tone::Cyan,
-        _ => Tone::Yellow,
-    };
-    look::span(status.to_string(), theme::tone(tone))
-}
-
-/// `+12` green, `+0` quiet.
-fn added_span(added: u64) -> Span<'static> {
-    let style = if added > 0 {
-        theme::tone(Tone::Green)
-    } else {
-        theme::dim()
-    };
-    look::span(format!("+{added}"), style)
-}
-
-/// `−3` red (U+2212), `−0` quiet.
-fn removed_span(removed: u64) -> Span<'static> {
-    let style = if removed > 0 {
-        theme::tone(Tone::Red)
-    } else {
-        theme::dim()
-    };
-    look::span(format!("−{removed}"), style)
-}
-
-/// Where DIFF's columns start: added, removed, the bar (and what follows it).
-struct Columns {
-    plus: u16,
-    minus: u16,
-    rest: u16,
-}
-
-/// `+a  −r` in their columns, the line ready for what follows them.
-fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64) {
-    // At its column, or two after what ran into it.
-    let at = |scene: &mut Scene<Act>, column: u16| {
-        if scene.x() < column {
-            scene.pad_to(column);
-            0
-        } else {
-            2
-        }
-    };
-    let gap = at(scene, columns.plus);
-    scene.atom_gap(vec![added_span(added)], gap);
-    let gap = at(scene, columns.minus);
-    scene.atom_gap(vec![removed_span(removed)], gap);
-    let gap = at(scene, columns.rest);
-    scene.indent(scene.x().max(columns.rest));
-    if gap > 0 {
-        scene.pad_to(scene.x() + gap);
-    }
-}
-
-/// A file of an area, as lazygit's files panel has it: its letter, its path
-/// below the area's folder, its lines, whether it is committed; a click opens
-/// it in nvim at its first change.
-fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns, dir: &Path) {
-    let open = Act::OpenFile {
-        dir: dir.to_path_buf(),
-        file: change.file.clone(),
-        line: None,
-    };
-    scene.block(open, |scene| {
-        scene.pad_to(2);
-        scene.atom_gap(vec![status_mark(change.status)], 0);
-        scene.pad_to(FILE_AT);
-        scene.indent(FILE_AT);
-        let (folder, name) = match path.rfind('/') {
-            Some(at) => path.split_at(at + 1),
-            None => ("", path),
-        };
-        scene.atom_gap(vec![look::dim(folder), look::span(name, Style::new())], 0);
-        counts(scene, columns, change.added, change.removed);
-        if change.is_uncommitted {
-            scene.atom_gap(vec![look::dim("uncommitted")], 0);
-        }
-        scene.indent(0);
-    });
-}
-
-/// The folder all `files` are in, with its `/`; empty when they share none.
-fn common_folder<'a>(mut files: impl Iterator<Item = &'a str>) -> String {
-    let Some(first) = files.next() else {
-        return String::new();
-    };
-    let mut folder = &first[..first.rfind('/').map_or(0, |at| at + 1)];
-    for file in files {
-        while !file.starts_with(folder) {
-            let trimmed = folder.trim_end_matches('/');
-            folder = &folder[..trimmed.rfind('/').map_or(0, |at| at + 1)];
-        }
-    }
-    folder.to_string()
-}
-
-fn width(text: &str) -> u16 {
-    Span::raw(text).width() as u16
-}
-
-/// `⚠ also changed on develop: a, b, c +2 more  merge develop in while it is small`.
-fn collision(scene: &mut Scene<Act>, what: &str, list: &[String], suffix: Option<&str>, dir: &Path) {
-    scene.atom(vec![look::span("⚠", theme::tone(Tone::Yellow))]);
-    look::say(scene, what, Style::new());
-    files(scene, list, suffix, dir);
-}
-
-/// File names that wrap between names, never inside one (#304); a click on one opens it.
-fn files(scene: &mut Scene<Act>, list: &[String], suffix: Option<&str>, dir: &Path) {
-    scene.indent(4);
-    let shown = list.len().min(3);
-    for (i, file) in list.iter().take(shown).enumerate() {
-        let text = if i + 1 < shown {
-            format!("{file},")
-        } else {
-            file.clone()
-        };
-        let open = Act::OpenFile {
-            dir: dir.to_path_buf(),
-            file: file.clone(),
-            line: None,
-        };
-        let style = Style::new().add_modifier(ratatui::style::Modifier::UNDERLINED);
-        // A name is a target of its own: a click opens that file, the pointer lights it.
-        for area in scene.atom(vec![look::span(&text, style)]) {
-            let target = Target::Button {
-                label: file.clone(),
-                tone: Tone::Cyan,
-                action: open.clone(),
-            };
-            scene.regions.push(Region { area, target });
-        }
-    }
-    if list.len() > shown {
-        scene.atom(vec![look::dim(format!("+{} more", list.len() - shown))]);
-    }
-    if let Some(suffix) = suffix {
-        scene.atom_gap(vec![look::dim(suffix)], 2);
-    }
-    scene.indent(0);
-    scene.end_line();
-}
-
-fn develop_of(scene: &mut Scene<Act>, develop: &Develop, model: &WorktreeModel, dir: &Path) {
+fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, dir: &Path) {
     scene.note(format!(
-        "since the branch started · {}",
+        "since the branch started  {}",
         counted(develop.merges.len() as u64, "merge request")
     ));
     match &develop.conflicts {
@@ -858,22 +560,23 @@ fn develop_of(scene: &mut Scene<Act>, develop: &Develop, model: &WorktreeModel, 
             scene.text("merges cleanly:", Style::new());
             scene.text("git fetch && git merge origin/develop", theme::dim());
         }
-        Some(conflicts) => {
-            collision(scene, "a merge conflicts in", conflicts, None, dir);
-        }
+        Some(conflicts) => diff::conflicts(scene, conflicts, dir),
     }
     scene.end_line();
     for merged in develop.merges.iter().take(MERGES) {
         let url = merged
             .mr
-            .zip(model.project_url.as_ref())
+            .zip(project)
             .map(|(iid, project)| format!("{project}/-/merge_requests/{iid}"));
         let draw = |scene: &mut Scene<Act>| {
             if let Some(iid) = merged.mr {
                 scene.atom(vec![look::span(format!("!{iid}"), Style::new())]);
             }
-            look::say(scene, &merged.title, Style::new());
+            // The title and the branch wrap under the title (tableRows' hanging indent).
+            scene.indent(if scene.x() > 0 { scene.x() + 2 } else { 0 });
+            say_gap(scene, &merged.title, Style::new(), 2);
             scene.atom_gap(vec![look::dim(&merged.branch)], 2);
+            scene.indent(0);
         };
         match url {
             Some(url) => scene.block(Act::Open(url), draw),
@@ -902,9 +605,59 @@ fn develop_of(scene: &mut Scene<Act>, develop: &Develop, model: &WorktreeModel, 
     }
 }
 
+/// Text as words that wrap whole, its first word `gap` columns after what is before it.
+fn say_gap(scene: &mut Scene<Act>, text: &str, style: Style, gap: u16) {
+    for (i, word) in look::words_of(&[look::span(text, style)]).into_iter().enumerate() {
+        scene.atom_gap(word, if i == 0 { gap } else { 1 });
+    }
+}
+
+/// A line of a log with its spaces kept: ESLint's `  12:5  error  …` keeps
+/// its indent and columns; it still wraps between words, at the indent.
+fn spaced(scene: &mut Scene<Act>, line: &str, style: Style) {
+    let mut spaces = 0u16;
+    let mut is_first = true;
+    for piece in line.split(' ') {
+        if piece.is_empty() {
+            spaces += 1;
+            continue;
+        }
+        let word = vec![look::span(piece, style)];
+        if is_first {
+            // At the indent, then the line's own leading spaces.
+            scene.atom_gap(vec![], 0);
+            scene.pad_to(scene.x() + spaces);
+            scene.atom_gap(word, 0);
+            is_first = false;
+        } else {
+            scene.atom_gap(word, spaces + 1);
+        }
+        spaces = 0;
+    }
+}
+
 fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &State) {
     scene.note("click a row to open it");
     let name = rows.iter().map(|row| row.name.len()).max().unwrap_or(0) as u16;
+    // Columns as Node's table: the mark, the name, the address, the hint.
+    let url_at = 1 + 2 + name + 2;
+    let address = rows
+        .iter()
+        .filter_map(|row| row.url.as_ref().or(row.address.as_ref()))
+        .map(|text| Span::raw(text.as_str()).width() as u16)
+        .max()
+        .unwrap_or(0);
+    let hint_at = url_at + address + 2;
+    // The hint in its column, or after the address where the pane has no room for one.
+    let to_hint = |scene: &mut Scene<Act>| {
+        let at = if scene.x() < hint_at && hint_at + 16 <= scene.width() {
+            hint_at
+        } else {
+            scene.x() + 2
+        };
+        scene.pad_to(at);
+        scene.indent(at);
+    };
     for row in rows {
         // Outside herdr there is no tab to start Storybook in: its row shows the command.
         let start =
@@ -915,11 +668,14 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
             } else {
                 scene.atom(vec![look::dim("○")]);
             }
-            scene.atom(vec![look::span(row.name, Style::new())]);
-            scene.pad_to(2 + name + 2);
-            scene.indent(2 + name + 2);
+            scene.atom_gap(vec![look::span(row.name, Style::new())], 2);
+            scene.pad_to(url_at);
+            scene.indent(url_at);
             if let Some(url) = row.url.as_ref().or(row.address.as_ref()) {
                 scene.atom_gap(vec![look::span(url, Style::new())], 0);
+            }
+            if start.is_some() || row.hint.is_some() {
+                to_hint(scene);
             }
             match (&start, &state.storybook) {
                 (Some(start), Some(acts::Storybook::Starting)) => {
@@ -937,7 +693,6 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
                 (Some(start), None) => scene.button("▶ start storybook", Tone::Cyan, start.clone()),
                 (None, _) => {
                     if let Some(hint) = &row.hint {
-                        scene.indent(scene.x() + 2);
                         look::say(scene, hint, theme::dim());
                     }
                 }
@@ -1102,6 +857,7 @@ fn migrations_of(scene: &mut Scene<Act>, migrations: &Migrations, dir: &Path, st
 mod tests {
     use super::*;
     use crate::tui::scene::Target;
+    use breadboard_core::model::develop::Merged;
     use breadboard_core::model::files::LogTarget;
     use breadboard_core::model::worktree::FailedLog;
 
@@ -1154,6 +910,7 @@ mod tests {
                             line: Some(12),
                         }),
                     ),
+                    ("  12:5  error  'x' is not defined  no-undef".into(), None),
                 ],
             }],
         };
@@ -1169,6 +926,8 @@ mod tests {
                 "click to open the job",
                 "      $ pnpm test",
                 "      src/a.test.mjs:12:5 error",
+                "        12:5  error  'x' is not defined",
+                "      no-undef",
             ]
         );
         assert_eq!(act_at(&scene, 3), Some(&Act::Open("https://gitlab/jobs/3".into())));
@@ -1183,72 +942,34 @@ mod tests {
         );
     }
 
-    fn change(file: &str, status: char, added: u64, is_uncommitted: bool) -> Change {
-        Change {
-            file: file.into(),
-            status,
-            added,
-            removed: 0,
-            is_uncommitted,
-        }
-    }
-
     #[test]
-    fn diff_lists_the_files_of_each_area_below_its_folder() {
-        let area_of = |name: &str, changes: Vec<Change>| {
-            let mut area = Area::default();
-            area.name = name.into();
-            area.added = changes.iter().map(|change| change.added).sum();
-            area.files = changes.len();
-            area.top = changes[0].file.clone();
-            area.changes = changes;
-            area
+    fn a_develop_merge_wraps_under_its_title_and_opens_its_mr() {
+        let merged = |n: i64| Merged {
+            mr: Some(n),
+            title: format!("feat(vita): develop change number {n} with a long title"),
+            branch: format!("feature/{n}-develop-change"),
         };
-        let area = area_of(
-            "breadboard/overview",
-            vec![
-                change("packages/breadboard/src/overview/files.mjs", 'M', 3, false),
-                change("packages/breadboard/src/overview/lib/tty.mjs", '?', 1, true),
-            ],
-        );
-        let readme = area_of("README.md", vec![change("README.md", 'M', 1, true)]);
-        let diff = Diff {
-            ahead: 1,
-            behind: 2,
-            uncommitted: 2,
-            added: 5,
-            files: 3,
-            areas: vec![area, readme],
-            ..Diff::default()
+        let develop = Develop {
+            merges: vec![merged(980), merged(970)],
+            direct: 1,
+            conflicts: Some(vec![]),
         };
-        let mut scene = Scene::new(80);
-        diff_of(&mut scene, &diff, Path::new("/w"));
+        let mut scene = Scene::new(48);
+        develop_of(&mut scene, &develop, Some("https://gitlab/p"), Path::new("/w"));
         scene.finish();
         assert_eq!(
-            text(&scene)[3..],
+            text(&scene),
             [
-                "breadboard/overview  +4  −0  ████████████████████████  2 files",
-                "  M  files.mjs       +3  −0",
-                "  ?  lib/tty.mjs     +1  −0  uncommitted",
-                "README.md            +1  −0  ██████  1 file · uncommitted",
+                "✓ merges cleanly: git fetch && git merge",
+                "origin/develop",
+                "!980  feat(vita): develop change number 980 with",
+                "      a long title  feature/980-develop-change",
+                "!970  feat(vita): develop change number 970 with",
+                "      a long title  feature/970-develop-change",
+                "  … 1 commit without one",
             ]
         );
-        assert_eq!(
-            act_at(&scene, 5),
-            Some(&Act::OpenFile {
-                dir: "/w".into(),
-                file: "packages/breadboard/src/overview/lib/tty.mjs".into(),
-                line: None,
-            })
-        );
-    }
-
-    #[test]
-    fn the_folder_files_share() {
-        assert_eq!(common_folder(["a/b/c.ts", "a/b/d/e.ts"].into_iter()), "a/b/");
-        assert_eq!(common_folder(["a/b/c.ts", "a/x.ts"].into_iter()), "a/");
-        assert_eq!(common_folder(["ab/c.ts", "a/x.ts"].into_iter()), "");
-        assert_eq!(common_folder(["README.md"].into_iter()), "");
-        assert_eq!(common_folder(std::iter::empty()), "");
+        let open = Some(Act::Open("https://gitlab/p/-/merge_requests/970".into()));
+        assert_eq!(act_at(&scene, 5), open.as_ref());
     }
 }

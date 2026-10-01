@@ -24,6 +24,7 @@ use crate::herdr::Agent;
 use crate::record::{ORCHESTRATOR, Plan, Record, Worker};
 use crate::setups::Setup;
 use crate::time::ago;
+use crate::wait::{Awaited, Verdict, is_waiting, verdict_of};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -655,6 +656,47 @@ fn merge_requests_of(
     }
 }
 
+/// Leaves out the waits whose command is gone and that ended (all merged, one
+/// closed, past `until`): the live overview types their line and clears them
+/// a moment after this read (actor/auto.rs `deliver_waits`), as Node does
+/// before its first frame with GitLab's data. Drawn, `waits for` would come
+/// and go and everything below it jump (#296). Without GitLab's data only
+/// `until` tells.
+fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64) {
+    let mut found: HashMap<i64, Awaited> = HashMap::new();
+    if let Some(remote) = remote {
+        for (iid, state) in &remote.awaited {
+            found.insert(
+                *iid,
+                Awaited {
+                    iid: *iid,
+                    state: state.clone(),
+                    has_conflicts: false,
+                },
+            );
+        }
+        for mr in remote.of.values().filter_map(|part| part.mr.as_ref()) {
+            found.insert(
+                mr.iid,
+                Awaited {
+                    iid: mr.iid,
+                    state: mr.state.clone(),
+                    has_conflicts: mr.has_conflicts,
+                },
+            );
+        }
+    }
+    let found: Vec<Awaited> = found.into_values().collect();
+    for tree in issues.iter_mut().filter_map(|issue| issue.tree.as_mut()) {
+        let is_ended = tree.wait.as_ref().is_some_and(|wait| {
+            !is_waiting(wait) && !matches!(verdict_of(wait, &found, now, &mut HashMap::new()), Verdict::Waiting(_))
+        });
+        if is_ended {
+            tree.wait = None;
+        }
+    }
+}
+
 /// The view of one orchestration from what was read: `remote` None until
 /// GitLab answers; `state` what the writing side keeps.
 pub fn orchestration_of(
@@ -668,6 +710,9 @@ pub fn orchestration_of(
     let work: &[i64] = plan.map(|plan| &plan.work[..]).unwrap_or(&[]);
     let mut issues = super::issues_of(record.map(|record| &record.issues[..]).unwrap_or(&[]), &local.trees);
     issues.sort_by_key(|issue| place_in(work, issue.number));
+    if state.is_deliverer {
+        drop_ended_waits(&mut issues, remote, now);
+    }
     let label = format!("{ORCHESTRATOR} {}", local.title);
     let left: Vec<String> = local
         .trees
@@ -1083,5 +1128,49 @@ mod tests {
             NOW,
         );
         assert!(model.is_empty);
+    }
+
+    #[test]
+    fn an_ended_wait_is_never_drawn() {
+        // 1-one waits for !12 (open) until after NOW: drawn. 2-two waits for !13 (merged): ended.
+        let wait = |mrs: Vec<i64>, until: &str| crate::wait::Wait {
+            mrs,
+            until: Some(until.into()),
+            ..Default::default()
+        };
+        let mut local = local();
+        local.trees[0].wait = Some(wait(vec![12], "2099-01-01T00:00:00Z"));
+        local.trees[1].wait = Some(wait(vec![13], "2099-01-01T00:00:00Z"));
+        let reasons = |state: &mut ViewState, local: &OrchestrationLocal| -> Vec<Vec<String>> {
+            let model = orchestration_of(local, Some(&remote()), state, NOW);
+            let mrs = model.merge_requests.unwrap();
+            mrs.open
+                .iter()
+                .filter_map(|row| row.mr.as_ref())
+                .map(|mr| {
+                    mr.reasons
+                        .iter()
+                        .filter(|reason| reason.text.starts_with("waits for"))
+                        .map(|reason| reason.text.clone())
+                        .collect()
+                })
+                .collect()
+        };
+        let mut deliverer = ViewState {
+            is_deliverer: true,
+            ..Default::default()
+        };
+        // !11 waits for !12, still open; !12's wait for !13 is over (and !13 counts as done anyway).
+        assert_eq!(
+            reasons(&mut deliverer, &local),
+            [vec!["waits for !12".to_string()], vec![]]
+        );
+        // Past its `until`: ended, though !12 is still open; a print draws it as Node's --once.
+        local.trees[0].wait = Some(wait(vec![12], "2020-01-01T00:00:00Z"));
+        assert_eq!(reasons(&mut deliverer, &local), [Vec::<String>::new(), vec![]]);
+        assert_eq!(
+            reasons(&mut ViewState::default(), &local),
+            [vec!["waits for !12".to_string()], vec![]]
+        );
     }
 }

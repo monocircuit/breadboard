@@ -318,13 +318,13 @@ fn taken_text(to: &str, open: &[i64]) -> String {
 /// What a queued issue waits for (#250): the announced agent, the MRs it
 /// starts after, why it is back, the free agent UP NEXT suggests, else what
 /// its fresh start does.
-fn queued_text(issue: &Entry, facts: &TreeFacts) -> String {
+fn queued_text(issue: &Entry, facts: &TreeFacts, names: &Names) -> String {
     if let Some(handover) = facts
         .announced
         .iter()
         .find(|handover| Some(handover.number) == issue.number)
     {
-        return taken_text(&handover.to, &handover.open);
+        return taken_text(&names.shown(&handover.to), &handover.open);
     }
     let open: Vec<i64> = issue
         .after
@@ -349,10 +349,18 @@ fn queued_text(issue: &Entry, facts: &TreeFacts) -> String {
     }
     if let Some(found) = suggested {
         let worker = &found.worker;
+        // Its handover failed (workers.rs puts why into `fresh`).
+        if let Some(failed) = fresh {
+            return format!("→ {}: {failed}", names.shown(&worker.name));
+        }
         return if worker.is_merged {
-            format!("→ {} (free, {} %)", worker.name, (worker.share * 100.0).round() as i64)
+            format!(
+                "→ {} (free, {} %)",
+                names.shown(&worker.name),
+                (worker.share * 100.0).round() as i64
+            )
         } else {
-            format!("→ {} once its MR is merged", worker.name)
+            format!("→ {} once its MR is merged", names.shown(&worker.name))
         };
     }
     fresh.cloned().unwrap_or_else(|| "start: waits for an agent".into())
@@ -575,7 +583,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             );
             let state = match lifecycle.key {
                 "queued" => Lifecycle {
-                    text: queued_text(issue, facts),
+                    text: queued_text(issue, facts, &names),
                     ..lifecycle
                 },
                 "removed" if issue.removed_at.is_some() => {
@@ -721,7 +729,7 @@ mod tests {
     use super::*;
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
-    use crate::model::display_names::pick_name;
+    use crate::model::display_names::{display_names_of, pick_name};
     use crate::model::handovers::tests::claude_of;
     use crate::record::{Start, Worker};
     use crate::wait::Wait;
@@ -1284,6 +1292,74 @@ mod tests {
                 (7, "start: waits for an agent".to_string()),
                 (4, "→ 2-feature after !256".to_string()),
                 (5, "→ 1-feature once its MR is merged".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_queued_issue_names_its_agent_by_display_name_and_says_a_failed_handover() {
+        use crate::model::workers::FreeWorker;
+        let queued = |number: i64| Entry {
+            is_queued: true,
+            ..gone(number)
+        };
+        let known = [Worker {
+            id: "c1".into(),
+            name: Some("1-feature".into()),
+            display_name: Some("Elif Kowalczyk".into()),
+            ..Default::default()
+        }];
+        let announced = [Announced {
+            number: 4,
+            to: "1-feature".into(),
+            after: vec![],
+            at: None,
+            agent: None,
+            open: vec![256],
+            is_due: false,
+            why: None,
+        }];
+        let worker = FreeWorker {
+            name: "1-feature".into(),
+            is_merged: true,
+            ..Default::default()
+        };
+        let suggested: HashMap<i64, Suggestion> = [5, 6]
+            .map(|number| {
+                (
+                    number,
+                    Suggestion {
+                        worker: worker.clone(),
+                        shared: vec![],
+                    },
+                )
+            })
+            .into();
+        let fresh: HashMap<i64, String> = [(
+            6,
+            "its handover failed: wt:orchestrate: not built yet; a click tries again".to_string(),
+        )]
+        .into();
+        let found = tree_of(
+            &[issue(1), queued(4), queued(5), queued(6)],
+            None,
+            &TreeFacts {
+                work: &[4, 5, 6],
+                known: &known,
+                announced: &announced,
+                suggested: Some(&suggested),
+                fresh: Some(&fresh),
+                ..Default::default()
+            },
+        );
+        let shown = display_names_of(&known, &["c1"])["c1"].clone();
+        let queue: Vec<String> = found.queued.iter().map(|node| node.state.text.clone()).collect();
+        assert_eq!(
+            queue,
+            [
+                format!("→ {shown} after !256"),
+                format!("→ {shown} (free, 0 %)"),
+                format!("→ {shown}: its handover failed: wt:orchestrate: not built yet; a click tries again"),
             ]
         );
     }

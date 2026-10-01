@@ -98,17 +98,35 @@ impl Window {
 }
 
 /// The section whose title has scrolled off while its lines still show:
-/// the first line of its title, pinned. Not in a pane too short to spare it.
+/// its title, pinned over the first scrolling rows. Only while a line of
+/// the section with something on it shows under the pin, so a title never
+/// sits over the blank after its section or the next section's title; not
+/// in a pane too short to spare it.
 fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pin> {
     let first = sticky + scroll;
     let placed = sheet
         .sections
         .iter()
         .find(|placed| placed.head > 0 && placed.from >= sticky && placed.from < first && first < placed.to)?;
-    (room >= 4).then_some(Pin {
+    let under = first + placed.head;
+    let is_shown = (under..placed.to.min(first + room)).any(|row| {
+        sheet
+            .rows
+            .get(usize::from(row))
+            .is_some_and(|row| row.line.spans.iter().any(|span| !span.content.trim().is_empty()))
+    });
+    (is_shown && room >= 4 * placed.head).then_some(Pin {
         from: placed.from,
-        rows: 1,
+        rows: placed.head,
     })
+}
+
+/// The rows of the sticky part that stay on top in a body `height` rows
+/// tall: all of them while they leave half of it to the rest, else the
+/// first half. The rows past the cut scroll with the rest, so nothing is
+/// out of reach, and the cut depends on the pane alone, never on the scroll.
+fn sticky_in(sticky: u16, height: u16) -> u16 {
+    sticky.min(height / 2)
 }
 
 /// Row `into` of `was` rows, in the same thing now `now` rows long: as far
@@ -175,9 +193,11 @@ impl<A: Clone + PartialEq> View<A> {
         self.is_stale = true;
     }
 
-    /// When something on the page shows time and needs drawing again.
+    /// When something on the page or the band shows time and needs drawing again.
     pub fn redraw_at(&self) -> Option<Instant> {
-        Some(self.built_at + self.sheet.as_ref()?.redraw_in?)
+        let page = self.sheet.as_ref().and_then(|sheet| sheet.redraw_in);
+        let after = [page, self.header.redraw_in].into_iter().flatten().min()?;
+        Some(self.built_at + after)
     }
 
     fn build<P: App<Action = A>>(&mut self, app: &P, width: u16) {
@@ -200,13 +220,7 @@ impl<A: Clone + PartialEq> View<A> {
         let rows = sheet.map_or(0, |sheet| sheet.rows.len().min(u16::MAX as usize) as u16);
         let top = self.band_height.min(self.area.height);
         let height = self.area.height - top;
-        let sticky = sheet.map_or(0, |sheet| sheet.sticky);
-        // Sticky only while it leaves half the pane to the rest.
-        let sticky = if u32::from(sticky) * 2 <= u32::from(height) {
-            sticky
-        } else {
-            0
-        };
+        let sticky = sticky_in(sheet.map_or(0, |sheet| sheet.sticky), height);
         let room = height - sticky;
         let max_scroll = rows.saturating_sub(sticky).saturating_sub(room);
         let scroll = scroll.min(max_scroll);
@@ -329,7 +343,11 @@ impl<A: Clone + PartialEq> View<A> {
     /// scroll kept on what the reader was looking at.
     pub fn draw<P: App<Action = A>>(&mut self, frame: &mut Frame, app: &P) {
         let area = frame.area();
-        if self.is_stale || self.sheet.as_ref().is_none_or(|sheet| sheet.width != area.width) {
+        // A new height too: a view may fit its lists to the pane (the issues of everything).
+        if self.is_stale
+            || self.area.height != area.height
+            || self.sheet.as_ref().is_none_or(|sheet| sheet.width != area.width)
+        {
             let anchor = self.anchor();
             self.area = area;
             self.build(app, area.width);
@@ -448,10 +466,25 @@ impl<A: Clone + PartialEq> View<A> {
         has_moved
     }
 
-    /// Scrolls by `pages`: what the pane shows under the sticky rows, less one to keep the context.
+    /// Scrolls by `pages`: what the pane shows under the sticky rows, less
+    /// one, so the last row seen stays on screen as the first (PgDn) or the
+    /// first as the last (PgUp), under a pinned title too.
     pub fn page_by(&mut self, pages: i32) -> bool {
-        let page = i32::from(self.window(0).room.saturating_sub(1).max(1));
-        self.scroll_by(pages * page)
+        let mut has_moved = false;
+        for _ in 0..pages.unsigned_abs() {
+            let now = self.window(self.scroll);
+            let step = now.room.saturating_sub(1);
+            let step = if pages > 0 {
+                // The pin of where it lands covers that window's first row.
+                let then = self.window(now.scroll.saturating_add(step));
+                step.saturating_sub(then.pin.map_or(0, |pin| pin.rows))
+            } else {
+                step.saturating_sub(now.pin.map_or(0, |pin| pin.rows))
+            };
+            let step = i32::from(step.max(1));
+            has_moved |= self.scroll_by(if pages > 0 { step } else { -step });
+        }
+        has_moved
     }
 
     /// Scrolls by `halves` of a page: Ctrl-D and Ctrl-U, as in less and vim.
@@ -515,7 +548,7 @@ mod tests {
     use crate::tui::demo::{Action, Demo, demo};
     use crate::tui::input::{Command, Rejoin, command_of};
     use crate::tui::scene::Region;
-    use crate::tui::{Flow, Input};
+    use crate::tui::{Flow, Input, Section};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -764,7 +797,7 @@ mod tests {
         assert!(!screen.view.scroll_by(-1), "above the top");
         assert!(!screen.view.page_by(-1));
         assert!(screen.view.page_by(1));
-        assert_eq!(screen.view.scroll(), window.room - 1);
+        assert!(screen.view.scroll() >= window.room - 2 && screen.view.scroll() < window.room);
         assert!(screen.view.scroll_bottom());
         assert_eq!(screen.view.scroll(), window.max_scroll);
         assert!(!screen.view.scroll_by(3), "past the end");
@@ -893,6 +926,49 @@ mod tests {
     }
 
     #[test]
+    fn a_title_is_pinned_only_while_a_line_of_its_section_shows_under_it() {
+        for (width, height) in [(80, 24), (120, 40), (200, 30)] {
+            let mut screen = Screen::new(width, height);
+            let max = screen.view.window(0).max_scroll;
+            for scroll in 0..=max {
+                screen.view.scroll_top();
+                screen.view.scroll_by(i32::from(scroll));
+                screen.draw();
+                let window = screen.view.shown();
+                let Some(pin) = window.pin else { continue };
+                let sheet = screen.view.sheet();
+                let placed = sheet.sections.iter().find(|placed| placed.from == pin.from).unwrap();
+                // Under the pin: a line of its own section with text on it.
+                let under = window.first_seen();
+                assert!(under < placed.to, "{width}x{height} at {scroll}: {placed:?}");
+                let text = sheet.text();
+                assert!(
+                    (under..placed.to.min(window.first() + window.room))
+                        .any(|row| !text[row as usize].trim().is_empty()),
+                    "{width}x{height} at {scroll}: {placed:?}"
+                );
+            }
+            // A section scrolled up to its last line: no pin over that line.
+            for placed in screen.view.sheet().sections.clone() {
+                let sticky = screen.view.shown().sticky;
+                if placed.head == 0 || placed.from < sticky || placed.to < placed.from + placed.head + 1 {
+                    continue;
+                }
+                screen.view.scroll_top();
+                if !screen.view.scroll_by(i32::from(placed.to - 1 - sticky)) {
+                    continue;
+                }
+                screen.draw();
+                let window = screen.view.shown();
+                if window.first() == placed.to - 1 {
+                    assert!(window.pin.is_none(), "{width}x{height}: {placed:?}");
+                    assert_eq!(screen.view.screen_y(placed.to - 1), Some(window.top + window.sticky));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn another_width_keeps_the_block_on_top() {
         let mut screen = Screen::new(120, 40);
         let block = screen
@@ -996,6 +1072,103 @@ mod tests {
                 assert_eq!(screen.view.scroll(), scroll, "{width}");
             }
         }
+    }
+
+    /// The page rows the reader sees in the scrolling part, under the pin.
+    fn seen(screen: &Screen) -> std::ops::Range<u16> {
+        let window = screen.view.shown();
+        window.first_seen()..(window.first() + window.room).min(window.rows)
+    }
+
+    #[test]
+    fn a_page_keeps_one_row_seen_under_a_pinned_title_too() {
+        for (width, height) in [(120, 40), (80, 24), (200, 30)] {
+            let mut screen = Screen::new(width, height);
+            let mut pins = 0;
+            loop {
+                let was = seen(&screen);
+                if !screen.view.page_by(1) {
+                    break;
+                }
+                screen.draw();
+                let now = seen(&screen);
+                pins += usize::from(screen.view.shown().pin.is_some());
+                assert!(now.start < was.end, "{width}x{height}: {was:?} then {now:?}");
+                let is_end = screen.view.scroll() == screen.view.window(0).max_scroll;
+                assert!(
+                    is_end || now.start + 2 >= was.end,
+                    "{width}x{height}: {was:?} then {now:?}"
+                );
+            }
+            assert!(pins > 0, "{width}x{height}");
+            loop {
+                let was = seen(&screen);
+                if !screen.view.page_by(-1) {
+                    break;
+                }
+                screen.draw();
+                let now = seen(&screen);
+                assert!(now.end > was.start, "{width}x{height}: {was:?} then {now:?}");
+                let is_top = screen.view.scroll() == 0;
+                assert!(
+                    is_top || now.end <= was.start + 2,
+                    "{width}x{height}: {was:?} then {now:?}"
+                );
+            }
+            assert_eq!(screen.view.scroll(), 0);
+        }
+    }
+
+    /// Sticky rows over a list, as many as `sticky`.
+    struct Tall {
+        sticky: u16,
+    }
+
+    impl App for Tall {
+        type Action = u16;
+        type Model = ();
+        fn header(&self) -> Header {
+            Header::new("tall")
+        }
+        fn build(&self, page: &mut Page<u16>) {
+            page.section(Section::new("NEXT").sticky().plain(), |scene| {
+                for i in 0..self.sticky {
+                    scene.text(&format!("next {i}"), Style::new());
+                    scene.newline();
+                }
+            });
+            page.section("LIST", |scene| {
+                for i in 0..60 {
+                    scene.block(i, |scene| scene.text(&format!("item {i}"), Style::new()));
+                }
+            });
+        }
+        fn update(&mut self, _: ()) {}
+        fn act(&mut self, _: Input<u16>) -> Flow {
+            Flow::Same
+        }
+    }
+
+    #[test]
+    fn a_sticky_part_taller_than_half_the_pane_is_cut_and_its_rest_scrolls() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut view = View::<u16>::default();
+        let app = Tall { sticky: 14 };
+        terminal.draw(|frame| view.draw(frame, &app)).unwrap();
+        let (_, height) = view.body();
+        let window = view.shown();
+        // The top half stays, never none of it, whatever the scroll.
+        assert_eq!(window.sticky, height / 2);
+        for _ in 0..30 {
+            view.scroll_by(1);
+            terminal.draw(|frame| view.draw(frame, &app)).unwrap();
+            assert_eq!(view.shown().sticky, height / 2);
+            assert_eq!(view.page_row(window.top), Some(0));
+        }
+        // The rows of NEXT past the cut can be read: they scroll.
+        view.scroll_top();
+        terminal.draw(|frame| view.draw(frame, &app)).unwrap();
+        assert!(view.screen_y(13).is_some());
     }
 
     #[test]

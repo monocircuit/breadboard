@@ -83,13 +83,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         }
         Act::Open(url) => {
             let main = app.actor.main.clone();
-            let label = herdr::space_label(&main, &app.view_dir());
-            // An MR or issue as a popup next to the terminal (io.mjs `show`), any other page in its tab group.
-            if url.contains("/-/merge_requests/") || url.contains("/-/issues/") {
-                browser::open_popup(&main, &url, &label);
-            } else {
-                browser::open_in_group(&main, &url, &label);
-            }
+            browser::show_or_open(&main, &url, &herdr::space_label(&main, &app.view_dir()));
             return Flow::Same;
         }
         // The stack of the main checkout from the view of everything: the worktree view has its own.
@@ -116,7 +110,7 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::Nothing => {}
         Go::Show { url, dir } => {
             let label = herdr::space_label(&main, dir.as_deref().unwrap_or(&app.view_dir()));
-            browser::open_popup(&main, &url, &label);
+            browser::show_or_open(&main, &url, &label);
         }
         Go::Merge { .. } => merge::click(app, &go),
         Go::Try { ref dir, id } => {
@@ -208,8 +202,10 @@ fn end(app: &mut Overview) {
     match started {
         Ok(()) => {
             app.actor.end = Some(Run::running(&log));
-            app.actor
-                .log(Paint::Yellow, format!("ending: pnpm wt:orchestrate {name} --end"));
+            app.actor.log(
+                Paint::Yellow,
+                format!("ending ⇶ {name}: pnpm wt:orchestrate {name} --end"),
+            );
         }
         Err(why) => {
             app.actor.log(Paint::Red, format!("not ended: {why}"));
@@ -231,7 +227,7 @@ fn dismiss(app: &mut Overview, id: &str) {
         .and_then(|rows| rows.iter().find(|row| row.id == id).cloned());
     let Some(row) = row else { return };
     if !app.actor.dismissing.contains_key(id) {
-        app.actor.dismissing.insert(id.to_string(), row.name.clone());
+        app.actor.dismissing.insert(id.to_string(), row.display.clone());
         let id = id.to_string();
         app.actor.later(DISMISS_ARM, move |app: &mut Overview| {
             if app.actor.dismissing.remove(&id).is_some() {
@@ -243,7 +239,11 @@ fn dismiss(app: &mut Overview, id: &str) {
     app.actor.dismissing.remove(id);
     let main = app.actor.main.clone();
     let id = id.to_string();
-    let who = row.name.clone();
+    let who = if row.display.is_empty() {
+        row.name.clone()
+    } else {
+        row.display.clone()
+    };
     app.actor.log(Paint::Yellow, format!("dismissing {who} …"));
     app.actor.queue(move || {
         if let Some(tab) = &row.tab {
@@ -300,11 +300,12 @@ fn resolve(app: &mut Overview, iid: i64) {
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
             if is_sent {
-                app.actor
-                    .log(Paint::Green, format!("typed into the agent of {who}: {line}"));
+                app.actor.log(Paint::Green, format!("told {who}: {line}"));
             } else {
-                app.actor
-                    .log(Paint::Red, format!("!{} didn't get in to the agent of {who}", mr.iid));
+                app.actor.log(
+                    Paint::Red,
+                    format!("{who} didn't take the line: !{} has merge conflicts …", mr.iid),
+                );
                 // Its note goes after a while.
                 app.actor
                     .later(Duration::from_millis(10_000), |app: &mut Overview| app.redraw());
@@ -314,17 +315,35 @@ fn resolve(app: &mut Overview, iid: i64) {
     });
 }
 
-/// A key the frame has no use for: the worktree view's (`u`).
+/// A key the frame has no use for: a digit or Enter answers NEXT's action (actions.rs), `u` the worktree view's.
 pub fn key(app: &mut Overview, key: KeyEvent) -> Flow {
-    super::worktree_view::key(app, key)
+    super::actions::key(app, key).unwrap_or_else(|| super::worktree_view::key(app, key))
 }
 
 /// What a read sets off, by the view: the orchestration's own acts, the main space's `--herdr` sync.
 pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     match &app.actor.view {
         View::Orchestration(_) => auto::after_read(app, is_local, is_remote),
-        View::Everything => actor::sync::after_read(app),
-        View::Worktree(_) => {}
+        View::Everything => {
+            if let Some(RemoteOf::Everything(remote)) = &app.remote
+                && is_remote
+                && app.gitlab.error.is_none()
+                && !app.is_once
+            {
+                super::overall::keep(&app.actor.main, remote.head.as_deref());
+            }
+            actor::sync::after_read(app)
+        }
+        // Its worktree is gone (the ✕, or wt:remove elsewhere): nothing left to show (overview.mjs).
+        View::Worktree(_) => {
+            if app.actor.is_live
+                && is_local
+                && matches!(&app.local, Some(Local::Worktree(local)) if local.tree.is_none())
+            {
+                // SAFETY: a signal to this process: the frame's loop ends and restores the terminal.
+                unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            }
+        }
     }
 }
 

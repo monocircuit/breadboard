@@ -807,6 +807,8 @@ pub struct EverythingRemote {
     /// Claimed ones first: that is the work in flight.
     pub issues: Vec<ListedIssue>,
     pub develop: Option<Pipeline>,
+    /// develop's head on origin (`git ls-remote`): the repo's changelog is kept for it (#261).
+    pub head: Option<String>,
     pub at: i64,
 }
 
@@ -897,6 +899,7 @@ pub async fn read_everything(gitlab: &Gitlab, heads: &[String]) -> Result<Everyt
         mrs,
         issues,
         develop,
+        head: None,
         at: now_ms(),
     })
 }

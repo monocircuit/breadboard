@@ -25,7 +25,13 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         match &next.band {
             NextBand::Nothing(text) => look::say(scene, text, theme::dim()),
             NextBand::Action(item) => {
-                look::gutter(scene, label, under(), |scene| actions::action_block(scene, item, ctx));
+                look::gutter(scene, label, under(), |scene| {
+                    actions::action_block(scene, item, ctx, true)
+                });
+                // Off the block: a click on the hint does nothing.
+                if let Some(hint) = actions::key_hint(item) {
+                    look::gutter(scene, under(), under(), |scene| look::say(scene, &hint, theme::dim()));
+                }
             }
             NextBand::UpNext(item) => {
                 look::gutter(scene, label, under(), |scene| actions::next_row(scene, item, ctx));

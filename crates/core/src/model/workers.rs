@@ -524,6 +524,17 @@ pub fn worker_actions_of(
         };
         fresh.insert(number, text);
     }
+    // A failed handover to the suggested agent: its queued node says why until a click tries again.
+    for number in suggested.keys() {
+        if let Some(StartRun {
+            is_running: false,
+            error: Some(error),
+            ..
+        }) = run_of(Some(*number))
+        {
+            fresh.insert(*number, format!("its handover failed: {error}; a click tries again"));
+        }
+    }
     for issue in &queued {
         let Some(number) = issue.number else { continue };
         let run = run_of(Some(number));

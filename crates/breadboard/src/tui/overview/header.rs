@@ -45,7 +45,8 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
     if ctx.is_once {
         header.keys = String::new();
     }
-    header
+    // What the overview did by itself or on a click, for a minute: the actor's.
+    super::actor::view::log(header, ctx)
 }
 
 /// The orchestration's rows on top: its chat (live, inside herdr) and why GitLab didn't answer.

@@ -174,7 +174,7 @@ pub fn click(app: &mut Overview) {
             } else {
                 Paint::Green
             };
-            app.actor.log(paint, format!("orchestrator chat: {said}"));
+            app.actor.log(paint, format!("chat: {said}"));
             app.actor.chat = Some(said.clone());
             app.actor.later(SAID, move |app: &mut Overview| {
                 if app.actor.chat.as_deref() == Some(said.as_str()) {
