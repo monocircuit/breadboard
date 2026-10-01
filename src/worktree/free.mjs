@@ -16,6 +16,8 @@ import { ensureTab, featureOf } from "./tabs.mjs";
 
 /** The tab of a free agent in the space `⇶ <name>`. */
 export const freeTab = agent => `free ${agent}`;
+/** Whether a tab's label is a free agent's. */
+export const isFreeTab = label => String(label ?? "").startsWith("free ");
 /**
  * The free agents of a record, by their conversation: `[{ id, name, files,
  * issues, free }]`, `free` the record's `{ at, from, mr }`: since when, the

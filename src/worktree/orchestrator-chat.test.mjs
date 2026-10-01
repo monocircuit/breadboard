@@ -202,6 +202,26 @@ describe("chatPaneOf and chatOfPane (what is recorded)", () => {
     );
   });
 
+  it("never takes a free agent for the chat (#289)", () => {
+    assert.equal(
+      chatPaneOf({
+        tabs: [{ tab_id: "t3", label: "free agent-a" }],
+        panes: [claude("t3", OTHER)],
+      }),
+      null,
+    );
+    assert.equal(
+      chatPaneOf({
+        tabs: [
+          { tab_id: "t3", label: "free agent-a" },
+          { tab_id: "t4", label: "5" },
+        ],
+        panes: [claude("t3", OTHER), claude("t4", ID)],
+      }).agent_session.value,
+      ID,
+    );
+  });
+
   it("records the claude's own cwd, else herdr's", () => {
     assert.deepEqual(chatOfPane(claude("t2", ID), [{ id: ID, cwd: "/wt" }]), {
       sessionId: ID,
