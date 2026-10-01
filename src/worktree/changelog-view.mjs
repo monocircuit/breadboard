@@ -9,6 +9,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import {
+  FOCUS_OUT,
+  MOUSE_OFF,
+  MOUSE_ON,
+  keyReader,
+  mouseOf,
+  onHover,
+} from "../lib/mouse.mjs";
 import { fail, step } from "../lib/proc.mjs";
 import { bold, dim, hex, isColor, link, wrap } from "../lib/tty.mjs";
 import { changelogFile, writeChangelog } from "./changelog.mjs";
@@ -115,8 +123,6 @@ const SCROLL = {
   g: () => -Infinity,
   G: () => Infinity,
 };
-const KEY = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[\d;]*[~A-Za-z]|[\s\S]/g;
-const MOUSE = /^\x1b\[<(\d+);\d+;(\d+)M$/;
 /** Lines per notch of the wheel. */
 const WHEEL_LINES = 3;
 /** How often the file is looked at: a rename (writeChangelog) is seen too. */
@@ -171,6 +177,13 @@ const watch = ({ file, empty }) => {
   let offset = 0;
   const folded = new Set();
   let shown = [];
+  /** The row (from 1) the pointer is on, null while it is away; a heading on it is lit. */
+  let pointer = null;
+  /** The heading lit on screen, null for none. */
+  let lit = null;
+  /** The heading on the row (from 1) of the screen, null on another line; row 1 is the title. */
+  const headingOn = row =>
+    row !== null && shown[row - 2]?.isHeading ? shown[row - 2].section : null;
   const rows = () => process.stdout.rows || 40;
   const columns = () => process.stdout.columns || 100;
   const lines = () => viewLines(readOr(file, empty), columns(), folded, paint);
@@ -188,8 +201,13 @@ const watch = ({ file, empty }) => {
       .filter(Boolean)
       .join("  ");
     shown = rest.slice(offset, offset + room);
+    lit = headingOn(pointer);
+    // The heading under the pointer on a lighter ground: a click there folds it (#277).
+    const body = shown.map(({ line, section, isHeading }) =>
+      isHeading && section === lit ? onHover(line, columns()) : line,
+    );
     process.stdout.write(
-      `\x1b[H\x1b[2J${[mark ? `${title.line}  ${dim(mark)}` : title.line, ...shown.map(({ line }) => line)].map(line => `${line}\x1b[K`).join("\r\n")}`,
+      `\x1b[H\x1b[2J${[mark ? `${title.line}  ${dim(mark)}` : title.line, ...body].map(line => `${line}\x1b[K`).join("\r\n")}`,
     );
   };
   const scroll = by => {
@@ -219,17 +237,23 @@ const watch = ({ file, empty }) => {
     jumpTo(headings().find(heading => heading.section === section));
   };
   const leave = () => {
-    process.stdout.write("\x1b[?1000l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
+    process.stdout.write(`${MOUSE_OFF}\x1b[?7h\x1b[?25h\x1b[?1049l`);
     process.exit(0);
   };
-  process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h");
+  process.stdout.write(`\x1b[?1049h\x1b[?25l\x1b[?7l${MOUSE_ON}`);
   process.on("SIGINT", leave);
   process.on("SIGTERM", leave);
   process.stdout.on("resize", draw);
   process.stdin.setRawMode?.(true);
   process.stdin.resume();
+  /** The pointer on `row` (null: away): drawn again only when the heading under it changed. */
+  const hover = row => {
+    pointer = row;
+    if (headingOn(row) !== lit) draw();
+  };
+  const keysOf = keyReader();
   process.stdin.on("data", chunk => {
-    for (const [key] of chunk.toString().matchAll(KEY)) {
+    for (const key of keysOf(chunk.toString())) {
       if (key === "q" || key === "\u0003") leave();
       if (SCROLL[key]) scroll(SCROLL[key](Math.max(1, rows() - 2)));
       if (key === "]") jumpTo(headings().find(heading => heading.at > offset));
@@ -246,13 +270,12 @@ const watch = ({ file, empty }) => {
         offset = 0;
         draw();
       }
-      const [, button, row] = key.match(MOUSE)?.map(Number) ?? [];
-      // A click on a heading folds it; row 1 is the title.
-      if (button === 0 && shown[row - 2]?.isHeading)
-        toggle(shown[row - 2].section);
-      // The wheel: 64 up, 65 down, with a modifier (Shift, Alt, Ctrl) too.
-      const wheel = { 64: -WHEEL_LINES, 65: WHEEL_LINES }[button & ~28];
-      if (wheel) scroll(wheel);
+      if (key === FOCUS_OUT) hover(null);
+      const mouse = mouseOf(key);
+      if (mouse?.kind === "move") hover(mouse.row);
+      // A click on a heading folds it.
+      if (mouse?.kind === "click") toggle(headingOn(mouse.row));
+      if (mouse?.kind === "wheel") scroll(mouse.by * WHEEL_LINES);
     }
   });
   fs.watchFile(file, { interval: WATCH_MS }, draw);
