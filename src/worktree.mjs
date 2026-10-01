@@ -104,6 +104,11 @@ export {
   titleOf,
 } from "./worktree/origins.mjs";
 export { handoversOf } from "./worktree/handovers.mjs";
+export {
+  chatStatus,
+  rememberChats,
+  restoreChat,
+} from "./worktree/orchestrator-chat.mjs";
 export { hasOwnCommits, isInside, pruneSpaces } from "./worktree/prune.mjs";
 export {
   REPO_TOKEN,

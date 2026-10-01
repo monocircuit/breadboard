@@ -1,4 +1,4 @@
--- The colours breadboard's nvim tabs mark changes in (changes.lua, ide.lua):
+-- The colours breadboard's nvim tabs mark changes in (changes.lua through gitsigns, ide.lua):
 -- strong enough to see changed lines and characters, since a theme's diff
 -- colours can lie close to its background (the matte black one: #202327 on
 -- near black). Set again after every theme switch. Built-ins only.
@@ -21,9 +21,22 @@ local light = {
   BreadboardDeleteText = { bg = "#eba3ad", fg = "#5a1a24", bold = true },
 }
 
+-- gitsigns' lines and words (changes.lua) in these colours; its signs keep the theme's.
+local gitsigns = {
+  GitSignsAddLn = "BreadboardDiffAdd",
+  GitSignsChangeLn = "BreadboardDiffChange",
+  GitSignsAddLnInline = "BreadboardDiffText",
+  GitSignsChangeLnInline = "BreadboardDiffText",
+  GitSignsDeleteVirtLn = "BreadboardDiffDelete",
+  GitSignsDeleteVirtLnInLine = "BreadboardDeleteText",
+}
+
 local function set()
   for name, hl in pairs(vim.o.background == "light" and light or dark) do
     vim.api.nvim_set_hl(0, name, hl)
+  end
+  for name, link in pairs(gitsigns) do
+    vim.api.nvim_set_hl(0, name, { link = link })
   end
 end
 

@@ -7,6 +7,7 @@ import {
   currentPane,
   herdr,
   isInHerdr,
+  panesOf,
   spaces,
   tabsOf,
 } from "../lib/herdr.mjs";
@@ -15,6 +16,13 @@ import { CHANGELOG, CHANGES, ENTRY, OVERVIEW, ROOT } from "./constants.mjs";
 import { sessionFile } from "./conversations.mjs";
 import { resumeFree } from "./free.mjs";
 import { exclusive } from "./lock.mjs";
+import {
+  chatOfPane,
+  hasChat,
+  isWorktreeSpace,
+  recordChat,
+  stayReason,
+} from "./orchestrator-chat.mjs";
 import {
   ORCHESTRATOR,
   ORCHESTRATOR_TAB,
@@ -173,9 +181,14 @@ export const orchestratorSpace = (name, { shouldResume = false } = {}) => {
 /**
  * The space `⇶ <name>` of an orchestration, marked in its colour, with the
  * tab running this — the orchestrating session's — moved in as
- * `orchestrator`. When that was `root` of the main space, the main space
- * gets a new one. A move while wt:orchestrate runs, so the space is never
- * empty long enough for pruneOrchestrators to take it.
+ * `orchestrator`, and its conversation recorded (orchestrator-chat.mjs). Only
+ * while the space has no orchestrator, and only a tab that is nobody's
+ * orchestrator or agent (stayReason, #287): one started from another
+ * orchestration's orchestrator just starts the issues. A spare
+ * `orchestrator` tab (its claude died) closes once the new one is in. When
+ * the moved tab was `root` of the main space, the main space gets a new one.
+ * A move while wt:orchestrate runs, so the space is never empty long enough
+ * for pruneOrchestrators to take it.
  */
 export const openOrchestrator = exclusive(async name => {
   if (!isInHerdr() || !mainSpace()) return null;
@@ -183,8 +196,22 @@ export const openOrchestrator = exclusive(async name => {
   const workspace = orchestratorSpace(name);
   if (!workspace) return null;
   const pane = process.env.HERDR_PANE_ID ? currentPane() : null;
+  const from = pane
+    ? spaces().find(w => w.workspace_id === pane.workspace_id)?.label
+    : null;
+  const why = pane
+    ? stayReason({
+        name,
+        here: orchestrationOf(from),
+        isWorktree: isWorktreeSpace(from),
+        hasLive: hasChat({
+          tabs: tabsOf(workspace),
+          panes: panesOf(workspace),
+        }),
+      })
+    : null;
   let isMoved = false;
-  if (pane && pane.workspace_id !== workspace) {
+  if (pane && !why && pane.workspace_id !== workspace) {
     const moved = herdr([
       "pane",
       "move",
@@ -196,12 +223,20 @@ export const openOrchestrator = exclusive(async name => {
     const created = moved?.move_result?.created_tab;
     if (created) herdr(["tab", "rename", created.tab_id, ORCHESTRATOR_TAB]);
     isMoved = Boolean(created);
+    if (isMoved) dropDuplicates(workspace, ORCHESTRATOR_TAB);
   }
+  // Its conversation, for a click in the overview and a herdr restart to bring back.
+  const isOwn =
+    isMoved ||
+    (pane?.workspace_id === workspace &&
+      tabsOf(workspace).find(tab => tab.tab_id === pane.tab_id)?.label ===
+        ORCHESTRATOR_TAB);
+  if (isOwn) recordChat(name, chatOfPane(pane));
   keepOrder(workspace, orchestratorOrder());
   mainSpace();
   const found = spaces().find(w => w.workspace_id === workspace);
   if (found) markSpace(found, { name, slot: slotOf(name) });
-  return `space ${label}${isMoved ? `, this tab moved in as ${ORCHESTRATOR_TAB}` : ""}`;
+  return `space ${label}${isMoved ? `, this tab moved in as ${ORCHESTRATOR_TAB}` : why ? `, this tab stays where it is: ${why}` : ""}`;
 });
 /** `Orchestrated work: an orchestrator space, marked …` → `orchestrated-work-orchestrator-space-marked`. */
 const STOPWORDS = new Set([

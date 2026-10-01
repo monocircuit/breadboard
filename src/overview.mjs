@@ -61,6 +61,7 @@ import {
 import {
   layout,
   pruneSpaces,
+  rememberChats,
   rememberSessions,
   sortSpaces,
   syncStackTabs,
@@ -187,7 +188,8 @@ setInterval(fetchRemote, REMOTE_MS);
  * `--herdr`: the layout follows what the local read sees. A worktree that
  * appears or goes rebuilds it, a stack that comes up or goes down changes its
  * tabs. Only on a change: the read runs every LOCAL_MS, herdr need not. The
- * claude conversation of each worktree's space is written down on every read,
+ * claude conversation of each worktree's space (and each orchestrator's) is
+ * written down on every read,
  * for a restart of herdr to resume, the space of a worktree that is gone
  * closes, however it went, and each worktree agent's line in the sidebar says
  * what it waits for (agent-state.mjs); what needs you notifies
@@ -208,6 +210,7 @@ const keepInStep = async () => {
   isBusy = true;
   try {
     rememberSessions();
+    rememberChats();
     pruneSpaces();
     // Cheap when the order stands: a plan or a handover may have changed it (#255).
     await sortSpaces();
