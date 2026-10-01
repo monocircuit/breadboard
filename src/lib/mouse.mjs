@@ -14,8 +14,13 @@ export const MOUSE_ON = "\x1b[?1003h\x1b[?1006h\x1b[?1004h";
 export const MOUSE_OFF = "\x1b[?1003l\x1b[?1006l\x1b[?1004l";
 /** One key or mouse report each: a chunk of input can hold several (a fast wheel, a move). */
 export const KEY = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[\d;]*[~A-Za-z]|[\s\S]/g;
-/** A mouse report cut off at the end of a chunk: the rest of it comes with the next one. */
-const CUT = /\x1b\[<[\d;]*$/;
+/**
+ * A report or key cut off at the end of a chunk, the rest of it in the next
+ * one: from its escape on, `ESC` or `ESC [` alone too (#303: a click cut
+ * there was read as loose characters and lost). A lone Escape key waits for
+ * the next input; the views don't use it.
+ */
+const CUT = /\x1b(?:\[[<\d;]*)?$/;
 /**
  * The keys of the input, chunk by chunk (`KEY` each): a report a chunk ends
  * in the middle of is kept for the next, so a fast move never turns into

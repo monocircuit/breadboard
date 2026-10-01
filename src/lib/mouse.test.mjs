@@ -49,4 +49,17 @@ describe("keyReader", () => {
     assert.deepEqual(keysOf("\x1b[<35;1;2M\x1b[<35;1"), ["\x1b[<35;1;2M"]);
     assert.deepEqual(keysOf("0;2Mk"), ["\x1b[<35;10;2M", "k"]);
   });
+
+  it("loses no click, wherever a chunk ends in its report (#303)", () => {
+    const input = "\x1b[<35;10;5M\x1b[<0;12;30M\x1b[<0;12;30m\x1b[A";
+    for (let at = 1; at < input.length; at++) {
+      const keysOf = keyReader();
+      const keys = [...keysOf(input.slice(0, at)), ...keysOf(input.slice(at))];
+      assert.deepEqual(
+        keys,
+        ["\x1b[<35;10;5M", "\x1b[<0;12;30M", "\x1b[<0;12;30m", "\x1b[A"],
+        `cut after ${JSON.stringify(input.slice(0, at))}`,
+      );
+    }
+  });
 });
