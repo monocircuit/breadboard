@@ -4,6 +4,53 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:20 · CLI / every command · an unknown command, `--help`, a bare `breadboard`
+Chose: a name no group takes says `✗ unknown command <name>: did you
+mean <nearest>?` and the usage with every command, a group per line, on
+stderr, exit 1 (`wt:actoin` → wt:action, `action` → wt:action, `up` →
+stack:up, `overvieww` → overview). `breadboard --help` (`-h`, `help`)
+prints the same usage on stdout, exit 0; a bare `breadboard` on stderr,
+exit 1. Against: round four's leftover `<name>: not built yet`, exit 2,
+which named nothing; and Node's one line
+`usage: node …/worktree.mjs new|orchestrate|…|remove …`, which lists its
+internal names, not the ones people type (`pnpm wt:*`, `stack:*`).
+Why: rule 3 (stderr, exit 1, `✗` as `fail`), rule 5 (the names typed
+stay, the usage lists exactly those), rule 4 (one list in cli/mod.rs,
+`cli/typo.rs` the one place that guesses, for commands and the write
+group's flags). Suite: cli.check.mjs 14/14, 1 todo (wt:orchestrate).
+
+## 2026-10-02 01:20 · CLI / wt:action, wt:tick, wt:note, wt:mr, wt:wait · a typo says what was meant
+Chose: an unknown flag says the one it likely is, as setup's wt:new does:
+`✗ unknown flag --dryrun: did you mean --dry-run?` (a flag two edits
+away, or the only one it begins: `--message` → `--message-file`), then
+the usage while it has at most 3 lines, else
+`  pnpm wt:action --help shows every form` (one wrong flag was 11 lines
+of usage). wt:wait says it the same way (`--hour`, `--cancle`; was
+`--hour is no MR (!213) and no flag`), a word that is no MR
+`x2 is no MR (!213 or 213)`. `wt:action lok x` says
+`lok is no kind of action: did you mean look? (…)`. `wt:tick x` says
+`x is no issue number (34 or #34)` as wt:mr does (Node's "This branch
+carries no issue number" was untrue: the word was wrong, the branch had
+one); a box that is no number `a is no box number: pnpm wt:tick 307 lists
+them, numbered` (was the usage). `wt:mr --description-file <f>` with no
+such file is `✗ <f> does not exist — write the description there first`
+before GitLab is asked; it put the template down at
+.claude/mr-description.md and asked to fill that instead.
+`wt:action --orchestration ../../x` says wt:plan's
+`../../x is no orchestration's name: names are kebab-case (…)`, not
+`no orchestration … is recorded`. `wt:action --list` right-aligns the ids
+to the widest one, so `  3  plan` and ` 155  look` start their kinds in
+one column (spec §11 names Node's shift a bug).
+Kept: `wt:mr --dry-run` prints `body <TMPDIR>/wt-mr-…/description.md`
+as Node does, and that file stays (checked in a world: it exists after
+the run). Still open: the pre-push shim runs `node …/pre-push.mjs` until
+the hook is a breadboard command (wt:new installs the same shim; the
+cut-over changes both at once).
+Why: rule 3 + the bar (exact errors that say what to do), rule 4 (one
+`nearest`, the same answer from every group of one binary), rule 6 (a
+missing description file sends nothing and writes nothing).
+Suite: wt:action, wt:tick, wt:note, wt:mr, wt:wait 5/5.
+
 ## 2026-10-02 01:10 · CLI / wt:issues · 2 calls, and an error that says what to do
 Chose: an issue GitLab counts no comment of (`user_notes_count`, the
 notes people wrote, in the issues list already read) is stale without

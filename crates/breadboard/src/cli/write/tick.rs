@@ -17,6 +17,7 @@ const TAKES: Takes = Takes {
     switches: &[],
     words: None,
     usage: USAGE,
+    command: "wt:tick",
 };
 
 pub fn run(argv: &Argv) -> Outcome {
@@ -35,17 +36,25 @@ pub fn run(argv: &Argv) -> Outcome {
         .filter(|arg| !arg.starts_with("--"))
         .collect();
     let given = match words.first() {
-        Some(first) => Some(first.to_string()),
-        None => issue_of_branch(&here.branch()).map(|n| n.to_string()),
+        Some(first) => first.to_string(),
+        None => match issue_of_branch(&here.branch()) {
+            Some(number) => number.to_string(),
+            None => {
+                return Err(format!(
+                    "{USAGE}\n  This branch carries no issue number, so name the issue."
+                ));
+            }
+        },
     };
-    let Some(number) = given.as_deref().and_then(number_of) else {
-        return Err(format!(
-            "{USAGE}\n  This branch carries no issue number, so name the issue."
-        ));
+    // The word given is what is wrong, not the branch (as wt:mr says it).
+    let Some(number) = number_of(&given) else {
+        return Err(format!("{given} is no issue number (34 or #34)\n{USAGE}"));
     };
     let wanted = words.get(1..).unwrap_or_default();
-    if wanted.iter().any(|box_| number_of(box_) != Some(box_)) {
-        return Err(USAGE.into());
+    if let Some(box_) = wanted.iter().find(|box_| number_of(box_) != Some(**box_)) {
+        return Err(format!(
+            "{box_} is no box number: pnpm wt:tick {number} lists them, numbered"
+        ));
     }
 
     // Read right before writing: someone may have changed the description since.

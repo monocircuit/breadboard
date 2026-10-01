@@ -14,6 +14,7 @@ const TAKES: Takes = Takes {
     switches: &[],
     words: Some(1),
     usage: USAGE,
+    command: "wt:note",
 };
 
 pub fn run(argv: &Argv) -> Outcome {

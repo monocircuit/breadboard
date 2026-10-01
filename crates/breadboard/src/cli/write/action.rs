@@ -3,6 +3,7 @@
 //! overview, where a click does it and ✓ ticks it off; an agent's go into
 //! its worktree's `.claude/actions.json`, the orchestrator's into the record.
 
+use super::super::typo::nearest;
 use super::change;
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use breadboard_core::actions::{
@@ -47,6 +48,7 @@ const TAKES: Takes = Takes {
     switches: &["--list", "--answers"],
     words: None,
     usage: USAGE,
+    command: "wt:action",
 };
 
 /// How old a lock may grow before the next writer takes it over (actions.mjs `LOCK_STALE`).
@@ -180,9 +182,13 @@ fn recommend_of(argv: &Argv, options: &[(String, String)]) -> Option<String> {
 /// of its orchestration, an agent's into its worktree (so they go with it).
 fn where_of(argv: &Argv, here: &Here) -> Result<(PathBuf, Option<String>), String> {
     if let Some(name) = argv.given("--orchestration") {
-        // A name outside NAME would reach outside the records (`../x`).
-        let main = here.main.as_deref().filter(|_| is_name(name));
-        let Some(main) = main.filter(|main| record_of(main, name).is_some()) else {
+        // A name outside NAME would reach outside the records (`../x`); said as wt:plan says it.
+        if !is_name(name) {
+            return Err(format!(
+                "{name} is no orchestration's name: names are kebab-case (pnpm wt:orchestrate <name> <issue>…)"
+            ));
+        }
+        let Some(main) = here.main.as_deref().filter(|main| record_of(main, name).is_some()) else {
             return Err(format!("no orchestration {name} is recorded"));
         };
         return Ok((record_file(main, name), Some(name.to_string())));
@@ -193,9 +199,10 @@ fn where_of(argv: &Argv, here: &Here) -> Result<(PathBuf, Option<String>), Strin
     Ok((actions_file(dir), origin_of(dir).map(|origin| origin.name)))
 }
 
-/// A row of `--list`.
-fn row(action: &Action) -> String {
-    let mut row = format!("  {}  {:<13} {}", action.id, action.kind, action.text);
+/// A row of `--list`, its id right-aligned to `width` digits: rows of ids
+/// 3 and 155 start their kinds in one column (Node's shifted, spec §11).
+fn row(action: &Action, width: usize) -> String {
+    let mut row = format!("  {:>width$}  {:<13} {}", action.id, action.kind, action.text);
     let set = |value: &Option<String>| value.as_deref().filter(|v| !v.is_empty()).map(str::to_string);
     if let Some(url) = set(&action.url) {
         row += &format!("  {url}");
@@ -257,20 +264,28 @@ pub fn run(argv: &Argv) -> Outcome {
     if argv.has("--list") {
         let open = actions_of(&file);
         let answered = answered_of(&file);
+        // The newest first: what was just decided is what gets relayed late.
+        let recent: Vec<&Action> = answered.iter().rev().take(10).collect();
+        let width = open
+            .iter()
+            .chain(recent.iter().copied())
+            .map(|action| action.id.to_string().len())
+            .max()
+            .unwrap_or(1);
         let mut text = if open.is_empty() {
             "  no open actions".to_string()
         } else {
-            open.iter().map(row).collect::<Vec<_>>().join("\n")
+            open.iter()
+                .map(|action| row(action, width))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        if !answered.is_empty() {
-            // The newest first: what was just decided is what gets relayed late.
-            let rows: Vec<String> = answered
+        if !recent.is_empty() {
+            let rows: Vec<String> = recent
                 .iter()
-                .rev()
-                .take(10)
                 .map(|action| match &action.answered_at {
-                    Some(at) => format!("{}  ({at})", row(action)),
-                    None => row(action),
+                    Some(at) => format!("{}  ({at})", row(action, width)),
+                    None => row(action, width),
                 })
                 .collect();
             text += &format!("\n\n  answered, delivered:\n{}", rows.join("\n"));
@@ -306,7 +321,20 @@ pub fn run(argv: &Argv) -> Outcome {
     }
 
     let Some(kind) = kind.filter(|kind| ACTION_KINDS.contains(kind)) else {
-        return Err(USAGE.into());
+        return Err(match kind {
+            // A word that is no kind says which it likely is, the usage's 11 lines would bury it.
+            Some(word) => {
+                let kinds: Vec<&str> = ACTION_KINDS.iter().copied().chain(["change"]).collect();
+                let meant = nearest(word, &kinds)
+                    .map(|meant| format!(": did you mean {meant}?"))
+                    .unwrap_or_default();
+                format!(
+                    "{word} is no kind of action{meant} (merge, try, decide, look, plan, change)\n{}",
+                    TAKES.after_error()
+                )
+            }
+            None => USAGE.into(),
+        });
     };
     let text = text_of(argv);
     if text.is_empty() {
@@ -503,7 +531,10 @@ mod tests {
             answer: Some("B".into()),
             ..Default::default()
         };
-        assert_eq!(row(&action), "  10  decide        A or B?  [A | B (Recommended)]  → B");
+        assert_eq!(
+            row(&action, 2),
+            "  10  decide        A or B?  [A | B (Recommended)]  → B"
+        );
         let try_ = Action {
             id: 2,
             kind: "try".into(),
@@ -511,7 +542,9 @@ mod tests {
             run: Some("cargo run".into()),
             ..Default::default()
         };
-        assert_eq!(row(&try_), "  2  try           t  $ cargo run");
+        assert_eq!(row(&try_, 1), "  2  try           t  $ cargo run");
+        // Next to a two-digit id, its kind starts in the same column.
+        assert_eq!(row(&try_, 2), "   2  try           t  $ cargo run");
     }
 
     #[test]

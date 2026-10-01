@@ -36,6 +36,7 @@ const TAKES: Takes = Takes {
     switches: &["--cancel"],
     words: None,
     usage: USAGE,
+    command: "wt:wait",
 };
 
 fn wait_file(dir: &Path) -> PathBuf {
@@ -126,8 +127,10 @@ fn parse_wait(argv: &[String]) -> Result<Parsed, String> {
             if !parsed.mrs.contains(&iid) {
                 parsed.mrs.push(iid);
             }
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown flag {flag}"));
         } else {
-            return Err(format!("{arg} is no MR (!213) and no flag"));
+            return Err(format!("{arg} is no MR (!213 or 213)"));
         }
         at += 1;
     }
@@ -332,8 +335,11 @@ fn pause(dir: &Path, until: i64) -> bool {
 }
 
 pub fn run(argv: &Argv) -> Outcome {
-    if argv.check(&TAKES) == Ok(true) {
-        return help(ABOUT, USAGE);
+    match argv.check(&TAKES) {
+        Ok(true) => return help(ABOUT, USAGE),
+        // A flag it doesn't take is refused as every command refuses it, `--cancel` too.
+        Err(problem) if problem.starts_with("unknown flag") => return Err(problem),
+        _ => {}
     }
     let here = Here::find();
     let Some(dir) = here.worktree() else {
@@ -471,9 +477,10 @@ mod tests {
             parse_wait(&args(&["!1", "--hours", "inf"])),
             Err("--hours takes a number above 0, not inf".into())
         );
+        assert_eq!(parse_wait(&args(&["!1", "--fast"])), Err("unknown flag --fast".into()));
         assert_eq!(
-            parse_wait(&args(&["!1", "--fast"])),
-            Err("--fast is no MR (!213) and no flag".into())
+            parse_wait(&args(&["!1", "x2"])),
+            Err("x2 is no MR (!213 or 213)".into())
         );
         assert_eq!(
             parse_wait(&args(&["--then", "x"])),

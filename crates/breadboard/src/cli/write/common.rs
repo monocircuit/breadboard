@@ -2,6 +2,7 @@
 //! (lib/proc.mjs `flagValue`, worktree.mjs's `flags`), `fail` as an error
 //! value, the checkout the command runs in.
 
+use super::super::typo::nearest;
 use breadboard_core::git;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -115,11 +116,15 @@ impl<'a> Argv<'a> {
                     problem = Some(format!("{name} takes no value"));
                 }
             } else {
-                problem = Some(format!("unknown flag {name}"));
+                let flags: Vec<&str> = takes.valued.iter().chain(takes.switches).copied().collect();
+                problem = Some(match nearest(name, &flags) {
+                    Some(meant) => format!("unknown flag {name}: did you mean {meant}?"),
+                    None => format!("unknown flag {name}"),
+                });
             }
         }
         match problem {
-            Some(problem) => Err(format!("{problem}\n{}", takes.usage)),
+            Some(problem) => Err(format!("{problem}\n{}", takes.after_error())),
             None => Ok(false),
         }
     }
@@ -134,6 +139,21 @@ pub struct Takes {
     /// How many words (no flag, no flag's value) at most; None: any number.
     pub words: Option<usize>,
     pub usage: &'static str,
+    /// Its name, `wt:mr`, for `pnpm wt:mr --help`.
+    pub command: &'static str,
+}
+
+impl Takes {
+    /// What follows an error of the command line: the usage while it is
+    /// short, else where to read it (wt:action's has 11 lines: one wrong flag
+    /// was a screen of text).
+    pub fn after_error(&self) -> String {
+        if self.usage.lines().count() <= 3 {
+            self.usage.to_string()
+        } else {
+            format!("  pnpm {} --help shows every form", self.command)
+        }
+    }
 }
 
 /// `--help`: what the command does and its usage, on stdout, exit 0.
@@ -303,6 +323,7 @@ mod tests {
         switches: &["--update", "--dry-run"],
         words: Some(1),
         usage: "usage: x",
+        command: "wt:x",
     };
 
     fn checked(args: &[&str]) -> Result<bool, String> {
@@ -314,7 +335,10 @@ mod tests {
         assert_eq!(checked(&["10", "--update", "--description-file", "f"]), Ok(false));
         assert_eq!(checked(&["--description-file=f", "--dry-run"]), Ok(false));
         assert_eq!(checked(&[]), Ok(false));
-        assert_eq!(checked(&["--dryrun"]), Err("unknown flag --dryrun\nusage: x".into()));
+        assert_eq!(
+            checked(&["--dryrun"]),
+            Err("unknown flag --dryrun: did you mean --dry-run?\nusage: x".into())
+        );
         assert_eq!(checked(&["--bogus=1"]), Err("unknown flag --bogus\nusage: x".into()));
         assert_eq!(
             checked(&["10", "11"]),
@@ -344,6 +368,15 @@ mod tests {
         let text = argv(&["look", "check", "-h", "output"]);
         let any = Takes { words: None, ..TAKES };
         assert_eq!(Argv(&text).check(&any), Ok(false));
+        // A long usage gives way to where to read it.
+        let long = Takes {
+            usage: "usage: a\n  b\n  c\n  d",
+            ..TAKES
+        };
+        assert_eq!(
+            Argv(&argv(&["--updat"])).check(&long),
+            Err("unknown flag --updat: did you mean --update?\n  pnpm wt:x --help shows every form".into())
+        );
     }
 
     #[test]

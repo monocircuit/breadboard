@@ -33,6 +33,7 @@ const TAKES: Takes = Takes {
     switches: &["--update", "--dry-run"],
     words: Some(1),
     usage: USAGE,
+    command: "wt:mr",
 };
 
 /// The label of an MR that needs no changelog entry.
@@ -140,6 +141,18 @@ pub fn run(argv: &Argv) -> Outcome {
     let Some(top) = here.top.as_deref() else {
         return Err("not in a git checkout: run it in a worktree".into());
     };
+    // A file named is the description: one that isn't there is refused before
+    // GitLab is asked, and no template is put down elsewhere instead.
+    if let Some(given) = argv.value("--description-file") {
+        let path = here.resolve(given);
+        if !path.is_file() {
+            return Err(format!(
+                "{} {} — write the description there first",
+                here.shown(given),
+                if path.exists() { "is no file" } else { "does not exist" }
+            ));
+        }
+    }
     let branch = here.branch();
     if branch.is_empty() || branch == "develop" || branch == "main" {
         return Err(format!(

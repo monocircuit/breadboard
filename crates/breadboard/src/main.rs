@@ -9,8 +9,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
-        eprintln!("usage: breadboard <command> [args…]");
-        return ExitCode::from(2);
+        return cli::bare();
     };
     match command.as_str() {
         // Printed once (`--once`, or stdout no terminal): the read group's; live: the TUI.
