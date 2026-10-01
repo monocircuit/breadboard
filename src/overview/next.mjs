@@ -86,12 +86,12 @@ export const namedIn = text => [
  * - the merge order left the plan's.
  */
 export const staleOf = ({ plan, states, isOffPlan = false }) => {
-  if (!plan) return [];
-  const listed = [...new Set([...(plan.work ?? []), ...(plan.merge ?? [])])];
+  const { work = [], merge = [], why = null } = plan ?? {};
+  const listed = [...new Set([...work, ...merge])];
   const gone = listed.filter(number => !states.has(number));
   const closed = listed.filter(number => states.get(number) === "closed");
   const inPlan = new Set(listed);
-  const done = namedIn(plan.why).filter(
+  const done = namedIn(why).filter(
     number => !inPlan.has(number) || states.get(number) !== "open",
   );
   const issuesText = numbers => numbers.map(number => `#${number}`).join(", ");

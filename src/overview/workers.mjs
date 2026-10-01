@@ -308,6 +308,8 @@ export const workerActionsOf = (
       who: to,
       issue: issues.find(candidate => candidate.number === number),
       at: handover.at ?? "",
+      // Under way: NEXT doesn't name it (next.mjs `isClickable`).
+      isRunning: Boolean(running.get(number)?.isRunning),
       text: running.get(number)?.isRunning
         ? `#${number} → ${to}: handing over …`
         : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : announcedText(handover, state)} (announced)`,
@@ -341,6 +343,7 @@ export const workerActionsOf = (
         who: state.to,
         issue,
         at: "",
+        isRunning: true,
         text: `#${number} → ${state.to}: handing over …`,
         go: () => {},
       });
@@ -353,6 +356,7 @@ export const workerActionsOf = (
         who: issue.feature,
         issue,
         at: "",
+        isRunning: Boolean(state?.isRunning),
         text: `#${number} queued (--queue), no agent free: ${fresh.get(number)}`,
         go: () => startFresh(name, number),
       });
@@ -366,6 +370,7 @@ export const workerActionsOf = (
       who: worker.name,
       issue,
       at: "",
+      isRunning: Boolean(state?.isRunning),
       text: state?.isRunning
         ? `#${number} → ${worker.name}: handing over …`
         : `#${number} → ${worker.name} (${workerText(found)})${error}`,
