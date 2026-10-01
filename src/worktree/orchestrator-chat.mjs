@@ -235,3 +235,21 @@ export const restoreChat = (
     ? `${what} in its tab`
     : `${what} in a new tab ${ORCHESTRATOR_TAB}`;
 };
+/**
+ * What the overview of `name` shows on its `open orchestrator chat`:
+ * `{ state, sessionId }` (chatStateOf; `gone` for no space), null outside herdr.
+ */
+export const chatStatus = name => {
+  if (!isInHerdr()) return null;
+  const chat = chatOf(name);
+  const label = orchestratorLabel(name);
+  const workspace = spaces().find(space => space.label === label)?.workspace_id;
+  if (!workspace) return { state: "gone", sessionId: chat?.sessionId ?? null };
+  const { state } = chatStateOf({
+    tabs: tabsOf(workspace),
+    panes: panesOf(workspace),
+    all: herdr(["pane", "list"])?.panes ?? [],
+    sessionId: chat?.sessionId,
+  });
+  return { state, sessionId: chat?.sessionId ?? null };
+};

@@ -37,6 +37,7 @@ import {
   pipelineMark,
   titleLines,
 } from "./boxes.mjs";
+import { pushChatButton } from "./chat.mjs";
 import { clickEnd, endText, pushEndButton } from "./end.mjs";
 import { announcedOf } from "./handovers.mjs";
 import { toneOf } from "./herdr-tones.mjs";
@@ -493,6 +494,7 @@ export const renderOrchestration = (local, remote, error) => {
   lines.push(
     ...titleLines(label, new Date().toLocaleTimeString(), isOnce ? "" : KEYS),
   );
+  pushChatButton(lines, orchestration, local.chat ?? null);
   const { work, merge } = local.plan ?? {};
   const issues = local.issues.toSorted(
     (a, b) => placeIn(work, a.number) - placeIn(work, b.number),

@@ -12,6 +12,7 @@ import {
   actionsFile,
   actionsOf,
   changeOf,
+  chatStatus,
   handoversOf,
   hasOwnCommits,
   isPortFree,
@@ -100,6 +101,8 @@ export const readView = async () => {
       recordFile: file,
       // For the automatic actions (auto-actions.mjs) and WORKTREES: what herdr says each agent does.
       agents: agentsOf(),
+      // Where the orchestrator's chat stands, for its button at the top (#287).
+      chat: chatStatus(orchestration),
     };
   }
   const tree = local.trees[0];
