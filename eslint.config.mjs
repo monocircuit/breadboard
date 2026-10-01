@@ -10,7 +10,7 @@ const flatConfig = await new FlatConfigLoader({
 
 export default defineConfig([
   // The spike's build output (#307).
-  { ignores: ["spikes/*/target/**"] },
+  { ignores: ["spikes/*/target/**", "target/**"] },
   { extends: [flatConfig] },
   // Command line tools: the console is their output.
   { rules: { "no-console": "off" } },

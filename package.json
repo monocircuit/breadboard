@@ -5,8 +5,11 @@
   "type": "module",
   "description": "The dev workflow of the repo: worktrees, stacks, the overview, the herdr plugin, the Chromium extension",
   "scripts": {
-    "lint": "eslint .",
-    "test": "node --test"
+    "lint": "eslint . && pnpm lint:rs",
+    "lint:rs": "cargo fmt --check && cargo clippy --all-targets --quiet -- -D warnings",
+    "test": "node --test && pnpm test:rs",
+    "test:rs": "cargo test --quiet",
+    "build:rs": "cargo build --release --quiet"
   },
   "devDependencies": {
     "@monocircuit/eslint-config": "workspace:*",

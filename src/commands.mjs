@@ -124,7 +124,16 @@ const DESCRIPTIONS = {
     "check-contrast": "contrast check of the built Storybook",
     tokens: "write tokens.css and theme.css from src/tokens/tokens.ts",
   },
+  "packages/breadboard": {
+    lint: "ESLint, cargo fmt and clippy",
+    "lint:rs":
+      "cargo fmt --check and clippy -D warnings of the Rust breadboard",
+    test: "node --test and cargo test",
+    "test:rs": "cargo test of the Rust breadboard",
+    "build:rs": "the breadboard binary, release (target/release/breadboard)",
+  },
   "packages/breadboard-gauntlet": {
+    snap: "a screenshot (text, PNG) of any TUI in a pty, in a gauntlet world: for the rewrite's critics",
     gauntlet:
       "the black-box suite: breadboard in a pty against a recorded world (BREADBOARD_SUBJECT: a rewrite)",
   },
