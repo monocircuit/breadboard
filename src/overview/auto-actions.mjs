@@ -182,8 +182,16 @@ export const removalOf = dir => removals.get(dir);
  * The automatic clean-up (#227, clean-up.mjs): wt:remove of each merged
  * worktree nothing stops, once. One that failed stays for a click (its row
  * in UP NEXT says why). `holds`: dir → why a handover holds it.
+ * `release(issue)`: frees its agent first (#289, workers.mjs), true when it
+ * did: then the removal waits until the agent left the worktree (leftIn).
  */
-export const removeMerged = (issues, of, agents, holds = new Map()) => {
+export const removeMerged = (
+  issues,
+  of,
+  agents,
+  holds = new Map(),
+  release = () => false,
+) => {
   // herdr told nothing: a working agent would look idle.
   if (agents.size === 0) return;
   for (const issue of issues) {
@@ -195,7 +203,9 @@ export const removeMerged = (issues, of, agents, holds = new Map()) => {
       status,
       hold: holds.get(tree.dir),
     });
-    if (cleanUp?.key === "due") removeWorktree(tree.dir);
+    if (cleanUp?.key !== "due") continue;
+    if (tree.claude && release(issue)) continue;
+    removeWorktree(tree.dir);
   }
 };
 const clickRemove = dir => {

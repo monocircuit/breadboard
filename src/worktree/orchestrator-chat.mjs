@@ -13,6 +13,7 @@ import {
 } from "../lib/herdr.mjs";
 import { quote } from "../lib/proc.mjs";
 import { isConversationRunning, runningClaudes } from "./conversations.mjs";
+import { isFreeTab } from "./free.mjs";
 import { ideFlag } from "./ide.mjs";
 import { orchestratorOrder, orchestratorSpace } from "./orchestrator.mjs";
 import {
@@ -144,8 +145,15 @@ export const chatStateOf = ({
  * started in a tab of its own (it becomes `orchestrator`, rememberChats).
  */
 export const chatPaneOf = ({ tabs, panes }) => {
+  // A free agent's tab (#289, free.mjs) is never the chat.
+  const free = new Set(
+    tabs.filter(tab => isFreeTab(tab.label)).map(tab => tab.tab_id),
+  );
   const claudes = panes.filter(
-    pane => pane.agent === "claude" && pane.agent_session?.value,
+    pane =>
+      pane.agent === "claude" &&
+      pane.agent_session?.value &&
+      !free.has(pane.tab_id),
   );
   const tab = chatTabOf(tabs);
   if (tab) return claudes.find(pane => pane.tab_id === tab.tab_id) ?? null;

@@ -60,7 +60,8 @@ import {
   resolveColumns,
 } from "./resolve.mjs";
 import { ago } from "./render-worktree.mjs";
-import { workerActionsOf } from "./workers.mjs";
+import { pushFreeAgents } from "./free-agents.mjs";
+import { freeOnCleanUp, workerActionsOf } from "./workers.mjs";
 import { KEYS, pushUnder, screen } from "./screen.mjs";
 import { foldLine, pushWorktrees } from "./tree.mjs";
 import { clickTry, pageOf, testOrigin, trySpot } from "./try.mjs";
@@ -186,6 +187,7 @@ const actionsOf = (local, issues, of, remote, announced) => {
       awaited: remote?.awaited ?? null,
       work: local.plan?.work ?? [],
       shown: names.shown,
+      free: local.freeAgents ?? [],
     },
   );
   const workers = handovers.actions.map(
@@ -282,7 +284,17 @@ const actionsOf = (local, issues, of, remote, announced) => {
     : [];
   // Merged worktrees nothing holds go by themselves, from the one live overview (clean-up.mjs).
   if (remote && isInHerdr() && deliversAnswers(orchestration))
-    removeMerged(issues, of, local.agents ?? new Map(), handovers.holds);
+    removeMerged(
+      issues,
+      of,
+      local.agents ?? new Map(),
+      handovers.holds,
+      issue =>
+        freeOnCleanUp(orchestration, issue, of(issue).mr, {
+          agents: local.agents ?? new Map(),
+          workers: local.workers,
+        }),
+    );
   return {
     holds: handovers.holds,
     stale,
@@ -587,6 +599,7 @@ export const renderOrchestration = (local, remote, error) => {
   // The handovers the orchestrator announced, where they stand (handovers.mjs).
   const announced = announcedOf(local.handovers, issues, {
     known: local.workers,
+    free: local.freeAgents ?? [],
     agents: local.agents,
     awaited: remote?.awaited ?? null,
   });
@@ -639,6 +652,14 @@ export const renderOrchestration = (local, remote, error) => {
     free: local.free,
     merged: mergedIids,
   });
+  // The free agents, their worktree gone (#289).
+  pushFreeAgents(
+    lines,
+    orchestration,
+    local.freeAgents ?? [],
+    local.agents,
+    local.workers,
+  );
 
   const byNumber = withMr;
   const afterOf = new Map(order.open.map(item => [item.number, item.after]));

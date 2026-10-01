@@ -167,7 +167,8 @@ describe("workerActionsOf", () => {
         ["start", "9-new"],
       ],
     );
-    assert.deepEqual([...held], ["/nonexistent/platform-3-done"]);
+    // Its agent goes free with the clean-up (#289): nothing holds the worktree.
+    assert.deepEqual([...held], []);
     assert.equal(suggested.get(8).worker.name, "3-done");
   });
 });
@@ -186,7 +187,7 @@ describe("workerActionsOf without shared files (#265)", () => {
   const calls = [];
   const run = (name, number, args) => calls.push([number, ...args]);
 
-  it("hands a queued issue nothing shares to the free agent and holds its clean-up", () => {
+  it("hands a queued issue nothing shares to the free agent, its clean-up not held (#289)", () => {
     calls.length = 0;
     const queued = { number: 31, feature: "31-new", queued: true, paths: [] };
     const { actions, holds } = workerActionsOf(
@@ -199,12 +200,7 @@ describe("workerActionsOf without shared files (#265)", () => {
     );
     assert.deepEqual(calls, [[31, "--to", "30-done"]]);
     assert.equal(actions[0].text, "#31 → 30-done (free, 18 %)");
-    const hold = holds.get(done.tree.dir);
-    assert.ok(hold);
-    assert.equal(
-      cleanUpOf(done, { mr: done.mr, status: "idle", hold }).key,
-      "waits",
-    );
+    assert.equal(holds.get(done.tree.dir), undefined);
   });
 
   it("closes the free agent with its clean-up once nothing is queued", () => {

@@ -9,6 +9,8 @@ import { herdr, herdrDid } from "../lib/herdr.mjs";
 import { git, lines } from "../lib/proc.mjs";
 import { EDITOR, OVERVIEW, ROOT } from "./constants.mjs";
 import { boundSession, contextShareOf, sessionFile } from "./conversations.mjs";
+import { freeAgentsOf } from "./free.mjs";
+import { checkoutOf } from "./orchestrator.mjs";
 import { originOf, recordOf, writeWorker } from "./origins.mjs";
 import { spaceOf } from "./spaces.mjs";
 import { dropDuplicates, featureOf, keepOrder } from "./tabs.mjs";
@@ -21,13 +23,15 @@ export const WAS_FOR = 24 * 60 * 60 * 1000;
 
 /**
  * The agents of the orchestration `name`, one per worktree of it with a
- * conversation bound: `{ dir, feature, id, name, was }`, `name` the one it
+ * conversation bound, then the free ones (free.mjs, `isFree`, `dir` the
+ * orchestration's checkout, `feature` null): `{ dir, feature, id, name, was }`, `name` the one it
  * goes by (the record's, set by its last handover, else the feature of the
  * worktree it is in), `was` the one before that handover, or null.
  */
 export const workersOf = name => {
-  const known = recordOf(name)?.workers ?? {};
-  return worktrees()
+  const record = recordOf(name);
+  const known = record?.workers ?? {};
+  const bound = worktrees()
     .slice(1)
     .filter(({ dir }) => originOf(dir)?.name === name)
     .map(({ dir }) => ({ dir, feature: featureOf(dir), id: boundSession(dir) }))
@@ -37,6 +41,18 @@ export const workersOf = name => {
       name: known[worker.id]?.name ?? worker.feature,
       was: known[worker.id]?.was ?? null,
     }));
+  // The free ones (#289): in the orchestration's checkout, their worktree gone.
+  const free = freeAgentsOf(record)
+    .filter(({ id }) => !bound.some(worker => worker.id === id))
+    .map(({ id, name: agent, was }) => ({
+      dir: checkoutOf(name),
+      feature: null,
+      id,
+      name: agent,
+      was,
+      isFree: true,
+    }));
+  return [...bound, ...free];
 };
 /**
  * The worker `who` names among `workers`, or undefined: its name, else the
@@ -138,7 +154,8 @@ export const moveWorker = (worker, pane, number, dir) => {
   }
   // The binding follows the conversation: a restart resumes it in its new space, answers go there.
   fs.writeFileSync(sessionFile(dir), `${worker.id}\n`);
-  fs.rmSync(sessionFile(worker.dir), { force: true });
+  // A free agent's checkout is the orchestration's: no binding of its own there.
+  if (!worker.isFree) fs.rmSync(sessionFile(worker.dir), { force: true });
   // The rename first: a stale pane id refuses it, and the next one is tried.
   const tell = paneId => {
     if (!paneId || !herdrDid(["agent", "prompt", paneId, renameLine(dir)]))
@@ -174,21 +191,26 @@ export const handedOver = (worker, { number, dir, before, files, at }) => {
 /** The record of `name` learns that `worker` works on `number` in `dir` now, under the name of its feature. */
 export const recordHandover = (name, worker, number, dir) => {
   const known = recordOf(name)?.workers?.[worker.id] ?? {};
-  writeWorker(
-    name,
-    worker.id,
-    handedOver(
+  writeWorker(name, worker.id, {
+    // Free no more (#289): it works on an issue again.
+    free: null,
+    ...handedOver(
       { ...worker, renamed: known.renamed },
       {
         number,
         dir,
         before: issuesBefore(name, worker).map(issue => issue.number),
         // What it knows from the worktree it leaves: that one goes with its clean-up.
-        files: [...new Set([...(known.files ?? []), ...filesOf(worker.dir)])],
+        files: [
+          ...new Set([
+            ...(known.files ?? []),
+            ...(worker.isFree ? [] : filesOf(worker.dir)),
+          ]),
+        ],
         at: new Date().toISOString(),
       },
     ),
-  );
+  });
 };
 /** Its name before the last handover, for WORKTREES, while that was less than WAS_FOR ago; else null. */
 export const wasOf = (known, now = Date.now()) =>
@@ -199,7 +221,7 @@ export const wasOf = (known, now = Date.now()) =>
 /**
  * The agents of the orchestration `name` free for a next issue now, for
  * wt:orchestrate: herdr sees them idle (or done), their context below the
- * limit and their MR merged (an agent only ready may still be needed for
+ * limit and their MR merged, or free (#289, `isFree`, `dir` null) (an agent only ready may still be needed for
  * it). `{ name, share, files, dir, isMerged }`, `files` those of its
  * worktree and, from the record, of its earlier ones (fit.mjs).
  */
@@ -216,13 +238,15 @@ export const idleWorkersNow = async name => {
         }) === null,
     );
   const merged = await Promise.all(
-    candidates.map(({ dir }) =>
-      glabApi(
-        `projects/:fullpath/merge_requests?state=merged&source_branch=${encodeURIComponent(branchOf.get(dir) ?? "")}`,
-      ).then(
-        mrs => mrs.length > 0,
-        () => false,
-      ),
+    candidates.map(({ dir, isFree }) =>
+      isFree
+        ? true
+        : glabApi(
+            `projects/:fullpath/merge_requests?state=merged&source_branch=${encodeURIComponent(branchOf.get(dir) ?? "")}`,
+          ).then(
+            mrs => mrs.length > 0,
+            () => false,
+          ),
     ),
   );
   return candidates
@@ -233,11 +257,12 @@ export const idleWorkersNow = async name => {
       files: [
         ...new Set([
           ...(known[worker.id]?.files ?? []),
-          ...filesOf(worker.dir),
+          ...(worker.isFree ? [] : filesOf(worker.dir)),
         ]),
       ],
-      dir: worker.dir,
+      dir: worker.isFree ? null : worker.dir,
       isMerged: true,
+      isFree: Boolean(worker.isFree),
     }));
 };
 /** dir → `{ head, files }`: the files of a worktree's commits, read again after a new commit. */

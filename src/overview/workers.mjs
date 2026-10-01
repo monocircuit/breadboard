@@ -1,8 +1,8 @@
 // Agents are workers (#217), in the overview of an orchestration: under UP
 // NEXT, for each queued issue the free agent that knows its code best, else
 // the one with the most room, else a fresh one (#265). The live overview
-// does it by itself (worktree/workers.mjs); the clean-up of a free agent's
-// worktree waits meanwhile, it would close the agent.
+// does it by itself (worktree/workers.mjs). A merged agent goes free with
+// the clean-up of its worktree (#289) and is suggested from there.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,12 +11,42 @@ import path from "node:path";
 import { red } from "../lib/tty.mjs";
 import { CONTEXT_LIMIT, ENTRY, filesOf, mainDir } from "../worktree.mjs";
 import { suggestionsOf } from "../worktree/fit.mjs";
+import { freeAgent } from "../worktree/free.mjs";
 import { THRESHOLD, freeMemory, gb } from "../worktree/memory.mjs";
 import { setupsOf } from "../worktree/setups.mjs";
-import { takesText } from "./handovers.mjs";
+import { agentNameOf } from "./handovers.mjs";
 import { screen } from "./screen.mjs";
 
 export { pathsOf, sharedOf, suggestionsOf } from "../worktree/fit.mjs";
+
+/**
+ * Before the clean-up of a merged worktree (#289): its agent goes free
+ * (worktree/free.mjs) instead of closing with the space, unless its context
+ * is above the limit: then it goes, a next issue would run out in the middle.
+ * `local`: `{ agents, workers }` of the read. True when it was freed.
+ */
+export const freeOnCleanUp = (
+  name,
+  issue,
+  mr,
+  { agents, workers = {} },
+  free = freeAgent,
+) => {
+  const { tree } = issue;
+  const claude = tree?.claude;
+  const agent = claude && agents.get(claude.id);
+  if (!agent || mr?.state !== "merged") return false;
+  const share = claude.window ? claude.used / claude.window : 0;
+  if (share > CONTEXT_LIMIT) return false;
+  return free(name, {
+    id: claude.id,
+    agent: agentNameOf(tree, workers),
+    pane: agent.pane,
+    dir: tree.dir,
+    iid: mr.iid,
+    files: filesOf(tree.dir),
+  }).isFreed;
+};
 
 /**
  * An agent whose work waits for no one but the human: its MR merged, or
@@ -31,9 +61,11 @@ export const isDoneMr = mr =>
  * that herdr sees idle (or done), whose MR is done and whose context is
  * below the limit. `{ name, share, files, dir, isMerged, issue }`,
  * `files` those of its worktree and, from the record, of its earlier ones.
+ * Then the free agents of `free` (#289, `{ id, name, files, share }`, its
+ * worktree gone) herdr sees idle and below the limit: `isFree`, `dir` null.
  */
-export const freeWorkersOf = (issues, of, agents, known = {}) =>
-  issues.flatMap(issue => {
+export const freeWorkersOf = (issues, of, agents, known = {}, free = []) => [
+  ...issues.flatMap(issue => {
     const { tree } = issue;
     const claude = tree?.claude;
     const agent = claude && agents.get(claude.id);
@@ -53,7 +85,25 @@ export const freeWorkersOf = (issues, of, agents, known = {}) =>
         issue,
       },
     ];
-  });
+  }),
+  // The free agents (#289), their worktree gone: idle, below the limit.
+  ...free.flatMap(agent => {
+    const status = agents.get(agent.id)?.status;
+    if (!["idle", "done"].includes(status) || agent.share > CONTEXT_LIMIT)
+      return [];
+    return [
+      {
+        name: agent.name,
+        share: agent.share ?? 0,
+        files: agent.files,
+        dir: null,
+        isMerged: true,
+        isFree: true,
+        issue: null,
+      },
+    ];
+  }),
+];
 
 /**
  * Which queued issues (in the order they wait) go to their suggested agent
@@ -200,11 +250,11 @@ const workerText = ({ worker, shared }) =>
  * The rows of UP NEXT for the workers of the orchestration `name`, as
  * automatic actions (`{ key, kind, text, at, issue, who, go }`): per queued
  * issue its suggested agent, `hand over`, else `start`, a fresh agent.
- * `held`: the worktrees of the suggested and announced agents and of those
- * a handover is moving (`holds`: dir → why), whose clean-up waits, it would
- * close the agent with the space. An agent nothing will need (no queued
- * issue, no handover) closes with its clean-up, its conversation kept for
- * `/resume`. `suggested`: number → `{ worker, shared }`, `fresh`: number →
+ * `held`: the worktrees of the agents a handover is moving now (`holds`:
+ * dir → why), whose clean-up waits until they moved. Any other merged agent
+ * goes free with its clean-up (#289, worktree/free.mjs) and stays for the
+ * next issue: `free`, the free agents (`{ id, name, files, share }`), are
+ * suggested like the others. `suggested`: number → `{ worker, shared }`, `fresh`: number →
  * what its fresh start does, both for the queue of WORKTREES (tree.mjs).
  *
  * `shouldHandOut` (the one live overview, once GitLab answered): a queued
@@ -214,7 +264,7 @@ const workerText = ({ worker, shared }) =>
  *
  * `announced` (overview/handovers.mjs): the handovers the orchestrator
  * announced (#227). Their issues and agents are no one else's; each is a
- * row of its own, done by itself once due, and its agent's worktree is held.
+ * row of its own, done by itself once due.
  *
  * `setups` (worktree/setups.mjs): the starts running now, from any process
  * (#272). Their agents are no one else's either, their issues not queued
@@ -239,6 +289,7 @@ export const workerActionsOf = (
     awaited = null,
     work = [],
     shown = who => who,
+    free: freeAgents = [],
   } = {},
 ) => {
   // An agent a start moves takes nothing else meanwhile: the queue gave
@@ -250,8 +301,17 @@ export const workerActionsOf = (
       .filter(state => state.isRunning)
       .map(state => state.dir),
   ]);
-  const free = freeWorkersOf(issues, of, agents, known).filter(
-    worker => !promised.has(worker.dir),
+  // A free agent (#289) has no worktree: it is promised by its name.
+  const promisedTo = new Set([
+    ...announced.map(({ to }) => to),
+    ...setups.map(setup => setup.to),
+    ...[...running.values()]
+      .filter(state => state.isRunning)
+      .map(state => state.to),
+  ]);
+  const free = freeWorkersOf(issues, of, agents, known, freeAgents).filter(
+    worker =>
+      worker.isFree ? !promisedTo.has(worker.name) : !promised.has(worker.dir),
   );
   const settingUp = new Set(setups.map(setup => setup.number));
   for (const issue of issues) {
@@ -380,21 +440,16 @@ export const workerActionsOf = (
       go: () => handOver(name, number, worker),
     });
   }
-  // Why the clean-up of each held worktree waits, for its node (tree.mjs).
+  // Why the clean-up of each held worktree waits, for its node (tree.mjs):
+  // only while its agent moves out. A suggested or announced agent is freed
+  // with the clean-up instead (#289) and takes its issue from there.
   const holds = new Map([
-    ...[...suggested].map(([number, { worker }]) => [
-      worker.dir,
-      `its agent is suggested for #${number}`,
-    ]),
     ...[...running]
       .filter(([, state]) => state.isRunning && state.dir)
       .map(([number, state]) => [state.dir, `its agent takes #${number} now`]),
     ...setups
       .filter(setup => setup.from)
       .map(setup => [setup.from, `its agent takes #${setup.number} now`]),
-    ...announced
-      .filter(({ tree }) => tree)
-      .map(handover => [handover.tree.dir, takesText(handover)]),
   ]);
   return {
     actions,
