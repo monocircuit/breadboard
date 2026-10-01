@@ -253,7 +253,7 @@ describe("gateRefusalOf", () => {
         record: { failed: { tree: "t2", failures } },
         plan: planned("a")(),
       }),
-      /its last check failed: a \(x > y\)/,
+      /its last check failed: a \(x > y\)[\s\S]*own fix MR[\s\S]*pnpm wt:wait/,
     );
   });
   it("says why when turbo can't tell, instead of locking out quietly", () => {

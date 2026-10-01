@@ -276,7 +276,8 @@ export const gateRefusalOf = ({ branch, sha, tree, record, plan, isEmpty }) => {
   const why =
     record?.failed?.tree === tree
       ? `its last check failed: ${failuresText(record.failed.failures ?? [])}.
-  Fix it, commit, run pnpm wt:check again.`
+  Fix it, commit, run pnpm wt:check again. Red on develop too: it is fixed once, in its own fix MR,
+  and you wait for that with pnpm wt:wait !<mr>.`
       : plan?.error
         ? `which packages it changes can't be told (${plan.error}).
   Run pnpm install, then pnpm wt:check.`

@@ -115,7 +115,8 @@ export default async function checkCommand() {
     });
     fail(
       `wt:check failed after ${duration} s: ${failures.length ? failuresText(failures, 5) : "see turbo's output above"}
-  Fix it, commit, run pnpm wt:check again: the push waits for it.`,
+  Fix it, commit, run pnpm wt:check again: the push waits for it.
+  Red on develop too: it is fixed once, in its own fix MR; wait for that with pnpm wt:wait !<mr>.`,
     );
   }
   // An edit while it ran: what passed isn't what is there now.
