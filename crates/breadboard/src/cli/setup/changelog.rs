@@ -708,19 +708,32 @@ fn orchestrations_of(mrs: &[Value]) -> Vec<(i64, String)> {
     found
 }
 
-/// Pages of a GitLab list until one comes back short, twenty at most.
-fn all_of(endpoint: &str) -> Result<Vec<Value>, String> {
+/// Pages of a GitLab list until one comes back short, twenty at most; the
+/// pages read before a call that failed for good, with that failure.
+fn pages_of(endpoint: &str) -> (Vec<Value>, Option<gitlab::Failure>) {
     let mut all = Vec::new();
     for page in 1..=20 {
         let joint = if endpoint.contains('?') { '&' } else { '?' };
-        let found = gitlab::list(&format!("{endpoint}{joint}per_page=100&page={page}"))?;
-        let is_short = found.len() < 100;
-        all.extend(found);
-        if is_short {
-            break;
+        match gitlab::list(&format!("{endpoint}{joint}per_page=100&page={page}")) {
+            Ok(found) => {
+                let is_short = found.len() < 100;
+                all.extend(found);
+                if is_short {
+                    break;
+                }
+            }
+            Err(failure) => return (all, Some(failure)),
         }
     }
-    Ok(all)
+    (all, None)
+}
+
+/// Every page of a GitLab list, or the failure of one of them.
+fn all_of(endpoint: &str) -> Result<Vec<Value>, gitlab::Failure> {
+    match pages_of(endpoint) {
+        (_, Some(failure)) => Err(failure),
+        (all, None) => Ok(all),
+    }
 }
 
 fn state_file() -> std::path::PathBuf {
@@ -731,12 +744,13 @@ fn overall_file() -> std::path::PathBuf {
     repo::main_dir().join(".claude").join("changelog.md")
 }
 
-/// The changes of a merged MR: from what the last rewrite kept, else from its diffs.
-fn changes_of(iid: i64, known: &Map<String, Value>) -> Value {
+/// The changes of a merged MR: from what the last rewrite kept, else from its
+/// diffs; a failed read of them is no "changed nothing" (it would be kept).
+fn changes_of(iid: i64, known: &Map<String, Value>) -> Result<Value, gitlab::Failure> {
     if let Some(found) = known.get(&iid.to_string()) {
-        return found.clone();
+        return Ok(found.clone());
     }
-    let diffs = all_of(&format!("projects/:fullpath/merge_requests/{iid}/diffs")).unwrap_or_default();
+    let diffs = all_of(&format!("projects/:fullpath/merge_requests/{iid}/diffs"))?;
     let mut paths: Vec<String> = Vec::new();
     for diff in &diffs {
         let is_deleted = diff.get("deleted_file").and_then(Value::as_bool).unwrap_or(false);
@@ -768,7 +782,7 @@ fn changes_of(iid: i64, known: &Map<String, Value>) -> Value {
         })
         .map(|changeset| json!({ "packages": changeset.packages, "bump": changeset.bump, "text": changeset.text }))
         .collect();
-    json!({ "paths": paths, "changesets": changesets })
+    Ok(json!({ "paths": paths, "changesets": changesets }))
 }
 
 fn changeset_from(value: &Value) -> Changeset {
@@ -779,8 +793,31 @@ fn changeset_from(value: &Value) -> Changeset {
     }
 }
 
+/// What `write_overall` wrote: the text, the window, and what GitLab didn't
+/// answer (`GitLab: HTTP 502 Bad Gateway (!310's diffs): read again next time`).
+#[derive(Debug, Default)]
+pub struct Written {
+    pub text: String,
+    pub window: String,
+    pub warnings: Vec<String>,
+}
+
+/// The changes kept for the next rewrite: only those read, by iid ascending
+/// (as `Object.fromEntries` of Node writes integer keys). A merged MR whose
+/// diffs failed stays out, so the next rewrite reads it again.
+fn kept_of(read: &[(i64, Result<Value, gitlab::Failure>)]) -> Map<String, Value> {
+    let mut kept: Vec<(i64, Value)> = read
+        .iter()
+        .filter_map(|(iid, change)| change.as_ref().ok().map(|change| (*iid, change.clone())))
+        .collect();
+    kept.sort_by_key(|(iid, _)| *iid);
+    kept.into_iter()
+        .map(|(iid, change)| (iid.to_string(), change))
+        .collect()
+}
+
 /// The repo's changelog rewritten from GitLab in the window `since` (else the last chosen).
-pub fn write_overall(since: Option<&str>) -> Result<(String, String), String> {
+pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
     let main = repo::main_dir();
     let state = breadboard_core::json::read(&state_file()).unwrap_or(json!({}));
     let known = state.get("mrs").and_then(Value::as_object).cloned().unwrap_or_default();
@@ -799,15 +836,22 @@ pub fn write_overall(since: Option<&str>) -> Result<(String, String), String> {
     .into_iter()
     .filter(|mr| str_of(mr, "merged_at").is_some_and(|at| ms_of(at) >= start))
     .collect();
-    let changes: Vec<Value> = gitlab::in_turns(&found, 8, |mr| {
-        changes_of(int_of(mr, "iid").unwrap_or_default(), &known)
+    let read: Vec<(i64, Result<Value, gitlab::Failure>)> = gitlab::in_turns(&found, 12, |mr| {
+        let iid = int_of(mr, "iid").unwrap_or_default();
+        (iid, changes_of(iid, &known))
     });
+    let mut warnings: Vec<String> = read
+        .iter()
+        .filter_map(|(iid, change)| change.as_ref().err().map(|failure| (iid, failure)))
+        .map(|(iid, failure)| format!("GitLab: {} (!{iid}'s diffs): read again next time", failure.reason))
+        .collect();
     let orchestrations = orchestrations_of(&found);
+    let nothing = json!({});
     let merged: Vec<Merged> = found
         .iter()
-        .zip(&changes)
-        .map(|(mr, change)| {
-            let iid = int_of(mr, "iid").unwrap_or_default();
+        .zip(&read)
+        .map(|(mr, (iid, change))| {
+            let change = change.as_ref().unwrap_or(&nothing);
             let url = str_of(mr, "web_url").unwrap_or_default().to_string();
             let title = str_of(mr, "title").unwrap_or_default();
             let changesets: Vec<Changeset> = change
@@ -824,7 +868,7 @@ pub fn write_overall(since: Option<&str>) -> Result<(String, String), String> {
                 .rsplit_once("merge_requests/")
                 .map_or(url.clone(), |(base, _)| base.to_string());
             Merged {
-                iid,
+                iid: *iid,
                 issue: number.map(|number| (number, format!("{base}issues/{number}"))),
                 summary: summary_of(str_of(mr, "description").unwrap_or_default(), title),
                 title: untitled(title),
@@ -833,13 +877,24 @@ pub fn write_overall(since: Option<&str>) -> Result<(String, String), String> {
                 changesets,
                 orchestration: orchestrations
                     .iter()
-                    .find(|(known, _)| *known == iid)
+                    .find(|(known, _)| known == iid)
                     .map(|(_, title)| title.clone()),
                 url,
             }
         })
         .collect();
-    let tags = all_of("projects/:fullpath/repository/tags").unwrap_or_default();
+    let (tags, failed) = pages_of("projects/:fullpath/repository/tags");
+    if let Some(failure) = failed {
+        let left = if tags.is_empty() {
+            "releases left out"
+        } else {
+            "some releases left out"
+        };
+        warnings.push(format!(
+            "GitLab: {} (the release tags): {left}, read again next time",
+            failure.reason
+        ));
+    }
     let base = found
         .first()
         .and_then(|mr| str_of(mr, "web_url"))
@@ -876,19 +931,14 @@ pub fn write_overall(since: Option<&str>) -> Result<(String, String), String> {
     let url = fragments::project_url(&main);
     let text = overall_text(&start_iso, &merged, &releases, Some((&entries, &areas, url.as_deref())));
     write_atomic(&overall_file(), &text).map_err(|error| error.to_string())?;
-    let mrs: Map<String, Value> = merged
-        .iter()
-        .zip(changes)
-        .map(|(mr, change)| (mr.iid.to_string(), change))
-        .collect();
     let develop = state.get("develop").cloned().unwrap_or(Value::Null);
-    let saved = json!({ "since": window, "develop": develop, "mrs": mrs });
+    let saved = json!({ "since": window, "develop": develop, "mrs": kept_of(&read) });
     write_atomic(
         &state_file(),
         &format!("{}\n", serde_json::to_string_pretty(&saved).unwrap_or_default()),
     )
     .map_err(|error| error.to_string())?;
-    Ok((text, window))
+    Ok(Written { text, window, warnings })
 }
 
 /// `pnpm changelog [--since 30d|2w|<date>] [--watch]`.
@@ -913,9 +963,13 @@ pub fn overall_command(args: &Args) -> ExitCode {
             "--since takes days (30d), weeks (2w) or a date (2026-09-01), not {since}"
         ));
     }
-    let (text, window) = write_overall(since.as_deref()).unwrap_or_else(|error| fail(&error));
-    step(&format!("wrote {relative} from GitLab, since {window}"));
-    view::print(&text);
+    let written = write_overall(since.as_deref()).unwrap_or_else(|error| fail(&error));
+    step(&format!("wrote {relative} from GitLab, since {}", written.window));
+    view::print(&written.text);
+    // Last, where they are seen: what this rewrite is missing and why.
+    for warning in &written.warnings {
+        eprintln!("! {warning}");
+    }
     ExitCode::SUCCESS
 }
 
@@ -991,6 +1045,22 @@ mod tests {
             ),
             vec!["did it"]
         );
+    }
+
+    #[test]
+    fn keeps_only_the_changes_read_in_ascending_iids() {
+        let failed = gitlab::Failure {
+            reason: "HTTP 502 Bad Gateway".into(),
+            endpoint: "projects/:fullpath/merge_requests/310/diffs".into(),
+            is_passing: true,
+        };
+        let read = vec![
+            (315, Ok(json!({ "paths": ["a"], "changesets": [] }))),
+            (310, Err(failed)),
+            (99, Ok(json!({ "paths": [], "changesets": [] }))),
+        ];
+        let kept = kept_of(&read);
+        assert_eq!(kept.keys().collect::<Vec<_>>(), vec!["99", "315"]);
     }
 
     #[test]
