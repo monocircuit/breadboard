@@ -3,8 +3,8 @@
 Two prototypes of the **same slice** of the orchestration overview, one per
 finalist stack, so the stacks can be compared by hand and by numbers. They
 are not wired into the live workflow: nothing in `pnpm overview`, `wt:*` or
-the herdr plugin uses them. The decision record is
-[`../docs/stack-decision.md`](../docs/stack-decision.md).
+the herdr plugin uses them. What they showed, measured:
+[`../docs/stack-evidence.md`](../docs/stack-evidence.md).
 
 | Dir | Stack |
 | --- | ----- |
