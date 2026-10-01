@@ -24,6 +24,7 @@ import {
   stackCell,
   titleLines,
 } from "./boxes.mjs";
+import { errorText, waitingText } from "./gitlab-status.mjs";
 import { open, show } from "./io.mjs";
 import { KEYS, pushRows } from "./screen.mjs";
 
@@ -112,7 +113,7 @@ export const render = (local, remote, error) => {
     closeBox(lines, orphansBox, bold("STACKS WITHOUT A WORKTREE"));
   }
 
-  if (error) lines.push("", red(`GitLab: ${error.split("\n")[0]}`));
+  if (error) lines.push("", red(errorText(error, remote)));
   if (remote) {
     const mrsBox = openBox(lines);
     pushRows(
@@ -180,7 +181,7 @@ export const render = (local, remote, error) => {
       `${bold("ISSUES")} ${dim(`${remote.issues.length} open, claimed first`)}`,
     );
   } else if (!error) {
-    lines.push("", dim("GitLab …"));
+    lines.push("", dim(waitingText()));
   }
 
   lines.push(
