@@ -6,7 +6,7 @@ import { areaOf } from "./diff.mjs";
 describe("areaOf", () => {
   it("names a package's file by the folder below src", () => {
     assert.equal(
-      areaOf("products/vita/src/server/db/schema.ts"),
+      areaOf("products/vita/web/src/server/db/schema.ts"),
       "vita/server",
     );
     assert.equal(
@@ -16,7 +16,8 @@ describe("areaOf", () => {
   });
 
   it("names a file at a package's top, or directly in src, by the package", () => {
-    assert.equal(areaOf("products/vita/package.json"), "vita");
+    assert.equal(areaOf("products/vita/web/package.json"), "vita");
+    assert.equal(areaOf("products/vita/core/src/routes.ts"), "vita-core");
     assert.equal(areaOf("packages/breadboard/src/overview.mjs"), "breadboard");
   });
 

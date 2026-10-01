@@ -307,7 +307,7 @@ export const renderWorktree = (local, remote, error) => {
         ? isShared
           ? dim("shared: whichever checkout runs pnpm dev")
           : ""
-        : dim("cd products/vita && pnpm dev"),
+        : dim("cd products/vita/web && pnpm dev"),
     },
     {
       isOn: isUp,

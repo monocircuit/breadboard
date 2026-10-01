@@ -1,9 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { VITA } from "../constants.mjs";
 import { isInside } from "../prune.mjs";
-import { compose, isPortFree, offsetOf } from "../stack.mjs";
+import { compose, envFileOf, isPortFree, offsetOf } from "../stack.mjs";
 import { worktrees } from "../worktrees.mjs";
 
 /**
@@ -17,7 +16,7 @@ export default async function listCommand() {
   const rows = [];
   for (const [index, { dir, branch }] of worktrees().entries()) {
     const offset = index === 0 ? 0 : offsetOf(dir);
-    const hasEnv = fs.existsSync(path.join(dir, VITA, ".env.local"));
+    const hasEnv = fs.existsSync(envFileOf(dir));
     const hasOwnPort = index === 0 || offset > 0;
     const isUp = hasEnv && hasOwnPort && !(await isPortFree(3000 + offset));
     const containers = offset

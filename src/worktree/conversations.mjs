@@ -79,7 +79,7 @@ const LIVE_MS = 10 * 60_000;
 /**
  * Every conversation of the repo is kept in the project of the main checkout,
  * so `/resume` there lists them all, also those of a worktree long removed.
- * The project of a worktree (and of a directory below one, `…-products-vita`)
+ * The project of a worktree (and of a directory below one, `…-products-vita-web`)
  * is a link to it. claude follows the link, and EnterWorktree sees both as
  * the same place. A project that is a directory still is merged in and
  * replaced by the link, once none of its transcripts was written to lately;
