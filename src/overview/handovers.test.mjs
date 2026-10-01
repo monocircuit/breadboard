@@ -98,6 +98,13 @@ describe("announcedOf", () => {
     });
     assert.equal(found.tree, agentTree);
   });
+
+  it("knows it by its name before a handover renamed it (#251)", () => {
+    const [found] = announcedOf([{ ...handover, to: "old-name" }], issues, {
+      known: { c224: { name: "224-x", was: "old-name" } },
+    });
+    assert.equal(found.tree, agentTree);
+  });
 });
 
 describe("an announced handover in the overview", () => {
