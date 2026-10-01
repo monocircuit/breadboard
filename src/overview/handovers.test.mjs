@@ -112,10 +112,17 @@ describe("an announced handover in the overview", () => {
     awaited: new Map([[232, { state: "opened" }]]),
   });
 
-  it("shows on the agent's node", () => {
+  it("shows on the agent's node: its state while nothing comes first, else its facts", () => {
     const { live } = treeOf(issues, () => ({}), { announced });
     const node = live.find(row => row.issue.number === 224);
-    assert.match(plain(node.facts), /→ next #226 after !232$/);
+    assert.equal(plain(node.state.text), "→ next #226 after !232");
+    assert.doesNotMatch(plain(node.facts), /→ next/);
+    const working = treeOf(issues, () => ({}), {
+      announced,
+      agents: new Map([["c224", { status: "working" }]]),
+    }).live.find(row => row.issue.number === 224);
+    assert.equal(plain(working.state.text), "at work");
+    assert.match(plain(working.facts), /→ next #226 after !232$/);
   });
 
   it("is a row of UP NEXT of its own and holds the agent's worktree", () => {

@@ -10,19 +10,31 @@ import { ORIGIN_SLOTS, originToken } from "./origins.mjs";
 import { BRANCH_TOKEN } from "./tabs.mjs";
 import { mainDir } from "./worktrees.mjs";
 
-/** The token under a worktree's agent: `needs you`, `review · !192`, … (overview/agent-state.mjs). */
+/** The token under a worktree's agent: what it waits for, `waits for you: merge · !192`, … (overview/agent-state.mjs). */
 export const STATE_TOKEN = "wt_state";
 /** The repo of an agent in a worktree's space: `Monocircuit/Platform` (overview/agent-repo.mjs). */
 export const REPO_TOKEN = "wt_repo";
 
 /** The colour of the branches in the sidebar: `pink` of the base config's `[theme.custom]`, else this. */
 const BRANCH_COLOUR = { colour: "pink", fallback: "#FF79C6" };
-/** The states of a worktree's agent that get a colour: what wants you most, the loudest. */
+/**
+ * The colour of what a worktree's agent waits for, by whom (#288, as the
+ * overview's WORKTREES paints it, overview/herdr-tones.mjs): you red, a
+ * question the loudest; at work yellow; GitLab (the pipeline, another MR, a
+ * handover after one) blue; free teal. The first rule that matches wins:
+ * `waits for you` before `waits`.
+ */
+const RED = { colour: "red", fallback: "#F38BA8" };
 const STATE_RULES = [
-  { prefix: "needs you", colour: "red", fallback: "#F38BA8", isBold: true },
-  { prefix: "pipeline failed", colour: "red", fallback: "#F38BA8" },
-  { prefix: "working", colour: "yellow", fallback: "#F9E2AF" },
-  { prefix: "review", colour: "blue", fallback: "#89B4FA" },
+  { prefix: "asks you", ...RED, isBold: true },
+  { prefix: "waits for you", ...RED },
+  { prefix: "pipeline failed", ...RED },
+  { prefix: "change requested", ...RED },
+  { prefix: "not pushed", ...RED },
+  { prefix: "at work", colour: "yellow", fallback: "#F9E2AF" },
+  { prefix: "waits", colour: "blue", fallback: "#89B4FA" },
+  { prefix: "→", colour: "blue", fallback: "#89B4FA" },
+  { prefix: "free", colour: "teal", fallback: "#94E2D5" },
 ];
 
 /** The section `[name]` of a TOML text, up to the next table, or null. */
@@ -96,7 +108,7 @@ export const sidebarConfig = base => {
     if (parts.length) parts.push("");
     parts.push(
       "# A claude agent: its space, then its repo (a worktree's) and the agent, then what it waits for:",
-      "# needs you, pipeline failed, working, review · !n (the overview reports both).",
+      "# asks you, waits for you: merge, waits for the pipeline, at work, free, … (the overview reports both).",
       ...(agents
         ? ["[ui.sidebar.agents.rows_by_agent]", `claude = ${rows}`]
         : ["[ui.sidebar.agents]", `rows = ${rows}`]),
