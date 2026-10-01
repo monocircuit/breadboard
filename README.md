@@ -22,8 +22,8 @@ ships; the package is private.
 | `src/commands.mjs` | `pnpm commands`: every script with what it is for |
 | [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
-| `nvim/changes.lua` | `:Changes`, `:ChangesDiff` and the changes inline (`:ChangesInline` toggles) in a worktree's `nvim` tab |
-| `nvim/colours.lua` | the colours the nvim tabs mark changes in, readable on any theme |
+| `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
+| `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
 | `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 | `src/worktree/ide.mjs` | the plugin pinned and cloned into `.claude/nvim/` of the main checkout, its switch, `claude --ide` |
@@ -31,6 +31,38 @@ ships; the package is private.
 
 The commands run from the root `package.json` (`node packages/breadboard/src/…`),
 so they work from every checkout without a `--filter`.
+
+## The nvim tab
+
+A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)
+looking at the branch: everything it changed since it left develop
+(`git merge-base HEAD origin/develop`), committed, uncommitted or untracked,
+what the MR will hold. `nvim/changes.lua` sets the base and the layout,
+nothing more; it installs no plugin and names a missing one in the tab.
+
+- **left** neo-tree, every changed file and the folders holding them marked
+  (its git status against the base);
+- **middle** the first changed file, then whatever you open: gitsigns'
+  signs in the gutter, added lines green, changed ones blue with the changed
+  words stronger, removed lines in red where they were; it follows your typing
+  and an agent's writes. A file new since develop has no old version, so it is
+  marked in the tree and the list only;
+- **below** `:Changes`, the changed files in the quickfix list with `+added
+  -removed`, kept up to date.
+
+| Key | What it does |
+| --- | ------------ |
+| `]q` / `[q`, `<CR>` in the list | next / previous changed file, the one under the cursor |
+| `]h` / `[h` | next / previous change in the file |
+| `<leader>ghp` | one change inline, as gitsigns previews it |
+| `:ChangesDiff` | the file side by side with its version in the base |
+| `:ChangesInline` | the marked lines and the removed ones off and on again (the signs stay) |
+| `<leader>e` | neo-tree closed and open again |
+
+The colours come from `nvim/colours.lua`, not the theme's `DiffAdd`: some
+themes draw it barely apart from the background. The orchestration's
+`changes` tab keeps its own list (`nvim/orchestration.lua`): it shows what
+each merged MR changed, which no single base of a tree can.
 
 ## claude in nvim
 
@@ -43,11 +75,8 @@ own, so every worktree's claude connects to its own nvim. With that
   diff in a new tab: `:w` or `<leader>aa` accepts it (your changes to it
   included), `:q` or `<leader>ad` rejects it. The prompt in claude's tab
   works as before. In auto mode claude asks about no edit, so no diff opens;
-- what the worktree changed against develop shows in every file it opens,
-  claude's accepted edits included: added lines green, a changed line's old
-  version in red above it with the changed characters marked in both,
-  removed lines in red where they were (`:ChangesInline` hides and shows
-  them, without claudecode.nvim too);
+- claude's accepted edits show up in the tab's marks against develop like
+  any other change (see "The nvim tab");
 - claude sees the open file and the selection: select lines, then ask about
   "this" in claude's tab; `<leader>as` sends the selection as a reference.
 
