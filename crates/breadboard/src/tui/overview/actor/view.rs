@@ -21,8 +21,6 @@ use std::time::Duration;
 
 /// How long a thing done stays in the log under the band.
 const SHOWN_MS: i64 = 60_000;
-/// How many things done the log shows.
-const SHOWN: usize = 3;
 
 /// The actor's word on the rows of a model, by the item's key: what it says
 /// in place of the model's text while its act is under way or done.
@@ -221,12 +219,8 @@ pub fn button(scene: &mut Scene<Act>, ctx: &Ctx, label: &str, tone: Tone, act: A
 /// the last minute and how many more, one row, so the rows under the band
 /// never move when it comes or goes (frame-scroll critic).
 pub fn log(header: crate::tui::Header, ctx: &Ctx) -> crate::tui::Header {
-    let mut shown = ctx
-        .actor
-        .did
-        .iter()
-        .filter(|did| ctx.now - did.at < SHOWN_MS)
-        .take(SHOWN);
+    // `· N more` counts every other thing done in that minute: DONE lists them all.
+    let mut shown = ctx.actor.did.iter().filter(|did| ctx.now - did.at < SHOWN_MS);
     let Some(newest) = shown.next() else { return header };
     let more: Vec<_> = shown.collect();
     let oldest = more.last().copied().unwrap_or(newest);
@@ -247,8 +241,25 @@ pub fn log(header: crate::tui::Header, ctx: &Ctx) -> crate::tui::Header {
     header.log(entry, more.len(), left)
 }
 
-/// A thing done in a few words: what comes before its `: `, a worktree named by its issue (`#305`).
+/// A thing done in a few words: what comes before its `: `, a worktree
+/// named by its issue (`#305`). Its `→ answer` and `of #305` are glued
+/// (no-break spaces): the band, which drops the words that don't fit,
+/// shows them whole or not at all, never `→ Rust +` (#304).
 pub fn short_of(text: &str) -> String {
+    let short = words_of(text);
+    let (head, answer) = match short.split_once(" → ") {
+        Some((head, answer)) => (head, Some(answer)),
+        None => (short.as_str(), None),
+    };
+    let mut glued = head.replace(" of #", "\u{a0}of\u{a0}#");
+    if let Some(answer) = answer {
+        glued.push_str(&format!(" →\u{a0}{}", answer.replace(' ', "\u{a0}")));
+    }
+    glued
+}
+
+/// `short_of` before the glue.
+fn words_of(text: &str) -> String {
     let text = text.split(" · ").next().unwrap_or(text);
     let mut parts = text.split(": ");
     let mut head = parts.next().unwrap_or(text).to_string();
@@ -316,13 +327,41 @@ mod tests {
     fn says_a_thing_done_in_a_few_words() {
         assert_eq!(
             short_of("typed into the agent of 305-overview-gitlab-refresh: [overview] x: y"),
-            "typed into the agent of #305"
+            "typed into the agent\u{a0}of\u{a0}#305"
         );
         assert_eq!(short_of("merged !316"), "merged !316");
         assert_eq!(
             short_of("removing the worktree 303-a-b: pnpm wt:remove 303-a-b"),
             "removing the worktree #303"
         );
+    }
+
+    #[test]
+    fn glues_an_answer_so_the_band_never_cuts_it_in_the_middle() {
+        let short = short_of("decide #2 of 307-x-y → Rust + ratatui · typed into its agent's pane");
+        assert_eq!(short.replace('\u{a0}', " "), "decide #2 of #307 → Rust + ratatui");
+        let words: Vec<&str> = short.split(' ').collect();
+        assert_eq!(
+            words,
+            ["decide", "#2\u{a0}of\u{a0}#307", "→\u{a0}Rust\u{a0}+\u{a0}ratatui"]
+        );
+        let header = crate::tui::Header::new("⇶ @monocircuit/breadboard").log(
+            vec![ratatui::text::Span::raw(format!("✓ {short}"))],
+            2,
+            Duration::from_secs(60),
+        );
+        for width in [80u16, 100, 120] {
+            let band: String = crate::tui::band::lines(&header, "↓ 41 more", width)
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+                .collect::<String>()
+                .replace('\u{a0}', " ");
+            assert!(
+                !band.contains('→') || band.contains("→ Rust + ratatui"),
+                "{width}: {band}"
+            );
+            assert!(band.contains("✓ decide #2 of #307"), "{width}: {band}");
+        }
     }
 
     #[test]

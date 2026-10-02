@@ -7,6 +7,7 @@
 mod acts;
 mod diff;
 mod editor;
+mod hunks;
 mod started;
 
 pub use acts::State;
@@ -51,16 +52,19 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Migrate(dir) => acts::migrate(state, &dir),
         Act::Storybook(_) => acts::start_storybook(state, model, &main),
         Act::OpenFile { file, line, .. } => acts::open_file(state, model, &main, &file, line),
+        Act::Hunks { file, at } => acts::toggle_hunks(state, file, at),
         _ => Flow::Same,
     }
 }
 
-/// A key the frame has no use for: `u` starts the stack whose button shows.
+/// A key the frame has no use for: `u` starts the stack whose button shows,
+/// Esc closes the hunks that show.
 pub fn key(app: &mut Overview, key: KeyEvent) -> Flow {
     let Some(Model::Worktree(model)) = &app.model else {
         return Flow::Same;
     };
     match (key.code, acts::up_target(model)) {
+        (KeyCode::Esc, _) => acts::close_hunks(&mut app.worktree),
         (KeyCode::Char('u'), Some(dir)) => acts::start_stack(&mut app.worktree, &dir),
         _ => Flow::Same,
     }
@@ -136,7 +140,7 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     if let Some(diff) = &local.diff {
         page.section("DIFF", |scene| {
             scene.note(diff::note(diff));
-            diff::diff_of(scene, diff, &local.dir);
+            diff::diff_of(scene, diff, &local.dir, state.hunks.as_ref());
         });
     }
     if let Some(develop) = local
@@ -144,8 +148,13 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
         .as_ref()
         .filter(|develop| !develop.merges.is_empty() || develop.direct > 0)
     {
+        let place = diff::Files {
+            dir: &local.dir,
+            diff: local.diff.as_ref(),
+            shown: state.hunks.as_ref(),
+        };
         page.section("DEVELOP", |scene| {
-            develop_of(scene, develop, model.project_url.as_deref(), &local.dir)
+            develop_of(scene, develop, model.project_url.as_deref(), &place)
         });
     }
     if !tree.has_env {
@@ -458,18 +467,19 @@ fn issue(scene: &mut Scene<Act>, boxes: &IssueBoxes) {
             scene.atom_gap(vec![look::span(count, Style::new())], 2);
         }
         scene.end_line();
+        // `○ text` two columns in, the text wrapping under itself (actions.mjs `pushIssue`).
         for open in &group.open {
-            scene.pad_to(3);
-            scene.atom(vec![look::dim("○")]);
-            scene.indent(5);
+            scene.pad_to(2);
+            scene.atom_gap(vec![look::dim("○")], 0);
+            scene.indent(4);
             look::say(scene, open, Style::new());
             scene.indent(0);
             scene.end_line();
         }
     }
     if boxes.more_open > 0 {
-        scene.pad_to(3);
-        scene.text(&format!("… {} more open", boxes.more_open), theme::dim());
+        scene.pad_to(2);
+        scene.atom_gap(vec![look::dim(format!("… {} more open", boxes.more_open))], 0);
         scene.end_line();
     }
 }
@@ -524,8 +534,10 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
         }
         scene.end_line();
         for (line, target) in &log.lines {
+            // A wrapped line goes on under its text, past its own leading spaces.
+            let lead = line.len() - line.trim_start_matches(' ').len();
             let draw = |scene: &mut Scene<Act>| {
-                scene.indent(6);
+                scene.indent(6 + lead as u16);
                 spaced(scene, line, if target.is_some() { Style::new() } else { theme::dim() });
                 scene.indent(0);
             };
@@ -545,7 +557,7 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
     }
 }
 
-fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, dir: &Path) {
+fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, place: &diff::Files) {
     scene.note(format!(
         "since the branch started  {}",
         counted(develop.merges.len() as u64, "merge request")
@@ -560,7 +572,7 @@ fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, 
             scene.text("merges cleanly:", Style::new());
             scene.text("git fetch && git merge origin/develop", theme::dim());
         }
-        Some(conflicts) => diff::conflicts(scene, conflicts, dir),
+        Some(conflicts) => diff::conflicts(scene, conflicts, place),
     }
     scene.end_line();
     for merged in develop.merges.iter().take(MERGES) {
@@ -613,7 +625,8 @@ fn say_gap(scene: &mut Scene<Act>, text: &str, style: Style, gap: u16) {
 }
 
 /// A line of a log with its spaces kept: ESLint's `  12:5  error  …` keeps
-/// its indent and columns; it still wraps between words, at the indent.
+/// its columns; it wraps between words, at the indent, which the caller sets
+/// past the line's leading spaces.
 fn spaced(scene: &mut Scene<Act>, line: &str, style: Style) {
     let mut spaces = 0u16;
     let mut is_first = true;
@@ -624,9 +637,6 @@ fn spaced(scene: &mut Scene<Act>, line: &str, style: Style) {
         }
         let word = vec![look::span(piece, style)];
         if is_first {
-            // At the indent, then the line's own leading spaces.
-            scene.atom_gap(vec![], 0);
-            scene.pad_to(scene.x() + spaces);
             scene.atom_gap(word, 0);
             is_first = false;
         } else {
@@ -927,7 +937,7 @@ mod tests {
                 "      $ pnpm test",
                 "      src/a.test.mjs:12:5 error",
                 "        12:5  error  'x' is not defined",
-                "      no-undef",
+                "        no-undef",
             ]
         );
         assert_eq!(act_at(&scene, 3), Some(&Act::Open("https://gitlab/jobs/3".into())));
@@ -955,7 +965,12 @@ mod tests {
             conflicts: Some(vec![]),
         };
         let mut scene = Scene::new(48);
-        develop_of(&mut scene, &develop, Some("https://gitlab/p"), Path::new("/w"));
+        let place = diff::Files {
+            dir: Path::new("/w"),
+            diff: None,
+            shown: None,
+        };
+        develop_of(&mut scene, &develop, Some("https://gitlab/p"), &place);
         scene.finish();
         assert_eq!(
             text(&scene),

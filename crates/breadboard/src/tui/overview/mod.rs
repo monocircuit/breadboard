@@ -3,7 +3,7 @@
 //!
 //! The readers run beside the view: the local one on a thread of its own
 //! (git, herdr and the disk block), every 2 s but only when a file it reads
-//! changed or 15 s went by; GitLab on the runtime, every 30 s and on `r`.
+//! or herdr's state of an agent changed, or 15 s went by; GitLab on the runtime, every 30 s and on `r`.
 //! Each sends what it read; the app builds the view's model from both
 //! (core's `model_of`) and the page from the model, one file per section:
 //!
@@ -115,8 +115,10 @@ pub fn main(args: &[String]) -> ExitCode {
     let (asks, asked) = watch::channel(None);
     let (refresh, refreshes) = mpsc::unbounded_channel();
     app.refresh = Some(refresh);
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    app.wake_local = Some(wake);
     act::start(&mut app, sender.clone());
-    read_locally(reader, sender.clone(), asks);
+    read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
     runtime.spawn(read_gitlab(main, asked, refreshes, sender));
     super::serve(runtime, &mut app, models)
 }
@@ -144,14 +146,25 @@ fn once(mut app: Overview, mut reader: LocalReader) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The local read on a thread of its own: again when a file it reads changed,
-/// at the latest after LOCAL_AT_LEAST; what GitLab is asked for goes to `asks`.
-fn read_locally(mut reader: LocalReader, sender: mpsc::UnboundedSender<Msg>, asks: watch::Sender<Option<RemoteAsk>>) {
+/// The local read on a thread of its own: again when a file it reads or
+/// herdr's state of a pane changed, at the latest after LOCAL_AT_LEAST; what GitLab is asked for goes to `asks`.
+/// `woken` looks at once: what the overview did by itself (a `wt:remove` ended) shows without waiting for the poll.
+fn read_locally(
+    mut reader: LocalReader,
+    sender: mpsc::UnboundedSender<Msg>,
+    asks: watch::Sender<Option<RemoteAsk>>,
+    woken: std::sync::mpsc::Receiver<()>,
+    is_sync: bool,
+) {
     std::thread::spawn(move || {
         let mut stamp = None;
+        let mut states = None;
         let mut read_at = Instant::now();
         loop {
-            if stamp != Some(reader.stamp()) || read_at.elapsed() >= LOCAL_AT_LEAST {
+            // herdr's states hold no file: asked on every look (one `pane list`), as Node's every local read.
+            let now_states = actor::herdr::states_stamp(&reader, is_sync);
+            if stamp != Some(reader.stamp()) || now_states != states || read_at.elapsed() >= LOCAL_AT_LEAST {
+                states = now_states;
                 let local = reader.read();
                 let ask = reader.ask(&local);
                 asks.send_if_modified(|was| {
@@ -167,7 +180,9 @@ fn read_locally(mut reader: LocalReader, sender: mpsc::UnboundedSender<Msg>, ask
                     return;
                 }
             }
-            std::thread::sleep(LOCAL_EVERY);
+            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = woken.recv_timeout(LOCAL_EVERY) {
+                return;
+            }
         }
     });
 }
@@ -325,6 +340,8 @@ pub struct Overview {
     broken: Option<String>,
     folds: Folds,
     refresh: Option<mpsc::UnboundedSender<()>>,
+    /// Wakes the local reader: after something the actor did, its result shows at once.
+    wake_local: Option<std::sync::mpsc::SyncSender<()>>,
     /// What the view of a worktree started: delete armed, stack, migrations, nvim.
     worktree: worktree_view::State,
     actor: actor::Actor,
@@ -351,6 +368,7 @@ impl Overview {
             broken: None,
             folds: Folds::default(),
             refresh: None,
+            wake_local: None,
             worktree: worktree_view::State::default(),
             actor: actor::Actor::new(&args.view, main, args.is_once, args.is_herdr),
             words: actor::view::Words::new(),
@@ -447,6 +465,10 @@ impl App for Overview {
         match message {
             Msg::Acted(effect) => {
                 effect(self);
+                // A full channel: a look is already due.
+                if let Some(wake) = &self.wake_local {
+                    let _ = wake.try_send(());
+                }
                 return;
             }
             Msg::Local(local) => self.local = Some(*local),

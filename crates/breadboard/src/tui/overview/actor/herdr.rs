@@ -6,7 +6,9 @@
 use breadboard_core::git::feature_of;
 use breadboard_core::herdr::{self, Pane, Tab, is_in_herdr};
 use breadboard_core::model::order::Target;
+use breadboard_core::reader::{LocalReader, View};
 use breadboard_core::record::{SPACE, orchestrator_label};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -43,10 +45,32 @@ pub fn ask(args: &[&str]) -> Option<serde_json::Value> {
     herdr::herdr(args)
 }
 
+/// herdr's states of its panes' agents, hashed (`pane list`): they hold no
+/// file, so the local read's 2 s look asks herdr too and reads again when
+/// one changed. An answer or a failed pipeline's line waiting on a blocked
+/// agent goes in at the next look after it is free (Node: every local read,
+/// view.mjs `retryDeliveries`); with `--herdr` (`is_sync`) the sidebar's
+/// line of an agent follows its state within that look too, and a pane that
+/// came or went sets off the sync (overview.mjs `keepInStep`). None for the
+/// view of everything without the sync (it shows no agent) and outside herdr.
+pub fn states_stamp(reader: &LocalReader, is_sync: bool) -> Option<u64> {
+    if !reader.is_in_herdr || (reader.view == View::Everything && !is_sync) {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    for pane in herdr::all_panes() {
+        (pane.id, pane.session, pane.status).hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
 /// The label of a checkout's space, the name of its tab group: the main space for the main checkout.
 pub fn space_label(main: &Path, dir: &Path) -> String {
     if dir == main {
         SPACE.to_string()
+    } else if let Ok(name) = dir.strip_prefix(breadboard_core::git::orchestrations_dir(main)) {
+        // An orchestration's checkout carries its space `⇶ <title>`.
+        orchestrator_label(main, &name.to_string_lossy())
     } else {
         feature_of(main, dir)
     }

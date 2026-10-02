@@ -172,6 +172,10 @@ pub struct View<A> {
     selected: Option<(A, usize)>,
     area: Rect,
     lit: Lit,
+    /// The anchor the scroll was last placed by and the scroll it gave:
+    /// while the reader hasn't scrolled since, the next build places by it
+    /// again, so a resize there and back gives back the same frame.
+    placed: Option<(Anchor<A>, u16)>,
 }
 
 impl<A: Clone> Default for View<A> {
@@ -188,6 +192,7 @@ impl<A: Clone> Default for View<A> {
             selected: None,
             area: Rect::default(),
             lit: Lit::default(),
+            placed: None,
         }
     }
 }
@@ -211,7 +216,13 @@ impl<A: Clone + PartialEq> View<A> {
         });
         let mut page = Page::new(width);
         self.sheet = match guarded(|| app.build(&mut page)) {
-            Ok(()) => Some(page.finish()),
+            Ok(()) => {
+                let mut sheet = page.finish();
+                if self.area.height < band::TIGHT_BELOW {
+                    sheet.tighten();
+                }
+                Some(sheet)
+            }
             Err(why) => Some(failed(
                 self.sheet.take().filter(|last| last.width == width),
                 width,
@@ -448,11 +459,17 @@ impl<A: Clone + PartialEq> View<A> {
             || self.area.height != area.height
             || self.sheet.as_ref().is_none_or(|sheet| sheet.width != area.width)
         {
-            let anchor = self.anchor();
+            let anchor = match self.placed.take() {
+                Some((anchor, at)) if at == self.scroll => Some(anchor),
+                _ => self.anchor(),
+            };
             self.area = area;
             self.build(app, area.width);
-            if let Some(scroll) = anchor.and_then(|anchor| self.place(&anchor)) {
-                self.scroll = scroll;
+            if let Some(anchor) = anchor
+                && let Some(scroll) = self.place(&anchor)
+            {
+                self.scroll = self.window(scroll).scroll;
+                self.placed = Some((anchor, self.scroll));
             }
         }
         self.area = area;
@@ -532,12 +549,15 @@ impl<A: Clone + PartialEq> View<A> {
         }
 
         // Where the window is: a thumb in the island's right margin.
-        if window.max_scroll > 0 && window.room > 0 && area.width > 0 {
-            let (room, total) = (u32::from(window.room), u32::from(window.rows - window.sticky));
-            let thumb = (room * room / total).clamp(1, room);
-            let at = u32::from(scroll) * (room - thumb) / u32::from(window.max_scroll);
+        // It runs beside the rows only, never on a pinned title.
+        let pinned = window.pin.map_or(0, |pin| pin.rows);
+        if window.max_scroll > 0 && window.room > pinned && area.width > 0 {
+            let track = u32::from(window.room - pinned);
+            let total = u32::from(window.rows - window.sticky);
+            let thumb = (track * u32::from(window.room) / total).clamp(1, track);
+            let at = u32::from(scroll) * (track - thumb) / u32::from(window.max_scroll);
             for i in at..at + thumb {
-                let cell = &mut buffer[(area.width - 1, window.top + window.sticky + i as u16)];
+                let cell = &mut buffer[(area.width - 1, window.top + window.sticky + pinned + i as u16)];
                 cell.set_symbol("┃").set_fg(theme::BAND_QUIET);
             }
         }
@@ -596,6 +616,12 @@ impl<A: Clone + PartialEq> View<A> {
     /// Scrolls by `pages`: what the pane shows under the sticky rows, less
     /// one, so the last row seen stays on screen as the first (PgDn) or the
     /// first as the last (PgUp), under a pinned title too.
+    ///
+    /// It lands where the top row the reader sees starts something, as
+    /// lazygit's pages start at an item: never inside a block (its name
+    /// scrolled off) or on a section's line whose title is gone without a
+    /// pin. For that it goes up to half a page less far, never further;
+    /// the end and the top it reaches as they are.
     pub fn page_by(&mut self, pages: i32) -> bool {
         let mut has_moved = false;
         for _ in 0..pages.unsigned_abs() {
@@ -608,10 +634,55 @@ impl<A: Clone + PartialEq> View<A> {
             } else {
                 step.saturating_sub(now.pin.map_or(0, |pin| pin.rows))
             };
-            let step = i32::from(step.max(1));
-            has_moved |= self.scroll_by(if pages > 0 { step } else { -step });
+            let step = step.max(1);
+            let less = step / 2;
+            let target = if pages > 0 {
+                now.scroll.saturating_add(step).min(now.max_scroll)
+            } else {
+                now.scroll.saturating_sub(step)
+            };
+            // The end and the top are where a page lands as they are.
+            let is_edge = target == 0 || target == now.max_scroll;
+            let landing = (0..=if is_edge { 0 } else { less })
+                .map(|back| {
+                    if pages > 0 {
+                        target.saturating_sub(back).max(now.scroll)
+                    } else {
+                        target.saturating_add(back).min(now.scroll)
+                    }
+                })
+                .take_while(|&scroll| scroll != now.scroll)
+                .find(|&scroll| !self.is_cut(&self.window(scroll)))
+                .unwrap_or(target);
+            let has_moved_now = landing != self.scroll;
+            self.scroll = landing;
+            has_moved |= has_moved_now;
         }
         has_moved
+    }
+
+    /// Whether the top row the reader sees in `window` starts nothing: it
+    /// is inside a block that fits half the room, below the block's first
+    /// row, or a line of a section whose title scrolled off with no pin.
+    fn is_cut(&self, window: &Window) -> bool {
+        let Some(sheet) = &self.sheet else { return false };
+        let row = window.first_seen();
+        if row >= window.rows || window.scroll == 0 {
+            return false;
+        }
+        let is_in_block = sheet.regions.iter().any(|region| {
+            !region.is_button()
+                && region.area.y >= window.sticky
+                && region.area.y < row
+                && row < region.area.bottom()
+                && region.area.height <= window.room / 2
+        });
+        let is_orphan = window.pin.is_none()
+            && sheet
+                .sections
+                .iter()
+                .any(|placed| placed.head > 0 && placed.from >= window.sticky && placed.from < row && row < placed.to);
+        is_in_block || is_orphan
     }
 
     /// Scrolls by `halves` of a page: Ctrl-D and Ctrl-U, as in less and vim.
@@ -1249,10 +1320,10 @@ mod tests {
     }
 
     #[test]
-    fn a_page_keeps_one_row_seen_under_a_pinned_title_too() {
+    fn a_page_keeps_one_row_seen_and_lands_on_the_head_of_a_block() {
         for (width, height) in [(120, 40), (80, 24), (200, 30)] {
             let mut screen = Screen::new(width, height);
-            let mut pins = 0;
+            let (mut pins, mut pages) = (0, 0);
             loop {
                 let was = seen(&screen);
                 if !screen.view.page_by(1) {
@@ -1261,14 +1332,19 @@ mod tests {
                 screen.draw();
                 let now = seen(&screen);
                 pins += usize::from(screen.view.shown().pin.is_some());
+                pages += 1;
                 assert!(now.start < was.end, "{width}x{height}: {was:?} then {now:?}");
-                let is_end = screen.view.scroll() == screen.view.window(0).max_scroll;
+                let window = screen.view.shown();
+                let is_end = screen.view.scroll() == window.max_scroll;
+                // At least half a page on, never a block cut at the top.
                 assert!(
-                    is_end || now.start + 2 >= was.end,
+                    is_end || now.start + window.room / 2 >= was.end,
                     "{width}x{height}: {was:?} then {now:?}"
                 );
+                assert!(is_end || !screen.view.is_cut(&window), "{width}x{height}: {now:?}");
             }
-            assert!(pins > 0, "{width}x{height}");
+            assert!(pages > 1, "{width}x{height}: {pages} pages");
+            assert!(pins > 0, "{width}x{height}: no pin");
             loop {
                 let was = seen(&screen);
                 if !screen.view.page_by(-1) {
@@ -1277,13 +1353,61 @@ mod tests {
                 screen.draw();
                 let now = seen(&screen);
                 assert!(now.end > was.start, "{width}x{height}: {was:?} then {now:?}");
+                let window = screen.view.shown();
                 let is_top = screen.view.scroll() == 0;
                 assert!(
-                    is_top || now.end <= was.start + 2,
+                    is_top || now.end <= was.start + window.room / 2,
                     "{width}x{height}: {was:?} then {now:?}"
                 );
+                assert!(!screen.view.is_cut(&window), "{width}x{height}: {now:?}");
             }
             assert_eq!(screen.view.scroll(), 0);
+        }
+    }
+
+    #[test]
+    fn a_resize_there_and_back_gives_back_the_same_frame() {
+        let text = |screen: &Screen| -> Vec<String> {
+            let buffer = screen.terminal.backend().buffer();
+            (0..buffer.area.height)
+                .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect()
+        };
+        let mut screen = Screen::new(120, 40);
+        let max = screen.view.window(0).max_scroll;
+        for scroll in (1..max).step_by(3) {
+            screen.view.scroll_top();
+            screen.view.scroll_by(i32::from(scroll));
+            screen.draw();
+            let before = text(&screen);
+            for (width, height) in [(80, 24), (200, 30), (60, 50), (120, 40)] {
+                screen.terminal.backend_mut().resize(width, height);
+                screen.draw();
+            }
+            assert_eq!(text(&screen), before, "scroll {scroll}");
+        }
+    }
+
+    #[test]
+    fn the_thumb_runs_beside_the_rows_never_on_a_pinned_title() {
+        for (width, height) in [(120, 40), (80, 24)] {
+            let mut screen = Screen::new(width, height);
+            let max = screen.view.window(0).max_scroll;
+            let mut pins = 0;
+            for _ in 0..=max {
+                screen.draw();
+                let window = screen.view.shown();
+                if let Some(pin) = window.pin {
+                    pins += 1;
+                    let top = window.top + window.sticky;
+                    for y in top..top + pin.rows {
+                        let cell = &screen.terminal.backend().buffer()[(width - 1, y)];
+                        assert_ne!(cell.symbol(), "┃", "{width}x{height} at {}", window.scroll);
+                    }
+                }
+                screen.view.scroll_by(1);
+            }
+            assert!(pins > 0, "{width}x{height}");
         }
     }
 
@@ -1416,6 +1540,28 @@ mod tests {
                 .collect()
         };
         assert!(row(&short, 1).contains("breadboard demo"), "{}", row(&short, 1));
+    }
+
+    #[test]
+    fn a_short_pane_drops_the_blank_after_the_sticky_part_and_clicks_still_land() {
+        let app = Tall { sticky: 3 };
+        for (height, sticky) in [(40, 4), (24, 3)] {
+            let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+            let mut view = View::<u16>::default();
+            terminal.draw(|frame| view.draw(frame, &app)).unwrap();
+            assert_eq!(view.sheet().sticky, sticky, "{height}");
+            let (top, _) = view.body();
+            // LIST's title right under the sticky part, then its first item.
+            let list = view
+                .sheet()
+                .sections
+                .iter()
+                .find(|placed| placed.name == "LIST")
+                .unwrap();
+            assert_eq!(list.from, sticky, "{height}");
+            assert_eq!(view.click(2, top + sticky + 1), Some(0), "{height}");
+            assert_eq!(view.click(2, top + sticky + 2), Some(1), "{height}");
+        }
     }
 
     #[test]

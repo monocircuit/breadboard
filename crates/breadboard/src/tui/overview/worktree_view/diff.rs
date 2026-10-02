@@ -1,8 +1,10 @@
 //! DIFF and the lines of file names (render-worktree.mjs `pushDiff`,
 //! files.mjs `fileLine` / `fileAt`): how far the work is from develop, where
-//! it lies, which files collide; every file a click away from nvim.
+//! it lies, which files collide; every file a click away from its hunks
+//! (hunks.rs), each line of them a click away from nvim.
 
 use super::super::{Act, look};
+use super::hunks::{self, Shown};
 use crate::tui::Scene;
 use crate::tui::scene::{Region, Target};
 use crate::tui::theme::{self, Tone};
@@ -36,12 +38,40 @@ const MIN_BAR: u64 = 6;
 /// The mark of a file with changes not yet committed.
 const UNCOMMITTED: &str = "uncommitted";
 
-/// A file in nvim of the worktree at its first change.
-pub fn open(dir: &Path, file: &str) -> Act {
-    Act::OpenFile {
-        dir: dir.to_path_buf(),
+/// A file's hunks under the row `at`, or closed again.
+pub fn show(file: &str, at: &str) -> Act {
+    Act::Hunks {
         file: file.to_string(),
-        line: None,
+        at: at.to_string(),
+    }
+}
+
+/// Where the files of DIFF and DEVELOP are: the worktree, its diff (the
+/// counts of each file), the file whose hunks show.
+#[derive(Clone, Copy)]
+pub struct Files<'a> {
+    pub dir: &'a Path,
+    pub diff: Option<&'a Diff>,
+    pub shown: Option<&'a Shown>,
+}
+
+impl Files<'_> {
+    /// The hunks of `file` after the row `at`, when they are the ones shown.
+    fn under(&self, scene: &mut Scene<Act>, at: &str, file: &str) {
+        let Some(shown) = self.shown.filter(|shown| shown.is_under(at, file)) else {
+            return;
+        };
+        let change = self.diff.and_then(|diff| {
+            diff.areas
+                .iter()
+                .flat_map(|area| &area.changes)
+                .find(|change| change.file == file)
+        });
+        let key = change.map_or((0, 0, false), |change| {
+            (change.added, change.removed, change.is_uncommitted)
+        });
+        let is_untracked = change.is_some_and(|change| change.status == '?');
+        hunks::draw(scene, shown, self.dir, key, is_untracked);
     }
 }
 
@@ -50,20 +80,23 @@ pub fn open(dir: &Path, file: &str) -> Act {
 /// wrap between names, never inside one, the next line at `indent` (#304).
 /// A name lights and opens its file, and so does the gap after it (`fileAt`:
 /// the nearest name to the left); anywhere else on the line opens the first.
-/// `files` are (shown, path) pairs.
+/// `files` are (shown, path) pairs; the line is `at` for the hunks a click
+/// shows under it.
+#[allow(clippy::too_many_arguments)]
 pub fn file_line(
     scene: &mut Scene<Act>,
     prefix: impl FnOnce(&mut Scene<Act>),
     files: &[(String, String)],
     count: usize,
     suffix: Option<&str>,
-    dir: &Path,
+    at: &str,
+    place: &Files,
     indent: u16,
 ) {
     let Some((_, first)) = files.first() else {
         return;
     };
-    scene.block(open(dir, first), |scene| {
+    scene.block(show(first, at), |scene| {
         prefix(scene);
         scene.indent(indent);
         let shown = files.len().min(count);
@@ -97,13 +130,19 @@ pub fn file_line(
                 let target = Target::Button {
                     label: label.clone(),
                     tone: Tone::Cyan,
-                    action: open(dir, file),
+                    action: show(file, at),
                 };
                 scene.regions.push(Region { area, target });
             }
         }
         scene.indent(0);
     });
+    if let Some(shown) = place
+        .shown
+        .filter(|shown| files.iter().any(|(_, file)| shown.is_under(at, file)))
+    {
+        place.under(scene, at, &shown.file);
+    }
 }
 
 /// `(shown, path)` pairs of paths shown whole.
@@ -112,21 +151,28 @@ pub fn whole(files: &[String]) -> Vec<(String, String)> {
 }
 
 /// `✗ a merge conflicts in a, b, c, d +N more`: red, a merge that will fail.
-pub fn conflicts(scene: &mut Scene<Act>, files: &[String], dir: &Path) {
+pub fn conflicts(scene: &mut Scene<Act>, files: &[String], place: &Files) {
     let prefix = |scene: &mut Scene<Act>| {
         scene.atom(vec![look::span("✗", theme::tone(Tone::Red))]);
         look::say(scene, "a merge conflicts in", Style::new());
     };
-    file_line(scene, prefix, &whole(files), CONFLICTS, None, dir, WRAP);
+    file_line(scene, prefix, &whole(files), CONFLICTS, None, "conflicts", place, WRAP);
 }
 
 /// `⚠ <what> a, b, c +N more  <suffix>`: yellow, an overlap to keep in mind.
-fn collision(scene: &mut Scene<Act>, what: Vec<Span<'static>>, files: &[String], suffix: Option<&str>, dir: &Path) {
+fn collision(
+    scene: &mut Scene<Act>,
+    what: Vec<Span<'static>>,
+    files: &[String],
+    suffix: Option<&str>,
+    at: &str,
+    place: &Files,
+) {
     let prefix = |scene: &mut Scene<Act>| {
         scene.atom(vec![look::span("⚠", theme::tone(Tone::Yellow))]);
         look::flow(scene, &what);
     };
-    file_line(scene, prefix, &whole(files), NAMES, suffix, dir, WRAP);
+    file_line(scene, prefix, &whole(files), NAMES, suffix, at, place, WRAP);
 }
 
 /// DIFF's title after its name: where it stands against develop.
@@ -137,16 +183,21 @@ pub fn note(diff: &Diff) -> String {
     }
     // Parts the title drops from the end in a narrow pane: the hint first.
     format!(
-        "against develop  {} · click a file: nvim at the change",
+        "against develop  {} · click a file: its changes, a line of them: nvim",
         counts.join(" · ")
     )
 }
 
-pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
+pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&Shown>) {
+    let place = Files {
+        dir,
+        diff: Some(diff),
+        shown,
+    };
     if diff.files == 0 {
         scene.text("nothing changed yet", theme::dim());
     } else {
-        table(scene, diff, dir);
+        table(scene, diff, &place);
     }
     if !diff.with_develop.is_empty() || !diff.with_worktrees.is_empty() {
         scene.blank();
@@ -157,7 +208,8 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
             vec![look::span("also changed on develop:", Style::new())],
             &diff.with_develop,
             Some("merge develop in while it is small"),
-            dir,
+            "develop",
+            &place,
         );
     }
     for other in &diff.with_worktrees {
@@ -165,34 +217,33 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
             look::span("also changed in ", Style::new()),
             look::bold(format!("{}:", other.name)),
         ];
-        collision(scene, what, &other.files, None, dir);
+        collision(scene, what, &other.files, None, &format!("tree:{}", other.name), &place);
     }
 }
 
 /// The total, then the biggest areas as a table, an area's files under it
 /// when it has more than one (lazygit's files panel), the rest summed up.
-/// The name column fits the area names; a file's path longer than it runs
-/// into the counts' columns, the counts after it or on the next line in
-/// their columns. The last cell keeps at least `MIN_WRAP` columns, the bars
-/// narrow for it, so it never splits a word shorter than that.
-fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
+/// The name column fits the area names and the files' paths while the bars
+/// keep `MIN_BAR`; a path longer than it puts its counts on the next line,
+/// in their columns. An area of one file names it after its bar when the
+/// name fits there whole, else under it as a file row: nothing breaks a name.
+fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
     scene.atom(vec![added_span(diff.added), Span::raw(" "), removed_span(diff.removed)]);
     scene.text(&format!("in {}", counted(diff.files as u64, "file")), Style::new());
     scene.atom_gap(bar(diff.added, diff.removed, diff.added + diff.removed, BAR), 2);
     scene.blank();
     let shown = &diff.areas[..diff.areas.len().min(AREAS)];
     let rest = &diff.areas[shown.len()..];
-    let tables: Vec<(&Area, Vec<(String, &Change)>)> = shown.iter().map(|area| (area, files_of(area))).collect();
     let more = (!rest.is_empty()).then(|| format!("… {}", counted(rest.len() as u64, "area")));
     let (rest_added, rest_removed) = (
         rest.iter().map(|area| area.added).sum::<u64>(),
         rest.iter().map(|area| area.removed).sum::<u64>(),
     );
-    let numbers = tables
+    let numbers = shown
         .iter()
-        .flat_map(|(area, files)| {
+        .flat_map(|area| {
             std::iter::once((area.added, area.removed))
-                .chain(files.iter().map(|(_, change)| (change.added, change.removed)))
+                .chain(area.changes.iter().map(|change| (change.added, change.removed)))
         })
         .chain(more.as_ref().map(|_| (rest_added, rest_removed)));
     let (plus, minus) = numbers.fold((0, 0), |(plus, minus), (added, removed)| {
@@ -201,9 +252,9 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
             width(&format!("−{removed}")).max(minus),
         )
     });
-    let lasts: Vec<String> = tables.iter().map(|(area, files)| last_of(area, files)).collect();
+    let named: Vec<String> = shown.iter().map(named_last).collect();
     // What follows the bar gets what its widest wants, at least MIN_WRAP, at most LAST.
-    let want = lasts
+    let want = named
         .iter()
         .map(|last| width(last))
         .max()
@@ -211,18 +262,18 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
         .clamp(MIN_WRAP, LAST);
     let counts_width = 2 + plus + 2 + minus + 2;
     let line = scene.width();
-    // Area names set the column while a narrow bar and the last cell fit
-    // beside them; a file's path only while the bars keep their full width.
+    // Names and paths set the column while a narrow bar and the last cell fit beside them.
     let name_cap = line.saturating_sub(counts_width + MIN_BAR as u16 + 2 + MIN_WRAP);
-    let path_cap = line.saturating_sub(counts_width + BAR as u16 + 2 + want);
-    let names = tables
+    let path_cap = line.saturating_sub(counts_width + MIN_BAR as u16 + 2 + want);
+    let names = shown
         .iter()
-        .map(|(area, _)| width(&area.name))
+        .map(|area| width(&area.name))
         .chain(more.as_deref().map(width))
         .map(|name| name.min(name_cap));
-    let paths = tables
+    let paths = shown
         .iter()
-        .flat_map(|(_, files)| files.iter().map(|(path, _)| FILE_AT + width(path)))
+        .flat_map(|area| files_of(area, false))
+        .map(|(path, _)| FILE_AT + width(&path))
         .filter(|path| *path <= path_cap);
     let name = names.chain(paths).max().unwrap_or(0);
     let biggest = shown.iter().map(|area| area.added + area.removed).max().unwrap_or(0);
@@ -239,18 +290,34 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
     };
     // What goes on a row's line after its counts: the bar and a last cell.
     let after = cells as u16 + 2 + MIN_WRAP;
-    for ((area, files), last) in tables.iter().zip(&lasts) {
-        scene.block(open(dir, &area.top), |scene| {
+    for (area, named) in shown.iter().zip(&named) {
+        // One file's name after the bar when it fits there whole, else as a row under it.
+        let is_named = area.changes.len() < 2 && columns.last + width(named) <= line;
+        let files = files_of(area, !is_named);
+        let last = if is_named {
+            named.clone()
+        } else {
+            counted(area.files as u64, "file")
+        };
+        scene.block(show(&area.top, "area"), |scene| {
             scene.atom_gap(vec![look::bold(&area.name)], 0);
             counts(scene, &columns, area.added, area.removed, after);
             scene.atom_gap(bar(area.added, area.removed, biggest, cells), 0);
-            columns.to(scene, columns.last, width(last).min(MIN_WRAP));
+            columns.to(scene, columns.last, width(&last).min(MIN_WRAP));
             let parts: Vec<&str> = last.split(" · ").collect();
             scene.parts(&parts, theme::dim());
             scene.indent(0);
         });
-        for (path, change) in files {
-            file_row(scene, path, change, &columns, dir);
+        if files.is_empty() {
+            place.under(scene, "area", &area.top);
+        }
+        for (path, change) in &files {
+            file_row(scene, path, change, &columns, area.changes.len() > 1);
+            place.under(scene, "file", &change.file);
+            // The area's row shows its top file's changes under that file's row.
+            if change.file == area.top {
+                place.under(scene, "area", &area.top);
+            }
         }
         if area.changes.len() > FILES {
             let hidden: Vec<(String, String)> = area.changes[FILES..]
@@ -261,7 +328,8 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
                 scene.pad_to(FILE_AT);
                 scene.atom_gap(vec![look::dim(format!("… {} more:", hidden.len()))], 0);
             };
-            file_line(scene, prefix, &hidden, NAMES, None, dir, FILE_AT);
+            let at = format!("more:{}", area.name);
+            file_line(scene, prefix, &hidden, NAMES, None, &at, place, FILE_AT);
         }
     }
     if let Some(more) = more {
@@ -288,15 +356,15 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, dir: &Path) {
             } else {
                 WRAP
             };
-            file_line(scene, prefix, &hidden, NAMES, None, dir, indent);
+            file_line(scene, prefix, &hidden, NAMES, None, "rest", place, indent);
         }
     }
 }
 
-/// What follows an area's bar: `N files`, and for one file its name.
-fn last_of(area: &Area, files: &[(String, &Change)]) -> String {
+/// What follows the bar of an area of one file: `1 file · name`; `N files` for more.
+fn named_last(area: &Area) -> String {
     let count = counted(area.files as u64, "file");
-    if files.is_empty() {
+    if area.changes.len() < 2 {
         format!("{count} · {}", basename(&area.top))
     } else {
         count
@@ -304,9 +372,9 @@ fn last_of(area: &Area, files: &[(String, &Change)]) -> String {
 }
 
 /// The files listed under an area, by their path below the area's folder;
-/// none for an area of one file, its row names it.
-fn files_of(area: &Area) -> Vec<(String, &Change)> {
-    if area.changes.len() < 2 {
+/// one file only `is_listed`, when its row has no room for its name.
+fn files_of(area: &Area, is_listed: bool) -> Vec<(String, &Change)> {
+    if area.changes.len() < 2 && !is_listed {
         return vec![];
     }
     let folder = common_folder(area.changes.iter().map(|change| change.file.as_str()));
@@ -388,11 +456,16 @@ impl Columns {
 }
 
 /// `+a  −r` in their columns, the line ready for what follows them, of
-/// which `after` columns stay on the counts' line.
+/// which `after` columns stay on the counts' line. A name that ran into the
+/// counts' column puts them on the next line, in it: the column stays straight.
 fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, after: u16) {
     let (plus, minus) = (added_span(added), removed_span(removed));
-    let (plus_width, minus_width) = (plus.width() as u16, minus.width() as u16);
-    columns.to(scene, columns.plus, plus_width + 2 + minus_width + after);
+    let minus_width = minus.width() as u16;
+    if scene.x() + 2 > columns.plus && columns.plus < scene.width() {
+        scene.newline();
+    }
+    scene.pad_to(columns.plus);
+    scene.indent(columns.plus);
     scene.atom_gap(vec![plus], 0);
     columns.to(scene, columns.minus, minus_width + after);
     scene.atom_gap(vec![minus], 0);
@@ -401,10 +474,10 @@ fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, a
 
 /// A file of an area, as lazygit's files panel has it: its letter, its path
 /// below the area's folder (wrapping at a `/` when it is wider than the
-/// line), its lines, whether it is committed; a click opens it in nvim at
-/// its first change.
-fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns, dir: &Path) {
-    scene.block(open(dir, &change.file), |scene| {
+/// line), its lines (not for the one file of an area: its row has them),
+/// whether it is committed; a click shows its hunks under it.
+fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns, has_counts: bool) {
+    scene.block(show(&change.file, "file"), |scene| {
         scene.pad_to(2);
         scene.atom_gap(vec![status_mark(change.status)], 0);
         scene.pad_to(FILE_AT);
@@ -422,9 +495,11 @@ fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Colum
         } else {
             0
         };
-        counts(scene, columns, change.added, change.removed, after);
+        if has_counts {
+            counts(scene, columns, change.added, change.removed, after);
+        }
         if change.is_uncommitted {
-            scene.atom_gap(vec![look::dim(UNCOMMITTED)], 0);
+            scene.atom_gap(vec![look::dim(UNCOMMITTED)], if has_counts { 0 } else { 2 });
         }
         scene.indent(0);
     });
@@ -477,7 +552,19 @@ mod tests {
     }
 
     fn opens(file: &str) -> Option<Act> {
-        Some(open(Path::new("/w"), file))
+        Some(show(file, "conflicts"))
+    }
+
+    fn shows(file: &str, at: &str) -> Option<Act> {
+        Some(show(file, at))
+    }
+
+    fn place() -> Files<'static> {
+        Files {
+            dir: Path::new("/w"),
+            diff: None,
+            shown: None,
+        }
     }
 
     fn change(file: &str, status: char, added: u64, is_uncommitted: bool) -> Change {
@@ -507,7 +594,7 @@ mod tests {
             .map(|file| format!("src/{file}"))
             .collect();
         let mut scene = Scene::new(80);
-        conflicts(&mut scene, &files, Path::new("/w"));
+        conflicts(&mut scene, &files, &place());
         scene.finish();
         let line = "✗ a merge conflicts in src/a.ts, src/b.ts, src/c.ts, src/d.ts +2 more";
         assert_eq!(text(&scene), [line]);
@@ -537,7 +624,8 @@ mod tests {
             &files,
             NAMES,
             Some("merge develop in while it is small"),
-            Path::new("/w"),
+            "conflicts",
+            &place(),
             WRAP,
         );
         scene.finish();
@@ -577,7 +665,7 @@ mod tests {
             ..Diff::default()
         };
         let mut scene = Scene::new(100);
-        diff_of(&mut scene, &diff, Path::new("/w"));
+        diff_of(&mut scene, &diff, Path::new("/w"), None);
         scene.finish();
         assert_eq!(
             text(&scene)[2..],
@@ -590,9 +678,9 @@ mod tests {
         );
         assert_eq!(
             act_at(&scene, 3, 4),
-            opens("packages/breadboard/src/overview/lib/tty.mjs").as_ref()
+            shows("packages/breadboard/src/overview/lib/tty.mjs", "file").as_ref()
         );
-        assert_eq!(act_at(&scene, 3, 5), opens("README.md").as_ref());
+        assert_eq!(act_at(&scene, 3, 5), shows("README.md", "area").as_ref());
     }
 
     #[test]
@@ -613,7 +701,7 @@ mod tests {
             ..Diff::default()
         };
         let mut scene = Scene::new(100);
-        diff_of(&mut scene, &diff, Path::new("/w"));
+        diff_of(&mut scene, &diff, Path::new("/w"), None);
         scene.finish();
         let lines = text(&scene);
         let last = lines.last().unwrap();
@@ -627,9 +715,9 @@ mod tests {
         let y = lines.len() as u16 - 1;
         assert_eq!(
             act_at(&scene, column_of(last, "f1.ts"), y),
-            opens("area1/f1.ts").as_ref()
+            shows("area1/f1.ts", "rest").as_ref()
         );
-        assert_eq!(act_at(&scene, 2, y), opens("area2/f2.ts").as_ref());
+        assert_eq!(act_at(&scene, 2, y), shows("area2/f2.ts", "rest").as_ref());
     }
 
     /// The rich world's table (the critic's, round 3): one long path, areas of one file.
@@ -661,22 +749,22 @@ mod tests {
     #[test]
     fn a_long_path_runs_into_the_counts_and_never_breaks_a_last_cell() {
         let mut scene = Scene::new(120);
-        diff_of(&mut scene, &rich(), Path::new("/w"));
+        diff_of(&mut scene, &rich(), Path::new("/w"), None);
         scene.finish();
         assert_eq!(
             text(&scene)[2..],
             [
-                "monolithium/components  +40  −0  ████████████████████████  1 file · Button.tsx",
-                "breadboard/overview     +28  −0  █████████████████         3 files",
-                "  A  gx-render.mjs      +15  −0",
-                "  ?  view.mjs           +12  −0  uncommitted",
-                "  ?  render-worktree-with-a-really-long-file-name-for-wrapping.mjs  +1  −0  uncommitted",
-                "vita                    +3   −0  ██                        1 file · .env.local",
+                "monolithium/components                                              +40  −0  ██████████████████████  1 file · Button.tsx",
+                "breadboard/overview                                                 +28  −0  ███████████████         3 files",
+                "  A  gx-render.mjs                                                  +15  −0",
+                "  ?  view.mjs                                                       +12  −0  uncommitted",
+                "  ?  render-worktree-with-a-really-long-file-name-for-wrapping.mjs  +1   −0  uncommitted",
+                "vita                                                                +3   −0  ██                      1 file · .env.local",
             ]
         );
         let mut scene = Scene::new(64);
         // Narrower: the bars give way to the last cell, the path breaks after its `.`.
-        diff_of(&mut scene, &rich(), Path::new("/w"));
+        diff_of(&mut scene, &rich(), Path::new("/w"), None);
         scene.finish();
         let lines = text(&scene);
         assert_eq!(
@@ -692,8 +780,14 @@ mod tests {
             ]
         );
         // Both lines of the long file's row open it.
-        assert_eq!(act_at(&scene, 3, 6), opens(&rich().areas[1].changes[2].file).as_ref());
-        assert_eq!(act_at(&scene, 30, 7), opens(&rich().areas[1].changes[2].file).as_ref());
+        assert_eq!(
+            act_at(&scene, 3, 6),
+            shows(&rich().areas[1].changes[2].file, "file").as_ref()
+        );
+        assert_eq!(
+            act_at(&scene, 30, 7),
+            shows(&rich().areas[1].changes[2].file, "file").as_ref()
+        );
     }
 
     #[test]

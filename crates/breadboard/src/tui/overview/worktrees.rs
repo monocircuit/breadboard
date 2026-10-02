@@ -1,12 +1,14 @@
 //! WORKTREES of an orchestration (tree.mjs): a folder tree under `⇶ <name>`,
 //! a node per issue with its number, its name in herdr's pink, where it
-//! stands at the right; who works in it (#292), its facts and title below,
-//! wrapped under the name (#304), the stems of the tree in front of every
+//! stands at the right; its facts below with who works in it (#292) at
+//! their right, under the state (on a line of its own when both don't fit),
+//! then its title, wrapped under the name (#304), the stems of the tree in front of every
 //! line. The queue and the done ones fold (#259); a click anywhere on a node
 //! goes to its worktree's space, else to its issue's page; hover lights the
 //! whole node (#296).
 
 use super::{Act, Ctx, Fold, look};
+use crate::tui::scene::width_of;
 use crate::tui::theme;
 use crate::tui::{Page, Scene};
 use breadboard_core::model::orchestration::OrchestrationModel;
@@ -130,13 +132,24 @@ fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, 
                 look::pink()
             };
             scene.atom(vec![look::span(&node.name, style)]);
-            scene.right(vec![look::span(&node.state.text, look::style_of(&node.state.paint))]);
+            right(
+                scene,
+                vec![look::span(&node.state.text, look::style_of(&node.state.paint))],
+            );
             scene.end_line();
-            if let Some(agent) = &node.agent {
-                agent_line(scene, agent);
+            // Who works in it at the right of the facts, under the state; on a line of its own before them when both don't fit.
+            let agent = node.agent.as_ref().map(agent_spans);
+            let is_beside = agent
+                .as_ref()
+                .is_some_and(|agent| facts_width(&node.facts) + 2 + width_of(agent) <= scene.width());
+            if let Some(agent) = agent.clone().filter(|_| !is_beside) {
+                look::flow(scene, &agent);
                 scene.end_line();
             }
             look::facts(scene, &node.facts);
+            if let Some(agent) = agent.filter(|_| is_beside) {
+                scene.right(agent);
+            }
             scene.end_line();
             look::say(scene, &node.title, theme::dim());
             scene.end_line();
@@ -151,13 +164,51 @@ fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, 
 
 /// `● Mira Albrecht · 3 issues · 2 MRs merged` (#292): the dot in the colour
 /// of whom the agent waits for, its name, what it did in this orchestration.
-fn agent_line(scene: &mut Scene<Act>, agent: &AgentLine) {
-    scene.atom(vec![
+fn agent_spans(agent: &AgentLine) -> Vec<Span<'static>> {
+    vec![
         look::span("●", look::style_of(&agent.dot)),
         Span::raw(" "),
         look::bold(&agent.name),
-    ]);
-    look::say(scene, &agent.counts(), theme::dim());
+        Span::raw(" "),
+        look::dim(agent.counts()),
+    ]
+}
+
+/// The columns the facts take on one line, as `look::facts` sets them.
+fn facts_width(facts: &[model::Fact]) -> u16 {
+    let parts: Vec<u16> = facts
+        .iter()
+        .filter(|fact| !model::text_of(fact).trim().is_empty())
+        .map(|fact| width_of(&look::spans(fact)))
+        .collect();
+    let gaps = parts.len().saturating_sub(1) as u16;
+    parts.iter().sum::<u16>() + gaps * 3
+}
+
+/// `spans` at the right edge: beside what the line has when it fits, else on
+/// the next line; wider than a line, its words on lines of their own, each
+/// at the right edge (tree.mjs: a state that doesn't fit stays right-aligned).
+fn right(scene: &mut Scene<Act>, spans: Vec<Span<'static>>) {
+    if width_of(&spans) <= scene.width() {
+        scene.right(spans);
+        return;
+    }
+    scene.end_line();
+    let mut line: Vec<Span<'static>> = Vec::new();
+    for word in look::words_of(&spans) {
+        let gap = u16::from(!line.is_empty());
+        if !line.is_empty() && width_of(&line) + gap + width_of(&word) > scene.width() {
+            scene.right(std::mem::take(&mut line));
+            scene.end_line();
+        }
+        if !line.is_empty() {
+            line.push(Span::raw(" "));
+        }
+        line.extend(word);
+    }
+    if !line.is_empty() {
+        scene.right(line);
+    }
 }
 
 #[cfg(test)]
@@ -253,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_is_its_name_and_state_its_agent_facts_and_title_under_its_stem() {
+    fn a_node_is_its_name_and_state_its_facts_and_agent_and_title_under_its_stem() {
         let scene = draw(&worktrees(0, 0), Folds::default(), 72);
         assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab"));
         assert_eq!(
@@ -263,15 +314,46 @@ mod tests {
                 "⇶ breadboard  .claude/orchestrations/breadboard.json",
                 "│  agents 2 · issues 3 · reused 0 · handovers failed 0",
                 "├─ 1. 303-every-button                            waits for the pipeline",
-                "│     ● Mira Albrecht · 3 issues · 2 MRs merged",
-                "│     #301 open · 1 ahead",
+                "│     #301 open · 1 ahead      ● Mira Albrecht · 3 issues · 2 MRs merged",
                 "│     the title of #301",
                 "└─ 2. 305-refresh                                 waits for the pipeline",
-                "      ● Mira Albrecht · 3 issues · 2 MRs merged",
-                "      #302 open · 1 ahead",
+                "      #302 open · 1 ahead      ● Mira Albrecht · 3 issues · 2 MRs merged",
                 "      the title of #302",
             ]
         );
+    }
+
+    #[test]
+    fn an_agent_that_does_not_fit_beside_the_facts_goes_on_its_own_line_before_them() {
+        let lines = text(&draw(&worktrees(0, 0), Folds::default(), 60));
+        assert_eq!(
+            lines[3..7],
+            [
+                "├─ 1. 303-every-button                waits for the pipeline",
+                "│     ● Mira Albrecht · 3 issues · 2 MRs merged",
+                "│     #301 open · 1 ahead",
+                "│     the title of #301",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_state_wider_than_the_line_stays_at_the_right_edge_on_lines_of_its_own() {
+        let mut worktrees = worktrees(0, 0);
+        worktrees.tree.live[0].state.text =
+            "start: → Elif Kowalczyk: its handover failed: wt:orchestrate: not built yet; a click tries again".into();
+        let lines = text(&draw(&worktrees, Folds::default(), 60));
+        assert_eq!(
+            lines[3..6],
+            [
+                "├─ 1. 303-every-button",
+                "│              start: → Elif Kowalczyk: its handover failed:",
+                "│         wt:orchestrate: not built yet; a click tries again",
+            ]
+        );
+        for line in &lines {
+            assert!(line.chars().count() <= 60, "{line}");
+        }
     }
 
     #[test]
@@ -292,8 +374,8 @@ mod tests {
         assert_eq!(
             blocks,
             [
-                (3, 4, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
-                (7, 4, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
+                (3, 3, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
+                (6, 3, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
             ]
         );
     }

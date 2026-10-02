@@ -4,6 +4,7 @@
 //! Storybook's tab, a file in nvim. Never in a print (`--once`): it has no clicks.
 
 use super::editor::{self, Checkout};
+use super::hunks::Shown;
 use super::started::{self, Started};
 use crate::tui::Flow;
 use breadboard_core::model::worktree::{STORYBOOK_PORT, WorktreeModel};
@@ -36,6 +37,8 @@ pub struct State {
     pub storybook: Option<Storybook>,
     /// Why the last click on a file didn't open it; None once one did.
     pub nvim: Option<String>,
+    /// The file whose hunks show in DIFF or DEVELOP, and under which row.
+    pub hunks: Option<Shown>,
 }
 
 impl State {
@@ -80,6 +83,22 @@ pub fn open_file(state: &mut State, model: &WorktreeModel, main: &Path, file: &s
     };
     state.nvim = editor::open_file(&checkout, file, line).err();
     Flow::Redraw
+}
+
+/// A file's hunks under the row clicked; a second click on it closes them,
+/// one on another file's row shows that one's instead (lazygit shows one).
+pub fn toggle_hunks(state: &mut State, file: String, at: String) -> Flow {
+    let is_open = state.hunks.as_ref().is_some_and(|shown| shown.is_under(&at, &file));
+    state.hunks = (!is_open).then(|| Shown::new(file, at));
+    Flow::Redraw
+}
+
+/// Esc: the hunks closed, if any show.
+pub fn close_hunks(state: &mut State) -> Flow {
+    match state.hunks.take() {
+        Some(_) => Flow::Redraw,
+        None => Flow::Same,
+    }
 }
 
 /// Delete: the first click arms it, the second within ARM runs `wt:remove

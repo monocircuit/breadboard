@@ -273,6 +273,40 @@ impl<A: Clone> Page<A> {
 }
 
 impl<A> Sheet<A> {
+    /// Without the blank line after each sticky section: in a short pane
+    /// the rows on top that never scroll cost the most, and the band's
+    /// ground and the islands' keep the parts apart without it.
+    pub fn tighten(&mut self) {
+        let blanks: Vec<u16> = self
+            .sections
+            .iter()
+            .map(|placed| placed.to)
+            .filter(|&to| to < self.sticky)
+            .filter(|&to| {
+                self.rows.get(usize::from(to)).is_some_and(|row| {
+                    row.ground == Ground::Plain && row.line.spans.iter().all(|span| span.content.trim().is_empty())
+                })
+            })
+            .collect();
+        for &blank in blanks.iter().rev() {
+            self.rows.remove(usize::from(blank));
+            for region in &mut self.regions {
+                if region.area.y > blank {
+                    region.area.y -= 1;
+                }
+            }
+            for placed in &mut self.sections {
+                if placed.from > blank {
+                    placed.from -= 1;
+                }
+                if placed.to > blank {
+                    placed.to -= 1;
+                }
+            }
+            self.sticky -= 1;
+        }
+    }
+
     /// What a mouse at page position (x, row) hits: a button before its
     /// block, the innermost block of nested ones.
     pub fn hit(&self, x: u16, row: u16) -> Option<(usize, &Region<A>)> {

@@ -19,6 +19,7 @@ use crate::tui::scene::width_of;
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Header, Page, Scene, Section};
 use breadboard_core::check::CheckState;
+use breadboard_core::git::orchestrations_dir;
 use breadboard_core::gitlab::read::{EverythingRemote, ListedIssue, ListedMr};
 use breadboard_core::herdr;
 use breadboard_core::model::everything::{EverythingModel, TreeRow, stack_cell};
@@ -260,9 +261,9 @@ fn changed_of(row: &TreeRow) -> Option<Vec<Span<'static>>> {
     })
 }
 
-/// The work in short, for a column too narrow for it all: what is changed
-/// and the check in a word (`untested`, `✓ tested`, `✗ failed`); its
-/// commits ahead are its MR's, beside it. `clean` or `1 ahead` without either.
+/// The work in a word, for a column too narrow for all of it: the check
+/// (`untested`, `✓ tested`, `✗ failed`, `checking…`), else what there is
+/// (`2 changed`, `1 ahead`, `clean`), first.
 fn short_work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
     let check = match &row.tree.checked {
         CheckState::Tested { .. } => Some(("✓ tested", Tone::Green)),
@@ -271,9 +272,10 @@ fn short_work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
         CheckState::Untested { .. } => Some(("untested", Tone::Yellow)),
         CheckState::None => None,
     };
-    let mut parts: Vec<_> = changed_of(row).into_iter().collect();
-    parts.extend(check.map(|(word, tone)| vec![look::span(word, theme::tone(tone))]));
-    if parts.is_empty() { work_of(row) } else { parts }
+    match check {
+        Some((word, tone)) => vec![vec![look::span(word, theme::tone(tone))]],
+        None => work_of(row).into_iter().take(1).collect(),
+    }
 }
 
 /// How wide facts are on one line: each, then ` ·` and a space between.
@@ -282,21 +284,27 @@ fn facts_width(parts: &[Vec<Span<'static>>]) -> u16 {
     words + 3 * (parts.len().max(1) as u16 - 1)
 }
 
-/// The work that fits `room` on one line: all of it, then without what is
-/// ahead, then in short; the short one wraps when not even that fits.
-fn work_in(row: &TreeRow, room: u16) -> Vec<Vec<Span<'static>>> {
+/// The work for a column `room` wide: all of it when it fits; else its
+/// check in a word there, and all of it on a line of its own under the
+/// name (the second): nothing is dropped (#304).
+fn work_in(row: &TreeRow, room: u16) -> (Vec<Vec<Span<'static>>>, Option<Vec<Vec<Span<'static>>>>) {
     let all = work_of(row);
     if facts_width(&all) <= room {
-        return all;
+        return (all, None);
     }
-    let mut changes = all.clone();
-    if row.tree.ahead > 0 && changes.len() > 1 {
-        changes.remove(0);
-        if facts_width(&changes) <= room {
-            return changes;
-        }
-    }
-    short_work_of(row)
+    (short_work_of(row), Some(all))
+}
+
+/// A worktree's work that its column could not hold, on the row's next line
+/// under its name: the column above keeps the check, this says the rest.
+fn work_line(scene: &mut Scene<Act>, detail: Option<Vec<Vec<Span<'static>>>>) {
+    let Some(detail) = detail else { return };
+    let indent = NAME_AT + GAP;
+    scene.end_line();
+    scene.pad_to(indent);
+    scene.indent(indent);
+    facts(scene, &detail, indent);
+    scene.indent(0);
 }
 
 /// A row's click: its space in herdr; outside herdr its app when that runs (render.mjs:366).
@@ -322,6 +330,10 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
     } else {
         "click one to go to its space · no .env.local in any"
     });
+    let main = rows
+        .iter()
+        .find(|row| row.tree.is_main)
+        .map(|row| row.tree.dir.as_path());
     let rows = grouped(rows);
     let names: Vec<_> = rows.iter().map(|row| name_cell(row)).collect();
     let cell = |row: &TreeRow, of: fn(&TreeRow) -> Vec<Span<'static>>| if has_env { of(row) } else { vec![] };
@@ -352,13 +364,18 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
         {
             group = Some(&origin.name);
             scene.end_line();
-            scene.pad_to(NAME_AT);
-            scene.indent(NAME_AT);
-            look::flow(
-                scene,
-                &[look::span(format!("⇶ {}", origin.name), theme::tone(Tone::Cyan))],
-            );
-            scene.indent(0);
+            // A click brings its space `⇶ <title>` to the front, which stands on its checkout.
+            let checkout = main.map(|main| orchestrations_dir(main).join(&origin.name));
+            let click = checkout.map_or(Act::Go(Go::Nothing), |dir| Act::Go(Go::FocusSpace(dir)));
+            scene.block(click, |scene| {
+                scene.pad_to(NAME_AT);
+                scene.indent(NAME_AT);
+                look::flow(
+                    scene,
+                    &[look::span(format!("⇶ {}", origin.name), theme::tone(Tone::Cyan))],
+                );
+                scene.indent(0);
+            });
             scene.end_line();
         }
         scene.block(tree_click(row, is_in_herdr), |scene| {
@@ -369,10 +386,11 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
             match &at {
                 Some(at) => {
                     let column = at.last().copied().unwrap_or(0);
-                    let work = work_in(row, scene.width().saturating_sub(column));
+                    let (work, detail) = work_in(row, scene.width().saturating_sub(column));
                     table_row(scene, at, vec![name, app, stack, mr], |scene| {
                         facts(scene, &work, column);
                     });
+                    work_line(scene, detail);
                 }
                 None => {
                     // A card: the name on its line, the rest under it, unless
@@ -394,10 +412,11 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
                     match &under {
                         Some(under) => {
                             let column = under.last().copied().unwrap_or(0);
-                            let work = work_in(row, scene.width().saturating_sub(column));
+                            let (work, detail) = work_in(row, scene.width().saturating_sub(column));
                             table_row(scene, under, vec![app, stack, mr], |scene| {
                                 facts(scene, &work, column);
                             });
+                            work_line(scene, detail);
                         }
                         None => {
                             for cell in [app, stack, mr] {
@@ -525,22 +544,25 @@ fn mr_wide(scene: &mut Scene<Act>, at: &[u16], cells: Vec<Vec<Span<'static>>>, m
 }
 
 /// An MR where its cells leave the title too little room: `!iid`, then its
-/// title with the room of the line, the state and pipeline after it, then
-/// branch and owner, each on the line it fits whole.
-fn mr_stacked(scene: &mut Scene<Act>, column: u16, cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
+/// title with the room of the line; under it, always at the start of its
+/// own line, its state and pipeline padded to their columns, so the eye runs
+/// down them as at 120 columns, then branch and owner where they fit whole.
+fn mr_stacked(scene: &mut Scene<Act>, column: u16, widths: &[u16], cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
     let mut cells = cells.into_iter();
     scene.atom(cells.next().unwrap_or_default());
     scene.indent(column);
     scene.pad_to(column);
     look::flow(scene, &[look::span(&mr.title, Style::new())]);
+    scene.end_line();
+    scene.pad_to(column);
     let mut state: Vec<Span<'static>> = vec![];
-    for cell in cells.filter(|cell| !cell.is_empty()) {
+    for (cell, &width) in cells.zip(&widths[1..]) {
         if !state.is_empty() {
-            state.push(Span::raw(" "));
+            state.push(Span::raw(" ".repeat(usize::from(GAP))));
         }
-        state.extend(cell);
+        state.extend(padded(cell, width));
     }
-    trail(scene, state, column);
+    scene.atom(state);
     trail(scene, mr_tail(mr), column);
     scene.indent(0);
 }
@@ -572,7 +594,7 @@ fn merge_requests(scene: &mut Scene<Act>, remote: &EverythingRemote, rows: &[Tre
                 .zip(&cells)
                 .map(|(mr, cells)| {
                     u32::from(rows_in(width, |scene| match stacked {
-                        true => mr_stacked(scene, column, cells.clone(), mr),
+                        true => mr_stacked(scene, column, &widths, cells.clone(), mr),
                         false => mr_wide(scene, at, cells.clone(), mr),
                     }))
                 })
@@ -587,7 +609,7 @@ fn merge_requests(scene: &mut Scene<Act>, remote: &EverythingRemote, rows: &[Tre
         });
         scene.block(click, |scene| match (&at, is_stacked) {
             (Some(at), false) => mr_wide(scene, at, cells, mr),
-            _ => mr_stacked(scene, column, cells, mr),
+            _ => mr_stacked(scene, column, &widths, cells, mr),
         });
     }
 }
@@ -974,34 +996,58 @@ mod tests {
         assert!(
             text[at + 1]
                 .trim_start()
-                .starts_with("ready ✓ passed  fix/157-wt-mr-wt-tick-fail · lukasdiegelmann1"),
+                .starts_with("ready  ✓ passed   fix/157-wt-mr-wt-tick-fail · lukasdiegelmann1"),
             "{text:#?}"
         );
         assert_eq!(block_rows(&sheet, "!187"), 2, "{text:#?}");
+        // State and pipeline start every MR's second line, in columns: the eye runs down them.
+        let other = text
+            .iter()
+            .position(|line| line.trim_start().starts_with("!308"))
+            .unwrap();
+        assert_eq!(text[other + 1].find("draft"), text[at + 1].find("ready"), "{text:#?}");
+        assert_eq!(
+            text[other + 1].find("◐ running"),
+            text[at + 1].find("✓ passed"),
+            "{text:#?}"
+        );
         assert!(block_rows(&sheet, "!308") <= 3, "{text:#?}");
     }
 
     #[test]
-    fn at_80_a_worktree_is_one_line_its_work_in_short() {
+    fn at_80_a_worktree_keeps_its_check_in_the_column_and_all_its_work_under_it() {
         let mut model = model(0);
         if let Ok(rows) = &mut model.trees {
             rows[2].tree.changed = 2;
         }
         let sheet = sheet(&model, 80);
         let text = sheet.text();
-        let line = |name: &str| text.iter().find(|line| line.contains(name)).unwrap().clone();
-        let first = line("292-overview-every-agent-has-name");
+        let at = |name: &str| text.iter().position(|line| line.contains(name)).unwrap();
+        let first = at("292-overview-every-agent-has-name");
         assert!(
-            first.contains("!303") && first.contains("✓ passed") && first.contains("untested"),
-            "{first}"
+            text[first].contains("!303") && text[first].contains("✓ passed") && text[first].ends_with("untested"),
+            "{text:#?}"
         );
-        assert!(!first.contains("1 ahead"), "{first}");
-        for name in ["292-", "303-"] {
-            assert_eq!(block_rows(&sheet, name), 1, "{text:#?}");
+        // Nothing dropped: `1 ahead` and the commit count on the row's second line, under its name.
+        assert_eq!(text[first + 1], "     1 ahead · untested: 1 commit", "{text:#?}");
+        let second = at("296-");
+        assert!(text[second].contains("!308 draft ✓ passed  untested"), "{text:#?}");
+        assert_eq!(
+            text[second + 1].trim(),
+            "1 ahead · 2 changed · untested: 1 commit",
+            "{text:#?}"
+        );
+        for name in ["292-", "296-", "303-"] {
+            assert_eq!(block_rows(&sheet, name), 2, "{text:#?}");
         }
-        // More than the column holds wraps in it, the row never becomes a card.
-        assert!(line("296-").contains("!308 draft ✓ passed  2 changed"), "{text:#?}");
-        assert_eq!(block_rows(&sheet, "296-"), 2, "{text:#?}");
+        // The check stands in one column on every row.
+        let column = |row: usize| text[row].find("untested").unwrap();
+        assert_eq!(column(first), column(second), "{text:#?}");
+        // Where the column holds it all, the row stays one line.
+        let wide = sheet_of(&model, 200);
+        let line = wide.iter().position(|line| line.contains("292-")).unwrap();
+        assert!(wide[line].ends_with("1 ahead · untested: 1 commit"), "{wide:#?}");
+        assert!(wide[line + 1].contains("296-"), "{wide:#?}");
     }
 
     #[test]

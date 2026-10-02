@@ -15,7 +15,7 @@ use breadboard_core::local::is_port_taken;
 use breadboard_core::model::try_state::{TryState, app_origin, page_of, short_page};
 use breadboard_core::model::{Paint, Span, Tree};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -45,8 +45,8 @@ pub struct Trying {
 #[derive(Debug, Default)]
 pub struct Tries {
     pub trying: HashMap<PathBuf, Trying>,
-    /// Worktrees whose try terminal a click couldn't open (no herdr, no space).
-    pub unopened: HashSet<PathBuf>,
+    /// Worktrees whose try terminal a click couldn't open, and why (no herdr, no space, no tab).
+    pub unopened: HashMap<PathBuf, String>,
     /// What the last click on a try of a worktree did: (its id, the text).
     pub clicked: HashMap<PathBuf, (i64, String)>,
 }
@@ -134,18 +134,16 @@ fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
     app.actor.queue(move || {
         let text = terminal(&main, &dir, id, &run);
         Some(Box::new(move |app: &mut Overview| {
-            match &text {
-                Some(text) => {
+            match text {
+                Ok(text) => {
                     app.actor.tries.unopened.remove(&dir);
-                    app.actor.tries.clicked.insert(dir.clone(), (id, text.clone()));
                     app.actor.log(Paint::Green, format!("try #{id}: {text}: {run}"));
+                    app.actor.tries.clicked.insert(dir.clone(), (id, text));
                 }
-                None => {
-                    app.actor.tries.unopened.insert(dir.clone());
-                    app.actor.log(
-                        Paint::Red,
-                        format!("try #{id}: no space of its worktree in herdr: run {run} there yourself"),
-                    );
+                Err(why) => {
+                    app.actor
+                        .log(Paint::Red, format!("try #{id}: {why}: run {run} there yourself"));
+                    app.actor.tries.unopened.insert(dir.clone(), why.to_string());
                 }
             }
             app.redraw();
@@ -153,12 +151,13 @@ fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
     });
 }
 
-/// The terminal of a try opened: what happened, None without herdr or the worktree's space.
-fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Option<String> {
+/// The terminal of a try opened: what happened, or where it stopped (Node
+/// says `no space` for each; the step that failed is named here).
+fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Result<String, &'static str> {
     if !is_in_herdr() {
-        return None;
+        return Err("not in herdr");
     }
-    let workspace = herdr::space_of(main, dir)?;
+    let workspace = herdr::space_of(main, dir).ok_or("no space of its worktree in herdr")?;
     let tabs = tabs_of(&workspace);
     let old: Vec<_> = tabs.iter().filter(|tab| tab.label == TRY_TAB).collect();
     let file = dir.join(".claude").join("try-tab.json");
@@ -209,11 +208,16 @@ fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Option<String> {
     };
     let tab = tabs_of(&workspace)
         .into_iter()
-        .find(|tab| tab.label == TRY_TAB && !closed.contains(&tab.id))?;
+        .find(|tab| tab.label == TRY_TAB && !closed.contains(&tab.id))
+        .ok_or("herdr shows no tab try in its space after opening it")?;
     let _ = std::fs::create_dir_all(dir.join(".claude"));
     let _ = std::fs::write(&file, format!("{}\n", json!({ "tab": tab.id, "id": id, "run": run })));
     herdr::did(&["workspace", "focus", &workspace]);
-    herdr::did(&["tab", "focus", &tab.id]).then_some(text)
+    if herdr::did(&["tab", "focus", &tab.id]) {
+        Ok(text)
+    } else {
+        Err("herdr didn't bring its tab try to the front")
+    }
 }
 
 /// The page of a try (`openPage`): on the worktree's own app that is down,
@@ -324,11 +328,8 @@ pub fn spot(actor: &Actor, action: &Action, tree: Option<&Tree>) -> Option<Vec<S
         .filter(|(id, _)| *id == action.id)
         .map(|(_, text)| text.clone());
     if let Some(run) = &action.run {
-        if actor.tries.unopened.contains(dir) {
-            return Some(vec![Span::new(
-                format!("no space of its worktree in herdr: run {run} there yourself"),
-                Paint::Red,
-            )]);
+        if let Some(why) = actor.tries.unopened.get(dir) {
+            return Some(vec![Span::new(format!("{why}: run {run} there yourself"), Paint::Red)]);
         }
         return clicked.map(|done| vec![Span::new(done, Paint::Green), Span::dim(format!(" {run}"))]);
     }

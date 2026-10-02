@@ -4,6 +4,155 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 09:10 · overview / actor · retried answers, the band's log, the --herdr look
+Chose: the local read's 2 s look also asks herdr (one `pane list`, hashed)
+and reads again when an agent's state or a pane changed, so an answer held
+back by a blocked agent goes in within one look of it being free. Against:
+reading only on a file change or after 15 s (14 s late). Why: rule 1 (the
+buttons check "reaches it within 3 s"), rule 3 (Node reads every 2 s).
+Idle CPU stays 0.2 % (rule 7): herdr is asked, nothing is read again unless
+it changed.
+Chose: an answer that gets in on a retry logs a green `decide #2 of #307 →
+answer · typed into its agent's pane`, which replaces the yellow waiting
+entry in the band and DONE. Why: the critic: the UI never said it arrived.
+Chose: the band's short entry glues `of #307` and `→ answer` with no-break
+spaces, so a narrow band shows the answer whole or leaves it out (DONE has
+it). Against: `→ Rust +`. Why: #304 (no silent cut).
+Chose: `· N more` counts every other thing done in the band's minute, not
+at most 2. Why: it said `2 more` beside a DONE of 8.
+Chose: with `--herdr` the view of everything watches herdr's states too, so
+the sidebar's line of an agent follows within a look and pruning/sorting
+runs on every herdr change. Against: Node's sync after every 2 s read,
+which in the world closes the same tabs every tick (40 in 20 s, ours 8).
+Why: rule 7 (idle near 0), rule 6 (no repeated writes herdr took already).
+Chose: a try whose terminal didn't open names the step (`no space …`,
+`herdr shows no tab try …`, `herdr didn't bring its tab try to the front`).
+Against: Node's `no space of its worktree` for each. Why: the critic: it
+blamed a space that exists.
+Suite: buttons 23/23, isolation 4/4, budgets 9/9; cli: overview --once,
+wt:remove ×2, wt:herdr green, the other wt:* are the CLI piece's.
+
+## 2026-10-02 09:10 · overview / NEXT, ACTIONS · keys only for answers its agent gets, ✓ says what it does
+Chose: in NEXT the digit keys give only answers that go to the agent (a
+decide's options, a try's or plan's buttons, `done`); the ✓ of a kind
+without answers (merge, change, a decide without options) has no key and
+reads `✓ tick off  takes it off the list · its agent is not told`. Against:
+round 1's `1 ✓` with `press 1 to answer`. Why: rule 3: Node has no keys
+here at all, and its ✓ only ticks the item off (answers.mjs `answerWith`:
+`doneAction`, nothing typed); the critic: one keystroke removed an agent's
+merge ask under a hint that said it answered. A key in a lazygit menu says
+what its row does; a ✓ that tells no one gets no single-key shortcut.
+Chose: Enter is not an answer key: it runs only the block picked with Tab
+(the frame), which is lit with its bar, as lazygit's menu runs its
+highlighted row. Against: round 1's Enter = the recommended option with
+nothing on screen selected. Why: rule 4, one way to pick a row; the
+critic. The hint under NEXT names each key and where its answer goes:
+`press 1-2 or click an option: typed to its agent`, `press 1 looks good:
+typed to its agent · 2 broken: written into its agent's input, for you to
+finish · or click`.
+Chose: ACTIONS' note says what a click on the rest of a block does, from
+the blocks shown: `a click on the rest opens its space, merges or runs its
+try`. Against: Node's and round 1's `the rest of a block does it`. Why:
+the critic (lazygit names what each row does); the note drops it whole
+where it doesn't fit (80 columns), where each block's own text still says
+`opens a terminal: …` / `two clicks merge`.
+Chose: ACTIONS draws the action NEXT shows only by its head and `↑ in NEXT:
+answer it there` (a click on it does the action). Against: Node, which
+draws the full block in both places. Why: rule 3 deviation, logged: NEXT
+is sticky, so the block is always on screen above; the same options twice
+made two places to answer one question and cost ACTIONS 6-8 rows at 80x24.
+Chose: an answer not yet delivered whose agent's pane was `blocked` at the
+last try says `its agent is at a question: it goes in once that is
+answered`. Against: Node's `at its next stop` for it. Why: the critic: the
+agent is not going to stop; the words say what holds it up (a draft's own
+`waits` is kept, as Node).
+Chose: the answer in the log is quoted (`decide #2 of 307-x → “OpenTUI on
+Bun” · typed into its agent's pane`). Why: the critic: a cut answer must
+never read as a shorter one; the band (actor's `short_of`) shows it whole
+or not, DONE in full.
+Deferred: #308's auto-merge line under NEXT and its toggle. Node does not
+have it yet; it comes with #308 (core's record, the band's toggle, the
+actor's merge), not as a NEXT line alone. Rule 3 then makes it parity.
+Suite: buttons 23/23, content 24/24.
+
+## 2026-10-02 09:04 · overview / WORKTREES · a node in 3 rows, a long state at the right
+Chose: who works in a worktree (#292's `● name · N issues · N MRs merged`)
+at the right of its facts line, under the state, when both fit; else on a
+line of its own before the facts, as Node. Against: Node's agent line
+always of its own. Why: the critic (lazygit wins on density, 4 rows a
+node): at 120 columns a node is 3 rows (name/state, facts/agent, title),
+7 nodes in 21 rows instead of 28; nothing is dropped (rule 3), the state
+and the agent's dot share a column in the colour of whom it waits for.
+Chose: a state wider than the line goes on lines of its own, each at the
+right edge (tree.mjs). Against: round 1's words at the facts indent. Why:
+rule 3, an undocumented deviation the critic found on queued nodes at 80.
+Not here: OSC 8 links on `#N`, `!iid` and the pipeline mark need the
+frame to carry a span's url to the terminal (core's `Span::url` has
+them); the queued nodes' `handover failed: wt:orchestrate: not built yet`
+is the CLI's stub. The settled-then-shift of WORKTREES is gone with the
+frame's wake of the local reader (08:55): `removed #303` is in the first
+settled frame.
+Suite: content 24/24, hover 4/4, buttons 23/23, views 9/9, isolation 4/4.
+
+## 2026-10-02 08:55 · TUI frame · the overview's own acts show at once, pages land on a head, the band
+Chose: what the overview did by itself (a `wt:remove`, a delivery) wakes
+the local reader when its effect comes back, so the result shows at once;
+the wake only looks at the reader's stamp, the 2 s poll stays. Against:
+waiting for the next poll. Why: rule 1 (#296): the reflow came up to 2 s
+late, after the first screen that held still, so hover.check measured a
+layout that then moved 3 rows; hover 2/4 at 00:50 was this, not the frame.
+Chose: PgDn, space and PgUp land where the top row starts a block or a
+section shows its title or pin, up to half a page less far, never further;
+the end and the top as they are. Against: Node's fixed `rows − sticky − 1`.
+Why: the critic: a page landed on an AGENTS line without its agent or
+title; lazygit's pages start at an item; rule 3's reason (the last row
+seen stays on screen) still holds.
+Chose: a rebuild places the scroll by the anchor it was last placed by
+while the reader hasn't scrolled since. Why: the critic: 120x40 → 80x24 →
+120x40 moved the view a row (a block's rows in proportion rounded twice);
+now the round trip gives back the same frame.
+Chose: the scroll thumb runs beside the rows under a pinned title, not on
+it. Why: the critic: `WORKTREES … removed ┃` read as part of the title.
+Chose: below 30 rows (`band::TIGHT_BELOW`) the band leaves out its blank
+first and last line and the sticky part the blank after the chat row and
+after NEXT. Against: Node's 5-row band and blanks. Why: rule 7, the bar:
+at 80x24 the list gets 18 rows instead of 14 (lazygit's commits: 21); the
+band's ground and the islands keep the parts apart.
+Chose: no wall clock in the band. Against: Node's `5:40:23 PM` on line 2.
+Why: Node's was fixed at render time, so it showed the last redraw, not
+now; a true one costs a frame a second (rule 7, idle CPU), the pane's
+host shows the time, lazygit has none; `GitLab 14:57` says how old the
+data is, the thing the clock stood in for.
+Chose: the keys line is Node's, then ` · Tab Enter pick a row`; Tab,
+Shift-Tab, Enter, Ctrl-D, Ctrl-U added. Why: rule 3 keeps every Node key
+and its words in front (a narrow band drops the new ones first); the bar
+is lazygit, which works without a mouse.
+Suite: hover 4/4 (twice), budgets 9/9 (first frame 160 ms, idle 0.10 %,
+24 MiB, 40 wheel reports/s at 1.6-1.9 % CPU settled 7 ms), views 9/9,
+content 24/24, isolation 4/4; buttons 22/23 (the new answers-retry test of
+the actor piece).
+
+## 2026-10-02 00:50 · overview / MERGE REQUESTS · merged rows, reasons, the `…` mark
+Chose: a merged row is Node's again: `!iid`, its pipeline mark (a click
+opens the pipeline) and the dim `merged <ago>` at the right of its first
+line, the title between. Against: round 2's age in the pipeline's column.
+Why: rule 3: GitLab merges on a red pipeline too, and #308's `merged
+automatically HH:MM` needs the status's own column.
+Chose: a title's words that don't fit beside the status wrap under the
+title column across the whole row, not only the title column. Why: #304
+takes the `…`, so a long merged title at 80 columns needs two lines; this
+keeps it at two instead of three (lazygit's subjects use the whole width).
+Chose: a reason no wider than half the line is glued into one word, so
+`try #2 broken → you` wraps whole; a longer one wraps at its words, its
+`→ who` always glued. Against: Node, which breaks inside a reason. Why: the
+critic (round 2); half the line, so a long reason never leaves the line
+before it half empty.
+Chose: `checking for conflicts …` with a space, as every `…` mark after a
+word (`look::uncut`). Against: Node's `conflicts…`. Why: rule 1: the
+suite's CUT check (`/[\w)(#]…/`, #304) reads `s…` as a cut.
+Suite: content 24/24, buttons 22/22; hover 2/4 (one row too many lit in
+both MERGE REQUESTS and WORKTREES, from the frame's change at 00:44).
+
 ## 2026-10-02 00:30 · overview / worktree view · DIFF's files, its columns, DEVELOP's rows
 Chose: DIFF lists the files of an area with more than one under it (up to
 5, then `… N more:` by name), each with git's letter in lazygit's colours

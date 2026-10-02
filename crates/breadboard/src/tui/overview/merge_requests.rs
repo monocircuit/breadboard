@@ -18,7 +18,7 @@ use breadboard_core::model::order::Go;
 use breadboard_core::model::resolve::Conflict;
 use breadboard_core::time::ago;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// The fewest columns a title gets beside its status (mr-blockers.mjs `MIN_TITLE`).
@@ -58,11 +58,30 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             scene.text("none yet", theme::dim());
             return;
         }
+        if let Some(line) = checking_line(mrs) {
+            scene.pad_to(1);
+            look::say(scene, &line, theme::dim());
+            scene.end_line();
+        }
         rows(scene, mrs, ctx);
         scene.end_line();
         scene.pad_to(1);
         look::say(scene, &ctx.gitlab.fresh(), theme::dim());
     });
+}
+
+/// `checking all 7 for conflicts …`: said once above the rows while GitLab
+/// checks every open MR (seen on every row after a push), instead of on each
+/// row's reasons line, where it took a third of it.
+fn checking_line(mrs: &MergeRequests) -> Option<String> {
+    let open: Vec<&MrFacts> = mrs.open.iter().filter_map(|row| row.mr.as_ref()).collect();
+    let is_all = open.len() > 1 && open.iter().all(|mr| is_checking(mr));
+    is_all.then(|| format!("checking all {} for conflicts …", open.len()))
+}
+
+/// GitLab hasn't settled an MR's conflicts yet.
+fn is_checking(mr: &MrFacts) -> bool {
+    matches!(mr.conflict, Some(Conflict::Checking))
 }
 
 /// The columns every row shares, so open and merged line up across the fold:
@@ -112,8 +131,9 @@ impl Columns {
 
 fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
     let columns = Columns::of(mrs);
+    let is_checking_said = checking_line(mrs).is_some();
     for row in &mrs.open {
-        open_row(scene, row, &columns, ctx);
+        open_row(scene, row, &columns, ctx, is_checking_said);
     }
     if mrs.merged.is_empty() {
         return;
@@ -136,13 +156,25 @@ fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
     if is_folded {
         return;
     }
-    for row in &mrs.merged {
-        let Some(mr) = &row.mr else { continue };
+    for mr in newest_first(mrs) {
         let lanes = vec![Span::raw(" ".repeat(columns.graph as usize))];
         scene.block(Act::Go(show(mr)), |scene| {
             look::gutter(scene, lanes.clone(), lanes, |scene| head(scene, mr, &columns, None));
         });
     }
+}
+
+/// The merged, the last merged first (lazygit's and git log's order): what
+/// just went in stands right under the fold. The closed (no merge time) after.
+fn newest_first(mrs: &MergeRequests) -> impl Iterator<Item = &MrFacts> {
+    let rows = || mrs.merged.iter().filter_map(|row| row.mr.as_ref());
+    let is_closed = |mr: &&MrFacts| mr.status.as_ref().is_none_or(|status| status.text == "merged");
+    rows()
+        .filter(|mr| !is_closed(mr))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .chain(rows().filter(is_closed))
 }
 
 /// A click on an MR's row: its page, in the tab group of its worktree.
@@ -154,18 +186,18 @@ fn show(mr: &MrFacts) -> Go {
 }
 
 /// An open MR: its lane, head, bar and what it lacks below.
-fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
+fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, is_checking_said: bool) {
     let width = columns.graph as usize;
     let Some(mr) = &row.mr else {
         // A line of the graph alone: no MR, no click.
         scene.end_line();
-        scene.atom(vec![look::dim(format!("{:<width$}", row.graph))]);
+        scene.atom(lanes(&row.graph, width));
         scene.end_line();
         return;
     };
     // The MR's own node in the colour of where it stands, its lanes dim.
     let first = node(&row.graph, mr, width);
-    let rest = vec![look::dim(format!("{:<width$}", row.below))];
+    let rest = lanes(&row.below, width);
     scene.block(Act::Go(show(mr)), |scene| {
         look::gutter(scene, first, rest, |scene| {
             head(scene, mr, columns, merge_of(ctx, mr));
@@ -180,11 +212,12 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
                     scene.end_line();
                 }
             }
-            if mr.conflict.is_some() || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
+            let is_conflict_said = mr.conflict.is_some() && !(is_checking_said && is_checking(mr));
+            if is_conflict_said || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
                 let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
                 scene.indent(at);
                 scene.pad_to(at);
-                lacks(scene, mr, ctx);
+                lacks(scene, mr, ctx, is_checking_said);
                 scene.indent(0);
                 scene.end_line();
             }
@@ -204,14 +237,39 @@ fn node(graph: &str, mr: &MrFacts, width: usize) -> Vec<Span<'static>> {
     } else {
         None
     };
-    let padded = format!("{graph:<width$}");
-    let Some(at) = padded.find('●') else {
-        return vec![look::dim(padded)];
-    };
-    let (before, after) = padded.split_at(at);
-    let after = &after['●'.len_utf8()..];
-    let style = tone.map_or_else(theme::dim, |tone| Style::new().fg(tone.fg()));
-    vec![look::dim(before), Span::styled("●", style), look::dim(after)]
+    let mut spans = lanes(graph, width);
+    if let Some(tone) = tone
+        && let Some(node) = spans.iter_mut().find(|span| span.content == "●")
+    {
+        node.style = Style::new().fg(tone.fg());
+    }
+    spans
+}
+
+/// The colours of the lanes, one per lane in turn (lazygit's graph): none
+/// of the colours that say where an MR stands (green, red, yellow).
+const LANES: [Color; 3] = [Color::Cyan, Color::Blue, Color::Magenta];
+
+/// A line of the graph padded to `width`, each lane in its colour: a lane is
+/// 2 columns, a `─` belongs to the lane it joins (the one at its right), so
+/// `├─┘` shows which lane goes into which.
+fn lanes(graph: &str, width: usize) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, ch) in format!("{graph:<width$}").chars().enumerate() {
+        let lane = if ch == '─' { i.div_ceil(2) } else { i / 2 };
+        let style = if ch == ' ' {
+            Style::new()
+        } else {
+            Style::new().fg(LANES[lane % LANES.len()])
+        };
+        match spans.last_mut() {
+            Some(last) if last.style == style && !last.content.contains('●') && ch != '●' => {
+                last.content.to_mut().push(ch);
+            }
+            _ => spans.push(Span::styled(ch.to_string(), style)),
+        }
+    }
+    spans
 }
 
 /// The column after `!iid`: the MR's pipeline mark, a merged one's too
@@ -503,7 +561,7 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
 }
 
 /// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
-fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
+fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx, is_checking_said: bool) {
     // A short reason stays on one line: `try #2 broken → you`, not `try #2`
     // and `broken → you` on two; one longer than half the line wraps at its
     // words, or it would leave the line before it half empty. The scene
@@ -519,6 +577,7 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     let button = "resolve\u{a0}merge\u{a0}conflicts";
     match &mr.conflict {
         None => {}
+        Some(Conflict::Checking) if is_checking_said => {}
         Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts…")]),
         Some(Conflict::None) => parts.push(vec![look::dim("no merge conflicts")]),
         Some(Conflict::Resolved) => parts.push(vec![look::span("✓ conflicts resolved", theme::tone(Tone::Green))]),
@@ -584,8 +643,13 @@ fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
             }
             continue;
         }
+        // A box list's own `…` is never left alone with the arrow on a line.
+        let text = match reason.text.strip_suffix(" …") {
+            Some(head) => format!("{head}\u{a0}…"),
+            None => reason.text.clone(),
+        };
         parts.push(glue(vec![
-            look::span(&reason.text, theme::tone(Tone::Yellow)),
+            look::span(&text, theme::tone(Tone::Yellow)),
             look::dim(format!("\u{a0}→\u{a0}{}", reason.who.replace(' ', "\u{a0}"))),
         ]));
     }
@@ -689,6 +753,85 @@ mod tests {
             "{:?}",
             text(&parts[1])
         );
+    }
+
+    #[test]
+    fn a_box_lists_dots_go_with_the_arrow() {
+        let parts = reasons_of(
+            &[reason(
+                "2 acceptance boxes open: The user can run …, The record says …",
+                "agent",
+            )],
+            20,
+        );
+        let words = look::words_of(&parts[0]);
+        assert_eq!(text(words.last().unwrap()), "says\u{a0}…\u{a0}→\u{a0}agent");
+    }
+
+    #[test]
+    fn checking_for_conflicts_is_said_once_when_every_open_mr_is_checked() {
+        let row = |conflict: Conflict| MrRow {
+            number: Some(1),
+            graph: "●".into(),
+            below: String::new(),
+            mr: Some(MrFacts {
+                conflict: Some(conflict),
+                ..facts("x", None)
+            }),
+        };
+        let mut mrs = MergeRequests {
+            open: vec![row(Conflict::Checking), row(Conflict::Checking)],
+            ..Default::default()
+        };
+        assert_eq!(checking_line(&mrs).as_deref(), Some("checking all 2 for conflicts …"));
+        // One settled: each row says where it stands.
+        mrs.open.push(row(Conflict::None));
+        assert_eq!(checking_line(&mrs), None);
+    }
+
+    #[test]
+    fn each_lane_has_its_colour_a_join_the_colour_of_the_lane_it_joins() {
+        let style_at = |spans: &[Span<'static>], at: usize| {
+            let mut x = 0;
+            for span in spans {
+                let n = span.content.chars().count();
+                if at < x + n {
+                    return span.style.fg;
+                }
+                x += n;
+            }
+            None
+        };
+        let join = lanes("├─┘", 5);
+        assert_eq!(text(&join), "├─┘  ");
+        assert_eq!(style_at(&join, 0), Some(LANES[0]));
+        assert_eq!(style_at(&join, 1), Some(LANES[1]));
+        assert_eq!(style_at(&join, 2), Some(LANES[1]));
+        // The MR's node: its own span, green once it is ready.
+        let ready = breadboard_core::model::Span::new(READY, breadboard_core::model::Paint::Green);
+        let spans = node("│ ●", &facts("x", Some(ready)), 5);
+        assert_eq!(style_at(&spans, 0), Some(LANES[0]));
+        assert_eq!(style_at(&spans, 2), Some(Tone::Green.fg()));
+        assert_eq!(style_at(&node("│ ●", &facts("x", None), 5), 2), Some(LANES[1]));
+    }
+
+    #[test]
+    fn the_last_merged_comes_first_the_closed_after() {
+        let done = |iid: i64, status: &str| MrRow {
+            number: Some(iid),
+            graph: String::new(),
+            below: String::new(),
+            mr: Some(MrFacts {
+                iid,
+                is_merged: true,
+                ..facts("x", Some(breadboard_core::model::Span::dim(status)))
+            }),
+        };
+        let mrs = MergeRequests {
+            merged: vec![done(1, "merged 3 h ago"), done(2, "merged 1 h ago"), done(3, "merged")],
+            ..Default::default()
+        };
+        assert_eq!(newest_first(&mrs).map(|mr| mr.iid).collect::<Vec<_>>(), [2, 1, 3]);
     }
 
     #[test]

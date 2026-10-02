@@ -161,9 +161,10 @@ pub fn lines(header: &Header, mark: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Below this many rows the band leaves out its blank first and last line:
-/// at 80x24 the list gets 2 more rows (15 instead of 13), the logo then
-/// fills the band from top to bottom.
+/// Below this many rows the band leaves out its blank first and last line,
+/// and the page the blank after each sticky section (`Sheet::tighten`): at
+/// 80x24 the list gets 18 rows instead of 14; the logo then fills the band
+/// from top to bottom.
 pub const TIGHT_BELOW: u16 = 30;
 
 /// The band as drawn in a pane `height` rows tall: `lines`, without the

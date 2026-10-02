@@ -54,6 +54,11 @@ pub enum Act {
         file: String,
         line: Option<u64>,
     },
+    /// A file's changes inline under the row `at` of DIFF or DEVELOP, or closed again.
+    Hunks {
+        file: String,
+        at: String,
+    },
 }
 
 /// What folds: the removed worktrees, the queue, the merged MRs.
@@ -89,7 +94,12 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         // The stack of the main checkout from the view of everything: the worktree view has its own.
         Act::StartStack(dir) if !matches!(app.model, Some(Model::Worktree(_))) => tries::start_stack(app, &dir, None),
         // The view of a worktree's own: its delete, stack, migrations, Storybook, nvim.
-        Act::Delete | Act::StartStack(_) | Act::Migrate(_) | Act::Storybook(_) | Act::OpenFile { .. } => {
+        Act::Delete
+        | Act::StartStack(_)
+        | Act::Migrate(_)
+        | Act::Storybook(_)
+        | Act::OpenFile { .. }
+        | Act::Hunks { .. } => {
             return super::worktree_view::act(app, act);
         }
         // Stored, typed into the agent's pane, shown at once (actions.rs, answers.mjs).
@@ -315,7 +325,7 @@ fn resolve(app: &mut Overview, iid: i64) {
     });
 }
 
-/// A key the frame has no use for: a digit or Enter answers NEXT's action (actions.rs), `u` the worktree view's.
+/// A key the frame has no use for: a digit answers NEXT's action (actions.rs), `u` the worktree view's.
 pub fn key(app: &mut Overview, key: KeyEvent) -> Flow {
     super::actions::key(app, key).unwrap_or_else(|| super::worktree_view::key(app, key))
 }

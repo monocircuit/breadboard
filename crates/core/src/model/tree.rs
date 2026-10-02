@@ -642,8 +642,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             .unwrap_or(usize::MAX)
     };
     let (mut queued, rest): (Vec<Node>, Vec<Node>) = rows.drain(..).partition(|node| node.state.key == "queued");
-    let (mut removed, mut live): (Vec<Node>, Vec<Node>) =
-        rest.into_iter().partition(|node| node.state.key == "removed");
+    let (mut removed, mut live): (Vec<Node>, Vec<Node>) = rest.into_iter().partition(is_gone);
     live.sort_by_key(|node| node.place);
     queued.sort_by(|a, b| {
         rank(a)
@@ -651,8 +650,19 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             .then_with(|| issues[a.index].queued_at.cmp(&issues[b.index].queued_at))
             .then_with(|| a.place.cmp(&b.place))
     });
-    removed.sort_by(|a, b| issues[b.index].removed_at.cmp(&issues[a.index].removed_at));
+    // The one being removed first, where it stays once it is gone: the last removed first.
+    let at = |node: &Node| (node.state.key != "removed", issues[node.index].removed_at.clone());
+    removed.sort_by_key(|node| std::cmp::Reverse(at(node)));
     TreeOf { live, queued, removed }
+}
+
+/// Whether a node goes under "done and removed": gone, or merged with its
+/// removal due and not failed. A due one is there from GitLab's first
+/// answer, so the automatic wt:remove that follows changes no layout: the
+/// node keeps its place and the fold its count (rule 1: the hover checks
+/// read the screen once it was quiet for a second).
+fn is_gone(node: &Node) -> bool {
+    node.state.key == "removed" || (node.state.key == "removable" && node.state.paint != Paint::Red)
 }
 
 /// The head line of WORKTREES (#260): how many agents are at work, wait for
@@ -666,11 +676,18 @@ pub fn head_of(tree: &TreeOf, free: Option<u64>) -> Fact {
         (count(Tone::You), "wait for you"),
         (count(Tone::Free), "free"),
         (
-            tree.live.iter().filter(|node| node.state.key == "removable").count(),
+            tree.live
+                .iter()
+                .chain(&tree.removed)
+                .filter(|node| node.state.key == "removable")
+                .count(),
             "will be removed",
         ),
         (tree.queued.len(), "queued"),
-        (tree.removed.len(), "removed"),
+        (
+            tree.removed.iter().filter(|node| node.state.key == "removed").count(),
+            "removed",
+        ),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)
@@ -1481,6 +1498,25 @@ mod tests {
             title: String::new(),
             go: Go::Nothing,
         }
+    }
+
+    #[test]
+    fn a_due_removal_waits_under_done_and_removed_a_failed_one_stays() {
+        let due = node("removable", None);
+        let failed = Node {
+            state: Lifecycle {
+                paint: Paint::Red,
+                ..due.state.clone()
+            },
+            ..due.clone()
+        };
+        assert!(is_gone(&due) && is_gone(&node("removed", None)));
+        assert!(!is_gone(&failed) && !is_gone(&node("x", Some(Tone::Work))));
+        let tree = TreeOf {
+            removed: vec![due, node("removed", None), node("removed", None)],
+            ..Default::default()
+        };
+        assert_eq!(text_of(&head_of(&tree, None)), "1 will be removed · 2 removed");
     }
 
     #[test]

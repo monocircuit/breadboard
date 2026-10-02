@@ -2,12 +2,13 @@
 //! `keepInStep`), after the first read and after every local read, never two
 //! at once: the conversation of each worktree's space and each
 //! orchestrator's written down for a restart to resume, each agent's line in
-//! the sidebar, a notification when a worktree needs you, and the layout
-//! (`wt:herdr`: spaces, tabs, stack tabs, pruning, order) when the set of
-//! worktrees or a stack's state changed.
+//! the sidebar, a notification when a worktree needs you; the spaces of
+//! removed worktrees pruned and the group's order kept on every read, the
+//! whole layout (`cli::layout`, in this process) when the set of worktrees
+//! changed, a stack's tabs when it came up or went down.
 
-use super::spawn::{self, Background, error_of};
 use super::{Effect, glab, herdr};
+use crate::cli::layout;
 use crate::tui::overview::Overview;
 use breadboard_core::conversations::{bound_session, session_file};
 use breadboard_core::git::feature_of;
@@ -56,7 +57,6 @@ pub struct Sync {
     memory: Arc<Mutex<Memory>>,
     /// The worktrees and whether their stack runs, at the last tick; None before the first.
     known: Option<BTreeMap<PathBuf, bool>>,
-    is_laying_out: bool,
 }
 
 /// After a read of the view of everything with `--herdr`.
@@ -94,10 +94,18 @@ pub fn after_read(app: &mut Overview) {
         })
         .collect();
     let before = app.actor.sync.known.replace(now.clone());
-    let is_layout = before.as_ref().is_none_or(|before| {
-        before.keys().collect::<Vec<_>>() != now.keys().collect::<Vec<_>>()
-            || before.iter().any(|(dir, is_up)| now.get(dir) != Some(is_up))
-    });
+    // Only on a change: the read runs every 2 s, herdr's layout need not.
+    let is_layout = before
+        .as_ref()
+        .is_none_or(|before| before.keys().collect::<Vec<_>>() != now.keys().collect::<Vec<_>>());
+    let stacks: Vec<PathBuf> = match &before {
+        Some(before) if !is_layout => now
+            .iter()
+            .filter(|(dir, is_up)| before.get(*dir) != Some(*is_up))
+            .map(|(dir, _)| dir.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
     let trees = local.trees.clone();
     let main = app.actor.main.clone();
     let memory = app.actor.sync.memory.clone();
@@ -105,13 +113,16 @@ pub fn after_read(app: &mut Overview) {
     is_busy.store(true, Ordering::SeqCst);
     app.actor.queue(move || {
         let said = tick(&main, &trees, mrs.as_deref(), &memory);
+        if is_layout {
+            layout::layout(&main, false);
+        }
+        for dir in &stacks {
+            layout::sync_stack_tabs(&main, dir);
+        }
         is_busy.store(false, Ordering::SeqCst);
         Some(Box::new(move |app: &mut Overview| {
             for (paint, text) in said {
                 app.actor.log(paint, text);
-            }
-            if is_layout {
-                layout(app);
             }
         }) as Effect)
     });
@@ -130,6 +141,9 @@ fn tick(
     let names = titles(main);
     remember_sessions(main, trees, &panes, &all_spaces, &mut said);
     remember_chats(main, &panes, &all_spaces, &names, &mut said);
+    layout::prune_spaces(main);
+    // Cheap when the order stands: a plan or a handover may have changed it (#255).
+    layout::sort_spaces(main);
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
     report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
     notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut said);
@@ -439,40 +453,6 @@ fn events_of(before: Option<&Seen>, now: &Seen, was_merged: impl Fn(i64) -> bool
         }
     }
     events
-}
-
-/// The layout (`wt:herdr`) in the background, one at a time.
-fn layout(app: &mut Overview) {
-    if app.actor.sync.is_laying_out {
-        return;
-    }
-    app.actor.sync.is_laying_out = true;
-    let log = spawn::log_file("overview-layout.log");
-    let program = spawn::breadboard();
-    let poster = app.actor.poster();
-    let started = spawn::start(
-        Background {
-            program: &program,
-            args: vec!["wt:herdr".into()],
-            cwd: &app.actor.main,
-            log: &log,
-            env: vec![],
-            is_paneless: false,
-        },
-        move |code, last| {
-            poster.post(move |app: &mut Overview| {
-                app.actor.sync.is_laying_out = false;
-                match error_of(code, &last, "wt:herdr ") {
-                    None => app.actor.log(Paint::Dim, format!("herdr in step: {last}")),
-                    Some(why) => app.actor.log(Paint::Red, format!("herdr not in step: {why}")),
-                }
-            });
-        },
-    );
-    if let Err(why) = started {
-        app.actor.sync.is_laying_out = false;
-        app.actor.log(Paint::Red, format!("herdr not in step: {why}"));
-    }
 }
 
 #[cfg(test)]

@@ -356,7 +356,7 @@ fn current_tab() -> Option<String> {
 /// After the removal the worktree's space goes (layout.mjs `releaseSpace`):
 /// a tab an agent works in, with several panes, or running this stays;
 /// `is_whole` (the ✕ of the overview, `--close-space`) closes all but this.
-fn release_space(feature: &str, is_whole: bool) -> Option<String> {
+pub(super) fn release_space(feature: &str, is_whole: bool) -> Option<String> {
     if !is_in_herdr() {
         return None;
     }
@@ -420,7 +420,7 @@ fn release_space(feature: &str, is_whole: bool) -> Option<String> {
 
 /// The space `⇶ <name>` of an orchestration without worktrees goes, its
 /// checkout and record with it (origins.mjs `pruneOrchestrators`).
-fn prune_orchestrators(main: &Path) -> Vec<String> {
+pub(super) fn prune_orchestrators(main: &Path) -> Vec<String> {
     let live: Vec<String> = worktrees(main)
         .iter()
         .skip(1)
