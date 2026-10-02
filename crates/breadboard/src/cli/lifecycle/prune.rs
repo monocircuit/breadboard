@@ -24,6 +24,15 @@ const TAKES: Takes = Takes {
     usage: "usage: pnpm wt:prune [--dry-run]",
 };
 
+/// Adds `pending` to `changelogs`, once per orchestration: one removal GitLab
+/// did not answer for leaves its changelog as it is.
+fn pend(changelogs: &mut Vec<remove::Pending>, pending: remove::Pending) {
+    match changelogs.iter_mut().find(|each| each.name == pending.name) {
+        Some(each) => each.is_answered &= pending.is_answered,
+        None => changelogs.push(pending),
+    }
+}
+
 /// Commits of `rev` that origin/develop doesn't have, by patch (`cwd`: a checkout of its repo).
 pub fn has_own_commits(rev: &str, cwd: &Path) -> bool {
     own_commits(cwd, rev) > 0
@@ -243,8 +252,9 @@ pub fn command(args: &Args) -> Done {
     } = prunable(&repo, &here);
     let mut report = Vec::new();
     let mut failed = 0;
-    // The orchestrations whose changelog misses a removed merge: each rewritten once, at the end.
-    let mut changelogs: Vec<String> = Vec::new();
+    // The orchestrations whose changelog misses a removed merge: each rewritten once, at the end;
+    // left as it is when GitLab did not answer one of its removals (#306).
+    let mut changelogs: Vec<remove::Pending> = Vec::new();
     for Entry { name, why, .. } in &trees {
         let what = match why {
             Some(why) => format!("kept, {why}"),
@@ -262,7 +272,9 @@ pub fn command(args: &Args) -> Done {
                     },
                 ) {
                     Ok(changelog) => {
-                        changelogs.extend(changelog.filter(|name| !changelogs.contains(name)));
+                        if let Some(pending) = changelog {
+                            pend(&mut changelogs, pending);
+                        }
                         "removed".into()
                     }
                     Err(refused) => {
@@ -297,9 +309,13 @@ pub fn command(args: &Args) -> Done {
     // Each at once, beside the plugin's check, waited for after the report.
     let rewrites: Vec<remove::Rewrite> = changelogs
         .iter()
-        .map(|name| {
+        .filter_map(|remove::Pending { name, is_answered }| {
+            if !is_answered {
+                step(&remove::not_rewritten(name, remove::UNANSWERED));
+                return None;
+            }
             step(&format!("rewrite the changelog of {name}"));
-            remove::Rewrite::start(&repo, name)
+            Some(remove::Rewrite::start(&repo, name))
         })
         .collect();
     // After the removals (the plugin may have been linked from one of them,
@@ -338,6 +354,20 @@ pub fn command(args: &Args) -> Done {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn one_unanswered_removal_keeps_its_orchestrations_changelog() {
+        let pending = |name: &str, is_answered| remove::Pending {
+            name: name.into(),
+            is_answered,
+        };
+        let mut changelogs = Vec::new();
+        pend(&mut changelogs, pending("a", true));
+        pend(&mut changelogs, pending("b", true));
+        pend(&mut changelogs, pending("a", false));
+        pend(&mut changelogs, pending("a", true));
+        assert_eq!(changelogs, vec![pending("a", false), pending("b", true)]);
+    }
 
     fn sh(dir: &Path, args: &[&str]) {
         let status = Command::new("git")
