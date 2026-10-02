@@ -10,6 +10,7 @@
 //
 // The MR and its merge come from the issue's entry and GitLab. An agent of
 // before has only `issues`: its history is read from that (historyOf).
+import { displayNamesOf } from "./display-names.mjs";
 import { recordOf, writeWorker } from "./origins.mjs";
 
 /** How an agent came to an issue: started for it, handed it, handed it as announced (#227). */
@@ -64,7 +65,10 @@ export const withFailure = (entry, { number, reason, at }) => {
 /**
  * The record of `name` learns that the agent `id` started on the issue
  * `number`: `how` (HOW), `context` its share used then (null unknown).
- * `fields` go with it: the name a fresh one starts with.
+ * `fields` go with it: the name a fresh one starts with. Its display name
+ * (#292) is picked on its first start and kept on every one after; the
+ * record's other workers without one keep the one they are shown by now,
+ * so the new one takes none of theirs.
  */
 export const recordStart = (
   name,
@@ -72,8 +76,14 @@ export const recordStart = (
   { number, how, context },
   fields = {},
 ) => {
-  const entry = recordOf(name)?.workers?.[id];
+  const known = recordOf(name)?.workers ?? {};
+  const entry = known[id];
+  const names = displayNamesOf(known, [id]);
+  for (const [other, worker] of Object.entries(known))
+    if (other !== id && !worker?.displayName)
+      writeWorker(name, other, { displayName: names.get(other) });
   writeWorker(name, id, {
+    displayName: names.get(id),
     ...fields,
     ...withStart(entry, {
       number,
@@ -109,35 +119,22 @@ export const agentOfIssue = (known, number) => {
   return null;
 };
 
-/** `1st`, `2nd`, `3rd`, `4th`, `11th`, `22nd`. */
-export const ordinal = n => {
-  const tens = n % 100;
-  if (tens >= 11 && tens <= 13) return `${n}th`;
-  return `${n}${{ 1: "st", 2: "nd", 3: "rd" }[n % 10] ?? "th"}`;
-};
 /** `31%`: how much of its context an agent had used. */
 const percent = share => `${Math.round(share * 100)}%`;
 
 /**
- * Which issue of its agent this is, for the node of the issue `number`:
- * `agent: 1st issue` for a fresh one, `agent: 3rd issue (#235 → #240 at
- * 31% → #252 at 38%)` for a reused one, each later issue with the context
- * it started on. `claude`: the agent its worktree runs, when one does: an
- * agent the record knows nothing of yet started fresh. "" when unknown.
+ * What an agent's name line counts (#292): `issues`, how many it worked on,
+ * the issue `number` its worktree has included, and `merged`, how many of
+ * their MRs are merged (`isMerged(number)`). `entry`: its record's worker.
  */
-export const historyText = (known, number, claude) => {
-  const found = agentOfIssue(known, number);
-  if (!found) return claude ? "agent: 1st issue" : "";
-  const { history, index } = found;
-  const place = `agent: ${ordinal(index + 1)} issue`;
-  if (history.length === 1) return place;
-  const chain = history
-    .map(
-      (start, i) =>
-        `#${start.number}${i > 0 && typeof start.context === "number" ? ` at ${percent(start.context)}` : ""}`,
-    )
-    .join(" → ");
-  return `${place} (${chain})`;
+export const countsOf = (entry, number, isMerged) => {
+  const numbers = [
+    ...new Set([...historyOf(entry).map(start => start.number), number]),
+  ].filter(Boolean);
+  return {
+    issues: numbers.length,
+    merged: numbers.filter(isMerged).length,
+  };
 };
 
 /**

@@ -2,11 +2,35 @@
 // as the overview reads them: whose worktree they are on, what they still
 // wait for, whether they are due. workers.mjs does a due one by itself, to
 // the agent of a worktree or to a free one (#289).
+import { displayNamesOf } from "../worktree/display-names.mjs";
 import { refusalOf } from "../worktree/workers.mjs";
 
 /** The name an agent of the orchestration goes by: the record's (#217), else its worktree's. */
 export const agentNameOf = (tree, known = {}) =>
   known[tree.claude?.id]?.name ?? tree.name;
+/**
+ * The names the overview shows its agents by (#292): `byId`, conversation
+ * id → its display name (worktree/display-names.mjs), of the record's
+ * workers and of the agents of `issues`' worktrees; `shown(who)`, the
+ * display name of the agent the name `who` goes by (its record's, its
+ * worktree's feature, its name before its last handover), else `who`.
+ */
+export const agentNamesOf = (issues, known = {}) => {
+  const trees = issues.map(issue => issue.tree).filter(tree => tree?.claude);
+  const byId = displayNamesOf(
+    known,
+    trees.map(tree => tree.claude.id),
+  );
+  const byName = new Map();
+  for (const [id, entry] of Object.entries(known))
+    for (const name of [entry?.was, entry?.name])
+      if (name) byName.set(name, byId.get(id));
+  for (const tree of trees) {
+    byName.set(tree.name, byId.get(tree.claude.id));
+    byName.set(agentNameOf(tree, known), byId.get(tree.claude.id));
+  }
+  return { byId, shown: who => byName.get(who) ?? who };
+};
 
 /**
  * A free agent (#289) of `free` named `to` (or so before its last handover)

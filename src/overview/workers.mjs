@@ -181,9 +181,9 @@ export const isHandOverNow = (handover, state, now = Date.now()) =>
   (!state || (!state.isRunning && now - state.ended >= RETRY_MS));
 
 /** What an announced handover's row says after its issue and agent, the MRs merged. */
-const announcedText = (handover, state) => {
+const announcedText = (handover, state, shown) => {
   if (state?.error)
-    return `failed: ${red(state.error)}; tries again once ${handover.to} is idle`;
+    return `failed: ${red(state.error)}; tries again once ${shown(handover.to)} is idle`;
   if (handover.why) return `waits: ${handover.why}`;
   return handover.isDue ? "now" : "once it is idle";
 };
@@ -270,7 +270,9 @@ const workerText = ({ worker, shared }) =>
  * (#272). Their agents are no one else's either, their issues not queued
  * any more, and the worktrees their agents leave are held. `awaited`: iid →
  * `{ state }` of the MRs queued issues wait for (`--queue --after`), `work`:
- * the work order of wt:plan, the order the queue starts in.
+ * the work order of wt:plan, the order the queue starts in. `shown`: the
+ * name an agent is shown by (#292, handovers.mjs `agentNamesOf`), its rows
+ * name it so; their keys and what they do keep the name it goes by.
  */
 export const workerActionsOf = (
   name,
@@ -286,6 +288,7 @@ export const workerActionsOf = (
     setups = setupsOf(name),
     awaited = null,
     work = [],
+    shown = who => who,
     free: freeAgents = [],
   } = {},
 ) => {
@@ -365,14 +368,14 @@ export const workerActionsOf = (
     actions.push({
       key: `hand over:#${number}:${to}`,
       kind: "hand over",
-      who: to,
+      who: shown(to),
       issue: issues.find(candidate => candidate.number === number),
       at: handover.at ?? "",
       // Under way: NEXT doesn't name it (next.mjs `isClickable`).
       isRunning: Boolean(running.get(number)?.isRunning),
       text: running.get(number)?.isRunning
-        ? `#${number} → ${to}: handing over …`
-        : `#${number} → ${to} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : announcedText(handover, state)} (announced)`,
+        ? `#${number} → ${shown(to)}: handing over …`
+        : `#${number} → ${shown(to)} ${handover.open.length ? `after ${handover.open.map(iid => `!${iid}`).join(", ")}` : announcedText(handover, state, shown)} (announced)`,
       go: () => handOver(name, number, handover),
     });
   }
@@ -386,7 +389,7 @@ export const workerActionsOf = (
       state?.isRunning
         ? "starting a fresh agent …"
         : state?.error
-          ? `${state.isFresh ? "its fresh agent" : `its handover to ${state.to}`} failed: ${red(state.error)}; a click tries again`
+          ? `${state.isFresh ? "its fresh agent" : `its handover to ${shown(state.to)}`} failed: ${red(state.error)}; a click tries again`
           : starts.includes(number)
             ? "starts a fresh agent"
             : `waits for an agent to get free: ${gb(Math.max(0, left))} free, below ${gb(THRESHOLD)} for a fresh one; a click starts one on the shared stack`,
@@ -400,11 +403,11 @@ export const workerActionsOf = (
       actions.push({
         key: `hand over:#${number}:${state.to}`,
         kind: "hand over",
-        who: state.to,
+        who: shown(state.to),
         issue,
         at: "",
         isRunning: true,
-        text: `#${number} → ${state.to}: handing over …`,
+        text: `#${number} → ${shown(state.to)}: handing over …`,
         go: () => {},
       });
       continue;
@@ -427,13 +430,13 @@ export const workerActionsOf = (
     actions.push({
       key: `hand over:#${number}:${worker.name}`,
       kind: "hand over",
-      who: worker.name,
+      who: shown(worker.name),
       issue,
       at: "",
       isRunning: Boolean(state?.isRunning),
       text: state?.isRunning
-        ? `#${number} → ${worker.name}: handing over …`
-        : `#${number} → ${worker.name} (${workerText(found)})${error}`,
+        ? `#${number} → ${shown(worker.name)}: handing over …`
+        : `#${number} → ${shown(worker.name)} (${workerText(found)})${error}`,
       go: () => handOver(name, number, worker),
     });
   }

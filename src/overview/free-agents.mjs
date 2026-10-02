@@ -4,6 +4,7 @@
 // dismiss it (worktree/free.mjs). The agents of the worktrees are on their
 // nodes in WORKTREES.
 import { bold, dim } from "../lib/tty.mjs";
+import { displayNamesOf } from "../worktree/display-names.mjs";
 import { dismissFree } from "../worktree/free.mjs";
 import { agentStateOf } from "./agent-state.mjs";
 import { button, closeBox, openBox } from "./boxes.mjs";
@@ -55,20 +56,31 @@ const clickDismiss = (name, agent, agents) => {
 };
 /**
  * The box AGENTS: one row per free agent of `free` (view.mjs `freeAgents`),
- * none when there is none. `agents`: agentsOf().
+ * none when there is none, each by its display name (#292), the name it
+ * goes by dim after it. `agents`: agentsOf(); `known`: the record's workers.
  */
-export const pushFreeAgents = (lines, name, free, agents = new Map()) => {
+export const pushFreeAgents = (
+  lines,
+  name,
+  free,
+  agents = new Map(),
+  known = {},
+) => {
+  const names = displayNamesOf(
+    known,
+    free.map(agent => agent.id),
+  );
   if (!free.length) return;
   const box = openBox(lines);
   /** The label of an agent's dismiss button. */
   const dismissOf = agent =>
     armed.get(agent.id)?.isArmed
-      ? `✕ click again to dismiss ${agent.name}`
+      ? `✕ click again to dismiss ${names.get(agent.id)}`
       : "✕ dismiss";
   const rows = free.map(agent => {
     const { state, text } = freeRowOf(agent, agents.get(agent.id)?.status);
     return [
-      `${paintOf(state.tone)(state.text)} ${pink(agent.name)}`,
+      `${paintOf(state.tone)(state.text)} ${bold(names.get(agent.id))} ${pink(agent.name)}`,
       `${dim(text)} ${button(dismissOf(agent), "red")}`,
     ];
   });
