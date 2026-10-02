@@ -4,10 +4,14 @@
 //! REQUESTS and herdr's space order read it from the record.
 
 use super::args::{Takes, fail, first, flag_value, main_dir};
-use breadboard_core::lock::with_dir_lock;
+use breadboard_core::lock::{lock_of, with_dir_lock};
 use breadboard_core::record::{self, Plan, is_name, record_file, record_of};
+use serde_json::Value;
+use std::fs;
+use std::io;
+use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const USAGE: &str = "usage: pnpm wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]";
 /// How long the record's `<file>.lock` holds before another takes it over (as actions.json's).
@@ -36,7 +40,7 @@ pub fn run(args: &[String]) -> ExitCode {
         ));
     }
     let Some(record) = record_of(&main, name) else {
-        return fail(&format!("no orchestration {name} is recorded"));
+        return fail(&broken_record(&main, name).unwrap_or_else(|| format!("no orchestration {name} is recorded")));
     };
     let (work, merge) = match (numbers_after(args, "--work"), numbers_after(args, "--merge")) {
         (Ok(work), Ok(merge)) => (work, merge),
@@ -67,6 +71,14 @@ pub fn run(args: &[String]) -> ExitCode {
 
     let plan = if work.is_some() || merge.is_some() || why.is_some() {
         // Under the record's lock, as wt:action --orchestration changes it.
+        // Held by another, the wait (up to LOCK_STALE) is said, not a silent hang.
+        if let Some(age) = age_of(&lock_of(&record_file(&main, name))) {
+            eprintln!(
+                "waiting: another change holds .claude/orchestrations/{name}.json.lock ({} s old); a lock is taken over as stale at {} s",
+                age.as_secs(),
+                LOCK_STALE.as_secs()
+            );
+        }
         let written = with_dir_lock(&record_file(&main, name), LOCK_STALE, || {
             record::write_plan(&main, name, work, merge, why)
         });
@@ -83,6 +95,31 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     println!("{}", text_of(name, plan.as_ref()));
     ExitCode::SUCCESS
+}
+
+/// Why the record of `name` is there but no record: its file doesn't parse,
+/// or lists no `issues`. None when it is fine or isn't there at all.
+pub fn broken_record(main: &Path, name: &str) -> Option<String> {
+    let file = format!(".claude/orchestrations/{name}.json");
+    let text = match fs::read_to_string(record_file(main, name)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("{file} can't be read: {error}")),
+    };
+    let fix = format!("fix it, or start the orchestration again (pnpm wt:orchestrate {name} <issue>…)");
+    match serde_json::from_str::<Value>(&text) {
+        Err(error) => Some(format!("{file} is no JSON ({error}): {fix}")),
+        Ok(value) if !value.get("issues").is_some_and(Value::is_array) => {
+            Some(format!("{file} lists no issues (no `issues` array): {fix}"))
+        }
+        Ok(_) => None,
+    }
+}
+
+/// How long ago `dir` was made (a lock), None without it.
+fn age_of(dir: &Path) -> Option<Duration> {
+    let modified = fs::metadata(dir).ok()?.modified().ok()?;
+    Some(SystemTime::now().duration_since(modified).unwrap_or_default())
 }
 
 /// What `wt:plan` prints, between empty lines.
@@ -147,6 +184,27 @@ mod tests {
         assert_eq!(numbers_after(&strings(&["--work", "2.5"]), "--work"), Err("2.5".into()));
         // The `=` form is no list (plan.mjs).
         assert_eq!(numbers_after(&strings(&["--work=3"]), "--work"), Ok(None));
+    }
+
+    #[test]
+    fn says_what_is_wrong_with_a_broken_record() {
+        let main = std::env::temp_dir().join(format!("breadboard-plan-broken-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&main);
+        let file = record_file(&main, "x");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        assert_eq!(broken_record(&main, "x"), None, "no file: not broken, not there");
+        fs::write(&file, "{\"issues\": [").unwrap();
+        let said = broken_record(&main, "x").unwrap();
+        assert!(
+            said.starts_with(".claude/orchestrations/x.json is no JSON (EOF"),
+            "{said}"
+        );
+        fs::write(&file, "{\"title\": \"x\"}").unwrap();
+        let said = broken_record(&main, "x").unwrap();
+        assert!(said.contains("lists no issues"), "{said}");
+        fs::write(&file, "{\"issues\": []}").unwrap();
+        assert_eq!(broken_record(&main, "x"), None);
+        let _ = fs::remove_dir_all(&main);
     }
 
     #[test]

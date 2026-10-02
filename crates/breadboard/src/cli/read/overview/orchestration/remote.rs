@@ -152,6 +152,8 @@ pub struct Remote {
     pub awaited: HashMap<i64, String>,
     /// When it was read.
     pub at: i64,
+    /// What was read only in part, in words: the view says it, its advice may miss it.
+    pub warnings: Vec<String>,
 }
 
 impl Remote {
@@ -265,6 +267,51 @@ fn links_of(project: &Value) -> HashMap<i64, Vec<Value>> {
             Some((iid_of(issue)?, links))
         })
         .collect()
+}
+
+/// The links of the open `issues`: one GraphQL query; when GitLab doesn't
+/// answer it (an older GitLab, a proxy that only passes REST), REST's
+/// `issues/<n>/links` of each, side by side (Node's route). What neither
+/// could read comes back as a warning: a missing "blocked by" turns the
+/// merge advice wrong, so the view must not keep quiet about it.
+fn links_of_issues(main: &Path, issues: &[i64]) -> (HashMap<i64, Vec<Value>>, Option<String>) {
+    if issues.is_empty() {
+        return (HashMap::new(), None);
+    }
+    let graphql_error = match gitlab::graphql(main, &links_query(issues)) {
+        Ok(project) => return (links_of(&project), None),
+        Err(error) => error,
+    };
+    let endpoints: Vec<String> = issues
+        .iter()
+        .map(|iid| format!("projects/:fullpath/issues/{iid}/links"))
+        .collect();
+    let mut links = HashMap::new();
+    let mut unread: Vec<i64> = Vec::new();
+    let mut rest_error = None;
+    for (iid, listed) in issues.iter().zip(gitlab::lists(main, &endpoints)) {
+        match listed {
+            Ok(listed) => {
+                links.insert(*iid, listed);
+            }
+            Err(error) => {
+                unread.push(*iid);
+                rest_error.get_or_insert(error);
+            }
+        }
+    }
+    unread.sort_unstable();
+    let unread: Vec<String> = unread.iter().map(|iid| format!("#{iid}")).collect();
+    let warning = rest_error.map(|rest_error| {
+        let reason = |error: &str| gitlab::explain(error).0;
+        format!(
+            "the \"blocked by\" links of {} can't be read: the merge order may miss one (GraphQL: {}; REST: {})",
+            unread.join(", "),
+            reason(&graphql_error),
+            reason(&rest_error)
+        )
+    });
+    (links, warning)
 }
 
 /// An MR as the Node overview caches a final one (read.mjs `mrOf`, rule 5):
@@ -499,14 +546,7 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
                 )
             })
         });
-        // An error (an older GitLab) leaves the links out, as a REST read that failed did.
-        let links = scope.spawn(|| {
-            (!open_issues.is_empty())
-                .then(|| gitlab::graphql(main, &links_query(&open_issues)).ok())
-                .flatten()
-                .map(|project| links_of(&project))
-                .unwrap_or_default()
-        });
+        let links = scope.spawn(|| links_of_issues(main, &open_issues));
         let job_lists = gitlab::lists(main, &job_endpoints);
         (
             recent.join().unwrap_or(None),
@@ -515,6 +555,7 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
         )
     });
     let recent = recent.transpose()?.unwrap_or_default();
+    let (links, links_warning) = links;
     for (id, listed) in failed.iter().zip(job_lists) {
         let mut listed = listed.unwrap_or_default();
         listed.sort_by_key(|job| int_of(job, "id").unwrap_or(0));
@@ -604,6 +645,7 @@ pub fn read(main: &Path, branches: &[String], awaited: &[i64]) -> Result<Remote,
         of,
         awaited,
         at: now_ms(),
+        warnings: links_warning.into_iter().collect(),
     })
 }
 

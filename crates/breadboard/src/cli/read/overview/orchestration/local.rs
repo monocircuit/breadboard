@@ -40,6 +40,9 @@ pub struct Tree {
     pub name: String,
     pub branch: String,
     pub actions: Vec<Action>,
+    /// Why its actions file is there but can't be read (cut off mid-write,
+    /// edited by hand): its actions are missing from the view, which says so.
+    pub unreadable: Option<String>,
     /// The answered and delivered ones: a `broken` try holds the merge (#280).
     pub answered: Vec<Action>,
     /// The MRs it waits for (wt:wait).
@@ -66,6 +69,21 @@ pub struct Tree {
     pub claude: Option<Claude>,
     /// The claudes still standing in it after a handover bound them elsewhere (#252).
     pub left: Vec<String>,
+}
+
+/// Why `file` is there but can't be read as a JSON object; None when it
+/// reads or isn't there (no actions yet).
+pub fn unreadable_of(file: &Path) -> Option<String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(error.to_string()),
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) if value.is_object() => None,
+        Ok(_) => Some("it holds no JSON object".into()),
+        Err(error) => Some(format!("no JSON: {error}")),
+    }
 }
 
 /// The worktrees of `worktrees` (not the main checkout) whose origin is `name`, read side by side.
@@ -103,6 +121,7 @@ fn tree_of(main: &Path, worktree: &Worktree, claudes: &[Running]) -> Tree {
         is_up: has_env && offset > 0 && port_answers(3000 + offset),
         name: git::feature_of(main, dir),
         actions: actions_of(&actions_file(dir)),
+        unreadable: unreadable_of(&actions_file(dir)),
         answered: answered_of(&actions_file(dir)),
         wait: wait_of(dir),
         change: change_in(&file),

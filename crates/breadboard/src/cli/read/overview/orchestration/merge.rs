@@ -772,11 +772,16 @@ pub fn row_blockers_of(
 }
 
 /// The reasons as the row's text below its title: `pipeline running → GitLab · …`.
+/// A reason that names the MR that acts already (`waits for !311`) has no
+/// arrow: in print, `→ !311` after it only repeats it.
 pub fn blockers_text(reasons: &[Reason]) -> String {
     reasons
         .iter()
         .filter(|reason| !reason.is_conflict)
         .map(|reason| {
+            if reason.who.starts_with('!') && names(&reason.text, &reason.who) {
+                return yellow(&reason.text);
+            }
             format!(
                 "{}{GLUE}{}",
                 yellow(&reason.text),
@@ -785,6 +790,18 @@ pub fn blockers_text(reasons: &[Reason]) -> String {
         })
         .collect::<Vec<_>>()
         .join(&dim(" · "))
+}
+
+/// Whether `text` names `who` as a word of its own (`!311` in `after !311 (needs #302)`, not in `!3110`).
+fn names(text: &str, who: &str) -> bool {
+    text.match_indices(who).any(|(at, _)| {
+        let after = text[at + who.len()..].chars().next();
+        !after.is_some_and(|next| next.is_ascii_alphanumeric())
+            && !text[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|before| before.is_ascii_alphanumeric())
+    })
 }
 
 /// The conflict state of an open MR as the start of its second line
@@ -902,6 +919,23 @@ mod tests {
                 .map(|reason| (reason.text.as_str(), reason.who.as_str()))
                 .collect::<Vec<_>>(),
             vec![("draft: mark ready", "you")]
+        );
+        let waits = [
+            ("waits for !311", "!311"),
+            ("after !314 (needs #304)", "!314"),
+            ("after !3110 (x)", "!311"),
+        ];
+        let reasons: Vec<Reason> = waits
+            .iter()
+            .map(|(text, who)| Reason {
+                text: text.to_string(),
+                who: who.to_string(),
+                is_conflict: false,
+            })
+            .collect();
+        assert_eq!(
+            blockers_text(&reasons),
+            "waits for !311 · after !314 (needs #304) · after !3110 (x)\u{a0}→\u{a0}!311"
         );
         let pending = mr(311, Some("pending"), true);
         let reasons = row_blockers_of(&pending, &[], 0, &[], &[], None, &HashSet::new());

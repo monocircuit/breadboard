@@ -4,6 +4,28 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 08:40 · CLI / overview --once, wt:plan · what can't be read is said, not guessed
+Chose: (1) the "blocked by" links of the open issues come from one
+GraphQL query; when GitLab doesn't answer it (an older GitLab, a proxy
+that passes REST only) each issue's REST `issues/<n>/links` is read side by
+side, as Node did, and what neither answers is a ⚠ line under the title
+band ("the merge order may miss one"); the suite checks the order with
+GraphQL down. (2) An orchestration record that doesn't parse or lists no
+`issues` is named with what to do (overview and wt:plan), where both said
+"no orchestration recorded". (3) A worktree's `.claude/actions.json` that
+can't be read is a ⚠ line in ACTIONS and its count in the heading, where
+the view said "nothing waits for you". (4) An MR row's reason that names
+the MR acting already (`waits for !311`) has no `→ !311` after it. (5)
+wt:plan says when another change holds the record's lock and how long it
+waits, instead of hanging silently. (6) While GitLab doesn't answer, a
+worktree's facts say `MR …` (unknown), as its issue's `#303 …`, not
+`no MR yet`: Node's guess is a known bug of the suite now.
+Why: rule 3 (no silent loss: Node's REST links, every row stays), rule 7
+(1 call where GraphQL answers, 5 for the whole view), rule 4 (4: the
+arrow only repeated the MR), and errors that say what to do. Suite: the
+CLI checks 21/21 against the binary (1 todo: wt:orchestrate needs claude);
+Node fails the new GitLab-down check as its known bug.
+
 ## 2026-10-02 01:50 · CLI / wt:tick, wt:note, wt:mr --update, wt:action change · what the suite can't reach
 Chose: the verdicts the world can't provoke are functions with tests of
 their own: `is_ticked_back` (wt:tick: as many boxes as before, the chosen

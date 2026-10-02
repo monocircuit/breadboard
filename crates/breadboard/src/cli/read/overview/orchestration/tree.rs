@@ -511,7 +511,8 @@ fn facts_of(
         }
     };
     if tree.is_some() && mr_fact.is_empty() {
-        facts.push(dim("no MR yet"));
+        // Without GitLab's answer nothing says there is none: unknown, as the issue's `…`.
+        facts.push(dim(if view.remote.is_some() { "no MR yet" } else { "MR …" }));
     } else {
         facts.push(mr_fact);
     }

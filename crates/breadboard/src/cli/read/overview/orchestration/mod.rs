@@ -16,7 +16,7 @@ mod workers;
 use super::agents::{Agents, agents_of, context_share_of};
 use super::clock::{band_time, minute};
 use super::frame::Frame;
-use super::paint::{bold, button, dim, green, link, pad, red, table_rows, visible, wrap};
+use super::paint::{bold, button, dim, green, link, pad, red, table_rows, visible, wrap, yellow};
 use super::theme::{Theme, paint_tone, pink, theme};
 use actions::{Item as ActionItem, action_text, actions_of, block_of, kind_chip};
 use breadboard_core::git;
@@ -111,12 +111,18 @@ pub fn orchestration(frame: &mut Frame, main: &Path, name: &str) {
     frame.band(&label, &band_time(now));
     let Some(record) = record.filter(|record| !record.issues.is_empty()) else {
         frame.blank();
-        frame.text_at(
-            0,
-            &dim(&format!(
-                "  no issues recorded for {label}: pnpm wt:orchestrate {name} <issue>…"
-            )),
-        );
+        match is_name(name)
+            .then(|| crate::cli::read::plan::broken_record(main, name))
+            .flatten()
+        {
+            Some(broken) => frame.text_at(2, &red(&format!("✗ {broken}"))),
+            None => frame.text_at(
+                0,
+                &dim(&format!(
+                    "  no issues recorded for {label}: pnpm wt:orchestrate {name} <issue>…"
+                )),
+            ),
+        }
         return;
     };
 
@@ -443,6 +449,10 @@ fn draw(frame: &mut Frame, view: &View) {
         frame.blank();
         frame.text_at(0, &red(&error_text(reason, *at)));
     }
+    for warning in view.remote.iter().flat_map(|remote| &remote.warnings) {
+        frame.blank();
+        frame.text_at(2, &yellow(&format!("⚠ {warning}")));
+    }
     let stale = if view.remote.is_some() {
         stale_of(view)
     } else {
@@ -466,11 +476,35 @@ fn draw(frame: &mut Frame, view: &View) {
     } else {
         "nothing waits for you".into()
     };
+    // A worktree whose actions can't be read: what it asks is missing here.
+    let unreadable: Vec<String> = view
+        .trees
+        .iter()
+        .filter_map(|tree| {
+            let reason = tree.unreadable.as_ref()?;
+            let dir = tree
+                .dir
+                .file_name()
+                .map_or(tree.name.clone(), |dir| dir.to_string_lossy().into_owned());
+            Some(format!(
+                "⚠ {dir}/.claude/actions.json can't be read, its actions are missing here: {reason}"
+            ))
+        })
+        .collect();
+    let summary = match unreadable.len() {
+        0 => summary,
+        1 => format!("{summary} · 1 file can't be read"),
+        count => format!("{summary} · {count} files can't be read"),
+    };
     frame.boxed("ACTIONS", &format!("{} {}", bold("ACTIONS"), dim(&summary)), |width| {
+        let mut lines: Vec<String> = unreadable
+            .iter()
+            .flat_map(|warning| wrap(&yellow(warning), width))
+            .collect();
         if listed.actions.is_empty() {
-            return vec![dim("none: an agent asks with pnpm wt:action <kind> <text>")];
+            lines.push(dim("none: an agent asks with pnpm wt:action <kind> <text>"));
+            return lines;
         }
-        let mut lines = Vec::new();
         for (at, item) in listed.actions.iter().enumerate() {
             if at > 0 {
                 lines.push(dim(&"─".repeat(width)));
