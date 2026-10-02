@@ -6,9 +6,9 @@
 //! else is only listed: a branch with own commits is the only copy of them.
 
 use super::args::{Args, Takes};
-use super::claude::{bound_session, left_in, left_text, running_claudes, session_file};
+use super::claude::{are_handed_over, bound_session, left_in, left_text, running_claudes, session_file};
 use super::plugin;
-use super::proc::{Done, fail, git, step, text};
+use super::proc::{Done, done, fail, git, paint, step, text, tone};
 use super::remove::{self, Options};
 use super::repo::Repo;
 use breadboard_core::git::{is_inside, own_commits};
@@ -158,8 +158,15 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
                 Some(_) if is_inside(here, dir) => Some("you are working in it".into()),
                 Some(_) => {
                     let left = left_in(dir, &claudes, bound_session(dir).as_deref());
-                    (!left.is_empty())
-                        .then(|| format!("{} still stands in it, not in its next worktree yet", left_text(&left)))
+                    (!left.is_empty()).then(|| {
+                        let dirs: Vec<&Path> = worktrees.iter().map(|tree| tree.dir.as_path()).collect();
+                        let yet = if are_handed_over(&left, dir, &dirs) {
+                            ", not in its next worktree yet"
+                        } else {
+                            ""
+                        };
+                        format!("{} still stands in it{yet}", left_text(&left))
+                    })
                 }
             };
             Entry {
@@ -227,11 +234,34 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
 
 /// `<name> <line>`, the names padded to 32 as today's, or to the longest
 /// when one is longer: the lines stay in one column.
+/// What happened to an entry, its verdict (up to the comma) in its colour:
+/// kept yellow, a failed removal red, a dry run's cyan, done green.
+fn toned(what: &str) -> String {
+    let (verdict, rest) = what
+        .split_once(',')
+        .map_or((what, ""), |(verdict, rest)| (verdict, rest));
+    let code = if what.starts_with("kept, wt:remove failed") {
+        tone::FAILED
+    } else if verdict.starts_with("kept") {
+        tone::KEPT
+    } else if verdict.starts_with("would") {
+        tone::WOULD
+    } else {
+        tone::DONE
+    };
+    let rest = if rest.is_empty() {
+        String::new()
+    } else {
+        format!(",{rest}")
+    };
+    format!("{}{rest}", paint(code, verdict))
+}
+
 fn lines(report: &[(String, String)]) -> Vec<String> {
     let width = report.iter().map(|(name, _)| name.chars().count()).fold(32, usize::max);
     report
         .iter()
-        .map(|(name, what)| format!("{name:<width$} {what}"))
+        .map(|(name, what)| format!("{name:<width$} {}", toned(what)))
         .collect()
 }
 
@@ -324,14 +354,11 @@ pub fn command(args: &Args) -> Done {
         plugin::heal(&repo.main);
     }
 
-    println!(
-        "\n✓ {}",
-        if is_dry {
-            "nothing was touched (--dry-run)"
-        } else {
-            "pruned"
-        }
-    );
+    done(if is_dry {
+        "nothing was touched (--dry-run)"
+    } else {
+        "pruned"
+    });
     for entry in lines(&report) {
         println!("  {entry}");
     }

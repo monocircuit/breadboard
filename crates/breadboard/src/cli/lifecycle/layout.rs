@@ -20,7 +20,7 @@ use super::args::{Args, Takes};
 use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::plugin;
-use super::proc::{Done, fail, step};
+use super::proc::{Done, done, fail, step};
 use super::repo::{Repo, VITA, compose_args, env_file_of, offset_of};
 use breadboard_core::record::SPACE;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
@@ -67,7 +67,7 @@ pub fn command(args: &Args) -> Done {
     if !args.has("--no-focus") {
         call(&["workspace", "focus", &main]);
     }
-    println!("\n✓ {SPACE} and a space per worktree");
+    done(&format!("{SPACE} and a space per worktree"));
     Ok(())
 }
 
@@ -296,7 +296,9 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
 }
 
 /// The line of a release: `closed the space x` | `closed 3 tabs of x` and
-/// `kept a tab of x (x: an agent works there)`.
+/// `kept a tab (an agent works there)` | `kept a tab of x (logs: it has
+/// several panes)`: the feature named once, a kept tab by its label only
+/// where that says more than the feature.
 pub fn release_line(feature: &str, closed: usize, kept: &[String]) -> Option<String> {
     if closed == 0 && kept.is_empty() {
         return None;
@@ -315,7 +317,12 @@ pub fn release_line(feature: &str, closed: usize, kept: &[String]) -> Option<Str
         } else {
             format!("{} tabs", kept.len())
         };
-        parts.push(format!("kept {count} of {feature} ({})", kept.join("; ")));
+        let of = if closed == 0 {
+            format!(" of {feature}")
+        } else {
+            String::new()
+        };
+        parts.push(format!("kept {count}{of} ({})", kept.join("; ")));
     }
     Some(parts.join(", "))
 }
@@ -358,7 +365,13 @@ pub fn release_space(feature: &str, is_whole: bool) -> Option<String> {
                 busy_reason(tab, &panes, current.as_ref())
             };
             if let Some(why) = why {
-                kept.push(format!("{}: {why}", s(tab, "label")));
+                let label = s(tab, "label");
+                let label = label.strip_prefix(&format!("{feature} : ")).unwrap_or(label);
+                kept.push(if label == feature {
+                    why.to_string()
+                } else {
+                    format!("{label}: {why}")
+                });
                 busy.push(s(tab, "tab_id").to_string());
             }
         }
@@ -423,10 +436,14 @@ mod tests {
     fn says_what_a_release_closed_and_kept() {
         assert_eq!(release_line("3-x", 0, &[]), None);
         assert_eq!(release_line("3-x", 4, &[]).as_deref(), Some("closed the space 3-x"));
-        let kept = vec!["3-x: an agent works there".to_string()];
+        let kept = vec!["an agent works there".to_string()];
         assert_eq!(
             release_line("3-x", 8, &kept).as_deref(),
-            Some("closed 8 tabs of 3-x, kept a tab of 3-x (3-x: an agent works there)")
+            Some("closed 8 tabs of 3-x, kept a tab (an agent works there)")
+        );
+        assert_eq!(
+            release_line("3-x", 0, &kept).as_deref(),
+            Some("kept a tab of 3-x (an agent works there)")
         );
         let two = vec![
             "a: it has several panes".to_string(),
@@ -434,7 +451,7 @@ mod tests {
         ];
         assert_eq!(
             release_line("3-x", 1, &two).as_deref(),
-            Some("closed 1 tab of 3-x, kept 2 tabs of 3-x (a: it has several panes; b: it runs this command)")
+            Some("closed 1 tab of 3-x, kept 2 tabs (a: it has several panes; b: it runs this command)")
         );
     }
 

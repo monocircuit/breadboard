@@ -17,7 +17,7 @@ use super::herdr::{self, call, did, id_at, s};
 use super::layout::spaces::space_of;
 use super::layout::tabs::{EDITOR, OVERVIEW, ROOT, drop_duplicates, keep_order};
 use super::plugin;
-use super::proc::{Done, Fail, exe, fail, git, step, text};
+use super::proc::{Done, Fail, done, exe, fail, git, step, text};
 use super::repo::Repo;
 use super::setups::{Claim, claim_setup, setup_text};
 use breadboard_core::git::branch_files;
@@ -190,11 +190,22 @@ fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
     })
 }
 
-/// The issue `arg` (its number, or `<n>-<feature>`) as GitLab has it; None
-/// when it can't be read (orchestrator.mjs `readIssue`).
-pub fn read_issue(repo: &Repo, arg: &str) -> Option<Issue> {
+/// Why the issue `number` could not be read, and what to do.
+fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
+    Fail(match unread {
+        gitlab::Unread::Missing => format!("#{number} is no issue of this project (glab issue list)"),
+        gitlab::Unread::Unanswered => format!(
+            "issue #{number} could not be read: GitLab did not answer; again once it does (glab issue view {number} says why)"
+        ),
+    })
+}
+
+/// The issue `arg` (its number, or `<n>-<feature>`) as GitLab has it, or
+/// why it can't be read (orchestrator.mjs `readIssue`).
+pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     let number: String = arg.chars().take_while(char::is_ascii_digit).collect();
-    let found = gitlab::view(&repo.main, &["issue", "view", &number])?;
+    let found =
+        gitlab::view(&repo.main, &["issue", "view", &number]).map_err(|unread| unread_issue(&number, unread))?;
     let title = str_of(&found, "title").unwrap_or_default().to_string();
     let feature = if number == arg {
         format!("{number}-{}", slug_of(&title))
@@ -219,8 +230,10 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Option<Issue> {
     } else {
         claimed_elsewhere(repo, &feature).map(|branch| format!("claimed by {branch}"))
     };
-    Some(Issue {
-        number: number.parse().ok()?,
+    Ok(Issue {
+        number: number
+            .parse()
+            .map_err(|_| unread_issue(&number, gitlab::Unread::Missing))?,
         title,
         branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
         feature,
@@ -737,6 +750,7 @@ pub struct Request<'a> {
     pub issue: &'a str,
     pub to: &'a str,
     pub limit: Option<&'a str>,
+    /// This run's `--peer`; without one the issue's kept peer, then the orchestration's.
     pub peer: Option<String>,
     /// The text of this run's `--brief`; without one the issue's kept brief.
     pub extra: Option<String>,
@@ -815,17 +829,17 @@ pub fn command(args: &Args) -> Done {
         }
         None => None,
     };
+    let peer = args.value("--peer").filter(|peer| !peer.is_empty());
     if let Some(after) = after {
         if !is_dry {
             plugin::heal(&repo.main);
         }
-        return announce(&repo, name, issues[0], to, &after, extra.as_deref(), is_dry);
+        let given = Given {
+            brief: brief_file.zip(extra.as_deref()),
+            peer,
+        };
+        return announce(&repo, name, issues[0], to, &after, &given, is_dry);
     }
-    let record = record::record_of(&repo.main, name);
-    let peer = args
-        .value("--peer")
-        .map(String::from)
-        .or_else(|| record.and_then(|record| record.peer));
     hand_over(
         &repo,
         &Request {
@@ -833,7 +847,7 @@ pub fn command(args: &Args) -> Done {
             issue: issues[0],
             to,
             limit: args.value("--limit"),
-            peer: peer.filter(|peer| !peer.is_empty()),
+            peer: peer.map(String::from),
             extra,
             is_shared: args.has("--shared"),
             is_dry,
@@ -841,27 +855,64 @@ pub fn command(args: &Args) -> Done {
     )
 }
 
-/// The brief an earlier run gave the issue `number`: `briefs` of the record
-/// (#247, written by wt:orchestrate), "" without one.
-fn kept_brief(raw: &Value, number: i64) -> String {
-    raw.get("briefs")
-        .and_then(|briefs| briefs.get(number.to_string()))
+/// What an earlier run kept for the issue `number` under `field` of the
+/// record (#247: `briefs`, written by wt:orchestrate; `peers`, by an
+/// announced handover).
+fn kept(raw: &Value, field: &str, number: i64) -> Option<String> {
+    raw.get(field)
+        .and_then(|kept| kept.get(number.to_string()))
         .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+        .map(String::from)
 }
 
-/// `text` kept as the brief of the issue `number` for its later start (#247).
-fn keep_brief(repo: &Repo, name: &str, number: i64, text: &str) {
-    let mut briefs = raw_record(repo, name)
-        .get("briefs")
+/// The brief an earlier run gave the issue `number`, "" without one.
+fn kept_brief(raw: &Value, number: i64) -> String {
+    kept(raw, "briefs", number).unwrap_or_default()
+}
+
+/// The peer of the issue `number`: this run's, the one its announcement
+/// kept, the orchestration's; None for none.
+fn peer_of(given: Option<&str>, raw: &Value, number: i64) -> Option<String> {
+    given
+        .map(String::from)
+        .or_else(|| kept(raw, "peers", number))
+        .or_else(|| str_of(raw, "peer").map(String::from))
+        .filter(|peer| !peer.is_empty())
+}
+
+/// `text` kept under `field` (`briefs`, `peers`) for the issue `number`'s later start (#247).
+fn keep(repo: &Repo, name: &str, field: &str, number: i64, text: &str) {
+    let mut kept = raw_record(repo, name)
+        .get(field)
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    briefs.insert(number.to_string(), json!(text));
+    kept.insert(number.to_string(), json!(text));
     let mut fields = Map::new();
-    fields.insert("briefs".into(), Value::Object(briefs));
+    fields.insert(field.into(), Value::Object(kept));
     let _ = record::update_record(&repo.main, name, fields);
+}
+
+/// What an announcement was given to keep for its handover (#247).
+pub struct Given<'a> {
+    /// `--brief`: its file and text.
+    pub brief: Option<(&'a str, &'a str)>,
+    /// `--peer`.
+    pub peer: Option<&'a str>,
+}
+
+/// What an announced handover will start with, for its dry run and its ✓:
+/// the brief and the peer, given now or kept from before.
+fn announced_with(given: &Given, raw: &Value, number: i64) -> String {
+    let brief = match given.brief {
+        Some((file, _)) => format!("the brief of {file}"),
+        None if !kept_brief(raw, number).is_empty() => "the brief kept for it".into(),
+        None => "no brief of its own".into(),
+    };
+    let peer = peer_of(given.peer, raw, number)
+        .map(|peer| format!(", peer {peer}"))
+        .unwrap_or_default();
+    format!("{brief}{peer}")
 }
 
 /// `<label> has no agent <who>; its agents: …`.
@@ -901,10 +952,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     };
     let share = context_share_of(&worker.id);
     let refusal = refusal_of(pane_of_conversation(&worker.id).as_ref(), share, limit);
-    let Some(issue) = read_issue(repo, request.issue) else {
-        let number: String = request.issue.chars().take_while(char::is_ascii_digit).collect();
-        return fail(format!("issue #{number} could not be read"));
-    };
+    let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
     // The handover fails: in the agent's history (not on a dry run), then said.
     let failed = |reason: &str| -> Done {
@@ -954,19 +1002,20 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     }
     let before = before_line(&issues_before(&raw, &worker));
     let extra = request.extra.clone().unwrap_or_else(|| kept_brief(&raw, number));
+    let peer = peer_of(request.peer.as_deref(), &raw, number);
     let brief = brief_of(
         &issue,
         name,
         &label,
-        request.peer.as_deref(),
+        peer.as_deref(),
         &extra,
         before.as_deref(),
         &repo.main,
     );
     if request.is_dry {
+        step(&format!("nothing was done (--dry-run). {} would get", worker.name));
         println!(
-            "\n▸ nothing was done (--dry-run). {} would get\n  {}\n  with the brief\n",
-            worker.name,
+            "  {}\n  with the brief\n",
             next_issue_line(number, &issue.feature, &issue.dir)
         );
         println!("{brief}");
@@ -1063,47 +1112,46 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     };
     match told {
         Told::Yes => {
-            println!(
-                "\n✓ #{number} went to the agent {feature}{renamed}, told in its prompt{setup_note}; SendMessage(to: \"{feature}\")"
-            );
+            done(&format!(
+                "#{number} went to the agent {feature}{renamed}, told in its prompt{setup_note}; SendMessage(to: \"{feature}\")"
+            ));
             Ok(())
         }
         Told::No => {
-            println!(
-                "\n✓ #{number} {feature} is ready for {}{setup_note}, but herdr took no line: type these into its tab\n{typed}",
+            done(&format!(
+                "#{number} {feature} is ready for {}{setup_note}, but herdr took no line: type these into its tab",
                 worker.name
-            );
+            ));
+            println!("{typed}");
             Ok(())
         }
-        Told::NotRenamed(now) => fail(format!(
-            "#{number} {feature} is ready for {}, but its /rename did not take (its session is still named {}): the next-issue line was not typed. Type these into its tab, one after the other:\n{typed}",
-            worker.name,
-            if now.is_empty() { "nothing".into() } else { now }
-        )),
+        Told::NotRenamed(now) => {
+            // The lines to type above, the reason on the ✗ line alone: the overview
+            // shows a background command's last line as its failure (#313).
+            step(&format!(
+                "type these into the tab of {}, one after the other:",
+                worker.name
+            ));
+            println!("{typed}");
+            fail(format!(
+                "#{number} {feature} is ready for {}, but its /rename did not take (its session is still named {}): the next-issue line was not typed, its two lines are above",
+                worker.name,
+                if now.is_empty() { "nothing".into() } else { now }
+            ))
+        }
     }
 }
 
 /// The handover announced, not done (handover.mjs `announceCommand`): the
 /// record keeps it, the issue queued; the overview does it once the MRs are
 /// merged and the agent is idle.
-pub fn announce(
-    repo: &Repo,
-    name: &str,
-    arg: &str,
-    to: &str,
-    after: &[i64],
-    extra: Option<&str>,
-    is_dry: bool,
-) -> Done {
+pub fn announce(repo: &Repo, name: &str, arg: &str, to: &str, after: &[i64], given: &Given, is_dry: bool) -> Done {
     let label = repo.orchestrator_label(name);
     let workers = workers_of(repo, name);
     let Some(worker) = find_worker(&workers, to) else {
         return Err(no_agent(&label, to, &workers));
     };
-    let Some(issue) = read_issue(repo, arg) else {
-        let number: String = arg.chars().take_while(char::is_ascii_digit).collect();
-        return fail(format!("issue #{number} could not be read"));
-    };
+    let issue = read_issue(repo, arg)?;
     let number = issue.number;
     let raw = raw_record(repo, name);
     let known = raw.get("issues").and_then(Value::as_array).and_then(|issues| {
@@ -1120,11 +1168,12 @@ pub fn announce(
     let mrs: Vec<String> = after.iter().map(|iid| format!("!{iid}")).collect();
     let mrs = mrs.join(", ");
     let verb = if after.len() > 1 { "are" } else { "is" };
+    let with = announced_with(given, &raw, number);
     if is_dry {
-        println!(
-            "\n▸ nothing was done (--dry-run). {} would take #{number} once {mrs} {verb} merged.",
+        step(&format!(
+            "nothing was done (--dry-run). {} would take #{number} once {mrs} {verb} merged, with {with}.",
             worker.name
-        );
+        ));
         return Ok(());
     }
     let mut entry = record_entry(&issue, issue.why.as_deref());
@@ -1138,15 +1187,18 @@ pub fn announce(
         entry.insert("queuedAt".into(), json!(queued_at.unwrap_or_else(|| to_iso(now_ms()))));
     }
     let _ = record::write_record(&repo.main, name, &[entry]);
-    // Its --brief waits with it for the handover (#247), next to the record's issues.
-    if let Some(extra) = extra {
-        keep_brief(repo, name, number, extra);
+    // Its --brief and --peer wait with it for the handover (#247), next to the record's issues.
+    if let Some((_, text)) = given.brief {
+        keep(repo, name, "briefs", number, text);
+    }
+    if let Some(peer) = given.peer {
+        keep(repo, name, "peers", number, peer);
     }
     let _ = record::announce_handover(&repo.main, name, number, &worker.name, after, &to_iso(now_ms()));
-    println!(
-        "\n✓ #{number} {} goes to {} once {mrs} {verb} merged: the overview of {label} hands it over then (its worktree is kept until), shown on {}'s node as → next #{number}",
+    done(&format!(
+        "#{number} {} goes to {} once {mrs} {verb} merged, with {with}: the overview of {label} hands it over then (its worktree is kept until), shown on {}'s node as → next #{number}",
         issue.feature, worker.name, worker.name
-    );
+    ));
     Ok(())
 }
 

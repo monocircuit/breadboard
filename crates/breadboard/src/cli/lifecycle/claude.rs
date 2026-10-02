@@ -172,6 +172,17 @@ pub fn left_in(dir: &Path, claudes: &[Running], bound: Option<&str>) -> Vec<Runn
         .collect()
 }
 
+/// Whether every one of `left` (standing in `dir`) was handed over: its
+/// conversation is bound to another of `dirs`, it is on its way there (#252).
+pub fn are_handed_over(left: &[Running], dir: &Path, dirs: &[&Path]) -> bool {
+    let bound: Vec<String> = dirs
+        .iter()
+        .filter(|other| **other != dir)
+        .filter_map(|other| bound_session(other))
+        .collect();
+    !left.is_empty() && left.iter().all(|claude| bound.contains(&claude.id))
+}
+
 /// `244-x`, `244-x, claude 1234`: the claudes left_in found.
 pub fn left_text(left: &[Running]) -> String {
     left.iter()
@@ -353,6 +364,13 @@ mod tests {
         let left = left_in(Path::new("/r/p-4"), &claudes, Some("a"));
         assert_eq!(left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
         assert_eq!(left_text(&left), "claude 1");
+        // Bound nowhere else: not on its way anywhere.
+        assert!(!are_handed_over(
+            &left,
+            Path::new("/r/p-4"),
+            &[Path::new("/nowhere/p-5")]
+        ));
+        assert!(!are_handed_over(&[], Path::new("/r/p-4"), &[]));
     }
 
     #[test]

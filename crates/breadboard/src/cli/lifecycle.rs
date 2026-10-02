@@ -15,7 +15,7 @@ mod gitlab;
 pub mod handover;
 mod herdr;
 pub mod layout;
-mod plugin;
+pub mod plugin;
 mod proc;
 mod prune;
 pub mod remove;

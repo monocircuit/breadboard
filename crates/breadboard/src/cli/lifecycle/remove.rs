@@ -5,12 +5,12 @@
 //! anything of anyone's is still in it.
 
 use super::args::{Args, Takes};
-use super::claude::{bound_session, left_in, left_text, running_claudes, session_file};
+use super::claude::{are_handed_over, bound_session, left_in, left_text, running_claudes, session_file};
 use super::gitlab;
 use super::herdr;
 use super::layout::{orchestrations::prune_orchestrators, release_space};
 use super::plugin;
-use super::proc::{Done, Fail, exe, fail, git, run_inherit, step, text};
+use super::proc::{Done, Fail, done, exe, fail, git, run_inherit, step, text};
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
 use super::setups::{setup_at, setup_text, setups_of};
@@ -317,10 +317,13 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     // A handed-over agent still in it: EnterWorktree fails once its directory is gone (#252).
     let left = left_in(&dir, &running_claudes(), bound_session(&dir).as_deref());
     if !left.is_empty() {
-        return fail(format!(
-            "{} still stands in {feature} (it enters its next worktree, or as a free agent the orchestration's checkout): again once it left",
-            left_text(&left)
-        ));
+        let dirs: Vec<&Path> = trees.iter().map(|tree| tree.dir.as_path()).collect();
+        let how = if are_handed_over(&left, &dir, &dirs) {
+            "it enters its next worktree, or as a free agent the orchestration's checkout; again once it left"
+        } else {
+            "again once it left it or ended"
+        };
+        return fail(format!("{} still stands in {feature}: {how}", left_text(&left)));
     }
     // A start sets it up or moves its agent out of it: git would pull the directory from under it (#272).
     let origin = origin_of(&dir);
@@ -484,7 +487,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         Some(branch) if !is_merged || options.is_keeping_branch => format!(", {branch} kept"),
         _ => String::new(),
     };
-    println!("\n✓ {feature} removed{kept}");
+    done(&format!("{feature} removed{kept}"));
     if let Some(rewrite) = rewrite {
         rewrite.wait();
     }

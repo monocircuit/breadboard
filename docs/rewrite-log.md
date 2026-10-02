@@ -4,6 +4,34 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 09:10 · CLI / wt:remove, wt:prune, wt:orchestrate --to, wt:herdr · lifecycle, round 2
+Chose: (1) A removal whose MR read GitLab didn't answer starts no
+changelog rewrite: it says `▸ the changelog of <name> is not rewritten:
+GitLab did not answer; pnpm wt:orchestrate <name> --changelog tries
+again`, still ✓ and exit 0; wt:prune leaves an orchestration's changelog
+as it is when one of its removals got no answer. A rewrite that loses a
+merge the changelog listed (a merge never becomes unmerged) is put back
+the same way. Node blanked it to "Nothing merged yet."; the suite checks
+it byte-identical now. (2) The /rename failure of a handover prints the
+two lines to type on stdout above, the ✗ reason stays one line: the
+overview shows a background command's last line. (3) An announced
+handover keeps its --peer next to its --brief (`peers` of the record,
+read by the later handover before the orchestration's peer); its dry run
+and ✓ say which brief and peer apply. (4) ✓ green, ✗ red, ▸ cyan, and
+wt:prune's verdict (kept yellow, would be cyan, done green), on a
+terminal without NO_COLOR only. (5) Wording: a release names the feature
+once; the leftIn refusal says "it enters its next worktree …" only for
+an agent bound to another worktree; an issue that can't be read says
+whether GitLab didn't answer or it doesn't exist, and what to do.
+(6) Kept: current_pane is None without HERDR_PANE_ID, also for wt:herdr
+from the plugin's restore: herdr answers with the focused pane then,
+which doesn't run the command (Node's releaseSpace guards the same way).
+Why: rule 2 (#306: a GitLab failure never blanks what is the point;
+#247 brief and peer; #313 the overview's error line), rule 3 for the
+rest of the wording (same facts, said once), rule 5 (`peers` is a new
+field beside `briefs`, the old records read as before). Suite: the
+lifecycle checks 8/8 and the CLI checks of these commands 6/6.
+
 ## 2026-10-02 08:40 · CLI / overview --once, wt:plan · what can't be read is said, not guessed
 Chose: (1) the "blocked by" links of the open issues come from one
 GraphQL query; when GitLab doesn't answer it (an older GitLab, a proxy
