@@ -4,7 +4,7 @@
 //! and wt:stack print.
 
 use super::herdr;
-use super::proc::{self, Args, How, fail, step};
+use super::proc::{self, Args, How, fail, outln, step};
 use super::repo::{self, PORTS, VITA};
 use breadboard_core::record;
 use std::fs;
@@ -286,7 +286,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
 /// Prints the summary.
 pub fn summary(summary: &Summary) {
     let main = repo::main_dir();
-    println!(
+    outln!(
         "{}",
         summary_text(summary, proc::is_agent(), |name| record::orchestrator_label(
             &main, name

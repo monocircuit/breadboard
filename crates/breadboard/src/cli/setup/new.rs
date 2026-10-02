@@ -5,7 +5,7 @@
 
 use super::conversations::{self, session_file};
 use super::herdr::{self, field};
-use super::proc::{self, Args, How, fail, name_refusal, set_hint, step};
+use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
 use super::repo::{self, VITA};
 use super::stack::{self, Summary};
 use super::sweep;
@@ -116,9 +116,9 @@ fn hand_over(previous: &Worktree) -> String {
 }
 
 pub fn command(args: &Args) -> ExitCode {
-    let feature = match args.first() {
-        Some(feature) if is_name(feature) => feature.to_string(),
-        given => fail(&name_refusal("the feature", given, USAGE)),
+    let feature = match args.first_word(&["--origin"]) {
+        Some(feature) if is_name(&feature) => feature,
+        given => fail(&name_refusal("the feature", given.as_deref(), USAGE)),
     };
     let branch = format!("{}/{feature}", if args.has("--fix") { "fix" } else { "feature" });
     let dir = repo::dir_of(&feature);
@@ -219,7 +219,7 @@ pub fn command(args: &Args) -> ExitCode {
         },
     );
     if !pushed.is_ok {
-        println!("! origin refused the branch, push it yourself: git push -u origin {branch}");
+        outln!("! origin refused the branch, push it yourself: git push -u origin {branch}");
     }
 
     step("pnpm install");
@@ -248,7 +248,7 @@ pub fn command(args: &Args) -> ExitCode {
     set_hint(&finish(&[]));
 
     let offset = if !main_env.exists() {
-        println!(
+        outln!(
             "\n! {} is missing, the worktree has no .env.local and no stack",
             main_env.display()
         );

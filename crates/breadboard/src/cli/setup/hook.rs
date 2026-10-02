@@ -6,7 +6,7 @@
 
 use super::check::{self, Failure};
 use super::gitlab;
-use super::proc::{fail, git};
+use super::proc::{errln, fail, git};
 use breadboard_core::json::str_of;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Value, json};
@@ -72,7 +72,7 @@ fn check_push(refs: &[(String, String)]) -> Vec<String> {
         );
         match gitlab::list(&endpoint) {
             Ok(mrs) => refusals.extend(refusal_of(branch, &mrs)),
-            Err(failure) => eprintln!(
+            Err(failure) => errln!(
                 "! push guard: couldn't look up the merge request of {branch}, pushing unchecked ({})",
                 failure.reason
             ),
@@ -246,7 +246,7 @@ pub fn command(words: &[String]) -> ExitCode {
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
     }
-    eprintln!("{}", refusals.join("\n\n"));
+    errln!("{}", refusals.join("\n\n"));
     ExitCode::FAILURE
 }
 

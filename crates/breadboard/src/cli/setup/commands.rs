@@ -2,7 +2,7 @@
 //! what it is for. The scripts come from the package.json files, so nothing
 //! goes out of date; a script without a line here shows its command.
 
-use super::proc::git;
+use super::proc::{git, outln};
 use super::repo;
 use super::view::is_color;
 use serde_json::Value;
@@ -258,7 +258,7 @@ fn section(root: &Path, said: &Descriptions, dir: &str, prefix: &str) {
         .map(|(script, _)| format!("{prefix}{script}").chars().count())
         .max()
         .unwrap_or(0);
-    println!(
+    outln!(
         "\n{} {}",
         paint("1", name),
         paint("2", if dir.is_empty() { "(root)" } else { dir })
@@ -270,7 +270,7 @@ fn section(root: &Path, said: &Descriptions, dir: &str, prefix: &str) {
             && *previous != next
             && (size_of(&next) > 1 || size_of(previous) > 1)
         {
-            println!();
+            outln!();
         }
         group = Some(next);
         let call = format!("{:<width$}", format!("{prefix}{script}"));
@@ -281,7 +281,7 @@ fn section(root: &Path, said: &Descriptions, dir: &str, prefix: &str) {
             }
             None => paint("2", command),
         };
-        println!("  {}  {what}", paint("36", &call));
+        outln!("  {}  {what}", paint("36", &call));
     }
 }
 
@@ -318,7 +318,7 @@ pub fn command(is_all: bool) -> ExitCode {
     } else {
         "pnpm commands --all: every package. "
     };
-    println!(
+    outln!(
         "{}",
         paint(
             "2",

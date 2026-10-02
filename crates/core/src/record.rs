@@ -50,7 +50,10 @@ pub fn origin_of(dir: &Path) -> Option<Origin> {
     let value = json::read(&origin_file(dir))?;
     let name = str_of(&value, "name")?;
     let slot = value.get("slot")?.as_u64()?;
-    is_name(name).then(|| Origin { name: name.to_string(), slot: (slot % u64::from(SLOTS)) as u32 })
+    is_name(name).then(|| Origin {
+        name: name.to_string(),
+        slot: (slot % u64::from(SLOTS)) as u32,
+    })
 }
 
 /// Records who started a worktree, as `JSON.stringify(origin)` and a newline.
@@ -95,9 +98,18 @@ pub fn changelog_file(main: &Path, name: &str) -> PathBuf {
 
 /// Every orchestration with a record, by name.
 pub fn recorded(main: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(records_dir(main)) else { return Vec::new() };
+    let Ok(entries) = fs::read_dir(records_dir(main)) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = entries
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.strip_suffix(".json").map(String::from))
+        .filter_map(|entry| {
+            entry
+                .ok()?
+                .file_name()
+                .to_str()?
+                .strip_suffix(".json")
+                .map(String::from)
+        })
         .collect();
     names.sort();
     names
@@ -285,7 +297,12 @@ pub fn is_session_id(id: &str) -> bool {
 impl Record {
     /// A record from its file's value; None unless it lists `issues` (origins.mjs `recordOf`).
     pub fn from_value(raw: Value) -> Option<Record> {
-        let issues = raw.get("issues")?.as_array()?.iter().map(IssueEntry::from_value).collect();
+        let issues = raw
+            .get("issues")?
+            .as_array()?
+            .iter()
+            .map(IssueEntry::from_value)
+            .collect();
         let plan = raw.get("plan").filter(|plan| plan.is_object()).map(|plan| Plan {
             work: ints_of(plan, "work"),
             merge: ints_of(plan, "merge"),
@@ -294,7 +311,12 @@ impl Record {
         let workers = raw
             .get("workers")
             .and_then(Value::as_object)
-            .map(|workers| workers.iter().map(|(id, worker)| Worker::from_value(id, worker)).collect())
+            .map(|workers| {
+                workers
+                    .iter()
+                    .map(|(id, worker)| Worker::from_value(id, worker))
+                    .collect()
+            })
             .unwrap_or_default();
         let handovers = raw
             .get("handovers")
@@ -322,7 +344,9 @@ impl Record {
         Some(Record {
             issues,
             plan,
-            title: str_of(&raw, "title").filter(|title| !title.is_empty()).map(String::from),
+            title: str_of(&raw, "title")
+                .filter(|title| !title.is_empty())
+                .map(String::from),
             workers,
             handovers,
             actions: actions_in(&raw),
@@ -351,7 +375,9 @@ pub fn record_of(main: &Path, name: &str) -> Option<Record> {
 
 /// What an orchestration shows (#234): its record's title, else its name.
 pub fn title_of(main: &Path, name: &str) -> String {
-    record_of(main, name).and_then(|record| record.title).unwrap_or_else(|| name.to_string())
+    record_of(main, name)
+        .and_then(|record| record.title)
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// The label of an orchestration's space: `⇶ <title>`.
@@ -363,17 +389,27 @@ pub fn orchestrator_label(main: &Path, name: &str) -> String {
 /// older `Monocircuit/Platform ⇶ <name>`), None for any other. `titles`:
 /// `(name, title)` of every record.
 pub fn orchestration_of_label(label: &str, titles: &[(String, String)]) -> Option<String> {
-    let shown = label.strip_prefix(&format!("{SPACE} ")).unwrap_or(label).strip_prefix(&format!("{ORCHESTRATOR} "))?;
+    let shown = label
+        .strip_prefix(&format!("{SPACE} "))
+        .unwrap_or(label)
+        .strip_prefix(&format!("{ORCHESTRATOR} "))?;
     if shown.is_empty() {
         return None;
     }
     let by_title = titles.iter().find(|(name, title)| name != shown && title == shown);
-    Some(by_title.map(|(name, _)| name.clone()).unwrap_or_else(|| shown.to_string()))
+    Some(
+        by_title
+            .map(|(name, _)| name.clone())
+            .unwrap_or_else(|| shown.to_string()),
+    )
 }
 
 /// The `(name, title)` of every record, for `orchestration_of_label`.
 pub fn titles(main: &Path) -> Vec<(String, String)> {
-    recorded(main).into_iter().map(|name| (name.clone(), title_of(main, &name))).collect()
+    recorded(main)
+        .into_iter()
+        .map(|name| (name.clone(), title_of(main, &name)))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +425,13 @@ fn object_of(value: Option<Value>) -> Map<String, Value> {
 
 /// The record's file as an object, `{ issues: [] }` without one.
 fn raw_of(main: &Path, name: &str) -> Map<String, Value> {
-    let raw = object_of(json::read(&record_file(main, name)).filter(|raw| raw.get("issues").is_some_and(Value::is_array)));
-    if raw.is_empty() { json!({ "issues": [] }).as_object().cloned().unwrap_or_default() } else { raw }
+    let raw =
+        object_of(json::read(&record_file(main, name)).filter(|raw| raw.get("issues").is_some_and(Value::is_array)));
+    if raw.is_empty() {
+        json!({ "issues": [] }).as_object().cloned().unwrap_or_default()
+    } else {
+        raw
+    }
 }
 
 fn write_raw(main: &Path, name: &str, raw: Map<String, Value>) -> io::Result<()> {
@@ -431,7 +472,11 @@ pub fn with_removed(
     merged_at: Option<&str>,
 ) -> Map<String, Value> {
     let mut record = record;
-    let issues: Vec<Value> = record.get("issues").and_then(Value::as_array).cloned().unwrap_or_default();
+    let issues: Vec<Value> = record
+        .get("issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let is_known = issues.iter().any(|issue| str_of(issue, "branch") == Some(branch));
     let issues = if is_known {
         issues
@@ -464,22 +509,48 @@ pub fn with_removed(
 }
 
 /// Notes in the record of `name` that the worktree of `branch` was removed (wt:remove).
-pub fn mark_removed(main: &Path, name: &str, branch: &str, feature: &str, removed_at: &str, merged_at: Option<&str>) -> io::Result<()> {
+pub fn mark_removed(
+    main: &Path,
+    name: &str,
+    branch: &str,
+    feature: &str,
+    removed_at: &str,
+    merged_at: Option<&str>,
+) -> io::Result<()> {
     let raw = object_of(json::read(&record_file(main, name)));
     write_raw(main, name, with_removed(raw, branch, feature, removed_at, merged_at))
 }
 
 /// The plan of `wt:plan`: a list left out keeps the one there.
-pub fn write_plan(main: &Path, name: &str, work: Option<Vec<i64>>, merge: Option<Vec<i64>>, why: Option<String>) -> io::Result<Plan> {
+pub fn write_plan(
+    main: &Path,
+    name: &str,
+    work: Option<Vec<i64>>,
+    merge: Option<Vec<i64>>,
+    why: Option<String>,
+) -> io::Result<Plan> {
     let mut raw = raw_of(main, name);
-    let old = Record::from_value(Value::Object(raw.clone())).and_then(|record| record.plan).unwrap_or_default();
-    let old_why = raw.get("plan").and_then(|plan| plan.get("why")).cloned().unwrap_or(Value::Null);
-    let plan = Plan { work: work.unwrap_or(old.work), merge: merge.unwrap_or(old.merge), why: why.or(old.why) };
+    let old = Record::from_value(Value::Object(raw.clone()))
+        .and_then(|record| record.plan)
+        .unwrap_or_default();
+    let old_why = raw
+        .get("plan")
+        .and_then(|plan| plan.get("why"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let plan = Plan {
+        work: work.unwrap_or(old.work),
+        merge: merge.unwrap_or(old.merge),
+        why: why.or(old.why),
+    };
     let why_value = match &plan.why {
         Some(why) => json!(why),
         None => old_why,
     };
-    raw.insert("plan".into(), json!({ "work": plan.work, "merge": plan.merge, "why": why_value }));
+    raw.insert(
+        "plan".into(),
+        json!({ "work": plan.work, "merge": plan.merge, "why": why_value }),
+    );
     write_raw(main, name, raw)?;
     Ok(plan)
 }
@@ -537,14 +608,25 @@ pub fn without_handover(mut record: Map<String, Value>, number: i64) -> Map<Stri
 /// Records that the agent `to` takes the issue `number` once the MRs `after` are merged.
 pub fn announce_handover(main: &Path, name: &str, number: i64, to: &str, after: &[i64], at: &str) -> io::Result<()> {
     let raw = raw_of(main, name);
-    write_raw(main, name, with_handover(raw, json!({ "number": number, "to": to, "after": after, "at": at })))
+    write_raw(
+        main,
+        name,
+        with_handover(raw, json!({ "number": number, "to": to, "after": after, "at": at })),
+    )
 }
 
 /// The handover of the issue `number` done: out of the record.
 pub fn drop_handover(main: &Path, name: &str, number: i64) -> io::Result<()> {
     let raw = raw_of(main, name);
-    let has = raw.get("handovers").and_then(Value::as_array).is_some_and(|list| list.iter().any(|h| int_of(h, "number") == Some(number)));
-    if has { write_raw(main, name, without_handover(raw, number)) } else { Ok(()) }
+    let has = raw
+        .get("handovers")
+        .and_then(Value::as_array)
+        .is_some_and(|list| list.iter().any(|h| int_of(h, "number") == Some(number)));
+    if has {
+        write_raw(main, name, without_handover(raw, number))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -673,19 +755,31 @@ mod tests {
         write_record(
             &main,
             "breadboard",
-            &[json!({ "number": 234, "why": "exists already" }), json!({ "number": 300, "why": null })],
+            &[
+                json!({ "number": 234, "why": "exists already" }),
+                json!({ "number": 300, "why": null }),
+            ],
         )
         .unwrap();
         let record = record_of(&main, "breadboard").unwrap();
         assert_eq!(record.issues.len(), 3);
-        assert_eq!(record.issues[0].title.as_deref(), Some("overview: an orchestration shows its own title"));
+        assert_eq!(
+            record.issues[0].title.as_deref(),
+            Some("overview: an orchestration shows its own title")
+        );
         assert_eq!(record.issues[2].number, Some(300));
     }
 
     #[test]
     fn marks_a_removed_worktree() {
         let raw: Value = serde_json::from_str(RECORD).unwrap();
-        let marked = with_removed(raw.as_object().unwrap().clone(), "feature/296-overview-hover", "296-overview-hover", "T", None);
+        let marked = with_removed(
+            raw.as_object().unwrap().clone(),
+            "feature/296-overview-hover",
+            "296-overview-hover",
+            "T",
+            None,
+        );
         assert_eq!(marked["issues"][1]["removedAt"], json!("T"));
         assert_eq!(marked["issues"][1]["mergedAt"], Value::Null);
         let added = with_removed(marked, "fix/301-by-hand", "301-by-hand", "T2", Some("M"));
@@ -719,15 +813,40 @@ mod tests {
     #[test]
     fn reads_origins_and_space_labels() {
         let scratch = Scratch::new();
-        write_origin(scratch.path(), &Origin { name: "breadboard".into(), slot: 4 }).unwrap();
-        assert_eq!(fs::read_to_string(origin_file(scratch.path())).unwrap(), "{\"name\":\"breadboard\",\"slot\":4}\n");
-        assert_eq!(origin_of(scratch.path()), Some(Origin { name: "breadboard".into(), slot: 1 }));
+        write_origin(
+            scratch.path(),
+            &Origin {
+                name: "breadboard".into(),
+                slot: 4,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(origin_file(scratch.path())).unwrap(),
+            "{\"name\":\"breadboard\",\"slot\":4}\n"
+        );
+        assert_eq!(
+            origin_of(scratch.path()),
+            Some(Origin {
+                name: "breadboard".into(),
+                slot: 1
+            })
+        );
         fs::write(origin_file(scratch.path()), "{\"name\":\"Bad Name\",\"slot\":1}").unwrap();
         assert_eq!(origin_of(scratch.path()), None);
         let titles = vec![("breadboard".to_string(), "@monocircuit/breadboard".to_string())];
-        assert_eq!(orchestration_of_label("⇶ @monocircuit/breadboard", &titles).as_deref(), Some("breadboard"));
-        assert_eq!(orchestration_of_label("⇶ breadboard", &titles).as_deref(), Some("breadboard"));
-        assert_eq!(orchestration_of_label("Monocircuit/Platform ⇶ other", &titles).as_deref(), Some("other"));
+        assert_eq!(
+            orchestration_of_label("⇶ @monocircuit/breadboard", &titles).as_deref(),
+            Some("breadboard")
+        );
+        assert_eq!(
+            orchestration_of_label("⇶ breadboard", &titles).as_deref(),
+            Some("breadboard")
+        );
+        assert_eq!(
+            orchestration_of_label("Monocircuit/Platform ⇶ other", &titles).as_deref(),
+            Some("other")
+        );
         assert_eq!(orchestration_of_label("Monocircuit/Platform", &titles), None);
     }
 }

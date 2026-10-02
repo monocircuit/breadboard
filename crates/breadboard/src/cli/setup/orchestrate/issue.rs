@@ -239,7 +239,7 @@ pub fn make_worktree(item: &Item, name: &str, is_shared: bool) -> Made {
         Err(error) => (format!("\n✗ {error}\n"), None),
     };
     if !errors.trim().is_empty() {
-        eprint!("{errors}");
+        proc::write_bytes(proc::Stream::Err, errors.as_bytes());
     }
     Made {
         is_there: repo::worktrees().iter().any(|tree| tree.dir == item.dir),
@@ -322,7 +322,35 @@ pub fn undo_start(name: &str, item: &Item, known: Option<&Value>, why: &str, cla
             .stdin(Stdio::null())
             .status();
     }
-    let _ = record::write_record(&repo::main_dir(), name, &[start_entry(item, known, Some(why))]);
+    // Not write_record: it keeps the entry wt:new wrote (no why) over one
+    // with a why, so the record said the worktree was removed but not why.
+    // The undone start's entry replaces it, as the spec's undoStart wants.
+    let main = repo::main_dir();
+    let entry = start_entry(item, known, Some(why));
+    let raw = breadboard_core::json::read(&record::record_file(&main, name));
+    let issues = with_entry(
+        raw.as_ref()
+            .and_then(|raw| raw.get("issues"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        entry,
+    );
+    let mut fields = Map::new();
+    fields.insert("issues".into(), Value::Array(issues));
+    let _ = record::update_record(&main, name, fields);
+}
+
+/// `issues` with `entry` in place of the one of its number (or added).
+fn with_entry(mut issues: Vec<Value>, entry: Value) -> Vec<Value> {
+    match issues
+        .iter()
+        .position(|known| known.get("number") == entry.get("number"))
+    {
+        Some(at) => issues[at] = entry,
+        None => issues.push(entry),
+    }
+    issues
 }
 
 /// The record's entry of `number` now.
@@ -360,6 +388,18 @@ mod tests {
             slug_of("a-very-long-word-that-goes-on-and-on-and-on-forever and more"),
             "very-long-word-that-goes"
         );
+    }
+
+    #[test]
+    fn puts_an_undone_start_in_place_of_its_entry() {
+        let issues = vec![
+            json!({ "number": 5, "why": null, "removedAt": "x" }),
+            json!({ "number": 6 }),
+        ];
+        let entry = json!({ "number": 5, "why": "failed: its claude did not start" });
+        let issues = with_entry(issues, entry.clone());
+        assert_eq!(issues, vec![entry, json!({ "number": 6 })]);
+        assert_eq!(with_entry(vec![], json!({ "number": 7 })), vec![json!({ "number": 7 })]);
     }
 
     #[test]

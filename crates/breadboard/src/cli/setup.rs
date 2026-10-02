@@ -24,7 +24,7 @@ mod stack;
 mod sweep;
 mod view;
 
-use proc::{Args, Shape, refuse_misuse, wants_help};
+use proc::{Args, Shape, outln, refuse_misuse, wants_help};
 use std::process::ExitCode;
 
 /// What each command takes (flags, those with a value, how many words) and
@@ -128,7 +128,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
     let args = Args::new(args);
     if let Some(shape) = shape_of(command) {
         if wants_help(&args) {
-            println!("{}", shape.usage);
+            outln!("{}", shape.usage);
             return Some(ExitCode::SUCCESS);
         }
         refuse_misuse(&args, &shape);

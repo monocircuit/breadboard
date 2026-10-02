@@ -5,7 +5,7 @@
 //! CI checks the fragments without an install and without glab.
 
 use super::localtime;
-use super::proc::{Args, fail, git};
+use super::proc::{Args, fail, git, outln};
 use breadboard_core::json::{int_of, str_of};
 use regex::Regex;
 use serde_json::Value;
@@ -615,16 +615,16 @@ fn add(root: &Path, args: &Args) {
     if let Err(error) = fs::write(root.join(&file), &content) {
         fail(&format!("couldn't write {file}: {error}"));
     }
-    println!("✓ {file}\n\n{content}\n  type and area wrong? Edit the file; then commit it with the change.");
+    outln!("✓ {file}\n\n{content}\n  type and area wrong? Edit the file; then commit it with the change.");
 }
 
 fn unreleased(root: &Path) {
     let entries = entries_of(root);
     if entries.is_empty() {
-        println!("Nothing unreleased: no fragments in .changelog/.");
+        outln!("Nothing unreleased: no fragments in .changelog/.");
         return;
     }
-    println!(
+    outln!(
         "## [Unreleased]\n\n{}",
         section_body(&entries, &areas_of(root), project_url(root).as_deref())
     );
@@ -678,7 +678,7 @@ fn release(root: &Path, args: &Args) {
     } else {
         String::new()
     };
-    println!(
+    outln!(
         "✓ {CHANGELOG}: [{version}] with {} entries, {} fragments deleted, vita at {version}{note}\n  Read it, then commit: chore(release): v{version}",
         all.len(),
         entries.len()
@@ -692,14 +692,14 @@ fn notes(root: &Path, args: &Args) {
     let text = fs::read_to_string(root.join(CHANGELOG)).ok();
     let plain = version.strip_prefix('v').unwrap_or(&version);
     match text.and_then(|text| notes_of(&text, plain)) {
-        Some(found) => println!("{found}"),
+        Some(found) => outln!("{found}"),
         None => fail(&format!("{CHANGELOG} has no section {version}")),
     }
 }
 
 fn check(root: &Path, args: &Args) {
     let entries = entries_of(root);
-    println!(
+    outln!(
         "✓ {} fragment{} valid",
         entries.len(),
         if entries.len() == 1 { "" } else { "s" }
@@ -727,7 +727,7 @@ fn check(root: &Path, args: &Args) {
             "{reason}. Add one (pnpm changelog:add \"<sentence>\", {FRAGMENTS}/README.md),\n  or label the MR {NO_CHANGELOG} when nobody would miss it in the changelog, then retry this job."
         ));
     }
-    println!("✓ {reason}");
+    outln!("✓ {reason}");
 }
 
 /// `pnpm changelog:<sub>`.

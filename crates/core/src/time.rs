@@ -6,7 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Milliseconds since the epoch, now.
 pub fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).

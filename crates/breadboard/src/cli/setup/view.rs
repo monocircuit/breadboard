@@ -7,6 +7,7 @@
 //! Plain ANSI through crossterm, no widget library: the view is a pager, and
 //! its links must stay OSC 8 (rewrite rule 4).
 
+use super::proc::outln;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::{execute, terminal};
 use regex::Regex;
@@ -226,9 +227,11 @@ fn wrap(line: &Line, width: usize) -> Vec<Line> {
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)\s]+)\)").unwrap());
 static CODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`([^`]+)`").unwrap());
+static BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*([^*]+)\*\*").unwrap());
 static TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" · (\d\d:\d\d)$").unwrap());
 
-/// `[text](url)` as a link, `` `code` `` dimmed, a trailing ` · HH:MM` dimmed.
+/// `[text](url)` as a link, `` `code` `` dimmed, `**text**` bold (an MR's
+/// summary has it), a trailing ` · HH:MM` dimmed.
 fn inline(text: &str, theme: &Theme) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     let (body, time) = match TIME.captures(text) {
@@ -240,45 +243,45 @@ fn inline(text: &str, theme: &Theme) -> Vec<Span> {
     };
     let mut rest = body;
     while !rest.is_empty() {
-        let link = LINK.captures(rest);
-        let code = CODE.captures(rest);
-        let link_at = link.as_ref().and_then(|found| found.get(0)).map(|all| all.start());
-        let code_at = code.as_ref().and_then(|found| found.get(0)).map(|all| all.start());
-        let next = match (link_at, code_at) {
-            (Some(l), Some(c)) => Some(l.min(c)),
-            (l, c) => l.or(c),
-        };
-        let Some(next) = next else {
+        // The first of a link, code and bold; at the same place the earlier listed.
+        let found = [&*LINK, &*CODE, &*BOLD]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(kind, pattern)| pattern.captures(rest).map(|found| (kind, found)))
+            .min_by_key(|(kind, found)| (found.get(0).map_or(usize::MAX, |all| all.start()), *kind));
+        let Some((kind, found)) = found else {
             spans.push(Span {
                 text: rest.to_string(),
                 ..Span::default()
             });
             break;
         };
-        if next > 0 {
+        let all = found.get(0).expect("a match has its whole");
+        if all.start() > 0 {
             spans.push(Span {
-                text: rest[..next].to_string(),
+                text: rest[..all.start()].to_string(),
                 ..Span::default()
             });
         }
-        if link_at == Some(next) {
-            let found = link.expect("a link was found");
-            spans.push(Span {
+        spans.push(match kind {
+            0 => Span {
                 text: found[1].to_string(),
                 fg: Some(theme.link),
                 link: Some(found[2].to_string()),
                 ..Span::default()
-            });
-            rest = &rest[found.get(0).map_or(rest.len(), |all| all.end())..];
-        } else {
-            let found = code.expect("code was found");
-            spans.push(Span {
+            },
+            1 => Span {
                 text: found[1].to_string(),
                 is_dim: true,
                 ..Span::default()
-            });
-            rest = &rest[found.get(0).map_or(rest.len(), |all| all.end())..];
-        }
+            },
+            _ => Span {
+                text: found[1].to_string(),
+                is_bold: true,
+                ..Span::default()
+            },
+        });
+        rest = &rest[all.end()..];
     }
     if let Some(time) = time {
         spans.push(Span {
@@ -375,7 +378,7 @@ pub fn render_markdown(text: &str, width: usize, theme: &Theme) -> Vec<Line> {
 /// `text` on stdout: painted on a terminal, else as Markdown.
 pub fn print(text: &str) {
     if !is_color() {
-        println!("{text}");
+        outln!("{text}");
         return;
     }
     let width = terminal::size().map(|(columns, _)| usize::from(columns)).unwrap_or(100);
@@ -383,7 +386,7 @@ pub fn print(text: &str) {
         .iter()
         .map(|line| line.ansi(true, None))
         .collect();
-    println!("{}", painted.join("\n"));
+    outln!("{}", painted.join("\n"));
 }
 
 const OPEN: &str = "▾";
@@ -726,6 +729,27 @@ mod tests {
             vec!["T", "", "• !1 a long entry", "  that wraps · 10:00", "  under"]
         );
         assert!(lines[2].ansi(true, None).contains("\x1b]8;;u\x1b\\"));
+    }
+
+    #[test]
+    fn paints_bold_code_and_links_in_order() {
+        let spans = inline("a **b** `c` [d](u) **e", &THEME);
+        let looks: Vec<(&str, bool, bool, bool)> = spans
+            .iter()
+            .map(|span| (span.text.as_str(), span.is_bold, span.is_dim, span.link.is_some()))
+            .collect();
+        assert_eq!(
+            looks,
+            vec![
+                ("a ", false, false, false),
+                ("b", true, false, false),
+                (" ", false, false, false),
+                ("c", false, true, false),
+                (" ", false, false, false),
+                ("d", false, false, true),
+                (" **e", false, false, false),
+            ]
+        );
     }
 
     #[test]

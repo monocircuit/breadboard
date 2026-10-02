@@ -11,7 +11,7 @@ mod space;
 mod workers;
 
 use crate::cli::setup::herdr;
-use crate::cli::setup::proc::{self, Args, fail, name_refusal, quote, step};
+use crate::cli::setup::proc::{self, Args, fail, name_refusal, outln, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
@@ -120,10 +120,31 @@ fn stray_flag(args: &Args) -> Option<String> {
 }
 
 pub fn command(args: &Args) -> ExitCode {
-    let name = args.first().map(String::from);
+    let argv = &args.all;
+    let after = after_args(argv);
+    let valued = ["--peer", "--brief", "--to", "--limit", "--title"];
+    // The words, wherever the flags stand (`--dry-run breadboard 301`): the
+    // orchestration, then its issues; the MRs after `--after` are none.
+    let positional: Vec<&String> = argv
+        .iter()
+        .enumerate()
+        .filter(|(i, arg)| {
+            !arg.starts_with("--")
+                && !after.as_ref().is_some_and(|(_, at)| at.contains(i))
+                && !(*i > 0 && valued.contains(&argv[i - 1].as_str()))
+        })
+        .map(|(_, arg)| arg)
+        .collect();
+    let name = positional.first().map(|name| name.to_string());
     let is_valid = name.as_deref().is_some_and(is_name);
     if let Some(stray) = stray_flag(args) {
         fail(&format!("{stray}\n{USAGE}"));
+    }
+    if args.has("--watch") && !args.has("--changelog") {
+        fail(&format!(
+            "--watch goes with --changelog: pnpm wt:orchestrate {} --changelog --watch\n{USAGE}",
+            name.as_deref().unwrap_or("<name>")
+        ));
     }
     if args.has("--cap") {
         fail(
@@ -155,22 +176,9 @@ pub fn command(args: &Args) -> ExitCode {
         let Some(set) = changes::read_change_set(&name) else {
             fail(&format!("no orchestration {name}"))
         };
-        println!("{}", serde_json::to_string(&set).unwrap_or_default());
+        outln!("{}", serde_json::to_string(&set).unwrap_or_default());
         return ExitCode::SUCCESS;
     }
-    let argv = &args.all;
-    let after = after_args(argv);
-    let valued = ["--peer", "--brief", "--to", "--limit", "--title"];
-    let positional: Vec<&String> = argv
-        .iter()
-        .enumerate()
-        .filter(|(i, arg)| {
-            !arg.starts_with("--")
-                && !after.as_ref().is_some_and(|(_, at)| at.contains(i))
-                && !(*i > 0 && valued.contains(&argv[i - 1].as_str()))
-        })
-        .map(|(_, arg)| arg)
-        .collect();
     let wanted: Vec<String> = positional.iter().skip(1).map(|arg| arg.to_string()).collect();
     let title = args.value("--title").map(|title| title.trim().to_string());
     if args.has("--title") && title.as_deref().is_none_or(str::is_empty) {
@@ -219,7 +227,7 @@ pub fn command(args: &Args) -> ExitCode {
         None => record::orchestrator_label(&main, &name),
     };
     let (colour, _) = herdr::SLOT_COLOURS[slot as usize % herdr::SLOT_COLOURS.len()];
-    println!(
+    outln!(
         "\n{label}  colour slot {} ({colour}, sidebar token ${})",
         slot + 1,
         herdr::origin_token(slot)
@@ -231,7 +239,7 @@ pub fn command(args: &Args) -> ExitCode {
             .as_ref()
             .map(|why| format!("skipped: {why}"))
             .unwrap_or_else(|| item.title.clone());
-        println!("  #{:<4} {:<width$}  {what}", item.number, item.branch);
+        outln!("  #{:<4} {:<width$}  {what}", item.number, item.branch);
     }
     if plan.iter().all(|item| item.why.is_some()) {
         fail("nothing to start: every issue is closed, claimed or has its worktree already");
@@ -269,19 +277,19 @@ pub fn command(args: &Args) -> ExitCode {
                 Start::Fresh { is_shared: true, .. } => "→ a fresh agent on the shared stack".into(),
                 Start::Fresh { .. } => "→ a fresh agent".into(),
             };
-            println!("  #{:<4} {line}", item.number);
+            outln!("  #{:<4} {line}", item.number);
         }
     }
     if is_dry {
         let first = plan.iter().find(|item| item.why.is_none()).unwrap_or(&plan[0]);
-        println!(
+        outln!(
             "\n▸ nothing was done (--dry-run). The brief of {} (.claude/brief.md), started with\n  claude --session-id <new id> --name {} {}\n",
             first.feature,
             first.feature,
             quote(BRIEF_PROMPT)
         );
         let extra = extra_for(&name, first.number(), given.as_deref());
-        println!(
+        outln!(
             "{}",
             brief_of(&Brief {
                 item: first,
@@ -301,7 +309,7 @@ pub fn command(args: &Args) -> ExitCode {
             } else {
                 "no brief of the orchestrator".into()
             };
-            println!("  #{} gets {source}", item.number);
+            outln!("  #{} gets {source}", item.number);
         }
         return ExitCode::SUCCESS;
     }
@@ -506,9 +514,9 @@ pub fn command(args: &Args) -> ExitCode {
             }
         }
     }
-    println!("\n{label}");
+    outln!("\n{label}");
     for line in &results {
-        println!("  {line}");
+        outln!("  {line}");
     }
     if !started.is_empty() {
         let hello: Vec<String> = started
@@ -516,7 +524,7 @@ pub fn command(args: &Args) -> ExitCode {
             .map(|agent| format!("    SendMessage(to: \"{agent}\", message: \"…\")"))
             .collect();
         let peer_note = peer.as_ref().map(|peer| format!(" ({peer})")).unwrap_or_default();
-        println!(
+        outln!(
             "
   A folder claude has not seen asks to be trusted first: answer it in the agent's tab.
   The overview's WORKTREES shows where each agent is: look there, don't ask and don't relay it.
@@ -534,7 +542,13 @@ pub fn command(args: &Args) -> ExitCode {
             hello.join("\n")
         );
     }
-    ExitCode::SUCCESS
+    // A start that failed fails the command: a script and the overview's
+    // `--now` (it reads the last line only on an exit code) see it.
+    if results.iter().any(|line| line.starts_with('✗')) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// `wt:orchestrate <name> --title "<text>"`: the title into the record, its space and marks renamed.
@@ -542,7 +556,7 @@ fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
     let main = repo::main_dir();
     let before = record::orchestrator_label(&main, name);
     if is_dry {
-        println!("\n▸ nothing was done (--dry-run): {before} → {ORCHESTRATOR} {title}\n");
+        outln!("\n▸ nothing was done (--dry-run): {before} → {ORCHESTRATOR} {title}\n");
         return ExitCode::SUCCESS;
     }
     if let Err(error) = record::update_record(&main, name, object(json!({ "title": title }))) {
@@ -559,7 +573,7 @@ fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
         space::orchestrator_space(name);
         herdr::mark_origins();
     }
-    println!(
+    outln!(
         "\n✓ {before} → {}{}; commands keep the name: pnpm wt:orchestrate {name} …\n",
         record::orchestrator_label(&main, name),
         if has_space {

@@ -86,7 +86,9 @@ impl PidFile {
                 Ok(mut created) => {
                     use std::io::Write;
                     created.write_all(own.as_bytes()).ok()?;
-                    return Some(PidFile { file: file.to_path_buf() });
+                    return Some(PidFile {
+                        file: file.to_path_buf(),
+                    });
                 }
                 Err(_) => {
                     let pid = pid_in(file);
@@ -111,7 +113,10 @@ impl Drop for PidFile {
 
 /// The pid in a pid file, 0 when there is none.
 pub fn pid_in(file: &Path) -> i64 {
-    fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(0)
+    fs::read_to_string(file)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

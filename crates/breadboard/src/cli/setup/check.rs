@@ -5,13 +5,13 @@
 //! the pre-push hook reads: it lets a commit of that tree through. The
 //! stamp's format stays (rule 5): Node's hook and overview read it.
 
-use super::proc::{fail, git, step};
+use super::proc::{Stream, fail, git, outln, step, write_bytes};
 use super::repo;
 use breadboard_core::time::{now_ms, to_iso};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -258,12 +258,7 @@ fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Option<i32>, String)
             let mut reader = BufReader::new(stream);
             let mut line = Vec::new();
             while reader.read_until(b'\n', &mut line).is_ok_and(|read| read > 0) {
-                if is_err {
-                    let _ = std::io::stderr().write_all(&line);
-                } else {
-                    let _ = std::io::stdout().write_all(&line);
-                    let _ = std::io::stdout().flush();
-                }
+                write_bytes(if is_err { Stream::Err } else { Stream::Out }, &line);
                 if let Ok(mut kept) = kept.lock() {
                     kept.push_str(&String::from_utf8_lossy(&line));
                 }
@@ -338,7 +333,7 @@ pub fn command() -> ExitCode {
                 "failed": null, "running": null,
             }),
         );
-        println!(
+        outln!(
             "\n✓ nothing to check: the branch changes no package against develop ({}); {} may be pushed\n",
             short(&base),
             short(&sha)
@@ -353,14 +348,14 @@ pub fn command() -> ExitCode {
         short(&base)
     ));
     for (package, tasks) in &planned {
-        println!("  {package}  {}", tasks.join(" "));
+        outln!("  {package}  {}", tasks.join(" "));
     }
     for package in &packages {
         if let Some(why) = ci_only(package) {
-            println!("  ({why})");
+            outln!("  ({why})");
         }
     }
-    println!();
+    outln!();
     write_check(
         &dir,
         json!({ "running": { "sha": sha, "tree": tree, "pid": std::process::id(), "since": to_iso(now_ms()) } }),
@@ -420,7 +415,7 @@ pub fn command() -> ExitCode {
     } else {
         format!("{} may be pushed", short(&head))
     };
-    println!("\n✓ checked in {duration} s: {}\n  {next}\n", packages.join(", "));
+    outln!("\n✓ checked in {duration} s: {}\n  {next}\n", packages.join(", "));
     ExitCode::SUCCESS
 }
 

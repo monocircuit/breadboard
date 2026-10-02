@@ -2,7 +2,7 @@
 //! today's commands read them, `step`, `fail` with its hint, child processes
 //! with their output shown or kept.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -18,13 +18,11 @@ impl Args {
         Args { all: args.to_vec() }
     }
 
-    /// The first argument unless it is a flag: a flag before the feature
-    /// leaves none (`wt:new --fix 12-x` is a usage error, as today).
-    pub fn first(&self) -> Option<&str> {
-        self.all
-            .first()
-            .map(String::as_str)
-            .filter(|arg| !arg.starts_with("--"))
+    /// The first word that is no flag and no value of one of `valued`,
+    /// wherever it stands: `wt:new --fix 12-x` is `wt:new 12-x --fix` (Node
+    /// read only the first argument and printed the bare usage).
+    pub fn first_word(&self, valued: &[&str]) -> Option<String> {
+        self.words(valued).into_iter().next()
     }
 
     /// Whether `--name` stands on the command line as it is (`--x=y` counts
@@ -167,6 +165,125 @@ fn distance(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
+/// A line on stdout that never panics: `println!` would on a closed pipe
+/// (`breadboard commands | head -2`), and a setup command must finish its
+/// steps when nobody reads them any more.
+macro_rules! outln {
+    () => {
+        $crate::cli::setup::proc::write_line($crate::cli::setup::proc::Stream::Out, format_args!(""))
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::setup::proc::write_line($crate::cli::setup::proc::Stream::Out, format_args!($($arg)*))
+    };
+}
+
+/// [`outln!`] on stderr.
+macro_rules! errln {
+    ($($arg:tt)*) => {
+        $crate::cli::setup::proc::write_line($crate::cli::setup::proc::Stream::Err, format_args!($($arg)*))
+    };
+}
+
+pub(crate) use {errln, outln};
+
+/// Where a line goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    Out,
+    Err,
+}
+
+impl Stream {
+    fn fd(self) -> libc::c_int {
+        match self {
+            Stream::Out => libc::STDOUT_FILENO,
+            Stream::Err => libc::STDERR_FILENO,
+        }
+    }
+}
+
+/// `text` and a newline on `stream`. A stream nobody reads any more (EPIPE:
+/// the reader of the pipe is gone) is pointed at /dev/null from then on, so
+/// the next lines and the children after them write into nothing instead of
+/// failing: the command's steps go on, its exit code stays its own.
+pub fn write_line(stream: Stream, text: std::fmt::Arguments) {
+    let written = match stream {
+        Stream::Out => {
+            let mut out = std::io::stdout().lock();
+            out.write_fmt(text).and_then(|()| out.write_all(b"\n"))
+        }
+        Stream::Err => {
+            let mut err = std::io::stderr().lock();
+            err.write_fmt(text).and_then(|()| err.write_all(b"\n"))
+        }
+    };
+    if written.is_err() {
+        detach(stream);
+    }
+}
+
+/// `bytes` on `stream` as they are, flushed; a closed one as [`write_line`].
+pub fn write_bytes(stream: Stream, bytes: &[u8]) {
+    let written = match stream {
+        Stream::Out => {
+            let mut out = std::io::stdout().lock();
+            out.write_all(bytes).and_then(|()| out.flush())
+        }
+        Stream::Err => std::io::stderr().lock().write_all(bytes),
+    };
+    if written.is_err() {
+        detach(stream);
+    }
+}
+
+/// stdout flushed; a closed one as [`write_line`].
+pub fn flush_out() {
+    if std::io::stdout().flush().is_err() {
+        detach(Stream::Out);
+    }
+}
+
+/// `stream` pointed at /dev/null.
+fn detach(stream: Stream) {
+    // SAFETY: open(2) of a constant path and dup2(2)/close(2) of descriptors this process owns.
+    unsafe {
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if null >= 0 {
+            libc::dup2(null, stream.fd());
+            libc::close(null);
+        }
+    }
+    if stream == Stream::Out {
+        // What stdout still buffers goes into /dev/null now, not again into the error.
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// Whether `stream` is a pipe or socket, whose reader can go away (a
+/// terminal or a file can't): a child's output then passes through this
+/// process (`forward`), so the child never meets the closed pipe itself,
+/// which would end it (a child gets SIGPIPE back at its default).
+fn is_pipe(stream: Stream) -> bool {
+    // SAFETY: fstat(2) into a zeroed stat of a descriptor number.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    let kind = (unsafe { libc::fstat(stream.fd(), &mut stat) } == 0).then_some(stat.st_mode & libc::S_IFMT);
+    matches!(kind, Some(libc::S_IFIFO | libc::S_IFSOCK))
+}
+
+/// A child's output passed on to `stream` as it comes, until it ends.
+fn forward(from: impl Read + Send + 'static, stream: Stream) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut from = from;
+        let mut buffer = [0u8; 8192];
+        while let Ok(read) = from.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            write_bytes(stream, &buffer[..read]);
+        }
+    })
+}
+
 static HINT: Mutex<String> = Mutex::new(String::new());
 /// Files this process holds and drops when it fails (setup claims).
 static HELD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
@@ -212,11 +329,11 @@ pub fn release_held() {
 /// the `✗ ` at the start of a line (wt:orchestrate, the overview).
 pub fn fail(message: &str) -> ! {
     let hint = hint();
-    let _ = std::io::stdout().flush();
+    flush_out();
     if hint.is_empty() {
-        eprintln!("\n✗ {message}");
+        errln!("\n✗ {message}");
     } else {
-        eprintln!("\n✗ {message}\n  {hint}");
+        errln!("\n✗ {message}\n  {hint}");
     }
     release_held();
     std::process::exit(1)
@@ -224,7 +341,7 @@ pub fn fail(message: &str) -> ! {
 
 /// `\n▸ <message>` on stdout.
 pub fn step(message: &str) {
-    println!("\n▸ {message}");
+    outln!("\n▸ {message}");
 }
 
 /// What a child process answered.
@@ -255,7 +372,7 @@ pub struct How<'a> {
 /// `command args` (proc.mjs `run`): shown or quiet; a failure fails unless
 /// `can_fail`.
 pub fn run(command: &str, args: &[&str], how: How) -> Ran {
-    let _ = std::io::stdout().flush();
+    flush_out();
     let mut child = Command::new(command);
     child.args(args);
     if let Some(cwd) = how.cwd {
@@ -271,17 +388,29 @@ pub fn run(command: &str, args: &[&str], how: How) -> Ran {
     } else {
         Stdio::inherit()
     });
-    if how.is_quiet {
-        child.stdout(Stdio::piped()).stderr(Stdio::piped());
-    } else {
-        child.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    }
+    let passes = |stream| !how.is_quiet && is_pipe(stream);
+    let (passes_out, passes_err) = (passes(Stream::Out), passes(Stream::Err));
+    let stdio = |is_kept: bool| if is_kept { Stdio::piped() } else { Stdio::inherit() };
+    child.stdout(stdio(how.is_quiet || passes_out));
+    child.stderr(stdio(how.is_quiet || passes_err));
     let ran = match child.spawn() {
         Ok(mut process) => {
             if let (Some(input), Some(mut stdin)) = (how.input, process.stdin.take()) {
                 let _ = stdin.write_all(input.as_bytes());
             }
-            match process.wait_with_output() {
+            let out = process
+                .stdout
+                .take_if(|_| passes_out)
+                .map(|from| forward(from, Stream::Out));
+            let err = process
+                .stderr
+                .take_if(|_| passes_err)
+                .map(|from| forward(from, Stream::Err));
+            let output = process.wait_with_output();
+            for pump in [out, err].into_iter().flatten() {
+                let _ = pump.join();
+            }
+            match output {
                 Ok(output) => Ran {
                     is_ok: output.status.success(),
                     out: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -415,10 +544,16 @@ mod tests {
     #[test]
     fn reads_flags_as_today() {
         let parsed = args(&["12-x", "--origin", "breadboard", "--shared"]);
-        assert_eq!(parsed.first(), Some("12-x"));
+        assert_eq!(parsed.first_word(&["--origin"]).as_deref(), Some("12-x"));
         assert!(parsed.has("--shared"));
         assert_eq!(parsed.value("--origin").as_deref(), Some("breadboard"));
-        assert_eq!(args(&["--fix", "12-x"]).first(), None);
+        assert_eq!(args(&["--fix", "12-x"]).first_word(&[]).as_deref(), Some("12-x"));
+        assert_eq!(
+            args(&["--origin", "breadboard", "12-x"])
+                .first_word(&["--origin"])
+                .as_deref(),
+            Some("12-x")
+        );
         assert_eq!(args(&["--origin", "--shared"]).value("--origin"), None);
         assert_eq!(args(&["--since=2w"]).value("--since").as_deref(), Some("2w"));
         assert_eq!(args(&["a", "--type", "fixed", "b"]).words(&["--type"]), vec!["a", "b"]);

@@ -119,7 +119,12 @@ fn shell_of(pane: &str) -> Option<u64> {
 }
 
 /// The pane running this: the one whose shell is an ancestor of this
-/// process, herdr's answer alone only without /proc (#287).
+/// process, herdr's answer alone only without /proc (#287). herdr's
+/// `current` is asked first; the other panes only when it names one whose
+/// shell herdr knows and that is not ours (a gone pane id answers with the
+/// focused pane). When herdr can't say the shell of a pane it names, it
+/// can't for the others either: one call instead of one per pane, the
+/// same answer (none).
 pub fn current_pane() -> Option<Value> {
     let current = herdr(&["pane", "current", "--current"]).and_then(|result| result.get("pane").cloned());
     let ancestors = ancestors_of(std::process::id());
@@ -127,10 +132,14 @@ pub fn current_pane() -> Option<Value> {
         return current;
     }
     let chain: Vec<u64> = ancestors.iter().map(|pid| u64::from(*pid)).collect();
-    let is_ours = |pane: &Value| shell_of(field(pane, "pane_id")).is_some_and(|shell| chain.contains(&shell));
-    if let Some(current) = current.filter(|pane| is_ours(pane)) {
-        return Some(current);
+    if let Some(current) = current {
+        match shell_of(field(&current, "pane_id")) {
+            Some(shell) if chain.contains(&shell) => return Some(current),
+            Some(_) => {}
+            None => return None,
+        }
     }
+    let is_ours = |pane: &Value| shell_of(field(pane, "pane_id")).is_some_and(|shell| chain.contains(&shell));
     all_panes().into_iter().find(|pane| is_ours(pane))
 }
 

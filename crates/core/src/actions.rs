@@ -96,7 +96,11 @@ fn text_of(value: &Value) -> String {
 
 /// The actions of a file's value under `key`.
 fn list_in(value: &Value, key: &str) -> Vec<Action> {
-    value.get(key).and_then(Value::as_array).map(|list| list.iter().filter_map(Action::from_value).collect()).unwrap_or_default()
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Action::from_value).collect())
+        .unwrap_or_default()
 }
 
 /// The open actions of a record's or actions file's value.
@@ -196,8 +200,13 @@ pub fn options_of(action: &Action) -> Vec<DecideOption> {
         .iter()
         .enumerate()
         .map(|(i, answer)| {
-            let (label, description) = split_option(answer, action.descriptions.get(i).map(String::as_str).unwrap_or(""));
-            DecideOption { answer: answer.clone(), label, description }
+            let (label, description) =
+                split_option(answer, action.descriptions.get(i).map(String::as_str).unwrap_or(""));
+            DecideOption {
+                answer: answer.clone(),
+                label,
+                description,
+            }
         })
         .collect()
 }
@@ -226,16 +235,28 @@ pub fn decide_problem(text: &str, options: &[(String, String)], recommend: Optio
         return Some("a decide names its recommendation: --recommend <label or number>".into());
     };
     if !options.iter().any(|(label, _)| label == recommend) {
-        let listed: Vec<String> =
-            options.iter().enumerate().map(|(i, (label, _))| format!("{} \"{label}\"", i + 1)).collect();
-        return Some(format!("--recommend {recommend} is none of the options: {}", listed.join(", ")));
+        let listed: Vec<String> = options
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| format!("{} \"{label}\"", i + 1))
+            .collect();
+        return Some(format!(
+            "--recommend {recommend} is none of the options: {}",
+            listed.join(", ")
+        ));
     }
     None
 }
 
 /// How an answer reaches its agent: `[overview] #3 decide "A or B" → B`.
 pub fn answer_line(action: &Action) -> String {
-    format!("[overview] #{} {} \"{}\" → {}", action.id, action.kind, action.text, action.answer.as_deref().unwrap_or(""))
+    format!(
+        "[overview] #{} {} \"{}\" → {}",
+        action.id,
+        action.kind,
+        action.text,
+        action.answer.as_deref().unwrap_or("")
+    )
 }
 
 /// The draft the user completes: `… → broken: `.
@@ -244,7 +265,9 @@ pub fn draft_line(action: &Action) -> String {
 }
 
 fn is_claimed(action: &Value, now: i64) -> bool {
-    str_of(action, "deliveringAt").and_then(parse_iso).is_some_and(|at| now - at < CLAIM_MS)
+    str_of(action, "deliveringAt")
+        .and_then(parse_iso)
+        .is_some_and(|at| now - at < CLAIM_MS)
 }
 
 /// What a change of the file does: the actions to write (None: none), the
@@ -259,8 +282,16 @@ struct Changed<T> {
 fn change_actions<T>(file: &Path, change: impl FnOnce(Vec<Value>) -> Changed<T>) -> io::Result<T> {
     with_dir_lock(file, LOCK_STALE, || {
         let read = json::read_object(file);
-        let actions = read.get("actions").and_then(Value::as_array).cloned().unwrap_or_default();
-        let Changed { actions, fields, result } = change(actions);
+        let actions = read
+            .get("actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Changed {
+            actions,
+            fields,
+            result,
+        } = change(actions);
         if let Some(actions) = actions {
             let mut object = json::read_object(file);
             object.insert("actions".into(), Value::Array(actions));
@@ -279,7 +310,11 @@ fn change_actions<T>(file: &Path, change: impl FnOnce(Vec<Value>) -> Changed<T>)
 fn answered_fields(file: &Path, delivered: &[Value]) -> Map<String, Value> {
     let delivered_at = to_iso(now_ms());
     let read = json::read_object(file);
-    let mut answered: Vec<Value> = read.get("answered").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut answered: Vec<Value> = read
+        .get("answered")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     for action in delivered {
         let mut action = action.as_object().cloned().unwrap_or_default();
         action.shift_remove("deliveringAt");
@@ -288,7 +323,10 @@ fn answered_fields(file: &Path, delivered: &[Value]) -> Map<String, Value> {
     }
     let skip = answered.len().saturating_sub(ANSWERED_KEPT);
     let mut fields = Map::new();
-    fields.insert("answered".into(), Value::Array(answered.into_iter().skip(skip).collect()));
+    fields.insert(
+        "answered".into(),
+        Value::Array(answered.into_iter().skip(skip).collect()),
+    );
     fields
 }
 
@@ -314,7 +352,11 @@ pub fn add_action(file: &Path, new: NewAction) -> io::Result<Action> {
     change_actions(file, |actions| {
         // After the delivered ones too: an answer in `answered` keeps its id.
         let answered = answered_of(file);
-        let highest = actions.iter().filter_map(|action| int_of(action, "id")).chain(answered.iter().map(|a| a.id)).max();
+        let highest = actions
+            .iter()
+            .filter_map(|action| int_of(action, "id"))
+            .chain(answered.iter().map(|a| a.id))
+            .max();
         let mut action = Map::new();
         action.insert("id".into(), json!(highest.unwrap_or(0).max(0) + 1));
         action.insert("kind".into(), json!(new.kind));
@@ -337,11 +379,17 @@ pub fn add_action(file: &Path, new: NewAction) -> io::Result<Action> {
         let action = Value::Object(action);
         let mut kept: Vec<Value> = actions
             .into_iter()
-            .filter(|other| str_of(other, "kind") != Some(new.kind.as_str()) || str_of(other, "text") != Some(new.text.as_str()))
+            .filter(|other| {
+                str_of(other, "kind") != Some(new.kind.as_str()) || str_of(other, "text") != Some(new.text.as_str())
+            })
             .collect();
         kept.push(action.clone());
         let fields = (new.kind == "merge").then(|| json!({ "change": null }).as_object().cloned().unwrap_or_default());
-        Changed { actions: Some(kept), fields, result: Action::from_value(&action).unwrap_or_default() }
+        Changed {
+            actions: Some(kept),
+            fields,
+            result: Action::from_value(&action).unwrap_or_default(),
+        }
     })
 }
 
@@ -349,12 +397,20 @@ pub fn add_action(file: &Path, new: NewAction) -> io::Result<Action> {
 pub fn done_action(file: &Path, id: i64) -> io::Result<bool> {
     change_actions(file, |actions| {
         let Some(at) = actions.iter().position(|action| int_of(action, "id") == Some(id)) else {
-            return Changed { actions: None, fields: None, result: false };
+            return Changed {
+                actions: None,
+                fields: None,
+                result: false,
+            };
         };
         let mut actions = actions;
         let action = actions.remove(at);
         let fields = json::is_truthy(action.get("answer")).then(|| answered_fields(file, &[action]));
-        Changed { actions: Some(actions), fields, result: true }
+        Changed {
+            actions: Some(actions),
+            fields,
+            result: true,
+        }
     })
 }
 
@@ -362,7 +418,11 @@ pub fn done_action(file: &Path, id: i64) -> io::Result<bool> {
 pub fn answer_action(file: &Path, id: i64, answer: &str) -> io::Result<bool> {
     change_actions(file, |actions| {
         if !actions.iter().any(|action| int_of(action, "id") == Some(id)) {
-            return Changed { actions: None, fields: None, result: false };
+            return Changed {
+                actions: None,
+                fields: None,
+                result: false,
+            };
         }
         let answered_at = to_iso(now_ms());
         let actions = actions
@@ -377,7 +437,11 @@ pub fn answer_action(file: &Path, id: i64, answer: &str) -> io::Result<bool> {
                 action
             })
             .collect();
-        Changed { actions: Some(actions), fields: None, result: true }
+        Changed {
+            actions: Some(actions),
+            fields: None,
+            result: true,
+        }
     })
 }
 
@@ -403,7 +467,11 @@ fn set_field(file: &Path, id: i64, field: &str, value: Option<Value>) -> io::Res
                 action
             })
             .collect();
-        Changed { actions: Some(actions), fields: None, result: () }
+        Changed {
+            actions: Some(actions),
+            fields: None,
+            result: (),
+        }
     })
 }
 
@@ -419,7 +487,11 @@ pub fn claim_answer(file: &Path, id: i64) -> io::Result<Option<Action>> {
         let now = now_ms();
         let found = actions.iter().find(|action| int_of(action, "id") == Some(id));
         if found.is_none_or(|action| !json::is_truthy(action.get("answer")) || is_claimed(action, now)) {
-            return Changed { actions: None, fields: None, result: None };
+            return Changed {
+                actions: None,
+                fields: None,
+                result: None,
+            };
         }
         let mut claimed = None;
         let actions = actions
@@ -434,7 +506,11 @@ pub fn claim_answer(file: &Path, id: i64) -> io::Result<Option<Action>> {
                 action
             })
             .collect();
-        Changed { actions: Some(actions), fields: None, result: claimed }
+        Changed {
+            actions: Some(actions),
+            fields: None,
+            result: claimed,
+        }
     })
 }
 
@@ -459,21 +535,34 @@ pub fn take_answers(file: &Path, pane: Option<Option<&str>>) -> io::Result<Vec<A
         };
         let (taken, kept): (Vec<Value>, Vec<Value>) = actions.into_iter().partition(is_taken);
         if taken.is_empty() {
-            return Changed { actions: None, fields: None, result: Vec::new() };
+            return Changed {
+                actions: None,
+                fields: None,
+                result: Vec::new(),
+            };
         }
         let fields = answered_fields(file, &taken);
-        Changed { actions: Some(kept), fields: Some(fields), result: taken.iter().filter_map(Action::from_value).collect() }
+        Changed {
+            actions: Some(kept),
+            fields: Some(fields),
+            result: taken.iter().filter_map(Action::from_value).collect(),
+        }
     })
 }
 
 /// `change` requested in `file`: its merge actions withdrawn, returned.
 pub fn request_change(file: &Path, change: Value) -> io::Result<Vec<Action>> {
     change_actions(file, |actions| {
-        let (merges, kept): (Vec<Value>, Vec<Value>) =
-            actions.into_iter().partition(|action| str_of(action, "kind") == Some("merge"));
+        let (merges, kept): (Vec<Value>, Vec<Value>) = actions
+            .into_iter()
+            .partition(|action| str_of(action, "kind") == Some("merge"));
         let mut fields = Map::new();
         fields.insert("change".into(), change);
-        Changed { actions: Some(kept), fields: Some(fields), result: merges.iter().filter_map(Action::from_value).collect() }
+        Changed {
+            actions: Some(kept),
+            fields: Some(fields),
+            result: merges.iter().filter_map(Action::from_value).collect(),
+        }
     })
 }
 
@@ -488,7 +577,15 @@ mod tests {
     }
 
     fn add(file: &Path, kind: &str, text: &str) -> Action {
-        add_action(file, NewAction { kind: kind.into(), text: text.into(), ..Default::default() }).unwrap()
+        add_action(
+            file,
+            NewAction {
+                kind: kind.into(),
+                text: text.into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
     }
 
     #[test]
@@ -501,10 +598,21 @@ mod tests {
     fn keeps_the_mr_of_the_orchestrators_merge() {
         let scratch = Scratch::new();
         let file = file_of(&scratch);
-        add_action(&file, NewAction { kind: "merge".into(), text: "#242 rows".into(), mr: Some(256), ..Default::default() })
-            .unwrap();
+        add_action(
+            &file,
+            NewAction {
+                kind: "merge".into(),
+                text: "#242 rows".into(),
+                mr: Some(256),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         add(&file, "look", "the logo");
-        assert_eq!(actions_of(&file).iter().map(|a| a.mr).collect::<Vec<_>>(), vec![Some(256), None]);
+        assert_eq!(
+            actions_of(&file).iter().map(|a| a.mr).collect::<Vec<_>>(),
+            vec![Some(256), None]
+        );
     }
 
     #[test]
@@ -525,7 +633,10 @@ mod tests {
         assert_eq!(second.id, 2);
         let raw = json::read(&file).unwrap();
         let keys: Vec<&String> = raw["actions"][1].as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["id", "kind", "text", "url", "run", "options", "recommend", "pane", "at"]);
+        assert_eq!(
+            keys,
+            ["id", "kind", "text", "url", "run", "options", "recommend", "pane", "at"]
+        );
         assert!(fs::read_to_string(&file).unwrap().ends_with("}\n"));
     }
 
@@ -562,11 +673,33 @@ mod tests {
 
     #[test]
     fn offers_the_options_of_a_decision() {
-        let decide = Action { kind: "decide".into(), options: vec!["A".into(), "B".into()], ..Default::default() };
+        let decide = Action {
+            kind: "decide".into(),
+            options: vec!["A".into(), "B".into()],
+            ..Default::default()
+        };
         assert_eq!(answers_of(&decide), vec!["A", "B"]);
-        assert!(answers_of(&Action { kind: "decide".into(), ..Default::default() }).is_empty());
-        assert_eq!(answers_of(&Action { kind: "plan".into(), ..Default::default() }), vec!["ok", "different"]);
-        assert!(answers_of(&Action { kind: "merge".into(), ..Default::default() }).is_empty());
+        assert!(
+            answers_of(&Action {
+                kind: "decide".into(),
+                ..Default::default()
+            })
+            .is_empty()
+        );
+        assert_eq!(
+            answers_of(&Action {
+                kind: "plan".into(),
+                ..Default::default()
+            }),
+            vec!["ok", "different"]
+        );
+        assert!(
+            answers_of(&Action {
+                kind: "merge".into(),
+                ..Default::default()
+            })
+            .is_empty()
+        );
     }
 
     #[test]
@@ -575,7 +708,12 @@ mod tests {
         let file = file_of(&scratch);
         add_action(
             &file,
-            NewAction { kind: "decide".into(), text: "A or B".into(), options: vec!["A".into(), "B".into()], ..Default::default() },
+            NewAction {
+                kind: "decide".into(),
+                text: "A or B".into(),
+                options: vec!["A".into(), "B".into()],
+                ..Default::default()
+            },
         )
         .unwrap();
         add(&file, "look", "the log");
@@ -593,8 +731,16 @@ mod tests {
         let file = file_of(&scratch);
         add(&file, "try", "the chip");
         add(&file, "plan", "the plan");
-        add_action(&file, NewAction { kind: "decide".into(), text: "A or B".into(), options: vec!["broken".into()], ..Default::default() })
-            .unwrap();
+        add_action(
+            &file,
+            NewAction {
+                kind: "decide".into(),
+                text: "A or B".into(),
+                options: vec!["broken".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
         answer_action(&file, 1, "broken").unwrap();
         answer_action(&file, 2, "different").unwrap();
         answer_action(&file, 3, "broken").unwrap();
@@ -603,7 +749,14 @@ mod tests {
         assert!(is_draft(&all[1]));
         assert!(!is_draft(&all[2]));
         assert_eq!(draft_line(&all[0]), "[overview] #1 try \"the chip\" → broken: ");
-        assert_eq!(take_answers(&file, None).unwrap().iter().map(|a| a.id).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(
+            take_answers(&file, None)
+                .unwrap()
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
         draft_waits(&file, 1, Some("at a question")).unwrap();
         assert_eq!(actions_of(&file)[0].waits.as_deref(), Some("at a question"));
         draft_waits(&file, 1, None).unwrap();
@@ -615,13 +768,36 @@ mod tests {
     fn takes_only_the_answers_asked_from_a_pane() {
         let scratch = Scratch::new();
         let file = file_of(&scratch);
-        add_action(&file, NewAction { kind: "plan".into(), text: "mine".into(), pane: Some("w1:p1".into()), ..Default::default() })
-            .unwrap();
-        add_action(&file, NewAction { kind: "plan".into(), text: "theirs".into(), pane: Some("w2:p1".into()), ..Default::default() })
-            .unwrap();
+        add_action(
+            &file,
+            NewAction {
+                kind: "plan".into(),
+                text: "mine".into(),
+                pane: Some("w1:p1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        add_action(
+            &file,
+            NewAction {
+                kind: "plan".into(),
+                text: "theirs".into(),
+                pane: Some("w2:p1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         answer_action(&file, 1, "ok").unwrap();
         answer_action(&file, 2, "ok").unwrap();
-        assert_eq!(take_answers(&file, Some(Some("w1:p1"))).unwrap().iter().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            take_answers(&file, Some(Some("w1:p1")))
+                .unwrap()
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
         assert_eq!(actions_of(&file).len(), 1);
     }
 
@@ -631,7 +807,12 @@ mod tests {
         let file = file_of(&scratch);
         add_action(
             &file,
-            NewAction { kind: "decide".into(), text: "A or B".into(), options: vec!["A".into(), "B".into()], ..Default::default() },
+            NewAction {
+                kind: "decide".into(),
+                text: "A or B".into(),
+                options: vec!["A".into(), "B".into()],
+                ..Default::default()
+            },
         )
         .unwrap();
         answer_action(&file, 1, "A").unwrap();
@@ -640,7 +821,14 @@ mod tests {
         assert!(take_answers(&file, None).unwrap().is_empty());
         release_answer(&file, 1).unwrap();
         assert_eq!(actions_of(&file)[0].delivering_at, None);
-        assert_eq!(take_answers(&file, None).unwrap().iter().map(|a| a.id).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            take_answers(&file, None)
+                .unwrap()
+                .iter()
+                .map(|a| a.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
     }
 
     #[test]
@@ -661,7 +849,12 @@ mod tests {
         let file = file_of(&scratch);
         add_action(
             &file,
-            NewAction { kind: "decide".into(), text: "A or B".into(), options: vec!["A".into(), "B".into()], ..Default::default() },
+            NewAction {
+                kind: "decide".into(),
+                text: "A or B".into(),
+                options: vec!["A".into(), "B".into()],
+                ..Default::default()
+            },
         )
         .unwrap();
         add(&file, "plan", "the plan");
@@ -674,11 +867,18 @@ mod tests {
         done_action(&file, 3).unwrap();
         assert!(actions_of(&file).is_empty());
         let answered = answered_of(&file);
-        assert_eq!(answered.iter().map(|a| (a.id, a.answer.clone().unwrap())).collect::<Vec<_>>(), vec![
-            (1, "B".to_string()),
-            (2, "ok".to_string())
-        ]);
-        assert!(answered.iter().all(|a| a.delivered_at.is_some() && a.delivering_at.is_none() && a.answered_at.is_some()));
+        assert_eq!(
+            answered
+                .iter()
+                .map(|a| (a.id, a.answer.clone().unwrap()))
+                .collect::<Vec<_>>(),
+            vec![(1, "B".to_string()), (2, "ok".to_string())]
+        );
+        assert!(
+            answered
+                .iter()
+                .all(|a| a.delivered_at.is_some() && a.delivering_at.is_none() && a.answered_at.is_some())
+        );
         assert_eq!(add(&file, "look", "more").id, 3);
     }
 
@@ -687,7 +887,8 @@ mod tests {
         let scratch = Scratch::new();
         let file = file_of(&scratch);
         add(&file, "merge", "ready");
-        let withdrawn = request_change(&file, json!({ "text": "rename it", "at": "T", "mr": 3, "head": "abc" })).unwrap();
+        let withdrawn =
+            request_change(&file, json!({ "text": "rename it", "at": "T", "mr": 3, "head": "abc" })).unwrap();
         assert_eq!(withdrawn.len(), 1);
         assert_eq!(change_of(&file).unwrap().text, "rename it");
         assert!(actions_of(&file).is_empty());
@@ -697,17 +898,46 @@ mod tests {
 
     #[test]
     fn takes_a_question_options_saying_what_happens_and_a_recommendation() {
-        let options: Vec<(String, String)> =
-            ["keep both lines", "drop the old line"].iter().map(|label| split_option(label, "")).collect();
-        assert_eq!(decide_problem("Which line stays? The old one is shorter.", &options, Some("drop the old line")), None);
+        let options: Vec<(String, String)> = ["keep both lines", "drop the old line"]
+            .iter()
+            .map(|label| split_option(label, ""))
+            .collect();
+        assert_eq!(
+            decide_problem(
+                "Which line stays? The old one is shorter.",
+                &options,
+                Some("drop the old line")
+            ),
+            None
+        );
         let short = vec![split_option("Go", "phases 2-4"), split_option("No-go: pixi stays", "")];
         assert_eq!(decide_problem("Skia?", &short, Some("Go")), None);
-        assert!(decide_problem("A or B", &options, Some("keep both lines")).unwrap().contains("question"));
-        assert!(decide_problem("Which?", &options[..1], None).unwrap().contains("two options"));
+        assert!(
+            decide_problem("A or B", &options, Some("keep both lines"))
+                .unwrap()
+                .contains("question")
+        );
+        assert!(
+            decide_problem("Which?", &options[..1], None)
+                .unwrap()
+                .contains("two options")
+        );
         let bare = vec![split_option("A", ""), split_option("B", "")];
-        assert!(decide_problem("Which?", &bare, Some("A")).unwrap().contains("\"A\", \"B\""));
-        assert!(decide_problem("Which?", &options, None).unwrap().contains("--recommend"));
-        assert!(decide_problem("Which?", &options, Some("C")).unwrap().contains("none of the options"));
+        assert!(
+            decide_problem("Which?", &bare, Some("A"))
+                .unwrap()
+                .contains("\"A\", \"B\"")
+        );
+        assert!(
+            decide_problem("Which?", &options, None)
+                .unwrap()
+                .contains("--recommend")
+        );
+        assert!(
+            decide_problem("Which?", &options, Some("C"))
+                .unwrap()
+                .contains("none of the options")
+        );
     }
 
     #[test]
@@ -717,9 +947,20 @@ mod tests {
             descriptions: vec!["phases 2-4".into(), String::new()],
             ..Default::default()
         };
-        assert_eq!(options_of(&action), vec![
-            DecideOption { answer: "Go".into(), label: "Go".into(), description: "phases 2-4".into() },
-            DecideOption { answer: "No-go: pixi stays".into(), label: "No-go".into(), description: "pixi stays".into() },
-        ]);
+        assert_eq!(
+            options_of(&action),
+            vec![
+                DecideOption {
+                    answer: "Go".into(),
+                    label: "Go".into(),
+                    description: "phases 2-4".into()
+                },
+                DecideOption {
+                    answer: "No-go: pixi stays".into(),
+                    label: "No-go".into(),
+                    description: "pixi stays".into()
+                },
+            ]
+        );
     }
 }

@@ -61,12 +61,18 @@ pub fn str_of<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 /// A whole number field, None when it is missing or no number.
 pub fn int_of(value: &Value, key: &str) -> Option<i64> {
     let field = value.get(key)?;
-    field.as_i64().or_else(|| field.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
+    field
+        .as_i64()
+        .or_else(|| field.as_f64().filter(|f| f.fract() == 0.0).map(|f| f as i64))
 }
 
 /// A list of whole numbers, the others left out.
 pub fn ints_of(value: &Value, key: &str) -> Vec<i64> {
-    value.get(key).and_then(Value::as_array).map(|list| list.iter().filter_map(Value::as_i64).collect()).unwrap_or_default()
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default()
 }
 
 /// A list of strings, the others left out.
@@ -109,7 +115,10 @@ mod tests {
         let value: Value = serde_json::from_str(text).unwrap();
         assert_eq!(pretty(&value), text);
         let mut object = value.as_object().unwrap().clone();
-        merge(&mut object, json!({ "alpha": 3, "beta": null }).as_object().unwrap().clone());
+        merge(
+            &mut object,
+            json!({ "alpha": 3, "beta": null }).as_object().unwrap().clone(),
+        );
         assert_eq!(Value::Object(object).to_string(), r#"{"zeta":1,"alpha":3,"beta":null}"#);
     }
 

@@ -7,7 +7,7 @@ use super::space::{orchestrator_checkouts, remove_orchestrator_checkout, space_o
 use super::workers::checkout_of;
 use crate::cli::setup::conversations::keep_conversation;
 use crate::cli::setup::herdr::{self, field, herdr};
-use crate::cli::setup::proc::{self, fail, step};
+use crate::cli::setup::proc::{self, fail, outln, step};
 use crate::cli::setup::repo;
 use breadboard_core::record;
 use serde_json::Value;
@@ -164,7 +164,7 @@ pub fn command(name: &str) -> ExitCode {
         || setups_dir(name).exists()
         || orchestrator_checkouts().contains(&checkout_of(name));
     if !is_known {
-        println!("\n✓ {label} ended already: no herdr space, record, setups or checkout of {name} is left");
+        outln!("\n✓ {label} ended already: no herdr space, record, setups or checkout of {name} is left");
         return ExitCode::SUCCESS;
     }
     let pane = if workspace.is_some() && std::env::var_os("HERDR_PANE_ID").is_some() {
@@ -189,7 +189,7 @@ pub fn command(name: &str) -> ExitCode {
             for line in done {
                 step(&line);
             }
-            println!("\n✓ {label} ended");
+            outln!("\n✓ {label} ended");
         }
     }
     ExitCode::SUCCESS

@@ -7,7 +7,7 @@
 use super::fragments::{self, Entry};
 use super::gitlab;
 use super::localtime::{day_of, time_of};
-use super::proc::{Args, fail, step};
+use super::proc::{Args, errln, fail, step};
 use super::repo;
 use super::view;
 use breadboard_core::json::{int_of, str_of};
@@ -968,7 +968,7 @@ pub fn overall_command(args: &Args) -> ExitCode {
     view::print(&written.text);
     // Last, where they are seen: what this rewrite is missing and why.
     for warning in &written.warnings {
-        eprintln!("! {warning}");
+        errln!("! {warning}");
     }
     ExitCode::SUCCESS
 }

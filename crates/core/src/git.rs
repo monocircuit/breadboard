@@ -44,7 +44,12 @@ pub fn git(dir: &Path, args: &[&str]) -> Out {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         },
-        Err(error) => Out { is_ok: false, status: -1, stdout: String::new(), stderr: error.to_string() },
+        Err(error) => Out {
+            is_ok: false,
+            status: -1,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        },
     }
 }
 
@@ -67,7 +72,9 @@ pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
         .split("\n\n")
         .filter_map(|block| {
             let get = |key: &str| {
-                block.lines().find_map(|line| line.strip_prefix(key).and_then(|rest| rest.strip_prefix(' ')))
+                block
+                    .lines()
+                    .find_map(|line| line.strip_prefix(key).and_then(|rest| rest.strip_prefix(' ')))
             };
             let dir = get("worktree")?;
             Some(Worktree {
@@ -94,17 +101,26 @@ pub fn orchestrations_dir(main: &Path) -> PathBuf {
 /// The worktrees without the orchestrations' checkouts (worktrees.mjs `worktrees`).
 pub fn worktrees(from: &Path) -> Vec<Worktree> {
     let all = all_worktrees(from);
-    let Some(main) = all.first().map(|tree| tree.dir.clone()) else { return all };
+    let Some(main) = all.first().map(|tree| tree.dir.clone()) else {
+        return all;
+    };
     let skip = orchestrations_dir(&main);
-    all.into_iter().filter(|tree| tree.dir == main || !tree.dir.starts_with(&skip)).collect()
+    all.into_iter()
+        .filter(|tree| tree.dir == main || !tree.dir.starts_with(&skip))
+        .collect()
 }
 
 /// The checkouts of the orchestrations (orchestrator.mjs `orchestratorCheckouts`).
 pub fn orchestrator_checkouts(from: &Path) -> Vec<PathBuf> {
     let all = all_worktrees(from);
-    let Some(main) = all.first().map(|tree| tree.dir.clone()) else { return Vec::new() };
+    let Some(main) = all.first().map(|tree| tree.dir.clone()) else {
+        return Vec::new();
+    };
     let folder = orchestrations_dir(&main);
-    all.into_iter().map(|tree| tree.dir).filter(|dir| dir.parent() == Some(folder.as_path())).collect()
+    all.into_iter()
+        .map(|tree| tree.dir)
+        .filter(|dir| dir.parent() == Some(folder.as_path()))
+        .collect()
 }
 
 /// The main checkout of the repo `from` stands in, None outside one.
@@ -115,8 +131,14 @@ pub fn main_dir(from: &Path) -> Option<PathBuf> {
 /// The name of a worktree after the main checkout's: `platform-292-x` → `292-x`
 /// (tabs.mjs `featureOf`).
 pub fn feature_of(main: &Path, dir: &Path) -> String {
-    let base = dir.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let prefix = format!("{}-", main.file_name().map(|name| name.to_string_lossy()).unwrap_or_default());
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let prefix = format!(
+        "{}-",
+        main.file_name().map(|name| name.to_string_lossy()).unwrap_or_default()
+    );
     base.replacen(&prefix, "", 1)
 }
 
@@ -135,7 +157,8 @@ pub fn issue_of_branch(branch: &str) -> Option<u64> {
     let bytes = branch.as_bytes();
     (0..bytes.len()).filter(|&at| bytes[at] == b'/').find_map(|at| {
         let digits = bytes[at + 1..].iter().take_while(|b| b.is_ascii_digit()).count();
-        (digits > 0 && bytes.get(at + 1 + digits) == Some(&b'-')).then(|| branch[at + 1..at + 1 + digits].parse().ok())?
+        (digits > 0 && bytes.get(at + 1 + digits) == Some(&b'-'))
+            .then(|| branch[at + 1..at + 1 + digits].parse().ok())?
     })
 }
 
@@ -160,7 +183,10 @@ pub fn own_commits(dir: &Path, branch: &str) -> usize {
     if branch == "(detached)" {
         return 0;
     }
-    git(dir, &["cherry", "origin/develop", branch]).lines().filter(|line| line.starts_with('+')).count()
+    git(dir, &["cherry", "origin/develop", branch])
+        .lines()
+        .filter(|line| line.starts_with('+'))
+        .count()
 }
 
 /// How much of a worktree's branch is on origin (change.mjs `pushStateOf`):
@@ -185,7 +211,11 @@ pub fn push_state(dir: &Path, branch: Option<&str>) -> PushState {
         }
         _ => None,
     };
-    let base = if pushed.is_some() { remote.clone().unwrap_or_default() } else { "origin/develop".into() };
+    let base = if pushed.is_some() {
+        remote.clone().unwrap_or_default()
+    } else {
+        "origin/develop".into()
+    };
     let log = git(dir, &["log", "--format=%ct", &format!("{base}..HEAD")]);
     let times: Vec<i64> = log.lines().filter_map(|line| line.trim().parse().ok()).collect();
     PushState {
@@ -221,9 +251,15 @@ pub fn work_files(dir: &Path) -> BTreeSet<String> {
     if !base.is_ok || base.out().is_empty() {
         return BTreeSet::new();
     }
-    let mut files: BTreeSet<String> =
-        git(dir, &["diff", "--name-only", base.out()]).lines().map(String::from).collect();
-    files.extend(git(dir, &["status", "--porcelain", "-uall"]).lines().map(path_of_status));
+    let mut files: BTreeSet<String> = git(dir, &["diff", "--name-only", base.out()])
+        .lines()
+        .map(String::from)
+        .collect();
+    files.extend(
+        git(dir, &["status", "--porcelain", "-uall"])
+            .lines()
+            .map(path_of_status),
+    );
     files
 }
 
@@ -237,10 +273,25 @@ pub fn branch_files(dir: &Path) -> Vec<String> {
         return Vec::new();
     }
     let reflog = git(dir, &["reflog", "show", "--format=%H", branch.out()]);
-    let Some(created) = reflog.lines().last().map(str::to_string) else { return Vec::new() };
-    let log = git(dir, &["log", "--first-parent", "--no-merges", "--format=", "--name-only", &format!("{created}..HEAD")]);
+    let Some(created) = reflog.lines().last().map(str::to_string) else {
+        return Vec::new();
+    };
+    let log = git(
+        dir,
+        &[
+            "log",
+            "--first-parent",
+            "--no-merges",
+            "--format=",
+            "--name-only",
+            &format!("{created}..HEAD"),
+        ],
+    );
     let mut seen = BTreeSet::new();
-    log.lines().filter(|file| seen.insert(file.to_string())).map(String::from).collect()
+    log.lines()
+        .filter(|file| seen.insert(file.to_string()))
+        .map(String::from)
+        .collect()
 }
 
 /// The commit HEAD points at, None in a repo without one.
@@ -258,7 +309,10 @@ pub fn tree_of(dir: &Path, rev: &str) -> Option<String> {
 /// The git directory of a worktree (`.git/worktrees/<name>` for a linked one)
 /// and the common one, for watching what changes its state.
 pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    let out = git(dir, &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+    let out = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"],
+    );
     let mut lines = out.lines();
     Some((PathBuf::from(lines.next()?), PathBuf::from(lines.next()?)))
 }
@@ -279,7 +333,11 @@ pub(crate) mod fixture {
             .env("GIT_COMMITTER_EMAIL", "test@example.com")
             .output()
             .unwrap();
-        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
@@ -287,8 +345,20 @@ pub(crate) mod fixture {
     pub fn repo(scratch: &Scratch) -> PathBuf {
         let origin = scratch.join("origin.git");
         let main = scratch.join("platform");
-        run(scratch.path(), &["init", "--quiet", "--bare", "--initial-branch=develop", origin.to_str().unwrap()]);
-        run(scratch.path(), &["init", "--quiet", "--initial-branch=develop", main.to_str().unwrap()]);
+        run(
+            scratch.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                "--initial-branch=develop",
+                origin.to_str().unwrap(),
+            ],
+        );
+        run(
+            scratch.path(),
+            &["init", "--quiet", "--initial-branch=develop", main.to_str().unwrap()],
+        );
         run(&main, &["remote", "add", "origin", origin.to_str().unwrap()]);
         std::fs::write(main.join(".gitignore"), ".claude/\n").unwrap();
         std::fs::write(main.join("README.md"), "# platform\n").unwrap();
@@ -303,7 +373,18 @@ pub(crate) mod fixture {
     pub fn worktree(main: &Path, feature: &str, is_pushed: bool) -> PathBuf {
         let dir = dir_of(main, feature);
         let branch = format!("feature/{feature}");
-        run(main, &["worktree", "add", "--quiet", "-b", &branch, dir.to_str().unwrap(), "develop"]);
+        run(
+            main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                &branch,
+                dir.to_str().unwrap(),
+                "develop",
+            ],
+        );
         std::fs::create_dir_all(dir.join("work")).unwrap();
         std::fs::write(dir.join(format!("work/{feature}.md")), format!("{feature}\n")).unwrap();
         run(&dir, &["add", "."]);
@@ -333,7 +414,10 @@ mod tests {
 
     #[test]
     fn names_features_and_issues() {
-        assert_eq!(feature_of(Path::new("/r/platform"), Path::new("/r/platform-292-x")), "292-x");
+        assert_eq!(
+            feature_of(Path::new("/r/platform"), Path::new("/r/platform-292-x")),
+            "292-x"
+        );
         assert_eq!(issue_of_branch("feature/292-every-agent"), Some(292));
         assert_eq!(issue_of_branch("fix/12-a"), Some(12));
         assert_eq!(issue_of_branch("feature/update-pnpm-12"), None);
@@ -351,13 +435,25 @@ mod tests {
         let pushed = worktree(&main, "1-pushed", true);
         let local = worktree(&main, "2-local", false);
         // The orchestration's checkout is no worktree with work.
-        run(&main, &["worktree", "add", "--quiet", "--detach", main.join(".claude/orchestrations/o").to_str().unwrap()]);
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                main.join(".claude/orchestrations/o").to_str().unwrap(),
+            ],
+        );
 
         let trees = worktrees(&local);
         assert_eq!(trees.len(), 3);
         assert_eq!(trees[0].dir, main);
         assert_eq!(all_worktrees(&main).len(), 4);
-        assert_eq!(orchestrator_checkouts(&main), vec![main.join(".claude/orchestrations/o")]);
+        assert_eq!(
+            orchestrator_checkouts(&main),
+            vec![main.join(".claude/orchestrations/o")]
+        );
         assert_eq!(main_dir(&pushed).as_deref(), Some(main.as_path()));
 
         assert_eq!(ahead_of_develop(&pushed), 1);
@@ -378,7 +474,11 @@ mod tests {
             vec!["new.md".to_string(), "work/2-local.md".to_string()]
         );
         assert_eq!(branch_files(&local), vec!["work/2-local.md".to_string()]);
-        assert!(remote_heads(&main).iter().any(|(_, branch)| branch == "feature/1-pushed"));
+        assert!(
+            remote_heads(&main)
+                .iter()
+                .any(|(_, branch)| branch == "feature/1-pushed")
+        );
         assert!(git_dirs(&local).is_some());
     }
 }

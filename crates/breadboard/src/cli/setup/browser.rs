@@ -3,6 +3,7 @@
 //! from a copy outside the repo; without it `xdg-open` opens the url.
 //! `pnpm browser` puts the copy in place and says how to load it.
 
+use super::proc::outln;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
@@ -154,7 +155,7 @@ pub fn open_in_group(url: &str, group: &str) -> bool {
 pub fn command() -> ExitCode {
     let is_changed = sync_extension();
     let dir = install_dir();
-    println!(
+    outln!(
         "\n✓ the extension is in {}{}",
         dir.display(),
         if is_changed {
@@ -164,10 +165,10 @@ pub fn command() -> ExitCode {
         }
     );
     match BROWSERS.into_iter().find(|browser| on_path(browser)) {
-        None => println!("  no Chromium or Chrome found: urls open with xdg-open, without a group\n"),
-        Some(browser) if is_in_flags(browser) => println!("  {browser} loads it ({})\n", flags_of(browser).display()),
-        Some(browser) if has_extension(browser) => println!("  {browser} has it installed\n"),
-        Some(browser) => println!(
+        None => outln!("  no Chromium or Chrome found: urls open with xdg-open, without a group\n"),
+        Some(browser) if is_in_flags(browser) => outln!("  {browser} loads it ({})\n", flags_of(browser).display()),
+        Some(browser) if has_extension(browser) => outln!("  {browser} has it installed\n"),
+        Some(browser) => outln!(
             "\n  {browser} doesn't load it yet. Either\n    add {dir} to the --load-extension= list in {flags} and restart it, or\n    chrome://extensions → Developer mode → Load unpacked → {dir}\n",
             dir = dir.display(),
             flags = flags_of(browser).display()
