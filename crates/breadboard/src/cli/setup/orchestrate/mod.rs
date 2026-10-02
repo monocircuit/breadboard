@@ -11,7 +11,7 @@ mod space;
 mod workers;
 
 use crate::cli::setup::herdr;
-use crate::cli::setup::proc::{self, Args, fail, quote, step};
+use crate::cli::setup::proc::{self, Args, fail, name_refusal, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
@@ -20,7 +20,7 @@ use issue::{
 };
 use serde_json::{Value, json};
 use std::fs;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 use workers::Start;
 
 pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
@@ -102,18 +102,45 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     let _ = record::update_record(&main, name, object(json!({ "brief": text, "briefs": briefs })));
 }
 
+/// The flags a form that only ends, reads or watches takes besides its own:
+/// `--end --dry-run` would end it for real, so any other is refused.
+const FORMS: [(&str, &[&str]); 3] = [("--end", &[]), ("--changelog", &["--watch"]), ("--changes", &[])];
+
+/// The first flag `args` gives a form of [`FORMS`] that the form doesn't take.
+fn stray_flag(args: &Args) -> Option<String> {
+    let (form, takes) = FORMS.iter().find(|(form, _)| args.has(form))?;
+    let flag = args
+        .all
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .filter(|arg| arg.starts_with("--"))
+        .map(|arg| arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag))
+        .find(|flag| flag != form && !takes.contains(flag))?;
+    Some(format!("{form} takes no {flag}"))
+}
+
 pub fn command(args: &Args) -> ExitCode {
     let name = args.first().map(String::from);
     let is_valid = name.as_deref().is_some_and(is_name);
+    if let Some(stray) = stray_flag(args) {
+        fail(&format!("{stray}\n{USAGE}"));
+    }
+    if args.has("--cap") {
+        fail(
+            "--cap is gone (#229): every issue starts at once, the machine's memory is the only limit; --queue queues them",
+        );
+    }
+    let refuse_name = || -> ! { fail(&name_refusal("the orchestration", name.as_deref(), USAGE)) };
     if args.has("--end") {
         if !is_valid {
-            fail(USAGE);
+            refuse_name();
         }
+        crate::cli::setup::heal_plugin();
         return end::command(name.as_deref().unwrap_or_default());
     }
     if args.has("--changelog") {
         if !is_valid {
-            fail(USAGE);
+            refuse_name();
         }
         return crate::cli::setup::changelog::orchestration_command(
             name.as_deref().unwrap_or_default(),
@@ -122,7 +149,7 @@ pub fn command(args: &Args) -> ExitCode {
     }
     if args.has("--changes") {
         if !is_valid {
-            fail(USAGE);
+            refuse_name();
         }
         let name = name.unwrap_or_default();
         let Some(set) = changes::read_change_set(&name) else {
@@ -147,30 +174,32 @@ pub fn command(args: &Args) -> ExitCode {
     let wanted: Vec<String> = positional.iter().skip(1).map(|arg| arg.to_string()).collect();
     let title = args.value("--title").map(|title| title.trim().to_string());
     if args.has("--title") && title.as_deref().is_none_or(str::is_empty) {
-        fail(USAGE);
+        fail(&format!("--title needs a text\n{USAGE}"));
     }
     let is_dry = args.has("--dry-run");
     if let Some(title) = &title
         && wanted.is_empty()
         && is_valid
     {
+        crate::cli::setup::heal_plugin();
         return retitle(name.as_deref().unwrap_or_default(), title, is_dry);
     }
-    let Some(name) = name.filter(|_| is_valid && !wanted.is_empty()) else {
-        fail(USAGE)
+    if !is_valid {
+        refuse_name();
+    }
+    let Some(name) = name.filter(|_| !wanted.is_empty()) else {
+        fail(&format!("which issues? name them after the orchestration\n{USAGE}"))
     };
-    if wanted.iter().any(|arg| !is_issue_arg(arg)) {
-        fail(USAGE);
+    if let Some(arg) = wanted.iter().find(|arg| !is_issue_arg(arg)) {
+        fail(&format!(
+            "{arg} is no issue: its number (12) or <n>-<feature> (12-my-feature)\n{USAGE}"
+        ));
     }
     let brief_file = args.value("--brief");
     let given = brief_file
         .as_ref()
         .map(|file| fs::read_to_string(file).unwrap_or_else(|_| fail(&format!("{file} does not exist"))));
-    if args.has("--cap") {
-        fail(
-            "--cap is gone (#229): every issue starts at once, the machine's memory is the only limit; --queue queues them",
-        );
-    }
+    crate::cli::setup::heal_plugin();
     let main = repo::main_dir();
     let found = record::record_of(&main, &name);
     let peer = args
@@ -363,7 +392,7 @@ pub fn command(args: &Args) -> ExitCode {
                         child.push("--shared".into());
                     }
                     step(&format!("pnpm {}", child.join(" ")));
-                    let handed = Command::new(proc::entry()).args(&child).stdin(Stdio::null()).status();
+                    let handed = proc::child().args(&child).stdin(Stdio::null()).status();
                     if handed.is_ok_and(|status| status.success()) {
                         let how = if shared.is_empty() {
                             ", with the most room"

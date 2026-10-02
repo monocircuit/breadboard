@@ -44,16 +44,21 @@ pub fn cwd() -> PathBuf {
 
 static MAIN: OnceLock<PathBuf> = OnceLock::new();
 
-/// The main checkout of the repo the command runs in; asked once, so a
-/// worktree removed meanwhile doesn't lose it.
+/// The main checkout of the repo the command runs in, from the cwd or
+/// `INIT_CWD` only; asked once, so a worktree removed meanwhile doesn't lose
+/// it. Never from where the binary lies: a binary of one checkout run outside
+/// any would act on that checkout (fetch, worktree add, push its claim).
 pub fn main_dir() -> PathBuf {
-    MAIN.get_or_init(|| {
-        core_git::main_dir(&cwd())
-            .or_else(|| core_git::main_dir(&here()))
-            .or_else(|| super::proc::entry().parent().and_then(core_git::main_dir))
-            .unwrap_or_else(|| fail("not inside the repo: run it in a checkout of monocircuit/platform"))
-    })
-    .clone()
+    find_main().unwrap_or_else(|| fail("not inside the repo: run it in a checkout of monocircuit/platform"))
+}
+
+/// The main checkout, None outside any repo (for what only helps inside one).
+pub fn find_main() -> Option<PathBuf> {
+    if let Some(main) = MAIN.get() {
+        return Some(main.clone());
+    }
+    let main = core_git::main_dir(&cwd()).or_else(|| core_git::main_dir(&here()))?;
+    Some(MAIN.get_or_init(|| main).clone())
 }
 
 /// The worktrees, the main checkout first, without the orchestrations' checkouts.

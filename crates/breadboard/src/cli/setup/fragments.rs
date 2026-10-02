@@ -335,6 +335,19 @@ static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\.\d+\.\d+$"
 static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^## \[(\d+\.\d+\.\d+)\]").unwrap());
 static NEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(## \[|\[[^\]]+\]: )").unwrap());
 
+/// What is wrong with the version `changelog:<command>` got: missing, a
+/// `v` too many (the tag's, not the section's), or no X.Y.Z.
+fn version_refusal(version: &str, command: &str) -> String {
+    let usage = format!("pnpm changelog:{command} <X.Y.Z>");
+    if version.is_empty() {
+        return format!("the version is missing: {usage}");
+    }
+    match version.strip_prefix('v').filter(|plain| VERSION.is_match(plain)) {
+        Some(plain) => format!("{version} is the tag, the version is {plain}: pnpm changelog:{command} {plain}"),
+        None => format!("{version} is no X.Y.Z version: {usage}"),
+    }
+}
+
 /// The versions of a changelog's sections, newest first.
 pub fn versions_of(text: &str) -> Vec<String> {
     SECTION.captures_iter(text).map(|found| found[1].to_string()).collect()
@@ -508,7 +521,7 @@ fn base_of(root: &Path) -> Option<String> {
 fn add(root: &Path, args: &Args) {
     let text = args.words(&["--type", "--area"]).join(" ").trim().to_string();
     if text.is_empty() {
-        fail(USAGE);
+        fail("the sentence is missing: pnpm changelog:add \"<what changed, for a user>\"");
     }
     let branch = git(&["branch", "--show-current"], root).text().to_string();
     let Some(name) = branch
@@ -620,7 +633,7 @@ fn unreleased(root: &Path) {
 fn release(root: &Path, args: &Args) {
     let version = args.words(&[]).into_iter().next().unwrap_or_default();
     if !VERSION.is_match(&version) {
-        fail(USAGE);
+        fail(&version_refusal(&version, "release"));
     }
     let url = project_url(root);
     let file = root.join(CHANGELOG);
@@ -674,7 +687,7 @@ fn release(root: &Path, args: &Args) {
 
 fn notes(root: &Path, args: &Args) {
     let Some(version) = args.words(&[]).into_iter().next() else {
-        fail(USAGE)
+        fail(&version_refusal("", "notes"))
     };
     let text = fs::read_to_string(root.join(CHANGELOG)).ok();
     let plain = version.strip_prefix('v').unwrap_or(&version);
@@ -736,6 +749,22 @@ pub fn command(sub: &str, args: &Args) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_what_is_wrong_with_a_version() {
+        assert_eq!(
+            version_refusal("v1.5.0", "release"),
+            "v1.5.0 is the tag, the version is 1.5.0: pnpm changelog:release 1.5.0"
+        );
+        assert_eq!(
+            version_refusal("", "notes"),
+            "the version is missing: pnpm changelog:notes <X.Y.Z>"
+        );
+        assert_eq!(
+            version_refusal("1.5", "release"),
+            "1.5 is no X.Y.Z version: pnpm changelog:release <X.Y.Z>"
+        );
+    }
 
     fn areas() -> Vec<String> {
         ["vita", "breadboard", "ci", "repo"]

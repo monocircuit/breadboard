@@ -30,7 +30,7 @@ pub fn check_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("checked.json")
 }
 
-fn read_check(dir: &Path) -> Map<String, Value> {
+pub fn read_check(dir: &Path) -> Map<String, Value> {
     breadboard_core::json::read(&check_file(dir))
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default()
@@ -78,7 +78,7 @@ pub fn working_tree_of(dir: &Path) -> Option<String> {
 }
 
 /// The turbo of the worktree, else the main checkout's.
-fn turbo_of(dir: &Path) -> Option<PathBuf> {
+pub fn turbo_of(dir: &Path) -> Option<PathBuf> {
     [dir.to_path_buf(), repo::main_dir()]
         .into_iter()
         .map(|root| root.join("node_modules/.bin/turbo"))
@@ -110,7 +110,7 @@ pub fn planned_of(dry_run: &Value) -> Vec<(String, Vec<String>)> {
 }
 
 /// What turbo would check for `filter`, or why it can't tell.
-fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+pub fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut args: Vec<String> = vec!["run".into()];
     args.extend(TASKS.iter().map(|task| task.to_string()));
     args.extend([format!("--filter={filter}"), "--dry-run=json".into()]);

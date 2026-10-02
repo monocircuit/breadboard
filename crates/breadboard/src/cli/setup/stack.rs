@@ -86,8 +86,31 @@ fn free_offset() -> u16 {
         .unwrap_or_else(|| fail("no free ports found for a stack"))
 }
 
-/// Moves a worktree from the shared stack to an own one and sets it up.
+/// The ports of a stack on `offset`, as the lines about it name them.
+fn ports_text(offset: u16) -> String {
+    let at = |port: u32| port + u32::from(offset);
+    format!(
+        "app {}, Postgres {}, Keycloak {}, SeaweedFS {}",
+        at(3000),
+        at(5432),
+        at(8080),
+        at(8333)
+    )
+}
+
+/// Moves a worktree from the shared stack to an own one and sets it up. One
+/// that has its own already is set up again on it: a `pnpm dev:setup` that
+/// failed is finished by running `pnpm wt:stack` once more.
 pub fn create_stack(dir: &Path, feature: &str) -> u16 {
+    let existing = repo::offset_of(dir);
+    if existing != 0 {
+        step(&format!(
+            "own stack on offset {existing} already: {}, set up again",
+            ports_text(existing)
+        ));
+        dev_setup(dir);
+        return existing;
+    }
     let source = repo::env_file_of(&repo::main_dir());
     let target = dir.join(VITA).join(".env.local");
     let Ok(text) = fs::read_to_string(&source) else {
@@ -96,30 +119,33 @@ pub fn create_stack(dir: &Path, feature: &str) -> u16 {
             source.display()
         ))
     };
-    if repo::offset_of(dir) != 0 {
-        fail(&format!("{feature} has its own stack already (pnpm wt:list)"));
-    }
     if fs::read_to_string(&target).is_ok_and(|current| current != text) {
         fail(&format!(
-            "{} differs from the one of the main checkout, move it away first",
+            "{} differs from the one of the main checkout and is no stack's, move it away first",
             target.display()
         ));
     }
     let offset = free_offset();
-    step(&format!(
-        "own stack on offset {offset}: app {}, Postgres {}, Keycloak {}, SeaweedFS {}",
-        3000 + u32::from(offset),
-        5432 + u32::from(offset),
-        8080 + u32::from(offset),
-        8333 + u32::from(offset)
-    ));
+    step(&format!("own stack on offset {offset}: {}", ports_text(offset)));
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
     }
     if let Err(error) = fs::write(&target, stack_env(&text, feature, offset)) {
         fail(&format!("couldn't write {}: {error}", target.display()));
     }
+    dev_setup(dir);
+    offset
+}
+
+/// `pnpm dev:setup` in vita: containers, migrations, bucket, Keycloak, seed.
+/// It may fail; the hint says how to finish it.
+fn dev_setup(dir: &Path) {
     step("pnpm dev:setup (containers, migrations, bucket, Keycloak, seed)");
+    let before = proc::hint();
+    proc::set_hint(&format!(
+        "the stack is only half set up: fix the cause, then run pnpm wt:stack in {}, it sets the stack up again",
+        dir.display()
+    ));
     proc::run(
         "pnpm",
         &["dev:setup"],
@@ -128,7 +154,7 @@ pub fn create_stack(dir: &Path, feature: &str) -> u16 {
             ..How::default()
         },
     );
-    offset
+    proc::set_hint(&before);
 }
 
 /// What wt:new and wt:stack say at the end: one line for wt:orchestrate,
@@ -143,6 +169,8 @@ pub struct Summary<'a> {
     pub silent: usize,
     pub left: Option<String>,
     pub origin: Option<&'a str>,
+    /// wt:stack's: nothing was pushed, the agent stands in the worktree.
+    pub is_stack_only: bool,
 }
 
 impl Default for Summary<'_> {
@@ -156,6 +184,7 @@ impl Default for Summary<'_> {
             silent: 0,
             left: None,
             origin: None,
+            is_stack_only: false,
         }
     }
 }
@@ -170,6 +199,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         silent,
         left,
         origin,
+        is_stack_only,
     } = summary;
     let dir = dir.display();
     let port = 3000 + u32::from(*offset);
@@ -201,6 +231,12 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         sweep.push_str(&format!(
             "\n  {silent} {issues} of merged work without a comment since the merge: pnpm wt:issues"
         ));
+    }
+    if is_agent && *is_stack_only {
+        return format!(
+            "\n✓ own stack +{offset} ready: app {port}, Postgres {}{herdr}\n",
+            5432 + u32::from(*offset)
+        );
     }
     if is_agent {
         let enter = match left {
@@ -279,6 +315,7 @@ pub fn wt_stack() -> ExitCode {
     if top == repo::main_dir() {
         fail("run it inside a worktree, the main checkout has the default stack");
     }
+    super::heal_plugin();
     let feature = repo::feature_of(top);
     let offset = create_stack(top, &feature);
     let changed = if herdr::is_in_herdr() {
@@ -294,6 +331,7 @@ pub fn wt_stack() -> ExitCode {
         branch: &branch,
         offset,
         tab: (!changed.is_empty()).then(|| format!("stack tabs {}", changed.join(" "))),
+        is_stack_only: true,
         ..Summary::default()
     });
     ExitCode::SUCCESS
@@ -341,6 +379,7 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
     if !repo::env_file_of(&dir).exists() {
         fail(&format!("{base} has no .env.local, so no stack"));
     }
+    super::heal_plugin();
     let offset = if dir == main { 0 } else { repo::offset_of(&dir) };
     let whose = if dir != main && offset == 0 {
         ", that is the shared stack of the main checkout"
@@ -417,6 +456,21 @@ mod tests {
         assert_eq!(
             summary_text(&origin, false, |name| format!("⇶ {name}")),
             "\n✓ feature/40-x pushed, worktree ready for ⇶ b, herdr: opened, own stack +2\n"
+        );
+        assert_eq!(
+            summary_text(
+                &Summary {
+                    is_stack_only: true,
+                    tab: Some("stack tabs +postgres".into()),
+                    dir,
+                    branch: "feature/40-x",
+                    offset: 2,
+                    ..Summary::default()
+                },
+                true,
+                |name| name.into()
+            ),
+            "\n✓ own stack +2 ready: app 3002, Postgres 5434, herdr: stack tabs +postgres\n"
         );
         assert_eq!(
             summary_text(&Summary { stale: 1, ..base }, true, |name| name.into()),

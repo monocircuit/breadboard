@@ -4,6 +4,59 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 09:20 · CLI / setup group · round 2: wt:stack idempotent, exact claims, the Rust pre-push hook
+Chose: (1) `wt:stack` in a worktree that has its own stack already
+(COMPOSE_PROJECT_NAME and POSTGRES_PORT in its .env.local) sets it up
+again instead of refusing: `▸ own stack on offset N already: app …,
+Postgres …, Keycloak …, SeaweedFS …, set up again`, `pnpm dev:setup`, the
+stack-tab sync, the summary, exit 0. Only an .env.local that differs from
+the main one and is no stack's is still refused, now saying so. Node
+wrote .env.local before dev:setup, so a failed dev:setup could never be
+finished; the failure's hint now says `run pnpm wt:stack in <dir>, it
+sets the stack up again`, and every other failing step of wt:new names
+the commands that finish the worktree from there (`pnpm install
+--frozen-lockfile && … && pnpm wt:stack`, `cp <main .env.local> …` with
+--shared) instead of "run the step again". An agent's wt:stack summary is
+`✓ own stack +N ready: app …, Postgres …, herdr: stack tabs …`, not wt:new's
+"pushed, EnterWorktree" (nothing was pushed, the agent stands there).
+(2) `wt:orchestrate <name> --end` of an orchestration nothing is left of
+is ✓ and exit 0 as in Node (an end run twice), the line says what was
+looked for: `✓ ⇶ tiny ended already: no herdr space, record, setups or
+checkout of tiny is left`. Round one's `✗ no orchestration …
+(pnpm wt:list …)` named a command that lists no orchestrations.
+(3) The claim check of wt:new and wt:orchestrate matches only
+`feature/<n>-…` and `fix/<n>-…`: Node's `*<n>-*` refused issue 5 for
+`fix/305-…` and 23 for `feature/123-…`. (4) The plugin check (#230) runs
+once nothing refused: a usage error asks herdr nothing (2–5 ms instead of
+30–40), `--changes` (nvim polls it) never, and a child of this binary
+(`wt:new --origin`, `wt:remove`, `--end` in the background, `--to`) gets
+`BREADBOARD_PLUGIN_CHECKED=1` and leaves it to its parent. (5) Errors say
+what is wrong: `the feature Bad_Name is not kebab-case (…): bad-name?`,
+`the orchestration is missing`, `Foo is no issue: its number (12) or
+<n>-<feature>`, `which issues? …`, `--cap is gone` before anything else,
+`v1.5.0 is the tag, the version is 1.5.0: pnpm changelog:release 1.5.0`,
+`the version is missing: …`, `the sentence is missing: …`. (6) wt:new's
+stale-issue sweep reads the notes only of issues people commented on
+(`user_notes_count`), as wt:issues does: one request per commented issue
+instead of one per open one. The sweep stays its own reader until the
+read group's `stale_issues` is reachable from here (its module is
+private) or moves to core. (7) The brief of a fresh start is the
+lifecycle group's `handover::brief_of`, one text for both (round one's
+entry 00:55 (1) waited for core; the copies had drifted). (8) `breadboard
+hook pre-push <remote> <url>`: Node's hook in Rust (the #184 MR guard
+and the #298 gate, same texts, the docs-only stamp), passing the suite's
+three #298 checks with a shim that calls it. The installed shim stays
+Node's for now: wt:mr's installer (write group) writes the same file,
+and plan step 5 switches both in one commit; the shim to switch to tries
+`<top>/packages/breadboard/target/release/breadboard hook pre-push` when
+that binary answers `hook --help`, else falls back to the Node hooks of
+older branches, the marker kept.
+Why: rule 1 (setup.check.mjs:236, the #298 checks), rule 3 ((2) Node's
+exit code), rule 2 and the issue's "clear errors that say what to do"
+((1), (5)), rule 7 and #305 ((4), (6)), rule 4 ((7), one brief), rule 8
+((8)), rule 5 ((8): the shim's marker and fallback for older branches).
+Suite: setup.check.mjs 23/23, cli.check.mjs 18/18 (+1 todo).
+
 ## 2026-10-02 09:10 · CLI / wt:remove, wt:prune, wt:orchestrate --to, wt:herdr · lifecycle, round 2
 Chose: (1) A removal whose MR read GitLab didn't answer starts no
 changelog rewrite: it says `▸ the changelog of <name> is not rewritten:

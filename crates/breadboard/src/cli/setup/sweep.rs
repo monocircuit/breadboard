@@ -199,17 +199,21 @@ pub fn stale_issue_count() -> Result<usize, String> {
             iids.join("&")
         ))?);
     }
-    let open: Vec<(i64, String)> = issues
+    // One nobody commented on (`user_notes_count`, the notes people wrote) is
+    // stale without reading its notes: only the commented ones are asked.
+    let open: Vec<(i64, String, bool)> = issues
         .iter()
         .filter(|issue| {
             str_of(issue, "state") == Some("opened") || has_open_box(str_of(issue, "description").unwrap_or_default())
         })
         .filter_map(|issue| {
             let iid = int_of(issue, "iid")?;
-            Some((iid, last_merge.get(&iid.to_string())?.clone()))
+            let has_comments = issue.get("user_notes_count").and_then(Value::as_u64) != Some(0);
+            Some((iid, last_merge.get(&iid.to_string())?.clone(), has_comments))
         })
         .collect();
-    let stale = gitlab::in_turns(&open, 10, |(iid, merged_at)| {
+    let asked: Vec<&(i64, String, bool)> = open.iter().filter(|(_, _, has_comments)| *has_comments).collect();
+    let stale = gitlab::in_turns(&asked, 10, |(iid, merged_at, _)| {
         let notes = gitlab::list(&format!(
             "projects/:fullpath/issues/{iid}/notes?sort=desc&order_by=created_at&per_page=100"
         ))?;
@@ -218,7 +222,7 @@ pub fn stale_issue_count() -> Result<usize, String> {
                 && str_of(note, "created_at").is_some_and(|at| at > merged_at.as_str())
         }))
     });
-    let mut count = 0;
+    let mut count = open.len() - asked.len();
     for verdict in stale {
         if verdict? {
             count += 1;

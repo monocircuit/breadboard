@@ -77,11 +77,77 @@ pub fn unknown_flag(all: &[String], known: &[&str]) -> Option<String> {
     })
 }
 
-/// Refuses a flag the command doesn't take before anything happens: the
-/// flag, the one it is likely a typo of, and the command's usage (exit 1).
-pub fn refuse_unknown(args: &Args, known: &[&str], usage: &str) {
-    if let Some(message) = unknown_flag(&args.all, known) {
-        fail(&format!("{message}\n{usage}"));
+/// What a command takes: its flags, those of them that need a value, how
+/// many words (None: any), and its usage.
+pub struct Shape {
+    pub flags: &'static [&'static str],
+    pub valued: &'static [&'static str],
+    pub words: Option<usize>,
+    pub usage: String,
+}
+
+/// What is wrong with the command line before anything happens, None when
+/// nothing is: a flag the command doesn't take (with the one it is likely a
+/// typo of), a flag without its value, a word too many.
+pub fn misuse(args: &Args, shape: &Shape) -> Option<String> {
+    if let Some(message) = unknown_flag(&args.all, shape.flags) {
+        return Some(message);
+    }
+    let before_dashes: Vec<&String> = args.all.iter().take_while(|arg| *arg != "--").collect();
+    if let Some(flag) = shape.valued.iter().find(|flag| {
+        before_dashes
+            .iter()
+            .any(|arg| arg == *flag || arg.strip_prefix(**flag) == Some("="))
+            && args.value(flag).is_none_or(|value| value.is_empty())
+    }) {
+        return Some(format!("{flag} needs a value"));
+    }
+    let words = args.words(shape.valued);
+    match shape.words {
+        Some(0) if !words.is_empty() => Some(format!("unexpected argument {}: it takes none", words[0])),
+        Some(most) if words.len() > most => Some(format!("unexpected argument {}", words[most])),
+        _ => None,
+    }
+}
+
+/// `text` in kebab-case as a name would be: `Bad_Name` → `bad-name`.
+pub fn kebab_of(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.join("-")
+}
+
+/// Why `given` is no name for `what` (a feature, an orchestration): missing,
+/// or not kebab-case with the name it likely meant; then the usage.
+pub fn name_refusal(what: &str, given: Option<&str>, usage: &str) -> String {
+    let Some(given) = given else {
+        return format!("{what} is missing\n{usage}");
+    };
+    let meant = kebab_of(given);
+    let hint = if meant.is_empty() {
+        String::new()
+    } else {
+        format!(": {meant}?")
+    };
+    format!("{what} {given} is not kebab-case (lowercase letters, digits, single dashes){hint}\n{usage}")
+}
+
+/// Whether the command line asks for the usage (`--help`, `-h`).
+pub fn wants_help(args: &Args) -> bool {
+    args.all
+        .iter()
+        .take_while(|arg| *arg != "--")
+        .any(|arg| arg == "--help" || arg == "-h")
+}
+
+/// Refuses a command line [`misuse`] finds before anything happens: what is
+/// wrong, then the command's usage (exit 1).
+pub fn refuse_misuse(args: &Args, shape: &Shape) {
+    if let Some(message) = misuse(args, shape) {
+        fail(&format!("{message}\n{}", shape.usage));
     }
 }
 
@@ -112,6 +178,11 @@ pub fn set_hint(text: &str) {
     }
 }
 
+/// What `fail` adds under its message now.
+pub fn hint() -> String {
+    HINT.lock().map(|hint| hint.clone()).unwrap_or_default()
+}
+
 /// A file removed when this process fails or ends through `fail`.
 pub fn hold(file: &Path) {
     if let Ok(mut held) = HELD.lock() {
@@ -140,7 +211,7 @@ pub fn release_held() {
 /// `\n✗ <message>` (and the hint) on stderr, exit 1. Other processes read
 /// the `✗ ` at the start of a line (wt:orchestrate, the overview).
 pub fn fail(message: &str) -> ! {
-    let hint = HINT.lock().map(|hint| hint.clone()).unwrap_or_default();
+    let hint = hint();
     let _ = std::io::stdout().flush();
     if hint.is_empty() {
         eprintln!("\n✗ {message}");
@@ -295,6 +366,16 @@ pub fn entry() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("breadboard"))
 }
 
+/// Set for a child of this binary: its parent checked the herdr plugin (#230).
+pub const PLUGIN_CHECKED: &str = "BREADBOARD_PLUGIN_CHECKED";
+
+/// This binary as a child process, told the plugin is checked.
+pub fn child() -> std::process::Command {
+    let mut command = std::process::Command::new(entry());
+    command.env(PLUGIN_CHECKED, "1");
+    command
+}
+
 /// The folder of the breadboard package this binary was built in
 /// (`packages/breadboard`): its `nvim/` and `chromium/` lie there. Found
 /// above the binary, else in the main checkout.
@@ -341,6 +422,47 @@ mod tests {
         assert_eq!(args(&["--origin", "--shared"]).value("--origin"), None);
         assert_eq!(args(&["--since=2w"]).value("--since").as_deref(), Some("2w"));
         assert_eq!(args(&["a", "--type", "fixed", "b"]).words(&["--type"]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn names_a_missing_value_and_a_word_too_many() {
+        let shape = |words| Shape {
+            flags: &["--port", "--all"],
+            valued: &["--port"],
+            words,
+            usage: "usage: x".into(),
+        };
+        let wrong = |list: &[&str], words| misuse(&args(list), &shape(words));
+        assert_eq!(wrong(&["a", "--port", "3002"], Some(1)), None);
+        assert_eq!(wrong(&["--port=3002", "a"], Some(1)), None);
+        assert_eq!(wrong(&["a", "b", "c"], None), None);
+        assert_eq!(wrong(&["--port"], Some(1)).as_deref(), Some("--port needs a value"));
+        assert_eq!(
+            wrong(&["--port", "--all"], Some(1)).as_deref(),
+            Some("--port needs a value")
+        );
+        assert_eq!(wrong(&["--port="], Some(1)).as_deref(), Some("--port needs a value"));
+        assert_eq!(wrong(&["a", "b"], Some(1)).as_deref(), Some("unexpected argument b"));
+        assert_eq!(
+            wrong(&["foo"], Some(0)).as_deref(),
+            Some("unexpected argument foo: it takes none")
+        );
+        assert!(wants_help(&args(&["a", "-h"])));
+        assert!(!wants_help(&args(&["a", "--", "--help"])));
+    }
+
+    #[test]
+    fn names_the_kebab_case_meant() {
+        assert_eq!(kebab_of("Bad_Name"), "bad-name");
+        assert_eq!(kebab_of("12 My  Feature!"), "12-my-feature");
+        assert_eq!(
+            name_refusal("the feature", Some("Bad_Name"), "usage: x"),
+            "the feature Bad_Name is not kebab-case (lowercase letters, digits, single dashes): bad-name?\nusage: x"
+        );
+        assert_eq!(
+            name_refusal("the feature", None, "usage: x"),
+            "the feature is missing\nusage: x"
+        );
     }
 
     #[test]

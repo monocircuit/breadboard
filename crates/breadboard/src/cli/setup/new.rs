@@ -5,7 +5,7 @@
 
 use super::conversations::{self, session_file};
 use super::herdr::{self, field};
-use super::proc::{self, Args, How, fail, set_hint, step};
+use super::proc::{self, Args, How, fail, name_refusal, set_hint, step};
 use super::repo::{self, VITA};
 use super::stack::{self, Summary};
 use super::sweep;
@@ -13,23 +13,39 @@ use breadboard_core::git::Worktree;
 use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
+
+const INSTALL: &str = "pnpm install --frozen-lockfile";
+const PRETTIER: &str = "pnpm --filter @monocircuit/prettier-config build";
+const ESLINT: &str = "pnpm --filter @monocircuit/eslint-config build:prod";
 
 pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>]";
 
-/// `34-…` claims issue 34: a branch of someone else carrying that number on
-/// origin means the issue is taken. The first such branch, or None.
+/// `34-…` claims issue 34: a branch of someone else for that issue on
+/// origin (`feature/34-…`, `fix/34-…`, not `…/134-…`) means it is taken.
+/// The first such branch, or None.
 pub fn claimed_elsewhere(feature: &str) -> Option<String> {
     let digits: String = feature.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() || !feature[digits.len()..].starts_with('-') {
         return None;
     }
-    let pattern = format!("*{digits}-*");
-    let out = proc::git(&["ls-remote", "--heads", "origin", &pattern], &repo::main_dir()).out;
-    out.split('\n').find_map(|line| {
-        line.split_once("refs/heads/")
-            .map(|(_, branch)| branch.to_string())
-            .filter(|b| !b.is_empty())
+    let patterns = [format!("feature/{digits}-*"), format!("fix/{digits}-*")];
+    let out = proc::git(
+        &["ls-remote", "--heads", "origin", &patterns[0], &patterns[1]],
+        &repo::main_dir(),
+    )
+    .out;
+    first_claim(&out, &digits)
+}
+
+/// The first branch of `ls-remote` output that claims issue `digits`.
+fn first_claim(ls_remote: &str, digits: &str) -> Option<String> {
+    ls_remote.split('\n').find_map(|line| {
+        let (_, branch) = line.split_once("refs/heads/")?;
+        let (kind, rest) = branch.split_once('/')?;
+        let is_claim =
+            matches!(kind, "feature" | "fix") && rest.strip_prefix(digits).is_some_and(|after| after.starts_with('-'));
+        is_claim.then(|| branch.trim().to_string())
     })
 }
 
@@ -81,7 +97,7 @@ fn hand_over(previous: &Worktree) -> String {
         };
         return format!("{feature} stays ({why}): its space keeps overview and nvim");
     }
-    let removed = Command::new(proc::entry())
+    let removed = proc::child()
         .args(["wt:remove", &feature, "--close-space"])
         .current_dir(&main)
         .stdin(Stdio::null())
@@ -100,8 +116,9 @@ fn hand_over(previous: &Worktree) -> String {
 }
 
 pub fn command(args: &Args) -> ExitCode {
-    let Some(feature) = args.first().filter(|feature| is_name(feature)).map(String::from) else {
-        fail(USAGE)
+    let feature = match args.first() {
+        Some(feature) if is_name(feature) => feature.to_string(),
+        given => fail(&name_refusal("the feature", given, USAGE)),
     };
     let branch = format!("{}/{feature}", if args.has("--fix") { "fix" } else { "feature" });
     let dir = repo::dir_of(&feature);
@@ -109,9 +126,10 @@ pub fn command(args: &Args) -> ExitCode {
         fail(&format!("{} exists already", dir.display()));
     }
     let origin_name = args.value("--origin");
-    if args.has("--origin") && !origin_name.as_deref().is_some_and(is_name) {
-        fail(USAGE);
+    if let Some(name) = origin_name.as_deref().filter(|name| !is_name(name)) {
+        fail(&name_refusal("the orchestration", Some(name), USAGE));
     }
+    super::heal_plugin();
     let origin = origin_name.map(|name| Origin {
         slot: herdr::slot_of(&name),
         name,
@@ -170,9 +188,23 @@ pub fn command(args: &Args) -> ExitCode {
             record::origin_file(&dir).display()
         ));
     }
-    set_hint(&format!(
-        "the worktree is only half set up: fix the cause and run the step again in {dir_text}, or start over with pnpm wt:remove {feature}"
-    ));
+    // A step that fails names the commands that finish the worktree from there.
+    let main_env = repo::env_file_of(&main);
+    let stack_step = if !main_env.exists() {
+        None
+    } else if args.has("--shared") {
+        Some(format!("cp {} {VITA}/.env.local", main_env.display()))
+    } else {
+        Some("pnpm wt:stack".to_string())
+    };
+    let finish = |rest: &[&str]| {
+        let rest: Vec<&str> = rest.iter().copied().chain(stack_step.as_deref()).collect();
+        format!(
+            "the worktree is only half set up: fix the cause, then finish it in {dir_text}: {}; or start over with pnpm wt:remove {feature}",
+            rest.join(" && ")
+        )
+    };
+    set_hint(&finish(&[INSTALL, PRETTIER, ESLINT]));
 
     step(&format!("push guard: {} (#184)", sweep::install_push_guard(&dir)));
     step(&format!("git push -u origin {branch} (the empty claim on the issue)"));
@@ -200,6 +232,7 @@ pub fn command(args: &Args) -> ExitCode {
             ..How::default()
         },
     );
+    set_hint(&finish(&[PRETTIER, ESLINT]));
     step("build the lint and format configs (lint and the hooks load them)");
     let quiet = || How {
         cwd: Some(&dir),
@@ -212,8 +245,8 @@ pub fn command(args: &Args) -> ExitCode {
         &["--filter", "@monocircuit/eslint-config", "build:prod"],
         quiet(),
     );
+    set_hint(&finish(&[]));
 
-    let main_env = repo::env_file_of(&main);
     let offset = if !main_env.exists() {
         println!(
             "\n! {} is missing, the worktree has no .env.local and no stack",
@@ -233,6 +266,8 @@ pub fn command(args: &Args) -> ExitCode {
     } else {
         stack::create_stack(&dir, &feature)
     };
+    // Set up: what follows only tells and arranges, nothing to finish by hand.
+    set_hint("");
     // GitLab not answering costs the count, never the worktree; an orchestration's skips the sweep.
     let silent = if origin.is_some() {
         0
@@ -252,6 +287,24 @@ pub fn command(args: &Args) -> ExitCode {
         silent,
         left,
         origin: origin.as_ref().map(|origin| origin.name.as_str()),
+        is_stack_only: false,
     });
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_claim_is_of_that_issue_only() {
+        let out = "a\trefs/heads/fix/305-overview-gitlab-refresh-makes-312\nb\trefs/heads/feature/123-x\nc\trefs/heads/chore/5-x\n";
+        assert_eq!(first_claim(out, "5"), None);
+        assert_eq!(first_claim(out, "23"), None);
+        assert_eq!(first_claim(out, "123").as_deref(), Some("feature/123-x"));
+        assert_eq!(
+            first_claim(out, "305").as_deref(),
+            Some("fix/305-overview-gitlab-refresh-makes-312")
+        );
+    }
 }

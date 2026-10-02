@@ -13,6 +13,7 @@ mod conversations;
 mod fragments;
 mod gitlab;
 mod herdr;
+mod hook;
 mod localtime;
 mod new;
 mod nvim;
@@ -23,16 +24,23 @@ mod stack;
 mod sweep;
 mod view;
 
-use proc::{Args, refuse_unknown};
+use proc::{Args, Shape, refuse_misuse, wants_help};
 use std::process::ExitCode;
 
-/// The flags each command takes and its usage: anything else is refused
-/// before the command does anything (a typo of `--shared` would make a
-/// worktree on its own stack and push its claim).
-fn flags_of(command: &str) -> Option<(&'static [&'static str], String)> {
+/// What each command takes (flags, those with a value, how many words) and
+/// its usage: anything else is refused before the command does anything (a
+/// typo of `--shared` would make a worktree on its own stack and push its
+/// claim; `wt:check foo` would check what `foo` doesn't name).
+fn shape_of(command: &str) -> Option<Shape> {
+    let shape = |flags, valued, words, usage: &str| Shape {
+        flags,
+        valued,
+        words,
+        usage: usage.to_string(),
+    };
     Some(match command {
-        "wt:new" => (&["--shared", "--fix", "--origin"], new::USAGE.to_string()),
-        "wt:orchestrate" => (
+        "wt:new" => shape(&["--shared", "--fix", "--origin"], &["--origin"], Some(1), new::USAGE),
+        "wt:orchestrate" => shape(
             &[
                 "--title",
                 "--shared",
@@ -51,23 +59,31 @@ fn flags_of(command: &str) -> Option<(&'static [&'static str], String)> {
                 "--now",
                 "--cap",
             ],
-            orchestrate::USAGE.to_string(),
+            &["--title", "--peer", "--brief", "--to", "--limit"],
+            None,
+            orchestrate::USAGE,
         ),
-        "wt:stack" => (&[], "usage: pnpm wt:stack".to_string()),
-        "wt:check" => (&[], "usage: pnpm wt:check".to_string()),
-        "stack:up" | "stack:down" | "stack:reset" | "stack:ps" => (
+        "wt:stack" => shape(&[], &[], Some(0), "usage: pnpm wt:stack"),
+        "wt:check" => shape(&[], &[], Some(0), "usage: pnpm wt:check"),
+        "stack:up" | "stack:down" | "stack:reset" | "stack:ps" => shape(
             &["--port"],
-            "usage: pnpm stack:up|down|reset|ps [--port <port> | <feature>]".to_string(),
+            &["--port"],
+            Some(1),
+            "usage: pnpm stack:up|down|reset|ps [--port <port> | <feature>]",
         ),
-        "changelog" => (
+        "changelog" => shape(
             &["--since", "--watch"],
-            "usage: pnpm changelog [--since 30d|2w|<date>] [--watch]".to_string(),
+            &["--since"],
+            Some(0),
+            "usage: pnpm changelog [--since 30d|2w|<date>] [--watch]",
         ),
-        "changelog:add" => (&["--type", "--area"], fragments::USAGE.to_string()),
-        "changelog:check" => (&["--mr"], fragments::USAGE.to_string()),
-        "changelog:unreleased" | "changelog:release" | "changelog:notes" => (&[], fragments::USAGE.to_string()),
-        "commands" => (&["--all"], "usage: pnpm commands [--all]".to_string()),
-        "browser" => (&[], "usage: pnpm browser".to_string()),
+        "changelog:add" => shape(&["--type", "--area"], &["--type", "--area"], None, fragments::USAGE),
+        "changelog:check" => shape(&["--mr"], &[], Some(0), fragments::USAGE),
+        "changelog:unreleased" => shape(&[], &[], Some(0), fragments::USAGE),
+        "changelog:release" | "changelog:notes" => shape(&[], &[], Some(1), fragments::USAGE),
+        "commands" => shape(&["--all"], &[], Some(0), "usage: pnpm commands [--all]"),
+        "browser" => shape(&[], &[], Some(0), "usage: pnpm browser"),
+        "hook" => shape(&[], &[], Some(3), hook::USAGE),
         _ => return None,
     })
 }
@@ -93,24 +109,44 @@ fn public_of<'a>(command: &str, args: &'a [String]) -> Option<(String, &'a [Stri
     })
 }
 
+/// #230: a `wt:*` or `stack:*` run inside herdr finds the plugin linked
+/// from a path that is gone and links it again (lifecycle's heal, once).
+/// Each command calls it once nothing refused: a usage error asks herdr
+/// nothing; a child of this binary (`proc::child`) leaves it to its parent.
+pub fn heal_plugin() {
+    if std::env::var_os(proc::PLUGIN_CHECKED).is_none()
+        && let Some(main) = repo::find_main()
+    {
+        super::lifecycle::plugin::heal(&main);
+    }
+}
+
 /// The command's exit code, or None when it isn't one of this group's.
 pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
     let (command, args) = public_of(command, args).unwrap_or_else(|| (command.to_string(), args));
     let command = command.as_str();
     let args = Args::new(args);
-    if let Some((known, usage)) = flags_of(command) {
-        refuse_unknown(&args, known, &usage);
+    if let Some(shape) = shape_of(command) {
+        if wants_help(&args) {
+            println!("{}", shape.usage);
+            return Some(ExitCode::SUCCESS);
+        }
+        refuse_misuse(&args, &shape);
     }
     Some(match command {
         "wt:new" => new::command(&args),
         "wt:orchestrate" => orchestrate::command(&args),
         "wt:stack" => stack::wt_stack(),
         _ if command.starts_with("stack:") => stack::control(&command["stack:".len()..], &args),
-        "wt:check" => check::command(),
+        "wt:check" => {
+            heal_plugin();
+            check::command()
+        }
         "changelog" => changelog::overall_command(&args),
         _ if command.starts_with("changelog:") => fragments::command(&command["changelog:".len()..], &args),
         "commands" => commands::command(args.has("--all")),
         "browser" => browser::command(),
+        "hook" => hook::command(&args.all),
         _ => return None,
     })
 }
@@ -151,8 +187,9 @@ mod tests {
             "commands",
             "browser",
         ] {
-            let (_, usage) = flags_of(command).unwrap();
-            assert!(usage.starts_with("usage:"), "{command}");
+            let shape = shape_of(command).unwrap();
+            assert!(shape.usage.starts_with("usage:"), "{command}");
+            assert!(shape.valued.iter().all(|flag| shape.flags.contains(flag)), "{command}");
         }
     }
 }

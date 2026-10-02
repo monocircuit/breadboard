@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// Its first prompt: one line without quotes.
 pub const BRIEF_PROMPT: &str = "Read .claude/brief.md and work on the issue it describes.";
@@ -183,72 +183,28 @@ pub struct Brief<'a> {
     pub before: Option<String>,
 }
 
+/// The text is the lifecycle group's (handover.rs `brief_of`), one for both:
+/// a fresh agent's and a handed-over one's must not drift.
 pub fn brief_of(brief: &Brief) -> String {
     let main = repo::main_dir();
-    let Item {
-        number,
-        title,
-        dir,
-        branch,
-        ..
-    } = brief.item;
-    let dir = dir.display();
-    let name = brief.name;
-    let label = record::orchestrator_label(&main, name);
-    let worktree = if brief.before.is_some() {
-        format!(
-            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim. You come from another worktree: `EnterWorktree(path: \"{dir}\")` once, if you don't stand in it yet; after that don't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
-        )
-    } else {
-        format!(
-            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
-        )
+    let item = brief.item;
+    let issue = crate::cli::lifecycle::handover::Issue {
+        number: item.number(),
+        title: item.title.clone(),
+        feature: item.feature.clone(),
+        is_fix: item.is_fix,
+        dir: item.dir.clone(),
+        why: item.why.clone(),
+        branch: item.branch.clone(),
     };
-    let peer = match brief.peer {
-        Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
-        None => format!(
-            "The orchestrator messages you first: reply to the `from` of its message. Before that, `ListAgents` finds it (it works in `{}`).",
-            main.display()
-        ),
-    };
-    let before = brief
-        .before
-        .as_ref()
-        .map(|before| format!("\n## Before this issue\n\n{before}\n"))
-        .unwrap_or_default();
-    let extra = if brief.extra.is_empty() {
-        String::new()
-    } else {
-        format!("\n## From the orchestrator\n\n{}\n", brief.extra.trim())
-    };
-    format!(
-        r#"# #{number} {title}
-
-You work on issue #{number} of monocircuit/platform, started by the orchestration `{name}` (herdr space `{label}`).
-{worktree}
-
-1. Read the issue: `glab issue view {number} --comments`, then the AGENTS.md files and skills it touches.
-2. Work as AGENTS.md says: commit, `pnpm wt:check`, push per step (green means wt:check passed on that commit: the pre-push hook refuses any other, never `--no-verify`; a failing test is fixed; one that fails on develop too is fixed once, in its own fix MR, and the others wait for it with `pnpm wt:wait`), the draft MR with the first commit (`pnpm wt:mr`), boxes ticked with `pnpm wt:tick`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
-   A change requested for your MR (by the user or the orchestrator): `pnpm wt:action change "<what>"` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
-   Your MR's pipeline failed: the overview types `[overview] the pipeline of !N failed: job …, <url>: …` into this tab by itself. Read the job's log (the url, or `glab ci trace <job id>`), fix what is your MR's doing and push. When the line says develop fails the same job, it isn't yours: say so in the MR (`glab mr note`) and go on, don't chase it.
-   Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run `pnpm wt:wait !N … --then "<what next>"` with `run_in_background` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline; MERGE REQUESTS shows the boxes: no note, no status message.
-   `SendMessage` to the orchestrator only for what needs it, one short message:
-   - the plan, when it differs from the issue;
-   - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its `decide` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;
-   - what concerns another agent's work (an order, a conflict, a dependency).
-   No message for a stage end or the end: the overview has them.
-   {peer}
-4. **Whenever you stop and the next step is the user's, leave an action for it** with `pnpm wt:action`. The overview of the orchestration answers "what now?" from these (its NEXT line and ACTIONS): the user must never have to ask you what is next.
-   - `pnpm wt:action merge "<what is in it>"` only once the work is done: the pipeline of the MR passed, every box of the issue is ticked (Work and acceptance criteria), every `try` you posted was answered `looks good`, and it is its turn in the merge order (`wt:plan`). Then mark it ready (`glab mr update --ready`) and post it yourself, the overview's automatic one is only a fallback; when your permissions block `--ready`, post it anyway with "mark ready + merge" in the text. While a try is open the overview offers no merge. Never merge yourself;
-   - `pnpm wt:action try "<what to check>" --run "<command>"` (a terminal, e.g. `pnpm overview --orchestration <name>` of your branch) or `--url <page>` (`/atlas/…` on your worktree's app, its stack started first) for something only a person can judge: the click opens that spot. Every box you leave open for the user's live check gets one, and the box names it (`… (try #<id>)`); tick it once the answer is `looks good`. A check that needs the deployment (HTTPS, the test instance's data) is `--on test --url <path>`, posted with the merge, its box marked `(after deploy, try #<id>)`: the only check that stays open across the merge; the row shows `waits for merge`, `deploying`, then `ready` by itself. A `broken` puts the MR back to draft (the overview does it when the MR was ready, else `glab mr update --draft`) until the fix is pushed, green and tried again with a new try;
-   - `pnpm wt:action decide "<what is decided, one sentence>? <why the recommendation, one line>" --option "<label>" --why "<what happens>" --option "<label>" --why "<what happens>" --recommend <label>`: the user answers from the row, so the question says precisely what is decided, each option a short label (the answer you get) with what happens as its `--why` (or `--option "<label>: <what happens>"`), not `A`/`B`, and `--recommend` marks yours `(Recommended)`. Together with the SendMessage to the orchestrator that explains them;
-   - `pnpm wt:action plan "<the plan in one line>"` before larger work, for an `ok` or `different`;
-   - `pnpm wt:action look "<what>"` for anything else the user has to do.
-   The user's click arrives typed into this tab as one line, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user, maybe with images: until it arrives, wait for it instead of guessing from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `pnpm wt:action --done <id>` (`--list` shows them). While you are working, leave none.
-5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as one line, `[overview] next issue #<n>, your name is <n-feature> now: EnterWorktree(path: "<dir>"), then read .claude/brief.md`: do just that, the brief there is your task from then on. The `/rename` typed before it gave your tab and conversation that name: the orchestrator and the other agents reach you under it, a message to your old name is about your old issue.
-{before}{extra}"#
+    crate::cli::lifecycle::handover::brief_of(
+        &issue,
+        brief.name,
+        &record::orchestrator_label(&main, brief.name),
+        brief.peer,
+        brief.extra,
+        brief.before.as_deref(),
+        &main,
     )
 }
 
@@ -268,7 +224,7 @@ pub fn make_worktree(item: &Item, name: &str, is_shared: bool) -> Made {
     if is_shared {
         args.push("--shared");
     }
-    let made = Command::new(proc::entry())
+    let made = proc::child()
         .args(&args)
         .current_dir(repo::main_dir())
         .stdin(Stdio::null())
@@ -360,7 +316,7 @@ pub fn undo_start(name: &str, item: &Item, known: Option<&Value>, why: &str, cla
         claim.release();
     }
     if repo::worktrees().iter().any(|tree| tree.dir == item.dir) {
-        let _ = Command::new(proc::entry())
+        let _ = proc::child()
             .args(["wt:remove", &item.feature])
             .current_dir(repo::main_dir())
             .stdin(Stdio::null())

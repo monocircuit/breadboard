@@ -13,7 +13,7 @@ use breadboard_core::record;
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
 /// Why `name` can't end yet: worktrees left, issues queued.
@@ -53,7 +53,7 @@ pub fn end_log(name: &str) -> PathBuf {
 fn end_in_background(name: &str, log: &PathBuf) {
     let Ok(out) = fs::File::create(log) else { return };
     let Ok(err) = out.try_clone() else { return };
-    let mut child = Command::new(proc::entry());
+    let mut child = proc::child();
     child
         .args(["wt:orchestrate", name, "--end"])
         .current_dir(repo::main_dir())
@@ -157,6 +157,16 @@ pub fn command(name: &str) -> ExitCode {
         fail(&format!("{label} can't end, {why}"));
     }
     let workspace = space_of_orchestration(name);
+    // Nothing of it anywhere: ended before (an end runs twice), or a typo;
+    // ended either way, as Node's, and the line says what was looked for.
+    let is_known = workspace.is_some()
+        || record::record_file(&main, name).exists()
+        || setups_dir(name).exists()
+        || orchestrator_checkouts().contains(&checkout_of(name));
+    if !is_known {
+        println!("\n✓ {label} ended already: no herdr space, record, setups or checkout of {name} is left");
+        return ExitCode::SUCCESS;
+    }
     let pane = if workspace.is_some() && std::env::var_os("HERDR_PANE_ID").is_some() {
         herdr::current_pane()
     } else {
