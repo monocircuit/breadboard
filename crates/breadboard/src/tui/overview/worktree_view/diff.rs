@@ -181,11 +181,14 @@ pub fn note(diff: &Diff) -> String {
     if diff.uncommitted > 0 {
         counts.push(format!("{} uncommitted", diff.uncommitted));
     }
-    // Parts the title drops from the end in a narrow pane: the hint first.
-    format!(
-        "against develop  {} · click a file: its changes, a line of them: nvim",
-        counts.join(" · ")
-    )
+    // Parts the title drops from the end in a narrow pane: the hint first,
+    // which only shows while there is a file to click.
+    let hint = if diff.files > 0 {
+        " · click a file: its changes, a line of them: nvim"
+    } else {
+        ""
+    };
+    format!("against develop  {}{hint}", counts.join(" · "))
 }
 
 pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&Shown>) {
@@ -224,9 +227,11 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&S
 /// The total, then the biggest areas as a table, an area's files under it
 /// when it has more than one (lazygit's files panel), the rest summed up.
 /// The name column fits the area names and the files' paths while the bars
-/// keep `MIN_BAR`; a path longer than it puts its counts on the next line,
-/// in their columns. An area of one file names it after its bar when the
-/// name fits there whole, else under it as a file row: nothing breaks a name.
+/// keep `MIN_BAR`; the counts follow a path longer than it while they fit
+/// beside it, else they go on the next line, in their columns. An area of
+/// one file names it after its bar when the name fits there whole, else
+/// under it as a file row with its counts, as any listed file: nothing
+/// breaks a name.
 fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
     scene.atom(vec![added_span(diff.added), Span::raw(" "), removed_span(diff.removed)]);
     scene.text(&format!("in {}", counted(diff.files as u64, "file")), Style::new());
@@ -312,7 +317,7 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
             place.under(scene, "area", &area.top);
         }
         for (path, change) in &files {
-            file_row(scene, path, change, &columns, area.changes.len() > 1);
+            file_row(scene, path, change, &columns);
             place.under(scene, "file", &change.file);
             // The area's row shows its top file's changes under that file's row.
             if change.file == area.top {
@@ -456,17 +461,22 @@ impl Columns {
 }
 
 /// `+a  −r` in their columns, the line ready for what follows them, of
-/// which `after` columns stay on the counts' line. A name that ran into the
-/// counts' column puts them on the next line, in it: the column stays straight.
+/// which `after` columns stay on the counts' line. A name that ran past the
+/// counts' column has them after it while they and `after` fit there, else
+/// on the next line, in their column: no line holds a name alone.
 fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, after: u16) {
     let (plus, minus) = (added_span(added), removed_span(removed));
     let minus_width = minus.width() as u16;
-    if scene.x() + 2 > columns.plus && columns.plus < scene.width() {
+    // A name past the counts' column: they follow it while they fit beside it, else the next line.
+    let need = 2 + plus.width() as u16 + 2 + minus_width + after;
+    let is_past = scene.x() + 2 > columns.plus;
+    let is_beside = is_past && scene.x() + need <= scene.width();
+    if is_past && !is_beside && columns.plus < scene.width() {
         scene.newline();
     }
     scene.pad_to(columns.plus);
     scene.indent(columns.plus);
-    scene.atom_gap(vec![plus], 0);
+    scene.atom_gap(vec![plus], if is_beside { 2 } else { 0 });
     columns.to(scene, columns.minus, minus_width + after);
     scene.atom_gap(vec![minus], 0);
     columns.to(scene, columns.bar, after.saturating_sub(2));
@@ -474,9 +484,8 @@ fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, a
 
 /// A file of an area, as lazygit's files panel has it: its letter, its path
 /// below the area's folder (wrapping at a `/` when it is wider than the
-/// line), its lines (not for the one file of an area: its row has them),
-/// whether it is committed; a click shows its hunks under it.
-fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns, has_counts: bool) {
+/// line), its lines, whether it is committed; a click shows its hunks under it.
+fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns) {
     scene.block(show(&change.file, "file"), |scene| {
         scene.pad_to(2);
         scene.atom_gap(vec![status_mark(change.status)], 0);
@@ -495,11 +504,9 @@ fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Colum
         } else {
             0
         };
-        if has_counts {
-            counts(scene, columns, change.added, change.removed, after);
-        }
+        counts(scene, columns, change.added, change.removed, after);
         if change.is_uncommitted {
-            scene.atom_gap(vec![look::dim(UNCOMMITTED)], if has_counts { 0 } else { 2 });
+            scene.atom_gap(vec![look::dim(UNCOMMITTED)], 0);
         }
         scene.indent(0);
     });
@@ -788,6 +795,60 @@ mod tests {
             act_at(&scene, 30, 7),
             shows(&rich().areas[1].changes[2].file, "file").as_ref()
         );
+    }
+
+    #[test]
+    fn a_listed_file_always_has_its_counts_beside_it_when_they_fit() {
+        let long = "packages/breadboard/crates/tui/a-very-long-file-name-that-wraps.rs";
+        let areas = vec![
+            area_of(
+                "breadboard/overview",
+                vec![
+                    change("packages/breadboard/src/overview/render.mjs", '?', 40, true),
+                    change("packages/breadboard/src/overview/files.mjs", '?', 12, true),
+                ],
+            ),
+            area_of("breadboard/crates", vec![change(long, '?', 9, true)]),
+            area_of(
+                "work",
+                vec![
+                    change("work/304-overview-pipeline-cuts-its-jobs.md", 'A', 1, false),
+                    change("work/315-a.md", '?', 1, true),
+                ],
+            ),
+        ];
+        let diff = Diff {
+            added: 63,
+            files: 5,
+            areas,
+            ..Diff::default()
+        };
+        let mut scene = Scene::new(80);
+        diff_of(&mut scene, &diff, Path::new("/w"), None);
+        scene.finish();
+        assert_eq!(
+            text(&scene)[2..],
+            [
+                "breadboard/overview  +52  −0  ████████████████████████  2 files",
+                "  ?  render.mjs      +40  −0  uncommitted",
+                "  ?  files.mjs       +12  −0  uncommitted",
+                "breadboard/crates    +9   −0  ████                      1 file",
+                "  ?  a-very-long-file-name-that-wraps.rs  +9  −0  uncommitted",
+                "work                 +2   −0  █                         2 files",
+                "  A  304-overview-pipeline-cuts-its-jobs.md  +1  −0",
+                "  ?  315-a.md        +1   −0  uncommitted",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_title_offers_a_click_only_when_there_is_a_file() {
+        assert!(note(&Diff::default()).ends_with("0 ahead · 0 behind"));
+        let diff = Diff {
+            files: 1,
+            ..Diff::default()
+        };
+        assert!(note(&diff).contains("click a file"));
     }
 
     #[test]

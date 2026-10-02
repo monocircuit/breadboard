@@ -23,6 +23,7 @@ use breadboard_core::herdr;
 use breadboard_core::model::Tree;
 use breadboard_core::model::counted;
 use breadboard_core::model::develop::{Develop, Migrations};
+use breadboard_core::model::files::turbo_prefix;
 use breadboard_core::model::tree::{check_fact, mr_state, pipeline_mark, tokens};
 use breadboard_core::model::worktree::{IssueBoxes, PipelineSection, WhereRow, WorktreeModel};
 use breadboard_core::reader::Model;
@@ -360,8 +361,10 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
         "merged on GitLab, but develop here is older: git fetch".to_string()
     } else {
         let mut parts = vec![];
-        if tree.changed > 0 {
-            parts.push(counted(tree.changed as u64, "uncommitted file"));
+        // DIFF's count (every untracked file, not its folder) where DIFF shows, so the two agree.
+        let changed = local.diff.as_ref().map_or(tree.changed, |diff| diff.uncommitted);
+        if changed > 0 {
+            parts.push(counted(changed as u64, "uncommitted file"));
         }
         if local.own_commits > 0 {
             parts.push(format!(
@@ -534,11 +537,35 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
         }
         scene.end_line();
         for (line, target) in &log.lines {
+            // Turbo's `<package>:<task>: ` dim, the line as the task wrote it after it.
+            let prefix = turbo_prefix(line);
+            let rest = &line[prefix.len()..];
             // A wrapped line goes on under its text, past its own leading spaces.
-            let lead = line.len() - line.trim_start_matches(' ').len();
+            let lead = (rest.len() - rest.trim_start_matches(' ').len()) as u16;
+            let style = if target.is_some() { Style::new() } else { theme::dim() };
             let draw = |scene: &mut Scene<Act>| {
-                scene.indent(6 + lead as u16);
-                spaced(scene, line, if target.is_some() { Style::new() } else { theme::dim() });
+                scene.indent(6);
+                if !prefix.is_empty() {
+                    scene.atom_gap(vec![look::dim(prefix.trim_end())], 0);
+                }
+                // Under the task's text while each of its words fits there whole, else under the prefix.
+                let widest = rest
+                    .split(' ')
+                    .map(|word| Span::raw(word).width() as u16)
+                    .max()
+                    .unwrap_or(0);
+                let at = if prefix.is_empty() { 6 } else { scene.x() + 1 };
+                let at = if at + lead + widest.max(30) <= scene.width() {
+                    at
+                } else {
+                    6
+                };
+                scene.indent(at + lead);
+                if prefix.is_empty() {
+                    spaced(scene, rest, style);
+                } else if !rest.is_empty() {
+                    spaced_gap(scene, rest, style, 1 + lead);
+                }
                 scene.indent(0);
             };
             match target {
@@ -628,6 +655,11 @@ fn say_gap(scene: &mut Scene<Act>, text: &str, style: Style, gap: u16) {
 /// its columns; it wraps between words, at the indent, which the caller sets
 /// past the line's leading spaces.
 fn spaced(scene: &mut Scene<Act>, line: &str, style: Style) {
+    spaced_gap(scene, line, style, 0);
+}
+
+/// `spaced`, its first word `gap` columns after what is before it, its leading spaces not counted.
+fn spaced_gap(scene: &mut Scene<Act>, line: &str, style: Style, gap: u16) {
     let mut spaces = 0u16;
     let mut is_first = true;
     for piece in line.split(' ') {
@@ -637,7 +669,7 @@ fn spaced(scene: &mut Scene<Act>, line: &str, style: Style) {
         }
         let word = vec![look::span(piece, style)];
         if is_first {
-            scene.atom_gap(word, 0);
+            scene.atom_gap(word, gap);
             is_first = false;
         } else {
             scene.atom_gap(word, spaces + 1);
@@ -950,6 +982,59 @@ mod tests {
                 line: Some(12),
             })
         );
+    }
+
+    #[test]
+    fn turbos_prefix_is_dim_and_the_task_line_wraps_under_its_own_text() {
+        let failed = job(3, "check:breadboard", "failed");
+        let log: Vec<String> = [
+            "@monocircuit/breadboard:lint: work/304-overview-pipeline-cuts-its-jobs.md",
+            "@monocircuit/breadboard:lint:   1:5  error  'x' is defined but never used  no-unused-vars",
+        ]
+        .map(String::from)
+        .to_vec();
+        let targets = breadboard_core::model::files::log_targets(&log);
+        let pipeline = PipelineSection {
+            jobs: vec![failed.clone()],
+            logs: vec![FailedLog {
+                job: failed,
+                lines: log.into_iter().zip(targets).collect(),
+            }],
+        };
+        let mut scene = Scene::new(90);
+        jobs(&mut scene, &pipeline, Path::new("/w"));
+        scene.finish();
+        assert_eq!(
+            text(&scene)[2..],
+            [
+                "      @monocircuit/breadboard:lint: work/304-overview-pipeline-cuts-its-jobs.md",
+                "      @monocircuit/breadboard:lint:   1:5  error  'x' is defined but never used",
+                "                                      no-unused-vars",
+            ]
+        );
+        assert_eq!(
+            scene.lines[3]
+                .spans
+                .iter()
+                .find(|span| span.content.contains("lint"))
+                .unwrap()
+                .style,
+            theme::dim()
+        );
+        // The problem line opens the file named above it.
+        assert_eq!(
+            act_at(&scene, 3),
+            Some(&Act::OpenFile {
+                dir: "/w".into(),
+                file: "work/304-overview-pipeline-cuts-its-jobs.md".into(),
+                line: Some(1),
+            })
+        );
+        // Too narrow for the path beside the prefix: under the prefix, whole.
+        let mut scene = Scene::new(70);
+        jobs(&mut scene, &pipeline, Path::new("/w"));
+        scene.finish();
+        assert_eq!(text(&scene)[3], "      work/304-overview-pipeline-cuts-its-jobs.md");
     }
 
     #[test]

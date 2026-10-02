@@ -124,13 +124,24 @@ static LOG_PATH: LazyLock<Regex> = LazyLock::new(|| {
 });
 static ESLINT_PROBLEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s+(\d+):\d+\s+(?:error|warning)\b").unwrap());
 
+static TURBO_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:@[\w.-]+/)?[\w.-]+(?::[A-Za-z][\w-]*)+:(?: |$)").unwrap());
+
+/// The `<package>:<task>: ` turbo writes before each line of a task's
+/// output (`@monocircuit/breadboard:lint: `), or nothing.
+pub fn turbo_prefix(text: &str) -> &str {
+    TURBO_PREFIX.find(text).map_or("", |found| found.as_str())
+}
+
 /// What a click on each line of a failed job's log opens: a path with a line,
 /// or one with a folder; a line of ESLint's problems takes the file of the
-/// line above that names one alone.
+/// line above that names one alone. Turbo's prefix doesn't count, so the
+/// lines of `pnpm wt:check` read as ESLint wrote them.
 pub fn log_targets(log: &[String]) -> Vec<Option<LogTarget>> {
     let mut eslint_file: Option<String> = None;
     log.iter()
         .map(|text| {
+            let text = &text[turbo_prefix(text).len()..];
             if let Some(problem) = ESLINT_PROBLEM.captures(text)
                 && let Some(file) = &eslint_file
             {
@@ -240,6 +251,28 @@ mod tests {
                 "✖ 2 problems (1 error, 1 warning)",
             ])),
             [target(file, None), target(file, Some(12)), target(file, Some(20)), None]
+        );
+        // Behind turbo's prefix, as `pnpm wt:check` logs it.
+        assert_eq!(
+            log_targets(&strings(&[
+                "@monocircuit/breadboard:lint: ",
+                "@monocircuit/breadboard:lint: work/304-overview.md",
+                "@monocircuit/breadboard:lint:   1:5  error  'x' is defined but never used  no-unused-vars",
+                "@monocircuit/vita-web:check:leaf-parity: src/a.ts:3:1",
+            ])),
+            [
+                None,
+                target("work/304-overview.md", None),
+                target("work/304-overview.md", Some(1)),
+                target("src/a.ts", Some(3)),
+            ]
+        );
+        assert_eq!(turbo_prefix("page.test.tsx:12:7 failed"), "");
+        assert_eq!(turbo_prefix("a.c:12: error"), "");
+        assert_eq!(turbo_prefix("AssertionError: expected 1 to be 2"), "");
+        assert_eq!(
+            turbo_prefix("@monocircuit/breadboard:lint:"),
+            "@monocircuit/breadboard:lint:"
         );
         assert_eq!(
             log_targets(&strings(&[

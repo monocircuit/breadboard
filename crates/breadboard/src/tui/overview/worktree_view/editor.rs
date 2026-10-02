@@ -70,10 +70,12 @@ pub fn open_file(checkout: &Checkout, file: &str, line: Option<u64>) -> Result<(
     Ok(())
 }
 
-/// The file of the checkout `file` means: itself when it is there (a file of
-/// DIFF, a conflict), else the one of `git ls-files` a log's path names.
+/// The file of the checkout `file` means: itself when it is there inside the
+/// checkout (a file of DIFF, a conflict, an untracked one too), else the one
+/// of `git ls-files` a log's path names.
 fn file_of(dir: &Path, file: &str) -> Option<String> {
-    if dir.join(file).is_file() {
+    let is_inside = Path::new(file).is_relative() && !file.split('/').any(|part| part == "..");
+    if is_inside && dir.join(file).is_file() {
         return Some(file.to_string());
     }
     let listed = git(dir, &["ls-files"]).stdout;

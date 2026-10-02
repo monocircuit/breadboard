@@ -11,6 +11,9 @@ pub const ISLAND: Color = Color::Rgb(38, 38, 38);
 pub const HEAD: Color = Color::Rgb(58, 58, 58);
 /// A clickable block under the pointer: a step lighter than the island.
 pub const HOVER: Color = Color::Rgb(54, 54, 54);
+/// The block picked with Tab (Enter runs it): a muted blue, as lazygit's
+/// selected row, apart from the hover's grey, as dark, so dim text reads as on it.
+pub const PICKED: Color = Color::Rgb(30, 52, 88);
 /// A title line under the pointer: a step lighter than its own.
 pub const HOVER_HEAD: Color = Color::Rgb(74, 74, 74);
 /// The band's text: light on its grey, 9:1.

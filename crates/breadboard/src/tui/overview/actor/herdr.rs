@@ -229,6 +229,10 @@ mod tests {
         let main = Path::new("/r/platform");
         assert_eq!(space_label(main, main), "Monocircuit/Platform");
         assert_eq!(space_label(main, Path::new("/r/platform-307-x")), "307-x");
+        assert_eq!(
+            space_label(main, Path::new("/r/platform/.claude/orchestrations/bb")),
+            "⇶ bb"
+        );
     }
 
     #[test]

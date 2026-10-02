@@ -11,6 +11,7 @@ mod band;
 mod clicks;
 mod demo;
 mod input;
+pub(crate) mod links;
 mod overview;
 mod page;
 mod run;

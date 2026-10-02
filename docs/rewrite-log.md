@@ -4,6 +4,68 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 09:20 · overview / everything · herdr's layout in Rust, the work cell, the MRs at 80
+Chose: herdr's layout in Rust (`cli/layout.rs`, `cli/layout/order.rs`):
+`wt:herdr` and the main overview's `--herdr` build the main space, a space
+per worktree (`worktree open`, else `workspace create`), the
+orchestrations' spaces, stack tabs, the marks (`markOrigins`), prune the
+spaces of removed worktrees (only when every pane stands in the deleted
+directory, a tab an agent works in stays: wt:remove's `releaseSpace`) and
+sort the group over herdr's socket (`workspace.move_block`, std's
+UnixStream). The overview calls it in-process (Node's `keepInStep`): prune
+and sort every tick, the layout when the set of worktrees changes, a
+stack's tabs when it goes up or down, without resuming conversations.
+Against: spawning `wt:herdr` (it resumes conversations and focuses the
+main space, Node's loop does neither; it answered `not built yet`, so the
+band showed a red `herdr not in step` all the time). Why: rules 3, 6, 8.
+Measured in the breadboard world: `wt:herdr` writes exactly Node's list
+(8 `tab close` of 299's space, kept the tab its agent works in; `worktree
+open` and `workspace create` for 303; `report-metadata w4P --clear-token
+orch1`; `workspace focus wD`), with the same 237 reads; the `--herdr` loop
+over 30 s the same writes as Node's apart from how often it ticks (entry
+below) and the order of `pane report-metadata`'s flags.
+Chose: a new tab runs this binary under the package.json names: `'<exe>'
+overview --herdr|--worktree <dir>|--orchestration <name>`, `'<exe>'
+changelog --watch`, `'<exe>' wt:orchestrate <name> --changelog --watch`.
+Against: Node's `node …/overview.mjs`. Why: rules 5 and 8; the changelog
+commands are the CLI piece's to build.
+Chose: the nvim tab's command (and the claudecode.nvim clone of ide.mjs
+with it) is made only when the tab is made or its shell idles. Against:
+Node, which clones on every layout while the plugin is missing. Why: rule
+7; the herdr writes are the same.
+Chose: a worktree's work names its check first (`untested: 1 commit · 1
+changed · 1 ahead`) and is never shortened: where each fact fits the work
+column it wraps in the column; where the column is narrower than a fact
+(80 columns), the column holds the check in a word and the whole work
+stands on the row's next line, under the name. Against: round 1, which
+dropped `N ahead` and the commit count unmarked; Node, which cuts with `…`
+and names the check last. Why: #304 and the critic; check first, so one
+column of checks runs down the rows.
+Chose: where an MR's cells go under its title (80 columns), its state and
+pipeline always start the next line, padded to columns, branch and owner
+after them where they fit whole. Against: after the title's last word.
+Why: the critic: the pipeline landed somewhere else on every row.
+Chose: the orchestration's heading `⇶ <name>` is a row: hover, and a click
+brings its space `⇶ <title>` to the front (`FocusSpace` of its checkout;
+`actor/herdr::space_label` names an orchestration checkout's space).
+Against: Node's `⇶ <name>` after every worktree's name. Why: one line
+instead of the same words on each row; the critic: it had no click.
+Logged now, from round 1 (rule 3): without any .env.local the app and stack
+columns go and the title says `no .env.local in any` once (Node: `—  no
+.env.local` on every row); a worktree's MR and pipeline stand in a column
+before the work, the work wraps last; ISSUES has the claim (`← !316`) as a
+column and the claiming branch after the title (Node: right after the
+`←`), so the titles line up; MR pipelines come from GraphQL's head
+pipeline of each MR, so !102 and !184–!188 show `✓ passed` where Node says
+`no pipeline` (its REST read pages only 100 pipelines and misses
+`refs/merge-requests/102/head`, rule 1 over 3); the `wt_state` of a pane
+names its open tries (`checks open: try #1 broken, … · !303`) where Node's
+view of everything reads no actions (`waits for the pipeline · !303`), so
+the main and the orchestration's overview no longer write two lines for
+one pane (rule 4).
+Suite: views 9/9, content 24/24, buttons 23/23, hover 4/4, isolation 4/4,
+budgets 9/9; cli: wt:herdr green (the other wt:* are the CLI piece's).
+
 ## 2026-10-02 09:10 · overview / actor · retried answers, the band's log, the --herdr look
 Chose: the local read's 2 s look also asks herdr (one `pane list`, hashed)
 and reads again when an agent's state or a pane changed, so an answer held

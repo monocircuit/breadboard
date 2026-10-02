@@ -155,6 +155,35 @@ struct Anchor<A> {
     section: Option<(String, usize, u16, u16)>,
 }
 
+/// The block a click or Enter ran, held at its screen row over the rebuild
+/// that run gives, as lazygit's selection stays put: what it opens shows
+/// under it, scrolled into view no further than the block's own top.
+/// Against the scroll anchor, which keeps the end the end and so pushed
+/// the clicked row off the top when it opened something at the end (DIFF).
+#[derive(Clone, Debug)]
+pub struct Held<A> {
+    /// What the click ran: running it again closes what it opened.
+    ran: A,
+    /// The block's action and which of the blocks with that action.
+    block: (A, usize),
+    /// Rows into the block, its height, the screen row under the band.
+    into: u16,
+    height: u16,
+    at: u16,
+    /// The blocks after it: which, and how many rows after its end.
+    after: Vec<(A, usize, u16)>,
+}
+
+/// What a held run opened: the page's rows and scroll before, the rows
+/// after, so the run that closes it again gives back the frame before.
+#[derive(Clone, Debug)]
+struct Opened<A> {
+    ran: A,
+    rows: u16,
+    scroll: u16,
+    grown: u16,
+}
+
 pub struct View<A> {
     sheet: Option<Sheet<A>>,
     header: Header,
@@ -176,6 +205,11 @@ pub struct View<A> {
     /// while the reader hasn't scrolled since, the next build places by it
     /// again, so a resize there and back gives back the same frame.
     placed: Option<(Anchor<A>, u16)>,
+    /// The next build follows the reader's own act (a click, a key), with
+    /// the block it ran on, if any.
+    is_acted: bool,
+    held: Option<Held<A>>,
+    opened: Option<Opened<A>>,
 }
 
 impl<A: Clone> Default for View<A> {
@@ -193,6 +227,9 @@ impl<A: Clone> Default for View<A> {
             area: Rect::default(),
             lit: Lit::default(),
             placed: None,
+            is_acted: false,
+            held: None,
+            opened: None,
         }
     }
 }
@@ -201,6 +238,124 @@ impl<A: Clone + PartialEq> View<A> {
     /// The data changed: the next frame builds the page again.
     pub fn stale(&mut self) {
         self.is_stale = true;
+    }
+
+    /// The reader's act changed the app: the next frame builds the page
+    /// again and keeps `held`, the block it ran on, where it was.
+    pub fn acted(&mut self, held: Option<Held<A>>) {
+        self.is_stale = true;
+        self.is_acted = true;
+        self.held = held;
+    }
+
+    /// The block a click at screen cell (x, y) runs, to hold over the rebuild.
+    pub fn hold(&self, x: u16, y: u16) -> Option<Held<A>> {
+        let sheet = self.sheet.as_ref()?;
+        let window = self.shown();
+        let row = window.page_row(y)?;
+        let (_, hit) = sheet.hit(x, row)?;
+        let index = sheet
+            .regions
+            .iter()
+            .enumerate()
+            .filter(|(_, region)| !region.is_button() && region.area.y <= row && row < region.area.bottom())
+            .min_by_key(|(_, region)| region.area.height)
+            .map(|(index, _)| index)?;
+        self.held_of(&window, index, row, hit.action().clone())
+    }
+
+    /// The block picked with Tab, held over the rebuild Enter gives.
+    pub fn hold_selected(&self) -> Option<Held<A>> {
+        let index = self.selected_index()?;
+        let region = &self.sheet.as_ref()?.regions[index];
+        self.held_of(&self.shown(), index, region.area.y, region.action().clone())
+    }
+
+    fn held_of(&self, window: &Window, index: usize, row: u16, ran: A) -> Option<Held<A>> {
+        let sheet = self.sheet.as_ref()?;
+        let y = window.screen_y(row)?;
+        if row < window.sticky {
+            return None;
+        }
+        let area = sheet.regions[index].area;
+        let after = blocks(sheet)
+            .into_iter()
+            .filter(|&i| sheet.regions[i].area.y >= area.bottom())
+            .map(|i| {
+                let (action, nth) = nth_of(sheet, i);
+                (action, nth, sheet.regions[i].area.y - area.bottom())
+            })
+            .collect();
+        Some(Held {
+            ran,
+            block: nth_of(sheet, index),
+            into: row - area.y,
+            height: area.height,
+            at: y - window.top,
+            after,
+        })
+    }
+
+    /// The scroll that keeps `held` on its screen row in the page built
+    /// anew, then shows what opened under it (the rows up to the first
+    /// block after it that moved) as far as the block's top stays on screen.
+    fn place_held(&self, held: &Held<A>) -> Option<u16> {
+        let sheet = self.sheet.as_ref()?;
+        let index = find(sheet, &held.block.0, held.block.1)?;
+        let area = sheet.regions[index].area;
+        let row = area.y + within(held.into, held.height, area.height);
+        let base = self.window(0);
+        if row < base.sticky || held.at < base.sticky {
+            return None;
+        }
+        let at = base.top + held.at;
+        let plain = row.saturating_sub(held.at);
+        let mut scroll = [plain, plain.saturating_add(1), plain.saturating_sub(1)]
+            .into_iter()
+            .find(|&scroll| {
+                let window = self.window(scroll);
+                window.scroll == scroll && window.screen_y(row) == Some(at)
+            })
+            .unwrap_or(plain)
+            .min(base.max_scroll);
+        // A title pinned now (its section goes on below) would cover it: down from under the pin.
+        while self.window(scroll).screen_y(row).is_none() && scroll > 0 {
+            scroll -= 1;
+        }
+        let moved = held.after.iter().find_map(|(action, nth, gap)| {
+            let next = sheet.regions[find(sheet, action, *nth)?].area;
+            (next.y != area.bottom() + gap).then_some(next.y)
+        });
+        let end = match moved {
+            Some(end) => end,
+            None if held.after.is_empty() => base.rows,
+            None => return Some(scroll),
+        };
+        // The block's top stays on screen; a block taller than the room keeps the clicked row.
+        let keep = if area.height <= base.room / 2 { area.y } else { row };
+        if let Some(last) = end.checked_sub(1).filter(|&last| last >= row) {
+            while self.window(scroll).screen_y(last).is_none()
+                && scroll < base.max_scroll
+                && self.window(scroll + 1).screen_y(keep).is_some()
+            {
+                scroll += 1;
+            }
+        }
+        Some(scroll)
+    }
+
+    /// After the reader's act: the frame before what a held run opened,
+    /// when this act closed it again (the page has its rows from before).
+    fn restore(&mut self, held: Option<&Held<A>>, rows: u16) -> Option<u16> {
+        let opened = self.opened.take()?;
+        let is_same = held.is_none_or(|held| held.ran == opened.ran);
+        if is_same && rows == opened.rows {
+            return Some(opened.scroll);
+        }
+        if rows == opened.grown {
+            self.opened = Some(opened);
+        }
+        None
     }
 
     /// When something on the page or the band shows time and needs drawing again.
@@ -463,13 +618,40 @@ impl<A: Clone + PartialEq> View<A> {
                 Some((anchor, at)) if at == self.scroll => Some(anchor),
                 _ => self.anchor(),
             };
+            let (is_acted, held) = (std::mem::take(&mut self.is_acted), self.held.take());
+            let was = (self.window(0).rows, self.scroll);
             self.area = area;
             self.build(app, area.width);
-            if let Some(anchor) = anchor
-                && let Some(scroll) = self.place(&anchor)
+            let rows = self.window(0).rows;
+            let restored = if is_acted {
+                self.restore(held.as_ref(), rows)
+            } else {
+                None
+            };
+            if let Some(scroll) = restored {
+                self.scroll = self.window(scroll).scroll;
+            } else if let Some(held) = held.filter(|_| is_acted)
+                && let Some(scroll) = self.place_held(&held)
             {
                 self.scroll = self.window(scroll).scroll;
-                self.placed = Some((anchor, self.scroll));
+                if rows > was.0 {
+                    self.opened = Some(Opened {
+                        ran: held.ran,
+                        rows: was.0,
+                        scroll: was.1,
+                        grown: rows,
+                    });
+                }
+            } else {
+                if self.opened.as_ref().is_some_and(|opened| opened.grown != rows) {
+                    self.opened = None;
+                }
+                if let Some(anchor) = anchor
+                    && let Some(scroll) = self.place(&anchor)
+                {
+                    self.scroll = self.window(scroll).scroll;
+                    self.placed = Some((anchor, self.scroll));
+                }
             }
         }
         self.area = area;
@@ -516,6 +698,8 @@ impl<A: Clone + PartialEq> View<A> {
                 (Ground::Island, false) => Some(theme::ISLAND),
                 (Ground::Head, false) => Some(theme::HEAD),
                 (Ground::Head, true) => Some(theme::HOVER_HEAD),
+                // The block picked with Tab on its own ground, as lazygit's selected row: never read as hover.
+                (_, true) if self.selected.is_some() => Some(theme::PICKED),
                 (_, true) => Some(theme::HOVER),
             };
             if let Some(ground) = ground {
@@ -738,6 +922,27 @@ fn blocks<A>(sheet: &Sheet<A>) -> Vec<usize> {
     order
 }
 
+/// A block's action and which of the blocks with that action it is.
+fn nth_of<A: Clone + PartialEq>(sheet: &Sheet<A>, index: usize) -> (A, usize) {
+    let action = sheet.regions[index].action();
+    let nth = sheet.regions[..index]
+        .iter()
+        .filter(|region| !region.is_button() && region.action() == action)
+        .count();
+    (action.clone(), nth)
+}
+
+/// The region of the `nth` block with `action`.
+fn find<A: PartialEq>(sheet: &Sheet<A>, action: &A, nth: usize) -> Option<usize> {
+    let (index, _) = sheet
+        .regions
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| !region.is_button() && region.action() == action)
+        .nth(nth)?;
+    Some(index)
+}
+
 /// How often a view that failed to draw is built again (Node's local read).
 const TRY_AGAIN: Duration = Duration::from_secs(2);
 
@@ -841,6 +1046,16 @@ mod tests {
         fn click(&mut self, action: Action) {
             if self.app.act(Input::Click(action)) == Flow::Redraw {
                 self.view.stale();
+            }
+            self.draw();
+        }
+
+        /// A click at a screen cell, as the run loop has it: the block held.
+        fn press(&mut self, x: u16, y: u16) {
+            let action = self.view.click(x, y).expect("a click there");
+            let held = self.view.hold(x, y);
+            if self.app.act(Input::Click(action)) == Flow::Redraw {
+                self.view.acted(held);
             }
             self.draw();
         }
@@ -1046,6 +1261,46 @@ mod tests {
         assert_eq!(screen.view.screen_y(last), Some(39));
         assert!(screen.view.scroll_top());
         assert_eq!(screen.view.scroll(), 0);
+    }
+
+    #[test]
+    fn a_click_that_opens_rows_keeps_its_row_and_shows_them_under_it() {
+        for (width, height) in [(80, 24), (120, 40)] {
+            let mut screen = Screen::new(width, height);
+            let fold = |screen: &Screen| {
+                let regions = screen.regions();
+                regions
+                    .into_iter()
+                    .find(|region| *region.action() == Action::Fold)
+                    .unwrap()
+                    .area
+            };
+            let area = fold(&screen);
+            // At the end when the fold shows there, as DIFF at the end of a worktree.
+            screen.view.scroll_bottom();
+            screen.draw();
+            if screen.view.screen_y(area.y).is_none() {
+                screen.show(area.y);
+            }
+            let (before, y) = (screen.view.scroll(), screen.view.screen_y(area.y).unwrap());
+            screen.press(width / 2, y);
+            let area = fold(&screen);
+            let now = screen.view.screen_y(area.y).expect("the clicked row stays on screen");
+            // Up as far as what opened needs, or down by the title its section now pins.
+            let pinned = screen.view.shown().pin.map_or(0, |pin| pin.rows);
+            assert!(now <= y + pinned, "{width}: {now} > {y} + {pinned}");
+            // What opened shows under it, as far as the room goes without losing the row.
+            let (top, rows) = screen.view.body();
+            let is_full = screen.view.screen_y(area.y + 1) == Some(now + 1)
+                && (now + 1..top + rows).all(|at| screen.view.page_row(at).is_some_and(|row| row > area.y));
+            assert!(is_full, "{width}: {now}");
+            let is_shown_up_to_top = screen.view.window(screen.view.scroll() + 1).screen_y(area.y).is_none();
+            assert!(is_shown_up_to_top || screen.view.scroll() == screen.view.window(0).max_scroll);
+            // The second click closes it and gives back the frame before.
+            screen.press(width / 2, now);
+            assert_eq!(screen.view.scroll(), before, "{width}");
+            assert_eq!(screen.view.screen_y(fold(&screen).y), Some(y), "{width}");
+        }
     }
 
     #[test]
@@ -1497,7 +1752,7 @@ mod tests {
             let area = screen.view.sheet().regions[index].area;
             // Its rows are on screen (its top at least, when it is taller than the room), lit, with the bar.
             let y = screen.view.screen_y(area.y).expect("its top on screen");
-            assert_eq!(screen.bg(60, y), Some(theme::HOVER), "{picked:?}");
+            assert_eq!(screen.bg(60, y), Some(theme::PICKED), "{picked:?}");
             assert_eq!(screen.terminal.backend().buffer()[(0, y)].symbol(), "▌");
             if area.height < screen.view.shown().room {
                 assert!(screen.view.screen_y(area.bottom() - 1).is_some(), "{picked:?}");

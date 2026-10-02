@@ -58,30 +58,11 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             scene.text("none yet", theme::dim());
             return;
         }
-        if let Some(line) = checking_line(mrs) {
-            scene.pad_to(1);
-            look::say(scene, &line, theme::dim());
-            scene.end_line();
-        }
         rows(scene, mrs, ctx);
         scene.end_line();
         scene.pad_to(1);
         look::say(scene, &ctx.gitlab.fresh(), theme::dim());
     });
-}
-
-/// `checking all 7 for conflicts …`: said once above the rows while GitLab
-/// checks every open MR (seen on every row after a push), instead of on each
-/// row's reasons line, where it took a third of it.
-fn checking_line(mrs: &MergeRequests) -> Option<String> {
-    let open: Vec<&MrFacts> = mrs.open.iter().filter_map(|row| row.mr.as_ref()).collect();
-    let is_all = open.len() > 1 && open.iter().all(|mr| is_checking(mr));
-    is_all.then(|| format!("checking all {} for conflicts …", open.len()))
-}
-
-/// GitLab hasn't settled an MR's conflicts yet.
-fn is_checking(mr: &MrFacts) -> bool {
-    matches!(mr.conflict, Some(Conflict::Checking))
 }
 
 /// The columns every row shares, so open and merged line up across the fold:
@@ -131,9 +112,8 @@ impl Columns {
 
 fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
     let columns = Columns::of(mrs);
-    let is_checking_said = checking_line(mrs).is_some();
     for row in &mrs.open {
-        open_row(scene, row, &columns, ctx, is_checking_said);
+        open_row(scene, row, &columns, ctx);
     }
     if mrs.merged.is_empty() {
         return;
@@ -186,7 +166,7 @@ fn show(mr: &MrFacts) -> Go {
 }
 
 /// An open MR: its lane, head, bar and what it lacks below.
-fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, is_checking_said: bool) {
+fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
     let width = columns.graph as usize;
     let Some(mr) = &row.mr else {
         // A line of the graph alone: no MR, no click.
@@ -212,12 +192,11 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, i
                     scene.end_line();
                 }
             }
-            let is_conflict_said = mr.conflict.is_some() && !(is_checking_said && is_checking(mr));
-            if is_conflict_said || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
+            if mr.conflict.is_some() || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
                 let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
                 scene.indent(at);
                 scene.pad_to(at);
-                lacks(scene, mr, ctx, is_checking_said);
+                lacks(scene, mr, ctx);
                 scene.indent(0);
                 scene.end_line();
             }
@@ -561,7 +540,7 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
 }
 
 /// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
-fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx, is_checking_said: bool) {
+fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     // A short reason stays on one line: `try #2 broken → you`, not `try #2`
     // and `broken → you` on two; one longer than half the line wraps at its
     // words, or it would leave the line before it half empty. The scene
@@ -577,8 +556,7 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx, is_checking_said: bool
     let button = "resolve\u{a0}merge\u{a0}conflicts";
     match &mr.conflict {
         None => {}
-        Some(Conflict::Checking) if is_checking_said => {}
-        Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts…")]),
+        Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts …")]),
         Some(Conflict::None) => parts.push(vec![look::dim("no merge conflicts")]),
         Some(Conflict::Resolved) => parts.push(vec![look::span("✓ conflicts resolved", theme::tone(Tone::Green))]),
         Some(Conflict::Button { behind, is_refused }) => {
@@ -601,8 +579,9 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx, is_checking_said: bool
             parts.push(vec![look::dim(why)]);
         }
         Some(Conflict::Sent { text, at }) => {
+            // Core's text starts with its own `◐` (resolve.rs `progress_of`).
             parts.push(vec![
-                look::span(format!("◐ {text}"), theme::tone(Tone::Yellow)),
+                look::span(text.clone(), theme::tone(Tone::Yellow)),
                 look::dim(format!(" {}", ago(*at, ctx.now))),
             ]);
             look::ticks(scene);
@@ -768,25 +747,65 @@ mod tests {
         assert_eq!(text(words.last().unwrap()), "says\u{a0}…\u{a0}→\u{a0}agent");
     }
 
-    #[test]
-    fn checking_for_conflicts_is_said_once_when_every_open_mr_is_checked() {
-        let row = |conflict: Conflict| MrRow {
-            number: Some(1),
-            graph: "●".into(),
-            below: String::new(),
-            mr: Some(MrFacts {
-                conflict: Some(conflict),
-                ..facts("x", None)
-            }),
+    /// The lines of an open row at `width`, drawn as the section draws it.
+    fn drawn(mr: MrFacts, width: u16) -> Vec<String> {
+        let gitlab = super::super::GitlabState::default();
+        let ctx = Ctx {
+            is_once: false,
+            folds: Default::default(),
+            gitlab: &gitlab,
+            now: 60_000,
+            main_name: "platform",
+            actor: super::super::actor::idle(),
+            words: super::super::actor::view::no_words(),
         };
-        let mut mrs = MergeRequests {
-            open: vec![row(Conflict::Checking), row(Conflict::Checking)],
+        let mrs = MergeRequests {
+            open: vec![MrRow {
+                number: Some(mr.iid),
+                graph: "●".into(),
+                below: String::new(),
+                mr: Some(mr),
+            }],
             ..Default::default()
         };
-        assert_eq!(checking_line(&mrs).as_deref(), Some("checking all 2 for conflicts …"));
-        // One settled: each row says where it stands.
-        mrs.open.push(row(Conflict::None));
-        assert_eq!(checking_line(&mrs), None);
+        let mut scene = Scene::<Act>::new(width);
+        rows(&mut scene, &mrs, &ctx);
+        scene.finish();
+        lines(&scene)
+    }
+
+    #[test]
+    fn a_sent_resolve_shows_its_mark_once() {
+        let mr = MrFacts {
+            conflict: Some(Conflict::Sent {
+                text: "◐ sent to its agent".into(),
+                at: 60_000,
+            }),
+            reasons: vec![reason("pipeline pending", "GitLab")],
+            ..facts("fix(x): y", None)
+        };
+        let lines = drawn(mr, 100);
+        let all = lines.join("\n").replace('\u{a0}', " ");
+        assert_eq!(all.matches('◐').count(), 1, "{lines:?}");
+        assert!(
+            all.contains("◐ sent to its agent just now · pipeline pending → GitLab"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn each_row_says_gitlab_checks_its_conflicts() {
+        // Node's cell on every checked row (render-orchestration.mjs): the
+        // row says where it stands even with no other reason (#296 bar).
+        let mr = MrFacts {
+            conflict: Some(Conflict::Checking),
+            ..facts("fix(x): y", None)
+        };
+        let lines = drawn(mr, 80);
+        assert!(
+            lines.iter().any(|line| line.contains("checking for conflicts …")),
+            "{lines:?}"
+        );
     }
 
     #[test]

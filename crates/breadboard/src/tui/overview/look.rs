@@ -4,6 +4,7 @@
 //! label, the graph's lanes), and nothing that reads as cut (#304).
 
 use crate::tui::Scene;
+use crate::tui::links;
 use crate::tui::scene::width_of;
 use crate::tui::theme::{self, Tone};
 use breadboard_core::herdr;
@@ -135,11 +136,12 @@ pub fn bold(text: impl AsRef<str>) -> Span<'static> {
     span(text, theme::bold())
 }
 
-/// core's pieces of text as spans.
+/// core's pieces of text as spans; a piece with a url opens it on a
+/// Ctrl-click (OSC 8, the frame's `links`), as Node's `link`.
 pub fn spans(pieces: &[model::Span]) -> Vec<Span<'static>> {
     pieces
         .iter()
-        .map(|piece| span(&piece.text, style_of(&piece.paint)))
+        .map(|piece| span(&piece.text, links::style(style_of(&piece.paint), piece.url.as_deref())))
         .collect()
 }
 

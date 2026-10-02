@@ -5,13 +5,15 @@
 //! Each list is a table: its columns as wide as their widest cell, the last
 //! one wrapping under itself, nothing cut (#304). The cells that tell most
 //! come before the one that wraps: a worktree's MR and pipeline stand on its
-//! line, its work after them, shortened to its check when the line is short
-//! (a worktree is one line at 80 columns, as in Node). An MR is its title,
-//! then its branch and owner; where its cells leave the title too little room
-//! the cells go under the title, whichever takes fewer rows. Live, the issues
-//! get what the pane has left (render.mjs), at least 3, then `… N more: glab
-//! issue list`; `--once` prints them all. Every row is a block (#296); a
-//! click goes where it names.
+//! line, its work after them, its check first; a column too narrow for a
+//! fact holds the check in a word and the whole work goes on the row's next
+//! line, under the name. An MR is its title, then its branch and owner;
+//! where its cells leave the title too little room they start the line under
+//! the title, in columns, whichever takes fewer rows. An orchestration's
+//! worktrees stand under its `⇶ <name>`, a row of its own that brings its
+//! space to the front. Live, the issues get what the pane has left
+//! (render.mjs), at least 3, then `… N more: glab issue list`; `--once`
+//! prints them all. Every row is a block (#296); a click goes where it names.
 
 use super::{Act, Ctx, look};
 use crate::tui::band;
@@ -235,16 +237,22 @@ fn mr_cells(rows: &[&TreeRow]) -> Vec<Vec<Span<'static>>> {
         .collect()
 }
 
-/// What a worktree's work is: `1 ahead · 2 changed · ✓ tested 1a2b3c4d`, or `clean`.
+/// What a worktree's work is, its check first so the column starts with it
+/// on every row: `✓ tested 1a2b3c4d · 2 changed · 1 ahead`, or `clean`.
 fn work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
     let tree = &row.tree;
     let mut parts = Vec::new();
-    if tree.ahead > 0 {
-        parts.push(vec![look::span(format!("{} ahead", tree.ahead), Style::new())]);
-    }
-    parts.extend(changed_of(row));
     if let Some(fact) = check_fact(&tree.checked) {
         parts.push(look::spans(&[fact]));
+    }
+    if tree.changed > 0 {
+        parts.push(vec![look::span(
+            format!("{} changed", tree.changed),
+            theme::tone(Tone::Yellow),
+        )]);
+    }
+    if tree.ahead > 0 {
+        parts.push(vec![look::span(format!("{} ahead", tree.ahead), Style::new())]);
     }
     if parts.is_empty() {
         parts.push(vec![look::dim("clean")]);
@@ -252,47 +260,32 @@ fn work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
     parts
 }
 
-fn changed_of(row: &TreeRow) -> Option<Vec<Span<'static>>> {
-    (row.tree.changed > 0).then(|| {
-        vec![look::span(
-            format!("{} changed", row.tree.changed),
-            theme::tone(Tone::Yellow),
-        )]
-    })
-}
-
-/// The work in a word, for a column too narrow for all of it: the check
-/// (`untested`, `✓ tested`, `✗ failed`, `checking…`), else what there is
-/// (`2 changed`, `1 ahead`, `clean`), first.
-fn short_work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
-    let check = match &row.tree.checked {
-        CheckState::Tested { .. } => Some(("✓ tested", Tone::Green)),
-        CheckState::Checking { .. } => Some(("checking…", Tone::Cyan)),
-        CheckState::Failed { .. } => Some(("✗ failed", Tone::Red)),
-        CheckState::Untested { .. } => Some(("untested", Tone::Yellow)),
-        CheckState::None => None,
+/// The check in a word (`untested`, `✓ tested`, `✗ failed`, `checking…`),
+/// for a column too narrow for its whole fact.
+fn check_word(row: &TreeRow) -> Option<Vec<Span<'static>>> {
+    let (word, tone) = match &row.tree.checked {
+        CheckState::Tested { .. } => ("✓ tested", Tone::Green),
+        CheckState::Checking { .. } => ("checking…", Tone::Cyan),
+        CheckState::Failed { .. } => ("✗ failed", Tone::Red),
+        CheckState::Untested { .. } => ("untested", Tone::Yellow),
+        CheckState::None => return None,
     };
-    match check {
-        Some((word, tone)) => vec![vec![look::span(word, theme::tone(tone))]],
-        None => work_of(row).into_iter().take(1).collect(),
-    }
+    Some(vec![look::span(word, theme::tone(tone))])
 }
 
-/// How wide facts are on one line: each, then ` ·` and a space between.
-fn facts_width(parts: &[Vec<Span<'static>>]) -> u16 {
-    let words: u16 = parts.iter().map(|part| width_of(part)).sum();
-    words + 3 * (parts.len().max(1) as u16 - 1)
-}
-
-/// The work for a column `room` wide: all of it when it fits; else its
-/// check in a word there, and all of it on a line of its own under the
-/// name (the second): nothing is dropped (#304).
+/// The work for a column `room` wide: all of it when each fact fits the
+/// column whole, wrapping under itself in the column like any last cell;
+/// else the check in a word there (or the first fact) and all of it on a
+/// line of its own under the name. Nothing is dropped (#304).
 fn work_in(row: &TreeRow, room: u16) -> (Vec<Vec<Span<'static>>>, Option<Vec<Vec<Span<'static>>>>) {
     let all = work_of(row);
-    if facts_width(&all) <= room {
+    // Each but the last carries its ` ·`.
+    let fits = |part: &Vec<Span<'static>>| width_of(part) + 2 <= room;
+    if all.iter().all(fits) {
         return (all, None);
     }
-    (short_work_of(row), Some(all))
+    let word = check_word(row).or_else(|| all.first().cloned()).filter(fits);
+    (word.into_iter().collect(), Some(all))
 }
 
 /// A worktree's work that its column could not hold, on the row's next line
@@ -1029,12 +1022,12 @@ mod tests {
             "{text:#?}"
         );
         // Nothing dropped: `1 ahead` and the commit count on the row's second line, under its name.
-        assert_eq!(text[first + 1], "     1 ahead · untested: 1 commit", "{text:#?}");
+        assert_eq!(text[first + 1], "     untested: 1 commit · 1 ahead", "{text:#?}");
         let second = at("296-");
         assert!(text[second].contains("!308 draft ✓ passed  untested"), "{text:#?}");
         assert_eq!(
             text[second + 1].trim(),
-            "1 ahead · 2 changed · untested: 1 commit",
+            "untested: 1 commit · 2 changed · 1 ahead",
             "{text:#?}"
         );
         for name in ["292-", "296-", "303-"] {
@@ -1046,8 +1039,37 @@ mod tests {
         // Where the column holds it all, the row stays one line.
         let wide = sheet_of(&model, 200);
         let line = wide.iter().position(|line| line.contains("292-")).unwrap();
-        assert!(wide[line].ends_with("1 ahead · untested: 1 commit"), "{wide:#?}");
+        assert!(wide[line].ends_with("untested: 1 commit · 1 ahead"), "{wide:#?}");
         assert!(wide[line + 1].contains("296-"), "{wide:#?}");
+    }
+
+    #[test]
+    fn the_work_wraps_in_its_column_else_goes_under_the_name() {
+        let text = |parts: &[Vec<Span<'static>>]| {
+            parts
+                .iter()
+                .map(|part| part.iter().map(|span| span.content.to_string()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        let mut row = TreeRow {
+            tree: tree("292-x", false),
+            mr: None,
+            branch: None,
+        };
+        row.tree.changed = 1;
+        // At 120 beside an app and a stack: each fact fits the column, they wrap in it.
+        let (column, rest) = work_in(&row, 26);
+        assert_eq!(text(&column), "untested: 1 commit · 1 changed · 1 ahead");
+        assert!(rest.is_none());
+        // Too narrow for the fact: its word, all of it under the name.
+        let (column, rest) = work_in(&row, 14);
+        assert_eq!(text(&column), "untested");
+        assert_eq!(text(&rest.unwrap()), "untested: 1 commit · 1 changed · 1 ahead");
+        // Room for all: one line.
+        let (column, rest) = work_in(&row, 60);
+        assert_eq!(text(&column), "untested: 1 commit · 1 changed · 1 ahead");
+        assert!(rest.is_none());
     }
 
     #[test]
@@ -1114,6 +1136,12 @@ mod tests {
                 url: "https://gitlab.com/monocircuit/platform/-/merge_requests/308".into(),
                 dir: Some("/repo/296-overview-hover-highlights-whole-block".into()),
             }))
+        );
+        assert_eq!(
+            action("⇶ breadboard"),
+            Some(Act::Go(Go::FocusSpace(
+                "/repo/platform/.claude/orchestrations/breadboard".into()
+            )))
         );
         assert_eq!(
             action("#300"),

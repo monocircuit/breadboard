@@ -5,6 +5,7 @@
 
 use super::clicks;
 use super::input::{Command, Rejoin, command_of};
+use super::links::Links;
 use super::term::{self, Tty};
 use super::view::View;
 use super::{App, Flow, Input};
@@ -33,6 +34,7 @@ pub async fn run<P: App>(app: &mut P, models: mpsc::UnboundedReceiver<P::Model>)
 
 async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedReceiver<P::Model>) -> io::Result<()> {
     let mut view = View::<P::Action>::default();
+    let mut links = Links::default();
     let mut events = EventStream::new();
     let mut rejoin = Rejoin::default();
     let mut terminate = signal(SignalKind::terminate())?;
@@ -48,7 +50,11 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
 
     loop {
         if is_dirty && last_draw.elapsed() >= FRAME {
-            tty.draw(|frame| view.draw(frame, app))?;
+            tty.draw(|frame| {
+                view.draw(frame, app);
+                links.take(frame.buffer_mut());
+            })?;
+            links.write(tty.backend_mut())?;
             last_draw = Instant::now();
             is_dirty = false;
         }
@@ -66,6 +72,8 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                 let Some(event) = event else { return Ok(()) };
                 for event in rejoin.feed(event?) {
                     let Some(command) = command_of(&event) else { continue };
+                    // The block a click or Enter runs: it keeps its place over the rebuild.
+                    let mut held = None;
                     let input = match command {
                         Command::Quit => return Ok(()),
                         Command::Scroll(by) => {
@@ -105,6 +113,7 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                         // Enter runs the block picked with Tab, as its click; else it is the app's.
                         Command::Key(key) => match view.selected() {
                             Some(action) if key.code == KeyCode::Enter && key.modifiers.is_empty() => {
+                                held = view.hold_selected();
                                 Input::Click(action)
                             }
                             _ => Input::Key(key),
@@ -113,7 +122,10 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             is_pressed = true;
                             clicks::log(&view.entry(x, y));
                             match view.click(x, y) {
-                                Some(action) => Input::Click(action),
+                                Some(action) => {
+                                    held = view.hold(x, y);
+                                    Input::Click(action)
+                                }
                                 None => continue,
                             }
                         }
@@ -129,7 +141,7 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                     match app.act(input) {
                         Flow::Quit => return Ok(()),
                         Flow::Redraw => {
-                            view.stale();
+                            view.acted(held);
                             is_dirty = true;
                         }
                         Flow::Same => {}
