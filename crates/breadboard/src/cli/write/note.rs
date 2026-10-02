@@ -75,16 +75,7 @@ pub fn run(argv: &Argv) -> Outcome {
         top,
         &format!("projects/:fullpath/issues/{number}/notes?sort=desc&order_by=created_at&per_page=10"),
     );
-    let is_there = back
-        .json()
-        .and_then(|notes| notes.as_array().cloned())
-        .is_some_and(|notes| {
-            notes.iter().any(|note| {
-                note.get("body")
-                    .and_then(Value::as_str)
-                    .is_some_and(|body| body.trim() == message)
-            })
-        });
+    let is_there = is_note_back(back.json().as_ref(), &message);
     say(&format!(
         "\n{} comment on #{number}{}{url}\n",
         if is_there { "✓" } else { "⚠" },
@@ -95,4 +86,34 @@ pub fn run(argv: &Argv) -> Outcome {
         }
     ));
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether one of the newest comments GitLab answers is the text sent. An
+/// answer that is no list of notes (no JSON, an error object) is a comment
+/// not seen: `⚠`, never a crash or a `✓`.
+fn is_note_back(answer: Option<&Value>, message: &str) -> bool {
+    answer.and_then(Value::as_array).is_some_and(|notes| {
+        notes.iter().any(|note| {
+            note.get("body")
+                .and_then(Value::as_str)
+                .is_some_and(|body| body.trim() == message)
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn says_commented_only_when_gitlab_shows_the_text_back() {
+        let notes = json!([{ "body": "other" }, { "body": "the text\n" }]);
+        assert!(is_note_back(Some(&notes), "the text"));
+        assert!(!is_note_back(Some(&notes), "another text"));
+        // A body that became a path, an error object, no JSON at all.
+        assert!(!is_note_back(Some(&json!([{ "body": "/tmp/x/body.md" }])), "the text"));
+        assert!(!is_note_back(Some(&json!({ "message": "404 Not found" })), "the text"));
+        assert!(!is_note_back(None, "the text"));
+    }
 }

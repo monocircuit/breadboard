@@ -101,6 +101,12 @@ fn body_of(written: &str, number: &str) -> String {
     format!("{}\n\nCloses #{number}", text.trim_end())
 }
 
+/// Whether the MR GitLab reads back holds the body sent (`⚠` otherwise: a
+/// read that failed, or a description that differs, e.g. a path for the text).
+fn is_description_back(back: Option<&Value>, body: &str) -> bool {
+    back.is_some_and(|back| glab::text_of(back, "description").trim() == body.trim())
+}
+
 /// Whether `.changelog/` has a fragment of the issue (platform-changelog.mjs `fragmentFiles`, `issueOfName`).
 fn has_fragment(top: &Path, number: &str) -> bool {
     let Ok(entries) = fs::read_dir(top.join(".changelog")) else {
@@ -339,7 +345,7 @@ pub fn run(argv: &Argv) -> Outcome {
             ));
         }
         let back = glab::view(top, "mr", &iid).ok().flatten();
-        let is_there = back.is_some_and(|back| glab::text_of(&back, "description").trim() == body.trim());
+        let is_there = is_description_back(back.as_ref(), &body);
         say(&format!(
             "\n{} description of !{iid} updated, closes #{number}{}\n  {}{boxes}\n",
             if is_there { "✓" } else { "⚠" },
@@ -442,12 +448,28 @@ pub fn run(argv: &Argv) -> Outcome {
 mod tests {
     use super::*;
     use crate::cli::write::common::scratch::Scratch;
+    use serde_json::json;
 
     #[test]
     fn closes_the_issue_unless_the_text_does() {
         assert_eq!(body_of("Text\n\nRefs #\n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nRefs #12  \n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nCloses #3\n\n", "7"), "Text\nCloses #3");
+    }
+
+    #[test]
+    fn says_updated_only_when_gitlab_shows_the_body_back() {
+        let body = "Text\n\nCloses #7";
+        assert!(is_description_back(
+            Some(&json!({ "description": "Text\n\nCloses #7\n" })),
+            body
+        ));
+        assert!(!is_description_back(
+            Some(&json!({ "description": "/tmp/x/description.md" })),
+            body
+        ));
+        assert!(!is_description_back(Some(&json!({ "title": "no description" })), body));
+        assert!(!is_description_back(None, body));
     }
 
     #[test]

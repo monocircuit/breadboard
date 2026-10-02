@@ -4,6 +4,24 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-02 01:50 · CLI / wt:tick, wt:note, wt:mr --update, wt:action change · what the suite can't reach
+Chose: the verdicts the world can't provoke are functions with tests of
+their own: `is_ticked_back` (wt:tick: as many boxes as before, the chosen
+ones ticked; a body that became a path has none), `is_note_back` (wt:note:
+one of the newest notes is the text; an error object or no JSON is `⚠`),
+`is_description_back` (wt:mr --update), and change's `report`: a draft
+that failed keeps the change written and said, drops `is a draft now`, and
+ends with `✗ glab could not make !N a draft (…): do it by hand …`, exit 1.
+The 30-minute conflicts verdict was tested already (`verdict_of`). The
+pre-push shim (19:45) is now step 5 of rewrite-plan.md, so the cut-over
+can't miss it. Against: failure switches in the gauntlet's fake GitLab,
+which three builders change at once this round.
+Why: rule 1 (each `⚠` and `✗` path held by a check), rule 4 (pure
+functions, no fake-GitLab knobs for four lines). Re-checked in a world:
+`wt:mr --dryrun`, `wt:mr --help`, `wt:tick 307 3 --help`, `wt:action look
+x --bogus` make 0 glab calls; a closed !316 gets a new draft (!319);
+`wt:wait !308 --hours 0.0001` ends after 71 ms, `!99999 !99998` at once.
+
 ## 2026-10-02 01:40 · CLI / wt:remove, wt:prune · a changelog that lists the merge is not rewritten (#305)
 Chose: a removal of merged work reads its MRs once anyway (the claim on
 origin, `mergedAt`); when its orchestration's changelog lists the last

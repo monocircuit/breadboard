@@ -121,7 +121,7 @@ pub fn run(argv: &Argv) -> Outcome {
     // Read it back: the same boxes, the chosen ones ticked. A body that became
     // a path has no boxes at all, so this catches that too.
     let back = boxes_of(glab::text_of(&read()?, "description"));
-    let is_there = back.len() == boxes.len() && fresh.iter().all(|&index| back[index].is_ticked);
+    let is_there = is_ticked_back(&back, boxes.len(), &fresh);
     say(&format!(
         "\n{} #{number} {title} — {} ticked{}",
         if is_there { "✓" } else { "⚠" },
@@ -137,6 +137,13 @@ pub fn run(argv: &Argv) -> Outcome {
     }
     say("");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether GitLab shows the ticks back: as many boxes as before, the chosen
+/// ones ticked. Anything else is `⚠`, never `✓` (a body that became a path
+/// has no boxes; someone else's edit in between may have moved them).
+fn is_ticked_back(back: &[Box], count: usize, fresh: &[usize]) -> bool {
+    back.len() == count && fresh.iter().all(|&index| back[index].is_ticked)
 }
 
 /// The description with the boxes `fresh` ticked: the first `[ ]` of each one's line.
@@ -161,5 +168,17 @@ mod tests {
             ticked_text(text, &boxes, &[0, 2]),
             "## A\n- [x] one [ ]\n- [ ] two\n- [x] three"
         );
+    }
+
+    #[test]
+    fn says_ticked_only_when_gitlab_shows_the_ticks_back() {
+        let ticked = boxes_of("- [x] one\n- [ ] two\n- [x] three");
+        assert!(is_ticked_back(&ticked, 3, &[0, 2]));
+        // One of the chosen not ticked in what came back.
+        assert!(!is_ticked_back(&ticked, 3, &[1]));
+        // A box more or fewer: the description changed under it.
+        assert!(!is_ticked_back(&ticked, 4, &[0]));
+        // A body that became a path has no boxes at all.
+        assert!(!is_ticked_back(&boxes_of("/tmp/wt-glab-x/description.md"), 3, &[0]));
     }
 }

@@ -72,7 +72,6 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
     let drafted = iid
         .as_ref()
         .map(|iid| glab::glab(&main, &["mr", "update", iid, "--draft"]));
-    let is_draft = drafted.as_ref().map(|ran| ran.is_ok);
     let withdrawn = match &dir {
         Some(dir) => {
             let branch = match &mr {
@@ -100,36 +99,91 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
         None => Vec::new(),
     };
 
+    let source = mr.as_ref().map(|mr| glab::text_of(mr, "source_branch")).unwrap_or("");
+    let ids: Vec<i64> = withdrawn.iter().map(|action| action.id).collect();
+    let draft = drafted.map(|ran| if ran.is_ok { Ok(()) } else { Err(ran.first_line()) });
+    let (lines, failure) = report(text, iid.as_deref(), draft, &ids, dir.is_some(), source);
+    say(&lines);
+    failure.map_or(Ok(ExitCode::SUCCESS), Err)
+}
+
+/// What `change` says once the change is written, and the failure that
+/// follows it when the MR could not be made a draft: the change stays
+/// written (the overview shows it), but the MR can still be merged, so the
+/// command ends with `✗` and exit 1 and says how to block it by hand.
+fn report(
+    text: &str,
+    iid: Option<&str>,
+    drafted: Option<Result<(), String>>,
+    withdrawn: &[i64],
+    has_dir: bool,
+    source: &str,
+) -> (String, Option<String>) {
     let mut lines = format!(
         "\n✓ change requested for {}: {text}\n",
-        iid.as_ref()
-            .map(|iid| format!("!{iid}"))
+        iid.map(|iid| format!("!{iid}"))
             .unwrap_or_else(|| "this worktree (no MR yet)".into())
     );
-    match (&iid, is_draft) {
-        (Some(iid), Some(true)) => {
+    match (iid, &drafted) {
+        (Some(iid), Some(Ok(()))) => {
             lines += &format!("  !{iid} is a draft now: it can't be merged until the change is pushed and green\n")
         }
         (Some(_), _) => {}
         (None, _) => lines += "  no MR to block yet: open it with the first commit (pnpm wt:mr)\n",
     }
     if !withdrawn.is_empty() {
-        let merges: Vec<String> = withdrawn.iter().map(|action| format!("merge #{}", action.id)).collect();
+        let merges: Vec<String> = withdrawn.iter().map(|id| format!("merge #{id}")).collect();
         lines += &format!("  withdrawn: {}\n", merges.join(", "));
     }
-    if dir.is_some() {
+    if has_dir {
         lines += "  the overview shows it on the MR and the worktree until a commit after it is pushed and green; then post the merge again (pnpm wt:action merge …)\n";
     } else {
-        let source = mr.as_ref().map(|mr| glab::text_of(mr, "source_branch")).unwrap_or("");
         lines +=
             &format!("  no worktree of this orchestration has {source}: the MR is blocked, the change needs one\n");
     }
-    say(&lines);
-    if let (Some(iid), Some(ran)) = (&iid, drafted.filter(|ran| !ran.is_ok)) {
-        return Err(format!(
-            "glab could not make !{iid} a draft ({}): do it by hand before the change is built (glab mr update {iid} --draft)",
-            ran.first_line()
-        ));
+    let failure = match (iid, drafted) {
+        (Some(iid), Some(Err(why))) => Some(format!(
+            "glab could not make !{iid} a draft ({why}): do it by hand before the change is built (glab mr update {iid} --draft)"
+        )),
+        _ => None,
+    };
+    (lines, failure)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_the_mr_is_a_draft_and_what_was_withdrawn() {
+        let (lines, failure) = report("rename it", Some("12"), Some(Ok(())), &[3, 5], true, "b");
+        assert!(lines.starts_with("\n✓ change requested for !12: rename it\n"));
+        assert!(lines.contains("  !12 is a draft now"));
+        assert!(lines.contains("  withdrawn: merge #3, merge #5\n"));
+        assert_eq!(failure, None);
     }
-    Ok(ExitCode::SUCCESS)
+
+    #[test]
+    fn a_draft_that_failed_keeps_the_change_and_ends_with_what_to_do() {
+        let (lines, failure) = report("x", Some("12"), Some(Err("403 Forbidden".into())), &[], true, "b");
+        // The change is written and said, but not the draft that didn't happen.
+        assert!(lines.contains("✓ change requested for !12: x"));
+        assert!(!lines.contains("is a draft now"));
+        assert_eq!(
+            failure.as_deref(),
+            Some(
+                "glab could not make !12 a draft (403 Forbidden): do it by hand before the change is built (glab mr update 12 --draft)"
+            )
+        );
+    }
+
+    #[test]
+    fn without_an_mr_or_a_worktree_says_what_is_missing() {
+        let (lines, failure) = report("x", None, None, &[], true, "");
+        assert!(lines.contains("this worktree (no MR yet)"));
+        assert!(lines.contains("no MR to block yet"));
+        assert_eq!(failure, None);
+        let (lines, _) = report("x", Some("4"), Some(Ok(())), &[], false, "feature/4-x");
+        assert!(lines.contains("no worktree of this orchestration has feature/4-x"));
+    }
 }

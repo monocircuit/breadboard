@@ -57,7 +57,10 @@ part of the suite is green and the critic picked it blind (rules,
    `wt:herdr`). The gauntlet's todo commands get their checks before their
    rewrite.
 5. **herdr plugin and hooks** (~1k): the manifest calls the binary; the
-   hooks call it.
+   hooks call it. That includes the git pre-push guard (#184): the shim
+   `wt:new` and `wt:mr` install still runs
+   `node …/git-hooks/pre-push.mjs`; it becomes `breadboard hook pre-push`,
+   and both installers change in the same commit (log, 2026-10-01 19:45).
 6. **Node goes**: `packages/breadboard/src` deleted when no script, hook or
    plugin calls it; the gauntlet's Node subject stays in its history.
 
