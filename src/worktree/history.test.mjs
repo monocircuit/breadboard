@@ -3,8 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   historyOf,
-  historyText,
-  ordinal,
+  countsOf,
   reuseOf,
   reuseText,
   withFailure,
@@ -68,51 +67,42 @@ describe("the history of an agent", () => {
   });
 });
 
-describe("historyText", () => {
+describe("countsOf", () => {
   const known = {
-    a: {
-      history: [
-        start(235, "fresh", 0),
-        start(240, "handover", 0.31),
-        start(252, "announced", 0.38),
-      ],
-    },
-    b: { history: [start(236, "fresh", 0)] },
+    history: [
+      start(235, "fresh", 0),
+      start(240, "handover", 0.31),
+      start(252, "announced", 0.38),
+    ],
   };
-  it("says which issue of its agent it is, the chain for a reused one", () => {
-    assert.equal(
-      historyText(known, 252, { id: "a" }),
-      "agent: 3rd issue (#235 → #240 at 31% → #252 at 38%)",
-    );
-    assert.match(historyText(known, 235, null), /^agent: 1st issue \(/);
-    assert.equal(historyText(known, 236, { id: "b" }), "agent: 1st issue");
-  });
-  it("counts an agent the record doesn't know as fresh, nothing without one", () => {
-    assert.equal(historyText({}, 7, { id: "c" }), "agent: 1st issue");
-    assert.equal(historyText({}, 7, null), "");
-  });
-  it("leaves out a context it doesn't know", () => {
-    assert.equal(
-      historyText({ a: { issues: [1, 2] } }, 2, null),
-      "agent: 2nd issue (#1 → #2)",
+  it("counts its issues, this one included, and their merged MRs", () => {
+    const merged = new Set([235, 240]);
+    assert.deepEqual(
+      countsOf(known, 252, n => merged.has(n)),
+      {
+        issues: 3,
+        merged: 2,
+      },
     );
   });
-});
-
-describe("ordinal", () => {
-  it("names the place", () => {
-    assert.deepEqual([1, 2, 3, 4, 11, 12, 13, 21, 22, 101].map(ordinal), [
-      "1st",
-      "2nd",
-      "3rd",
-      "4th",
-      "11th",
-      "12th",
-      "13th",
-      "21st",
-      "22nd",
-      "101st",
-    ]);
+  it("goes up with a handover", () => {
+    const after = withStart(known, start(260, "handover", 0.4));
+    assert.deepEqual(
+      countsOf(after, 260, () => true),
+      {
+        issues: 4,
+        merged: 4,
+      },
+    );
+  });
+  it("counts the one issue of an agent the record doesn't know", () => {
+    assert.deepEqual(
+      countsOf(undefined, 7, () => false),
+      {
+        issues: 1,
+        merged: 0,
+      },
+    );
   });
 });
 

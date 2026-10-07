@@ -164,6 +164,35 @@ export const wrap = (text, width, maxLines = MAX_LINES) => {
   lines[at] = fit(lines[at], width);
   return lines;
 };
+/**
+ * Which of the painted `parts` go on which line at `width` (#304): as many
+ * as fit, `gap` between two, every part whole on one line; the lines after
+ * the first start with `indent`. A part too wide for a line alone gets one.
+ */
+export const flowGroups = (parts, width, { gap = " ", indent = "" } = {}) => {
+  const groups = [];
+  let used = 0;
+  parts.forEach((part, i) => {
+    const room = used + visible(gap) + visible(part);
+    if (groups.length && room <= width) {
+      groups.at(-1).push(i);
+      used = room;
+      return;
+    }
+    groups.push([i]);
+    used = (groups.length > 1 ? visible(indent) : 0) + visible(part);
+  });
+  return groups;
+};
+/**
+ * The painted `parts` as lines of at most `width` columns (flowGroups): a
+ * list of names wraps between them, never inside one; only a part wider
+ * than a line alone is cut.
+ */
+export const flow = (parts, width, { gap = " ", indent = "" } = {}) =>
+  flowGroups(parts, width, { gap, indent }).map((group, n) =>
+    fit(`${n ? indent : ""}${group.map(i => parts[i]).join(gap)}`, width),
+  );
 /** Below this many columns the last cell of a table isn't wrapped but cut. */
 const MIN_WRAP = 16;
 /**

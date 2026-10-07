@@ -201,29 +201,52 @@ describe("treeOf", () => {
     assert.doesNotMatch(later, /was 1-feature/);
   });
 
-  it("says which issue of its agent a node is, a reused one with its chain (#264)", () => {
-    const factsOf = (issues, known) =>
-      treeOf(issues, () => ({}), { known }).live.map(row => plain(row.facts));
-    const fresh = issue(1, { tree: tree({ name: "1-feature" }) });
-    assert.match(factsOf([fresh], {})[0], /agent: 1st issue/);
+  it("names its agent on the line under its name, with its issues and merged MRs (#292)", () => {
+    const agentsOf = (issues, known, of = () => ({})) =>
+      treeOf(issues, of, { known })
+        .live.toSorted((a, b) => a.issue.number - b.issue.number)
+        .map(row => plain(row.agent));
+    const [fresh] = agentsOf(
+      [issue(1, { tree: tree({ name: "1-feature" }) })],
+      {
+        c1: { displayName: "Mira Albrecht" },
+      },
+    );
+    assert.equal(fresh, "● Mira Albrecht · 1 issue · 0 MRs merged");
     const known = {
       c1: {
         name: "3-third",
+        displayName: "Mira Albrecht",
         history: [
           { number: 1, how: "fresh", at: null, context: 0 },
           { number: 3, how: "handover", at: null, context: 0.31 },
         ],
       },
     };
-    const [first, third] = factsOf(
+    const [gone, third] = agentsOf(
       [
         issue(1, { tree: tree({ name: "1-feature", claude: null }) }),
         issue(3, { tree: tree({ name: "3-third" }) }),
       ],
       known,
+      ({ number }) => (number === 1 ? { mr: merged } : {}),
     );
-    assert.match(first, /agent: 1st issue \(#1 → #3 at 31%\)/);
-    assert.match(third, /agent: 2nd issue \(#1 → #3 at 31%\)/);
+    // Its old worktree has no agent any more; the handover kept its name, its counts went up.
+    assert.equal(gone, "");
+    assert.equal(third, "● Mira Albrecht · 2 issues · 1 MR merged");
+  });
+
+  it("gives an agent the record has no name for one of its own, no one else's", () => {
+    const rows = treeOf(
+      [
+        issue(1, { tree: tree({ dir: "/a", claude: { id: "a" } }) }),
+        issue(2, { tree: tree({ dir: "/b", claude: { id: "b" } }) }),
+      ],
+      () => ({}),
+    ).live;
+    const names = rows.map(row => plain(row.agent).split(" · ")[0]);
+    assert.match(names[0], /^● \S+ \S+$/);
+    assert.notEqual(names[0], names[1]);
   });
 
   it("puts the gone ones under removed, the last removed first", () => {
@@ -459,11 +482,9 @@ describe("pushWorktrees", () => {
     assert.match(lines[at + 2], /^│ {5}the title of 1\s*$/);
     // The last node: no `│` below it.
     assert.match(lines[at + 3], /└─ 2\. 2-feature +free/);
-    assert.match(
-      lines[at + 4],
-      /^ {6}#2 open · no MR yet · agent: 1st issue · no answer yet/,
-    );
-    assert.match(lines[at + 5], /^ {6}the title of 2/);
+    assert.match(lines[at + 4], /^ {6}● \S+ \S+ · 1 issue · 0 MRs merged\s*$/);
+    assert.match(lines[at + 5], /^ {6}#2 open · no MR yet · no answer yet/);
+    assert.match(lines[at + 6], /^ {6}the title of 2/);
   });
 
   it("gives a removed node its times", () => {
@@ -496,7 +517,7 @@ describe("pushWorktrees", () => {
       lines[at],
       /^\s*├─ ▾ queued \(1\) · in the order they start\s*$/,
     );
-    assert.match(lines[at - 3], /├─ 1\. 1-feature/);
+    assert.match(lines[at - 4], /├─ 1\. 1-feature/);
     assert.match(lines[at - 1], /^│ {5}/);
     assert.match(
       lines[at + 1],

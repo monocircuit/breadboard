@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import {
   fit,
   fitParts,
+  flow,
+  flowGroups,
   table,
   tableRows,
   underRows,
@@ -175,5 +177,53 @@ describe("fitParts", () => {
     );
     // A first part too wide alone is cut with … still.
     assert.equal(fitParts("ACTIONS 4 for you", 10), "ACTIONS 4…");
+  });
+});
+
+describe("flow", () => {
+  const parts = ["✓ check:vita", "✓ check:monolithium", "✗ scan:image:mr"];
+
+  it("keeps the parts on one line when they fit", () => {
+    assert.deepEqual(flow(parts, 80, { gap: "   " }), [
+      "✓ check:vita   ✓ check:monolithium   ✗ scan:image:mr",
+    ]);
+  });
+
+  it("wraps between parts, never inside one, the next lines indented", () => {
+    assert.deepEqual(flow(parts, 36, { gap: "   ", indent: "  " }), [
+      "✓ check:vita   ✓ check:monolithium",
+      "  ✗ scan:image:mr",
+    ]);
+    assert.deepEqual(flowGroups(parts, 36, { gap: "   ", indent: "  " }), [
+      [0, 1],
+      [2],
+    ]);
+  });
+
+  it("counts the indent of a continued line", () => {
+    assert.deepEqual(
+      flowGroups(["aaaa", "bbbb", "cccc"], 9, { indent: "  " }),
+      [[0, 1], [2]],
+    );
+    assert.deepEqual(
+      flowGroups(["aaaa", "bb", "cc", "dd"], 7, { indent: "  " }),
+      [
+        [0, 1],
+        [2, 3],
+      ],
+    );
+  });
+
+  it("measures painted parts by what shows, colours and links kept", () => {
+    const painted = [`${RED}✗${RESET} ${link("u", "check:vita")}`, "✓ b"];
+    const lines = flow(painted, 14);
+    assert.deepEqual(lines, [painted[0], painted[1]]);
+  });
+
+  it("cuts only a part wider than a line alone", () => {
+    assert.deepEqual(flow(["a-very-long-job-name", "b"], 10), [
+      "a-very-lo…",
+      "b",
+    ]);
   });
 });

@@ -288,10 +288,13 @@ describe("AGENTS", () => {
     pushFreeAgents(none, "o", []);
     assert.deepEqual(none, []);
     const lines = [];
-    pushFreeAgents(lines, "o", [agent], new Map([["c9", { status: "idle" }]]));
+    pushFreeAgents(lines, "o", [agent], new Map([["c9", { status: "idle" }]]), {
+      c9: { displayName: "Mira Albrecht" },
+    });
     const text = plain(lines.join("\n"));
     assert.match(text, /AGENTS/);
-    assert.match(text, /free agent-a/);
+    // By its display name (#292), the name it goes by after it.
+    assert.match(text, /free Mira Albrecht agent-a/);
     assert.match(text, /dismiss/);
   });
 });
