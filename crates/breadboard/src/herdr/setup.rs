@@ -305,9 +305,14 @@ fn fill(session: &Session, text: &str) -> String {
 /// the plugin's keys and the sidebar rows appended. Written only when it
 /// changed; a base with its own `[ui.sidebar.spaces]` keeps it.
 pub fn write_config(session: &Session) -> Result<Written, Fail> {
+    write_config_over(session, &session::own_config())
+}
+
+/// `write_config` with your own herdr config at `own` (a test passes one that isn't there).
+fn write_config_over(session: &Session, own: &Path) -> Result<Written, Fail> {
     let bases = [
         session.home.join("config.local.toml"),
-        session::own_config(),
+        own.to_path_buf(),
         session.plugin_dir.join("config.toml"),
     ];
     let base = bases
@@ -627,12 +632,9 @@ mod tests {
         .unwrap();
         fs::write(plugin.join("keys.toml"), "[[keys.command]]\nkey = \"prefix+o\"\n\n").unwrap();
         let session = Session::at(root.join("platform"), plugin.clone());
-        // Only the repo's base: no own config in the way.
-        if session::own_config().exists() {
-            fs::remove_dir_all(&root).unwrap();
-            return;
-        }
-        let written = write_config(&session).unwrap();
+        // Only the repo's base: no own config in the way, whoever runs the test.
+        let own = root.join("no-own-config.toml");
+        let written = write_config_over(&session, &own).unwrap();
         assert!(written.is_changed && !written.has_own_rows);
         let text = fs::read_to_string(&session.config_file).unwrap();
         let status = session.status_command();
@@ -643,8 +645,9 @@ mod tests {
         )));
         assert_eq!(text.matches(&status).count(), 1);
         assert!(text.contains("\n\n[[keys.command]]\nkey = \"prefix+o\"\n\n# The spaces of an orchestration"));
-        assert!(text.ends_with("]]]\n"));
-        assert!(!write_config(&session).unwrap().is_changed);
+        // The agents' rows end the file, as Node writes them: `… }] }]]`.
+        assert!(text.ends_with("}] }]]\n"), "{text}");
+        assert!(!write_config_over(&session, &own).unwrap().is_changed);
         fs::remove_dir_all(&root).unwrap();
     }
 }

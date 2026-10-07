@@ -4,6 +4,20 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-07 22:30 · loop · a win is the critic's blind pick and a green suite
+Chose: a piece wins when its critic picks ours blind and the suite's checks
+touching it pass, as the loop's prompt says. Parity and requirement gaps no
+longer veto a blind pick by themselves: the critic weighs them as a
+developer would (a wrong number or a wrong write still makes the other the
+better tool) and names them either way, for the next builder round. Each
+piece's loop now starts with the critic, on the state as it is.
+Against: the loop's first rule, "ours wins blind AND parity complete".
+Why: the user's prompt (the critic says which a developer would rather
+work in); under the stricter rule about half the critics picked ours blind
+and still marked it lost for a missing log entry or a doubled mark, so no
+piece could win short of perfect. Parity stays enforced by the suite
+(rule 1) and rule 3.
+
 ## 2026-10-07 22:31 · overview / WORKTREES and AGENTS, round 3 · git's facts never wait for docker; a stack docker hasn't told is `…`, never `down`
 Chose: the orchestration's local read asks docker on a thread of its own
 (core's `reader::Stacks`): the nodes draw with git's facts at once, an own
