@@ -65,17 +65,36 @@ pub fn live_setups_of(main: &Path, name: &str) -> Vec<Setup> {
     setups_of(main, name, is_alive)
 }
 
-/// A claim on the start of an issue, released when dropped.
+/// A claim on the start of an issue, released when dropped (also on a
+/// failure: the command returns, the claim goes) or by `release`.
 pub struct Claim {
-    file: PathBuf,
+    file: Option<PathBuf>,
+}
+
+impl Claim {
+    /// No claim at all: a dry run takes none.
+    pub fn none() -> Claim {
+        Claim { file: None }
+    }
+
+    /// The claim's file, for a process that exits without its drops.
+    pub fn file(&self) -> Option<&Path> {
+        self.file.as_deref()
+    }
+
+    /// Gives the claim up now; again is nothing, another process's claim stays.
+    pub fn release(&self) {
+        let Some(file) = &self.file else { return };
+        let pid = json::read(file).and_then(|setup| int_of(&setup, "pid"));
+        if pid == Some(i64::from(std::process::id())) {
+            let _ = fs::remove_file(file);
+        }
+    }
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        let pid = json::read(&self.file).and_then(|setup| int_of(&setup, "pid"));
-        if pid == Some(i64::from(std::process::id())) {
-            let _ = fs::remove_file(&self.file);
-        }
+        self.release();
     }
 }
 
@@ -100,13 +119,14 @@ pub fn claim_setup(
         match fs::OpenOptions::new().write(true).create_new(true).open(&file) {
             Ok(mut created) => {
                 created.write_all(format!("{}\n", json::pretty(&entry)).as_bytes())?;
-                return Ok(Ok(Claim { file }));
+                return Ok(Ok(Claim { file: Some(file) }));
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let holder = json::read(&file).as_ref().and_then(Setup::from_value);
                 if let Some(holder) = holder.filter(|holder| is_alive(holder.pid)) {
                     return Ok(Err(Some(holder)));
                 }
+                // Its process ended without a release: the claim is free again.
                 let _ = fs::remove_file(&file);
             }
             Err(error) => return Err(error),
@@ -155,6 +175,18 @@ mod tests {
         drop(first);
         assert!(live_setups_of(main, "o").is_empty());
         assert!(claim_setup(main, "o", 267, "/x/267-a", None, None).unwrap().is_ok());
+    }
+
+    #[test]
+    fn releases_a_claim_once_and_none_at_all() {
+        let scratch = Scratch::new();
+        let main = scratch.path();
+        let claim = claim_setup(main, "o", 7, "/r/p-7-x", None, None).unwrap().unwrap();
+        assert!(claim.file().is_some_and(Path::exists));
+        claim.release();
+        claim.release();
+        assert!(live_setups_of(main, "o").is_empty());
+        assert!(Claim::none().file().is_none());
     }
 
     #[test]

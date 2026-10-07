@@ -19,7 +19,7 @@ const BATCH: usize = 100;
 /// How many lines of a failed job's log the views show.
 const LOG_LINES: usize = 6;
 /// A pipeline that no longer runs: its jobs are final (a retry changes its `updatedAt`).
-const FINISHED: [&str; 4] = ["success", "failed", "canceled", "skipped"];
+pub(super) const FINISHED: [&str; 4] = ["success", "failed", "canceled", "skipped"];
 
 /// What a read keeps between reads, for the fast ones (gitlab.mjs `readMemory`):
 /// the links of the open issues, the logs of failed jobs (they don't change).
@@ -29,6 +29,8 @@ pub struct Memory {
     pub logs: HashMap<i64, Vec<String>>,
     /// GitLab answered the links' field with an error: not asked again.
     pub has_no_links: bool,
+    /// GitLab answered REST but not GraphQL: read through REST, GraphQL tried again on a full read.
+    pub is_rest_only: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +47,7 @@ fn mr_fields() -> String {
     )
 }
 
-fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+pub(super) fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str).filter(|text| !text.is_empty())
 }
 
@@ -59,7 +61,7 @@ fn nodes(value: &Value, key: &str) -> Vec<Value> {
 }
 
 /// The number at the end of a global id (`gid://gitlab/Ci::Build/123`) or a number as text.
-fn id_of(value: Option<&Value>) -> i64 {
+pub(super) fn id_of(value: Option<&Value>) -> i64 {
     match value {
         Some(Value::Number(number)) => number.as_i64().unwrap_or(0),
         Some(Value::String(text)) => text.rsplit('/').next().and_then(|id| id.parse().ok()).unwrap_or(0),
@@ -74,7 +76,7 @@ pub fn origin_of(url: &str) -> Option<String> {
     Some(url[..end].to_string())
 }
 
-fn lower(value: Option<&str>) -> String {
+pub(super) fn lower(value: Option<&str>) -> String {
     value.unwrap_or_default().to_lowercase()
 }
 
@@ -145,7 +147,7 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
     (mr, merge_sha)
 }
 
-static DRAFT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Draft:\s*").unwrap());
+pub(super) static DRAFT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Draft:\s*").unwrap());
 
 /// An issue of GraphQL, `blocked_by` the issues GitLab links as blocking it.
 pub fn issue_of(value: &Value, blocked_by: &[i64]) -> Issue {
@@ -217,7 +219,7 @@ fn cached_jobs(cache: &Cache, pipeline: &Pipeline) -> Option<Vec<Job>> {
 }
 
 /// The jobs of an open MR's pipeline as read, their logs added; a finished pipeline's kept.
-async fn settle_jobs(
+pub(super) async fn settle_jobs(
     gitlab: &Gitlab,
     cache: &mut Cache,
     memory: &mut Memory,
@@ -380,6 +382,9 @@ pub async fn read_orchestration(
     ask: &Ask,
     is_full: bool,
 ) -> Result<Remote> {
+    if memory.is_rest_only && !is_full {
+        return super::rest::read_orchestration(gitlab, cache, memory, ask, is_full).await;
+    }
     gitlab.phase(Some("merge requests"));
     let branches: Vec<String> = {
         let mut seen = BTreeSet::new();
@@ -458,7 +463,16 @@ pub async fn read_orchestration(
             variables[name] = json!(values);
         }
     }
-    let project = gitlab.graphql(&query, variables).await?;
+    let project = match gitlab.graphql(&query, variables).await {
+        Ok(project) => project,
+        // GitLab answered, its GraphQL didn't (an older GitLab, a proxy): REST, Node's route.
+        Err(error) if error.status.is_some() => {
+            memory.is_rest_only = true;
+            return super::rest::read_orchestration(gitlab, cache, memory, ask, is_full).await;
+        }
+        Err(error) => return Err(error),
+    };
+    memory.is_rest_only = false;
     if project.is_null() {
         return Err(GitlabError::new("GitLab knows no such project"));
     }

@@ -7,7 +7,7 @@ use super::{Act, Ctx, actions, look};
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Page, Scene, Section};
 use breadboard_core::model::next::once_text;
-use breadboard_core::model::orchestration::{NextBand, OrchestrationModel};
+use breadboard_core::model::orchestration::{GITLAB_PENDING, NextBand, OrchestrationModel};
 use ratatui::style::Style;
 use ratatui::text::Span;
 
@@ -23,6 +23,12 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         let label = vec![look::bold("NEXT"), Span::raw("  ")];
         let under = || vec![Span::raw(" ".repeat(LABEL.len()))];
         match &next.band {
+            // GitLab failed before its first answer: nothing comes by waiting, and NEXT can't tell.
+            NextBand::Nothing(text) if text == GITLAB_PENDING && ctx.gitlab.error.is_some() => look::say(
+                scene,
+                "what is for you can't be told: GitLab didn't answer",
+                theme::dim(),
+            ),
             NextBand::Nothing(text) => look::say(scene, text, theme::dim()),
             NextBand::Action(item) => {
                 look::gutter(scene, label, under(), |scene| {

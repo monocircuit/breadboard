@@ -4,11 +4,13 @@
 //! orchestrator's written down for a restart to resume, each agent's line in
 //! the sidebar, a notification when a worktree needs you; the spaces of
 //! removed worktrees pruned and the group's order kept on every read, the
-//! whole layout (`cli::layout`, in this process) when the set of worktrees
+//! whole layout (wt:herdr's, `cli::lifecycle::layout`, in this process) when the set of worktrees
 //! changed, a stack's tabs when it came up or went down.
 
 use super::{Effect, glab, herdr};
-use crate::cli::layout;
+use crate::cli::lifecycle::layout;
+use crate::cli::lifecycle::layout::spaces::space_of;
+use crate::cli::lifecycle::repo::Repo;
 use crate::tui::overview::Overview;
 use breadboard_core::conversations::{bound_session, session_file};
 use breadboard_core::git::feature_of;
@@ -113,12 +115,16 @@ pub fn after_read(app: &mut Overview) {
     is_busy.store(true, Ordering::SeqCst);
     app.actor.queue(move || {
         let said = tick(&main, &trees, mrs.as_deref(), &memory);
-        if is_layout {
-            layout::layout(&main, false);
-        }
-        for dir in &stacks {
-            layout::sync_stack_tabs(&main, dir);
-        }
+        // One change of the layout at a time, with wt:herdr and the other overviews.
+        let repo = Repo { main: main.clone() };
+        layout::exclusive(|| {
+            if is_layout {
+                layout::layout(&repo, false);
+            }
+            for dir in &stacks {
+                layout::sync_stack_tabs(&repo, dir, space_of(&repo, dir).as_deref());
+            }
+        });
         is_busy.store(false, Ordering::SeqCst);
         Some(Box::new(move |app: &mut Overview| {
             for (paint, text) in said {
@@ -141,9 +147,14 @@ fn tick(
     let names = titles(main);
     remember_sessions(main, trees, &panes, &all_spaces, &mut said);
     remember_chats(main, &panes, &all_spaces, &names, &mut said);
-    layout::prune_spaces(main);
-    // Cheap when the order stands: a plan or a handover may have changed it (#255).
-    layout::sort_spaces(main);
+    let repo = Repo {
+        main: main.to_path_buf(),
+    };
+    layout::exclusive(|| {
+        layout::prune_spaces(&repo);
+        // Cheap when the order stands: a plan or a handover may have changed it (#255).
+        layout::orchestrations::sort_spaces(&repo);
+    });
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
     report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
     notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut said);

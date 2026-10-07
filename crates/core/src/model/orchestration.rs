@@ -100,6 +100,9 @@ pub struct ViewState {
     pub is_deliverer: bool,
 }
 
+/// NEXT before GitLab's first answer: what is for you depends on it.
+pub const GITLAB_PENDING: &str = "GitLab …";
+
 /// NEXT: the answer to "what now?" (#278).
 #[derive(Debug, Clone, PartialEq)]
 pub enum NextBand {
@@ -841,7 +844,7 @@ pub fn orchestration_of(
             Some(Next::Action(at)) => NextBand::Action(actions[at].clone()),
             Some(Next::UpNext(at)) => NextBand::UpNext(up_next[at].clone()),
             Some(Next::Merge(merge)) => NextBand::Merge(merge),
-            None if remote.is_none() => NextBand::Nothing("GitLab …".into()),
+            None if remote.is_none() => NextBand::Nothing(GITLAB_PENDING.into()),
             None => {
                 let at_work = issues
                     .iter()
@@ -1078,7 +1081,7 @@ mod tests {
     fn waits_for_gitlab_before_it_answers() {
         let model = orchestration_of(&local(), None, &mut ViewState::default(), NOW);
         assert!(!model.has_remote);
-        assert_eq!(model.next.unwrap().band, NextBand::Nothing("GitLab …".into()));
+        assert_eq!(model.next.unwrap().band, NextBand::Nothing(GITLAB_PENDING.into()));
         assert_eq!(model.merge_requests.unwrap(), MergeRequests::default());
         assert_eq!(model.worktrees.unwrap().tree.live.len(), 2);
     }

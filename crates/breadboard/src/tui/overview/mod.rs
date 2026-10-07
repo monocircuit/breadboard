@@ -481,7 +481,7 @@ impl App for Overview {
                         self.remote = Some(*remote);
                     }
                     Err(reason) => {
-                        self.gitlab.error = Some(gitlab::error_text(&reason, Some(at), self.gitlab.at));
+                        self.gitlab.error = Some(gitlab::error_text(&reason, Some(at), self.gitlab.at, !self.is_once));
                     }
                 }
             }

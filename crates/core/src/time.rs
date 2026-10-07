@@ -148,6 +148,12 @@ fn local(ms: i64) -> (i64, i64, i64, i64, i64) {
     )
 }
 
+/// `2026-09-30`, local: the day of a changelog's heading.
+pub fn day(ms: i64) -> String {
+    let (year, month, day, _, _) = local(ms);
+    format!("{year}-{month:02}-{day:02}")
+}
+
 /// `14:57`, local time.
 pub fn hm(ms: i64) -> String {
     let (_, _, _, hour, minute) = local(ms);
@@ -178,6 +184,8 @@ mod tests {
         let now = parse_iso("2026-09-30T12:00:00Z").unwrap();
         assert_eq!(clock(now, now).len(), 5);
         assert!(clock(now - 3 * 86_400_000, now).contains(" Sep "));
+        assert_eq!(day(now).len(), 10);
+        assert_eq!(hm(now).len(), 5);
     }
 
     #[test]

@@ -414,7 +414,8 @@ fn facts_of(
     if !mr_fact.is_empty() {
         all.push(mr_fact);
     } else if tree.is_some() {
-        all.push(vec![Span::dim("no MR yet")]);
+        // Before GitLab answered nothing is known: `MR …`, as its issue's `#303 …`.
+        all.push(vec![Span::dim(if facts.has_remote { "no MR yet" } else { "MR …" })]);
     }
     if let Some(tree) = tree {
         let mut work = Vec::new();

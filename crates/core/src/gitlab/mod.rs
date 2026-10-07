@@ -8,6 +8,7 @@
 pub mod cache;
 pub mod client;
 pub mod read;
+mod rest;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -206,14 +207,16 @@ pub fn waiting_text(progress: &client::Progress) -> String {
     format!("GitLab: {}/{}{phase}", progress.answered, progress.asked)
 }
 
-/// The line of a read that failed: when, why, the age of the data shown in its place.
-pub fn error_text(reason: &str, at: Option<i64>, data_at: Option<i64>) -> String {
+/// The line of a read that failed: when, why, the age of the data shown in
+/// its place; `, tried again` only where it is (a print asks once).
+pub fn error_text(reason: &str, at: Option<i64>, data_at: Option<i64>, will_retry: bool) -> String {
     let when = at.map(|at| format!(" {}", crate::time::hm(at))).unwrap_or_default();
     let kept = data_at
         .map(|at| format!(", data from {}", crate::time::hm(at)))
         .unwrap_or_default();
+    let again = if will_retry { ", tried again" } else { "" };
     format!(
-        "GitLab didn't answer{when} ({}){kept}, tried again",
+        "GitLab didn't answer{when} ({}){kept}{again}",
         reason.lines().next().unwrap_or("")
     )
 }
@@ -377,7 +380,13 @@ mod tests {
         };
         assert_eq!(waiting_text(&progress), "GitLab: 4/7 · pipelines");
         assert_eq!(waiting_text(&client::Progress::default()), "GitLab …");
-        assert!(error_text("timeout\nmore", None, None).starts_with("GitLab didn't answer (timeout), tried again"));
+        assert!(
+            error_text("timeout\nmore", None, None, true).starts_with("GitLab didn't answer (timeout), tried again")
+        );
+        assert_eq!(
+            error_text("timeout", None, None, false),
+            "GitLab didn't answer (timeout)"
+        );
         assert!(
             fresh_text(
                 0,
