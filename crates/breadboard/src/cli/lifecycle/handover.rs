@@ -17,7 +17,7 @@ use super::herdr::{self, call, did, id_at, s};
 use super::layout::spaces::space_of;
 use super::layout::tabs::{EDITOR, OVERVIEW, ROOT, drop_duplicates, keep_order};
 use super::plugin;
-use super::proc::{Done, Fail, done, exe, fail, git, step, text};
+use super::proc::{Done, Fail, Wait, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
@@ -171,22 +171,30 @@ pub fn slug_of(title: &str) -> String {
     slug
 }
 
-/// The branch on origin that claims the issue of `feature` already, if one does.
+/// Why the issue of `feature` is not free: a branch on origin claims it
+/// already, or origin did not say (nothing is set up on a claim not known).
 fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
     let number: String = feature.chars().take_while(char::is_ascii_digit).collect();
     if number.is_empty() || !feature[number.len()..].starts_with('-') {
         return None;
     }
-    let heads = git(
-        &repo.main,
+    let heads = output_within(
+        "git",
         &["ls-remote", "--heads", "origin", &format!("*{number}-*")],
-        None,
+        &repo.main,
+        &Wait::new(
+            "origin (git ls-remote, the branches of the issue)",
+            Duration::from_secs(30),
+        ),
     );
+    if heads.stderr.starts_with("timeout") {
+        return Some("origin did not answer whether a branch claims it (git ls-remote)".into());
+    }
     heads.lines().find_map(|line| {
         line.split("refs/heads/")
             .nth(1)
             .filter(|branch| !branch.is_empty())
-            .map(String::from)
+            .map(|branch| format!("claimed by {branch}"))
     })
 }
 
@@ -204,8 +212,8 @@ fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
 /// why it can't be read (orchestrator.mjs `readIssue`).
 pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     let number: String = arg.chars().take_while(char::is_ascii_digit).collect();
-    let found =
-        gitlab::view(&repo.main, &["issue", "view", &number]).map_err(|unread| unread_issue(&number, unread))?;
+    let found = gitlab::view(&repo.main, &["issue", "view", &number], &format!("issue #{number}"))
+        .map_err(|unread| unread_issue(&number, unread))?;
     let title = str_of(&found, "title").unwrap_or_default().to_string();
     let feature = if number == arg {
         format!("{number}-{}", slug_of(&title))
@@ -228,7 +236,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
                 .unwrap_or_default()
         ))
     } else {
-        claimed_elsewhere(repo, &feature).map(|branch| format!("claimed by {branch}"))
+        claimed_elsewhere(repo, &feature)
     };
     Ok(Issue {
         number: number

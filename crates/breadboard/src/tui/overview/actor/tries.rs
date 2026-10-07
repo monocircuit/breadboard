@@ -137,12 +137,21 @@ fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
             match text {
                 Ok(text) => {
                     app.actor.tries.unopened.remove(&dir);
-                    app.actor.log(Paint::Green, format!("try #{id}: {text}: {run}"));
+                    app.actor.log_as(
+                        &format!("try:{id}"),
+                        Paint::Green,
+                        format!("try #{id}: {text}"),
+                        Some(run.clone()),
+                    );
                     app.actor.tries.clicked.insert(dir.clone(), (id, text));
                 }
                 Err(why) => {
-                    app.actor
-                        .log(Paint::Red, format!("try #{id}: {why}: run {run} there yourself"));
+                    app.actor.log_as(
+                        &format!("try:{id}"),
+                        Paint::Red,
+                        format!("try #{id}: {why}: run it there yourself"),
+                        Some(run.clone()),
+                    );
                     app.actor.tries.unopened.insert(dir.clone(), why.to_string());
                 }
             }
@@ -401,7 +410,12 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
                 match &error {
                     None => {
                         app.actor.stacks.remove(&done);
-                        app.actor.log(Paint::Green, format!("the stack of {who} is up"));
+                        app.actor.log_as(
+                            &format!("stack:{who}"),
+                            Paint::Green,
+                            format!("the stack of {who} is up"),
+                            None,
+                        );
                         if let Some(offset) = offset {
                             app_up(app, &done, offset);
                         }
@@ -411,8 +425,12 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
                             run.is_running = false;
                             run.error = Some(why.clone());
                         }
-                        app.actor
-                            .log(Paint::Red, format!("the stack of {who} didn't start: {why}"));
+                        app.actor.log_as(
+                            &format!("stack:{who}"),
+                            Paint::Red,
+                            format!("the stack of {who} didn't start: {why}"),
+                            None,
+                        );
                     }
                 }
                 app.redraw();
@@ -423,8 +441,12 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
     match started {
         Ok(()) => {
             app.actor.stacks.insert(dir.to_path_buf(), Run::running(&log));
-            app.actor
-                .log(Paint::Yellow, format!("starting the stack of {who}: pnpm stack:up"));
+            app.actor.log_as(
+                &format!("stack:{who}"),
+                Paint::Yellow,
+                format!("starting the stack of {who} …"),
+                Some("pnpm stack:up".into()),
+            );
         }
         Err(why) => {
             app.actor.stacks.insert(

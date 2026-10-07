@@ -273,7 +273,7 @@ pub fn command(args: &Args) -> Done {
     let repo = Repo::here()?;
     let here = std::env::current_dir().unwrap_or_default();
     step("git fetch --prune");
-    git(&repo.main, &["fetch", "--prune"], None);
+    remove::fetch(&repo);
 
     let Prunable {
         trees,

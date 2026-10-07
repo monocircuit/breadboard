@@ -9,7 +9,9 @@ use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
+use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
+use super::everything::{app_cell, stack_cell};
 use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
@@ -247,6 +249,13 @@ pub struct Node {
     pub agent: Option<AgentLine>,
     /// Its facts, parted by ` · `.
     pub facts: Vec<Fact>,
+    /// Its app and its stack (#332, render.mjs's columns): None without a worktree or its .env.local.
+    pub app: Option<Span>,
+    pub stack: Option<Span>,
+    /// Where its open work collides (#332, DIFF's `⚠ also changed …`):
+    /// develop first (named `develop`), then the orchestration's other
+    /// worktrees, each by its issue (`#304`), else its feature.
+    pub collides: Vec<Overlap>,
     pub title: String,
     /// A click: its space, else its issue's page.
     pub go: Go,
@@ -419,8 +428,17 @@ fn facts_of(
     }
     if let Some(tree) = tree {
         let mut work = Vec::new();
+        // How far it is from develop (#332), as lazygit's branches: `↑1 ↓13`,
+        // commits develop lacks and develop's it lacks; nothing to merge in once merged.
         if tree.ahead > 0 {
-            work.push(Span::plain(format!("{} ahead", tree.ahead)));
+            work.push(Span::plain(format!("↑{}", tree.ahead)));
+        }
+        let is_merged = issue.merged_at.is_some() || mr.is_some_and(Mr::is_merged);
+        if tree.behind > 0 && !is_merged {
+            if !work.is_empty() {
+                work.push(Span::plain(" "));
+            }
+            work.push(Span::new(format!("↓{}", tree.behind), Paint::Yellow));
         }
         if tree.changed > 0 {
             if !work.is_empty() {
@@ -545,6 +563,43 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 issue.merged_at.is_some() || of(issue).and_then(|part| part.mr.as_ref()).is_some_and(Mr::is_merged)
             })
     };
+    // The open work of each worktree, by its issue (`#304`, short beside a long feature), for where they collide.
+    let works: Vec<(usize, String, &std::collections::BTreeSet<String>)> = issues
+        .iter()
+        .enumerate()
+        .filter(|(_, issue)| {
+            issue.merged_at.is_none() && !of(issue).and_then(|part| part.mr.as_ref()).is_some_and(Mr::is_merged)
+        })
+        .filter_map(|(index, issue)| {
+            let name = issue
+                .number
+                .map_or_else(|| issue.feature.clone(), |number| format!("#{number}"));
+            Some((index, name, &issue.tree.as_ref()?.files))
+        })
+        .collect();
+    let collides_of = |index: usize| -> Vec<Overlap> {
+        let Some((_, _, mine)) = works.iter().find(|(at, _, _)| *at == index) else {
+            return Vec::new();
+        };
+        let develop = issues[index]
+            .tree
+            .as_ref()
+            .map(|tree| tree.on_develop.clone())
+            .unwrap_or_default();
+        let develop = (!develop.is_empty()).then(|| Overlap {
+            name: "develop".into(),
+            files: develop,
+        });
+        let others = works
+            .iter()
+            .filter(|(at, _, _)| *at != index)
+            .map(|(_, name, files)| Overlap {
+                name: name.clone(),
+                files: files.intersection(mine).cloned().collect(),
+            })
+            .filter(|other| !other.files.is_empty());
+        develop.into_iter().chain(others).collect()
+    };
     let mut rows: Vec<Node> = issues
         .iter()
         .enumerate()
@@ -625,6 +680,9 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 number: issue.number,
                 agent,
                 facts: facts_of(issue, found, mr, &state, handover.as_ref(), facts),
+                app: tree.filter(|tree| tree.has_env).map(app_cell),
+                stack: tree.filter(|tree| tree.has_env).map(stack_cell),
+                collides: collides_of(index),
                 state,
                 place: numbers[index],
                 name: issue.feature.clone(),
@@ -1062,6 +1120,54 @@ mod tests {
     }
 
     #[test]
+    fn says_how_far_develop_moved_on_where_the_work_collides_its_app_and_stack() {
+        let with = |number: i64, files: &[&str], on_develop: &[&str]| Entry {
+            tree: Some(Tree {
+                ahead: 1,
+                behind: 3,
+                files: files.iter().map(|file| file.to_string()).collect(),
+                on_develop: on_develop.iter().map(|file| file.to_string()).collect(),
+                has_env: true,
+                has_own_port: true,
+                offset: number,
+                stack: Some("running(5)".into()),
+                ..tree()
+            }),
+            ..issue(number)
+        };
+        let issues = [
+            with(1, &["a.md", "b.md"], &["b.md"]),
+            with(2, &["a.md"], &[]),
+            with(3, &["c.md"], &[]),
+            // Merged: its work is in develop, nothing of it collides or is behind.
+            Entry {
+                merged_at: Some("2026-10-01T10:00:00Z".into()),
+                ..with(4, &["a.md"], &["a.md"])
+            },
+        ];
+        let found = tree_of(&issues, None, &TreeFacts::default());
+        let node = |number: i64| found.live.iter().find(|node| node.number == Some(number)).unwrap();
+        let collides = |number: i64| {
+            node(number)
+                .collides
+                .iter()
+                .map(|overlap| format!("{}: {}", overlap.name, overlap.files.join(", ")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(collides(1), ["develop: b.md", "#2: a.md"]);
+        assert_eq!(collides(2), ["#1: a.md"]);
+        assert!(collides(3).is_empty() && collides(4).is_empty());
+        assert!(facts_text(&node(1).facts).contains("↑1 ↓3"));
+        assert!(!facts_text(&node(4).facts).contains('↓'));
+        assert_eq!(node(3).app.as_ref().map(|app| app.text.as_str()), Some("○ :3003"));
+        assert_eq!(
+            node(3).stack.as_ref().map(|stack| stack.text.as_str()),
+            Some("+3 running(5)")
+        );
+        assert_eq!(tree_of(&[gone(5)], None, &TreeFacts::default()).removed[0].app, None);
+    }
+
+    #[test]
     fn names_the_wait_once() {
         let waiting = Entry {
             tree: Some(Tree {
@@ -1496,6 +1602,9 @@ mod tests {
             has_tree: true,
             agent: None,
             facts: vec![],
+            app: None,
+            stack: None,
+            collides: vec![],
             title: String::new(),
             go: Go::Nothing,
         }
@@ -1607,7 +1716,7 @@ mod tests {
                 facts_text(&one.facts).as_str(),
                 one.title.as_str()
             ),
-            ("no agent", "#1 open · no MR yet · 2 ahead", "the title of 1")
+            ("no agent", "#1 open · no MR yet · ↑2", "the title of 1")
         );
         assert_eq!(two.state.text, "free");
         assert!(facts_text(&two.facts).starts_with("#2 open · no MR yet · no answer yet"));

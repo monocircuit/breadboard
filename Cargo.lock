@@ -129,12 +129,14 @@ name = "breadboard"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-lc-rs",
  "breadboard-core",
  "crossterm",
  "futures-util",
  "libc",
  "ratatui",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

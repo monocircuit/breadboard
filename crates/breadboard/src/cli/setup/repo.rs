@@ -28,13 +28,20 @@ pub const PORTS: [(u16, Option<&str>); 7] = [
 pub const STUDIO_PORT: u16 = 4983;
 
 /// Where the commands stand: `INIT_CWD` (pnpm keeps the place it was typed
-/// in), else the working directory.
+/// in) when it lies in the repo of the working directory, else the working
+/// directory. An `INIT_CWD` of another repo (a pnpm script of one checkout
+/// that runs this in another, a world under a checkout) is not followed.
 pub fn here() -> PathBuf {
-    std::env::var_os("INIT_CWD")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_dir())
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+    static HERE: OnceLock<PathBuf> = OnceLock::new();
+    HERE.get_or_init(|| {
+        let cwd = cwd();
+        std::env::var_os("INIT_CWD")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_dir() && *dir != cwd)
+            .filter(|dir| find_main().is_some_and(|main| core_git::main_dir(dir).as_ref() == Some(&main)))
+            .unwrap_or(cwd)
+    })
+    .clone()
 }
 
 /// The working directory itself.
@@ -44,10 +51,10 @@ pub fn cwd() -> PathBuf {
 
 static MAIN: OnceLock<PathBuf> = OnceLock::new();
 
-/// The main checkout of the repo the command runs in, from the cwd or
-/// `INIT_CWD` only; asked once, so a worktree removed meanwhile doesn't lose
-/// it. Never from where the binary lies: a binary of one checkout run outside
-/// any would act on that checkout (fetch, worktree add, push its claim).
+/// The main checkout of the repo of the working directory; asked once, so a
+/// worktree removed meanwhile doesn't lose it. Never from `INIT_CWD` or from
+/// where the binary lies: a binary of one checkout run outside any would act
+/// on that checkout (fetch, worktree add, push its claim).
 pub fn main_dir() -> PathBuf {
     find_main().unwrap_or_else(|| fail("not inside the repo: run it in a checkout of monocircuit/platform"))
 }
@@ -57,7 +64,7 @@ pub fn find_main() -> Option<PathBuf> {
     if let Some(main) = MAIN.get() {
         return Some(main.clone());
     }
-    let main = core_git::main_dir(&cwd()).or_else(|| core_git::main_dir(&here()))?;
+    let main = core_git::main_dir(&cwd())?;
     Some(MAIN.get_or_init(|| main).clone())
 }
 

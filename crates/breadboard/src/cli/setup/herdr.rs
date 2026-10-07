@@ -139,8 +139,28 @@ pub fn current_pane() -> Option<Value> {
             None => return None,
         }
     }
-    let is_ours = |pane: &Value| shell_of(field(pane, "pane_id")).is_some_and(|shell| chain.contains(&shell));
-    all_panes().into_iter().find(|pane| is_ours(pane))
+    // One process-info a pane: asked 16 at a time, the first of herdr's
+    // order that is ours wins (a run outside every pane asks them all: 94
+    // panes took 3.3 s one after another).
+    let panes = all_panes();
+    for batch in panes.chunks(16) {
+        let found = thread::scope(|scope| {
+            let asked: Vec<_> = batch
+                .iter()
+                .map(|pane| scope.spawn(|| shell_of(field(pane, "pane_id"))))
+                .collect();
+            asked
+                .into_iter()
+                .map(|handle| handle.join().ok().flatten())
+                .zip(batch)
+                .find(|(shell, _)| shell.is_some_and(|shell| chain.contains(&shell)))
+                .map(|(_, pane)| pane.clone())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
 }
 
 thread_local! {

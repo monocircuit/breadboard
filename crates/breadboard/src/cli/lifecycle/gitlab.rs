@@ -2,9 +2,46 @@
 //! calls today's breadboard makes (rewrite rule 6), in the main checkout,
 //! whose remote names the project.
 
-use super::proc::output;
+use super::proc::{Wait, output_within};
+use breadboard_core::git::Out;
 use serde_json::Value;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// How long one read may take: core's client gives a call as long. Past it
+/// GitLab counts as not answering, as one that refuses (#306); today's
+/// `glab` waited without end.
+pub const LIMIT: Duration = Duration::from_secs(15);
+
+/// How long a read may take that only names something in a refusal.
+pub const NAMING: Duration = Duration::from_secs(5);
+
+/// Set once a read went unanswered to its limit: the rest of this run asks
+/// no more (a wt:prune of five merged worktrees waited 15 s for each).
+static IS_SILENT: AtomicBool = AtomicBool::new(false);
+
+/// `glab <args>` within `limit`, or not at all once GitLab was silent.
+fn glab(main: &Path, args: &[&str], what: &str, limit: Duration) -> Out {
+    if IS_SILENT.load(Ordering::Relaxed) {
+        return Out {
+            is_ok: false,
+            status: -1,
+            stdout: String::new(),
+            stderr: "timeout: GitLab was silent before in this run".into(),
+        };
+    }
+    let out = output_within("glab", args, main, &wait_for(what, limit));
+    if out.stderr.starts_with("timeout") {
+        IS_SILENT.store(true, Ordering::Relaxed);
+    }
+    out
+}
+
+/// The wait of a read of `what` (`the MRs of fix/303-x`).
+fn wait_for(what: &str, limit: Duration) -> Wait {
+    Wait::new(format!("GitLab ({what})"), limit)
+}
 
 /// `encodeURIComponent`: everything but `A-Z a-z 0-9 - _ . ! ~ * ' ( )` as `%XX`.
 pub fn encode(text: &str) -> String {
@@ -19,9 +56,10 @@ pub fn encode(text: &str) -> String {
         .collect()
 }
 
-/// `glab api <endpoint>` → its JSON, None when glab fails or answers none.
-pub fn api(main: &Path, endpoint: &str) -> Option<Value> {
-    let out = output("glab", &["api", endpoint], main, None);
+/// `glab api <endpoint>` → its JSON, None when glab fails, answers none or
+/// not within `limit`; `what` it reads is said while it waits.
+pub fn api(main: &Path, endpoint: &str, what: &str, limit: Duration) -> Option<Value> {
+    let out = glab(main, &["api", endpoint], what, limit);
     if !out.is_ok {
         return None;
     }
@@ -47,11 +85,12 @@ fn unread_of(stderr: &str) -> Unread {
     }
 }
 
-/// `glab <args> -F json` of an issue or an MR (`issue view 12`, `mr view 3`).
-pub fn view(main: &Path, args: &[&str]) -> Result<Value, Unread> {
+/// `glab <args> -F json` of an issue or an MR (`issue view 12`, `mr view 3`),
+/// `what` it reads said while it waits.
+pub fn view(main: &Path, args: &[&str], what: &str) -> Result<Value, Unread> {
     let mut all = args.to_vec();
     all.extend(["-F", "json"]);
-    let out = output("glab", &all, main, None);
+    let out = glab(main, &all, what, LIMIT);
     if !out.is_ok {
         return Err(unread_of(&out.stderr));
     }
@@ -73,6 +112,7 @@ mod tests {
             Unread::Unanswered
         );
         assert_eq!(unread_of(""), Unread::Unanswered);
+        assert_eq!(unread_of("timeout: no answer in 15 s"), Unread::Unanswered);
     }
 
     #[test]

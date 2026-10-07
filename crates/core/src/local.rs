@@ -58,29 +58,191 @@ pub fn is_port_taken(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_err())
 }
 
-/// The compose projects docker knows, by name → status; None when docker doesn't answer.
-pub fn compose_projects() -> Option<BTreeMap<String, String>> {
+// ---------------------------------------------------------------------------
+// docker (#331): one read of every container of the machine, at most once in
+// CONTAINERS_EVERY_MS for all processes of the user together, shared through
+// a file; the stacks and each stack's containers are taken from it. Never a
+// `compose ls` / `compose ps` per process and stack.
+// ---------------------------------------------------------------------------
+
+/// How long one read of docker holds for every process (#331: every 10–15 s).
+pub const CONTAINERS_EVERY_MS: i64 = 12_000;
+/// A reader that died holding the lock: taken over after this.
+const CONTAINERS_LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A container of a compose stack, as `docker ps` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StackContainer {
+    pub project: String,
+    pub service: String,
+    /// `running`, `exited`, …
+    pub state: String,
+    /// `healthy`, `unhealthy`, `starting`, or empty without a health check.
+    pub health: String,
+}
+
+/// What the file holds: when docker was read, and what it said (None: it didn't answer).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Containers {
+    pub at: i64,
+    pub containers: Option<Vec<StackContainer>>,
+}
+
+/// The user's folder of breadboard's runtime files: `$XDG_RUNTIME_DIR/breadboard`, else `$TMPDIR/breadboard-<uid>`.
+pub fn runtime_dir() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join("breadboard"),
+        // SAFETY: getuid never fails.
+        None => std::env::temp_dir().join(format!("breadboard-{}", unsafe { libc::getuid() })),
+    }
+}
+
+/// The file docker's read is shared through (#331).
+pub fn containers_file() -> PathBuf {
+    runtime_dir().join("containers.json")
+}
+
+/// The template of `docker ps`: one container a line, tab-separated.
+const PS_FORMAT: &str = "{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}\t{{.Label \"com.docker.compose.oneoff\"}}\t{{.State}}\t{{.Status}}";
+
+/// The containers of compose stacks in what `docker ps --format PS_FORMAT` printed; one-off ones (`compose run`) left out, as `compose ps` does.
+pub fn containers_in(text: &str) -> Vec<StackContainer> {
+    let mut found: Vec<StackContainer> = text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let (project, service, oneoff, state, status) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next().unwrap_or(""),
+            );
+            if project.is_empty() || oneoff.eq_ignore_ascii_case("true") {
+                return None;
+            }
+            let health = ["unhealthy", "healthy", "health: starting"]
+                .into_iter()
+                .find(|health| status.contains(&format!("({health})")))
+                .map(|health| health.trim_start_matches("health: ").to_string())
+                .unwrap_or_default();
+            Some(StackContainer {
+                project: project.to_string(),
+                service: service.to_string(),
+                state: state.to_lowercase(),
+                health,
+            })
+        })
+        .collect();
+    found.sort_by(|a, b| (&a.project, &a.service).cmp(&(&b.project, &b.service)));
+    found
+}
+
+/// One read of docker: every container of a compose stack; None when docker doesn't answer.
+fn read_docker() -> Option<Vec<StackContainer>> {
     let output = Command::new("docker")
-        .args(["compose", "ls", "--all", "--format", "json"])
+        .args([
+            "ps",
+            "--all",
+            "--filter",
+            "label=com.docker.compose.project",
+            "--format",
+            PS_FORMAT,
+        ])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    if !output.status.success() {
-        return None;
+    output
+        .status
+        .success()
+        .then(|| containers_in(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// docker's containers, read at most once in CONTAINERS_EVERY_MS by all processes together: the one that finds the file old reads and writes it, the others take what it holds.
+pub fn containers() -> Option<Vec<StackContainer>> {
+    shared_containers(&containers_file(), crate::time::now_ms(), read_docker)
+}
+
+fn read_containers(file: &Path) -> Option<Containers> {
+    serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
+}
+
+/// `containers` with its file, clock and read given (the tests').
+pub fn shared_containers(
+    file: &Path,
+    now: i64,
+    read: impl FnOnce() -> Option<Vec<StackContainer>>,
+) -> Option<Vec<StackContainer>> {
+    let known = read_containers(file);
+    if let Some(known) = &known
+        && (0..CONTAINERS_EVERY_MS).contains(&(now - known.at))
+    {
+        return known.containers.clone();
     }
-    let list: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    Some(
-        list.as_array()?
-            .iter()
-            .filter_map(|project| {
-                Some((
-                    project.get("Name")?.as_str()?.to_string(),
-                    project.get("Status")?.as_str().unwrap_or("").to_string(),
-                ))
-            })
-            .collect(),
-    )
+    let lock = crate::lock::lock_of(file);
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let is_stale_lock = std::fs::metadata(&lock)
+        .and_then(|meta| meta.modified())
+        .is_ok_and(|at| at.elapsed().unwrap_or_default() > CONTAINERS_LOCK_STALE);
+    if is_stale_lock {
+        let _ = std::fs::remove_dir_all(&lock);
+    }
+    let is_ours = std::fs::create_dir(&lock).is_ok();
+    if !is_ours && let Some(known) = known {
+        // Another process reads docker right now: what the file holds until then.
+        return known.containers;
+    }
+    let containers = read();
+    let fresh = Containers {
+        at: now,
+        containers: containers.clone(),
+    };
+    if let Ok(text) = serde_json::to_string(&fresh) {
+        let part = file.with_extension(format!("{}.part", std::process::id()));
+        if std::fs::write(&part, text).is_ok() {
+            let _ = std::fs::rename(&part, file);
+        }
+    }
+    if is_ours {
+        let _ = std::fs::remove_dir(&lock);
+    }
+    containers
+}
+
+/// compose's word for a stack's state from its containers' (`compose ls`): `exited(1), running(2)`.
+pub fn status_of<'a>(states: impl IntoIterator<Item = &'a str>) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for state in states {
+        *counts.entry(state).or_default() += 1;
+    }
+    counts
+        .iter()
+        .map(|(state, count)| format!("{state}({count})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The compose projects docker knows, by name → status; None when docker doesn't answer.
+pub fn compose_projects() -> Option<BTreeMap<String, String>> {
+    Some(projects_in(&containers()?))
+}
+
+/// The stacks of `containers`, by name → status.
+pub fn projects_in(containers: &[StackContainer]) -> BTreeMap<String, String> {
+    let mut by_project: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for container in containers {
+        by_project
+            .entry(container.project.as_str())
+            .or_default()
+            .push(container.state.as_str());
+    }
+    by_project
+        .into_iter()
+        .map(|(project, states)| (project.to_string(), status_of(states)))
+        .collect()
 }
 
 /// A container of a checkout's stack.
@@ -91,31 +253,16 @@ pub struct Container {
     pub health: String,
 }
 
-/// The containers of one checkout's stack (gitlab.mjs `containersOf`).
-pub fn containers_of(dir: &Path, project: &str) -> Vec<Container> {
-    let output = Command::new("docker")
-        .args(["compose", "-p", project, "ps", "--all", "--format", "json"])
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    let Ok(output) = output else { return Vec::new() };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .map(|container| {
-            let text = |key: &str| {
-                container
-                    .get(key)
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            Container {
-                service: text("Service"),
-                state: text("State"),
-                health: text("Health"),
-            }
+/// The containers of one checkout's stack (gitlab.mjs `containersOf`), from the shared read.
+pub fn containers_of(_dir: &Path, project: &str) -> Vec<Container> {
+    containers()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|container| container.project == project)
+        .map(|container| Container {
+            service: container.service,
+            state: container.state,
+            health: container.health,
         })
         .collect()
 }
@@ -176,6 +323,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.answered = answered_of(&file);
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
+    tree.on_develop = git::on_develop(&dir, &tree.files);
     tree.branch_files = branch_files(&dir);
     tree.behind = behind_develop(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
@@ -298,6 +446,81 @@ mod tests {
     use crate::git::fixture::{repo, worktree};
     use crate::lock::scratch::Scratch;
     use crate::record::{Origin, write_origin};
+
+    #[test]
+    fn takes_every_stack_and_its_containers_from_one_docker_read() {
+        let printed = "vita-2\tapp\t\trunning\tUp 2 hours (healthy)\n\
+                       vita-2\tdb\tFalse\trunning\tUp 2 hours (health: starting)\n\
+                       vita-2\tapp\tTrue\texited\tExited (0) 1 hour ago\n\
+                       vita\tdb\t\texited\tExited (1) 3 days ago\n\
+                       vita\tapp\t\trunning\tUp 1 minute (unhealthy)\n\
+                       \tlonely\t\trunning\tUp\n";
+        let containers = containers_in(printed);
+        let line = |container: &StackContainer| {
+            format!(
+                "{} {} {} {}",
+                container.project, container.service, container.state, container.health
+            )
+        };
+        assert_eq!(
+            containers.iter().map(line).collect::<Vec<_>>(),
+            [
+                "vita app running unhealthy",
+                "vita db exited ",
+                "vita-2 app running healthy",
+                "vita-2 db running starting"
+            ]
+        );
+        let projects = projects_in(&containers);
+        assert_eq!(projects["vita"], "exited(1), running(1)");
+        assert_eq!(projects["vita-2"], "running(2)");
+        assert!(containers_in("").is_empty());
+    }
+
+    #[test]
+    fn reads_docker_once_for_every_process_within_its_interval() {
+        let scratch = Scratch::new();
+        let file = scratch.join("breadboard/containers.json");
+        let one = || {
+            Some(vec![StackContainer {
+                project: "vita".into(),
+                service: "db".into(),
+                state: "running".into(),
+                health: String::new(),
+            }])
+        };
+        let reads = std::cell::Cell::new(0);
+        let counted = |answer: Option<Vec<StackContainer>>| {
+            reads.set(reads.get() + 1);
+            answer
+        };
+        assert_eq!(shared_containers(&file, 1_000, || counted(one())), one());
+        // Another process within the interval: the file, docker not asked.
+        assert_eq!(
+            shared_containers(&file, 1_000 + CONTAINERS_EVERY_MS - 1, || counted(None)),
+            one()
+        );
+        assert_eq!(reads.get(), 1);
+        // While one reads (its lock), the others take the old answer.
+        std::fs::create_dir(crate::lock::lock_of(&file)).unwrap();
+        assert_eq!(
+            shared_containers(&file, 1_000 + CONTAINERS_EVERY_MS, || counted(None)),
+            one()
+        );
+        assert_eq!(reads.get(), 1);
+        std::fs::remove_dir(crate::lock::lock_of(&file)).unwrap();
+        // Past the interval: read again; docker not answering is shared too.
+        assert_eq!(
+            shared_containers(&file, 1_000 + CONTAINERS_EVERY_MS, || counted(None)),
+            None
+        );
+        assert_eq!(
+            shared_containers(&file, 1_001 + CONTAINERS_EVERY_MS, || counted(one())),
+            None
+        );
+        assert_eq!(reads.get(), 2);
+        assert!(!crate::lock::lock_of(&file).exists());
+    }
 
     #[test]
     fn reads_env_and_the_offset_of_a_stack() {

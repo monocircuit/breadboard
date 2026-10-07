@@ -263,6 +263,23 @@ pub fn work_files(dir: &Path) -> BTreeSet<String> {
     files
 }
 
+/// Of `files`, the ones develop changed too since the merge base: where the
+/// work collides with develop (diff.mjs, DIFF's `⚠ also changed on develop`).
+pub fn on_develop(dir: &Path, files: &BTreeSet<String>) -> Vec<String> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    if !base.is_ok || base.out().is_empty() {
+        return Vec::new();
+    }
+    git(dir, &["diff", "--name-only", base.out(), "origin/develop"])
+        .lines()
+        .filter(|file| files.contains(*file))
+        .map(String::from)
+        .collect()
+}
+
 /// The files the commits of a worktree's branch touched, from where wt:new
 /// made the branch (its reflog's oldest entry) along the first parent and
 /// without merges: what develop brought in doesn't count, and it stays the
@@ -474,6 +491,15 @@ mod tests {
             vec!["new.md".to_string(), "work/2-local.md".to_string()]
         );
         assert_eq!(branch_files(&local), vec!["work/2-local.md".to_string()]);
+        // develop moves on with a file the work changes too: they collide there.
+        assert!(on_develop(&local, &work_files(&local)).is_empty());
+        std::fs::write(main.join("new.md"), "develop's\n").unwrap();
+        run(&main, &["add", "new.md"]);
+        run(&main, &["commit", "--quiet", "-m", "feat: develop's new.md"]);
+        run(&main, &["push", "--quiet", "origin", "develop"]);
+        run(&main, &["fetch", "--quiet", "origin"]);
+        assert_eq!(on_develop(&local, &work_files(&local)), vec!["new.md".to_string()]);
+        assert_eq!(behind_develop(&local), 1);
         assert!(
             remote_heads(&main)
                 .iter()

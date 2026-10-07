@@ -60,6 +60,24 @@ pub fn stack_cell(tree: &Tree) -> Span {
     }
 }
 
+/// A checkout's app as a cell (render.mjs): `● :3002` up (its page linked),
+/// `○ :3002` down, `⇒ :3000` on the shared one, `—` without .env.local.
+pub fn app_cell(tree: &Tree) -> Span {
+    let port = 3000 + tree.offset;
+    if !tree.has_env {
+        Span::dim("—")
+    } else if !tree.has_own_port {
+        Span::dim("⇒ :3000")
+    } else if tree.is_up {
+        Span {
+            url: Some(format!("http://localhost:{port}")),
+            ..Span::new(format!("● :{port}"), Paint::Green)
+        }
+    } else {
+        Span::dim(format!("○ :{port}"))
+    }
+}
+
 pub fn everything_of(local: &EverythingLocal, remote: Option<EverythingRemote>) -> EverythingModel {
     let trees = section("WORKTREES", || {
         local
@@ -151,5 +169,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(stack_cell(&own).text, "+2 down");
+        assert_eq!(app_cell(&own).text, "○ :3002");
+        let up = app_cell(&Tree { is_up: true, ..own });
+        assert_eq!(
+            (up.text.as_str(), up.url.as_deref()),
+            ("● :3002", Some("http://localhost:3002"))
+        );
+        assert_eq!(app_cell(&rows[1].tree).text, "—");
+        let shared = Tree {
+            has_env: true,
+            ..Default::default()
+        };
+        assert_eq!(app_cell(&shared).text, "⇒ :3000");
     }
 }

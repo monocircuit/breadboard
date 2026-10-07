@@ -87,9 +87,18 @@ pub fn open_file(state: &mut State, model: &WorktreeModel, main: &Path, file: &s
 
 /// A file's hunks under the row clicked; a second click on it closes them,
 /// one on another file's row shows that one's instead (lazygit shows one).
-pub fn toggle_hunks(state: &mut State, file: String, at: String) -> Flow {
-    let is_open = state.hunks.as_ref().is_some_and(|shown| shown.is_under(&at, &file));
-    state.hunks = (!is_open).then(|| Shown::new(file, at));
+/// `is_whole` (the `… N more lines` row): the shown ones, all their lines.
+pub fn toggle_hunks(state: &mut State, file: String, at: String, is_whole: bool) -> Flow {
+    let open = state.hunks.as_mut().filter(|shown| shown.is_under(&at, &file));
+    match open {
+        Some(shown) if is_whole => shown.is_whole = true,
+        Some(_) => state.hunks = None,
+        None => {
+            let mut shown = Shown::new(file, at);
+            shown.is_whole = is_whole;
+            state.hunks = Some(shown);
+        }
+    }
     Flow::Redraw
 }
 
@@ -184,6 +193,20 @@ fn own_binary() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_shows_its_hunks_a_second_click_closes_them_more_shows_all() {
+        let mut state = State::default();
+        let shown = |state: &State| state.hunks.as_ref().map(|shown| (shown.file.clone(), shown.is_whole));
+        toggle_hunks(&mut state, "a".into(), "file".into(), false);
+        assert_eq!(shown(&state), Some(("a".into(), false)));
+        toggle_hunks(&mut state, "a".into(), "file".into(), true);
+        assert_eq!(shown(&state), Some(("a".into(), true)));
+        toggle_hunks(&mut state, "b".into(), "file".into(), false);
+        assert_eq!(shown(&state), Some(("b".into(), false)));
+        toggle_hunks(&mut state, "b".into(), "file".into(), false);
+        assert_eq!(shown(&state), None);
+    }
 
     #[test]
     fn delete_stays_armed_for_five_seconds() {

@@ -316,6 +316,7 @@ pub fn command() -> ExitCode {
     if base.is_empty() {
         fail("no merge base with origin/develop: git fetch origin first");
     }
+    super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
     let Some(tree) = working_tree_of(&dir) else {
         fail("couldn't read the working tree (git add -A in a copy of the index failed)")

@@ -165,6 +165,8 @@ pub struct Tree {
     pub answered: Vec<Action>,
     /// What its work touches, for the merge order.
     pub files: BTreeSet<String>,
+    /// Of `files`, the ones develop changed too since the merge base (#332).
+    pub on_develop: Vec<String>,
     /// What the commits of its branch touched (git.rs `branch_files`): what its agent knows.
     pub branch_files: Vec<String>,
     /// Commits of develop it lacks.

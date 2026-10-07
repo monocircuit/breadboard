@@ -3,10 +3,12 @@
 //! whose output streams through.
 
 use breadboard_core::git::Out;
-use std::io::{IsTerminal, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Output, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Why a command stops: printed as `✗ <reason>` (proc.mjs `fail`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +136,128 @@ pub fn output(program: &str, args: &[&str], cwd: &Path, input: Option<&str>) -> 
     }
 }
 
+/// What a call to another machine waits for, said once it takes longer
+/// than `notice`, and how long it may take before it counts as unanswered.
+#[derive(Debug, Clone)]
+pub struct Wait {
+    /// `GitLab (the MRs of fix/303-x)`: the line says `waiting for <what>`.
+    pub what: String,
+    pub notice: Duration,
+    pub limit: Duration,
+}
+
+/// Whether waits are said: a command of this group run from the command
+/// line, never the overview, whose screen a line would break (it calls the
+/// layout in its own process).
+static IS_SAYING_WAITS: AtomicBool = AtomicBool::new(false);
+
+/// From here on, this process says what it waits for (`lifecycle::run`).
+pub fn say_waits() {
+    IS_SAYING_WAITS.store(true, Ordering::Relaxed);
+}
+
+/// `line` on stdout at once, when this process says its waits.
+pub fn say_wait(line: &str) {
+    if IS_SAYING_WAITS.load(Ordering::Relaxed) {
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// How long a command may be silent before it says what it waits for.
+pub const NOTICE: Duration = Duration::from_millis(1500);
+
+impl Wait {
+    pub fn new(what: impl Into<String>, limit: Duration) -> Wait {
+        Wait {
+            what: what.into(),
+            notice: NOTICE,
+            limit,
+        }
+    }
+
+    /// The line said once the wait is longer than `notice`.
+    pub fn line(&self) -> String {
+        format!("  waiting for {}, at most {} s", self.what, self.limit.as_secs())
+    }
+}
+
+/// `child` waited for, its output read beside it: `waiting for …` said once
+/// it takes longer than `wait.notice`, killed after `wait.limit` (None then).
+/// Today's waited without a word and without end for a GitLab or an origin
+/// that accepts and never answers.
+pub fn wait_within(mut child: Child, wait: &Wait) -> std::io::Result<Option<Output>> {
+    let reader = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = reader(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let stderr = reader(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    let started = Instant::now();
+    let mut is_said = false;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        let waited = started.elapsed();
+        if waited >= wait.limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        if !is_said && waited >= wait.notice {
+            say_wait(&wait.line());
+            is_said = true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    // A grandchild may hold a pipe open past the kill: read what is there, never block on it.
+    let stdout = if status.is_some() {
+        stdout.join().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let stderr = if status.is_some() {
+        stderr.join().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok(status.map(|status| Output { status, stdout, stderr }))
+}
+
+/// [`output`] of a call to another machine, given at most `wait.limit`:
+/// past it, a failed answer whose stderr says `timeout`.
+pub fn output_within(program: &str, args: &[&str], cwd: &Path, wait: &Wait) -> Out {
+    let unanswered = |stderr: String| Out {
+        is_ok: false,
+        status: -1,
+        stdout: String::new(),
+        stderr,
+    };
+    let spawned = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    match spawned.and_then(|child| wait_within(child, wait)) {
+        Ok(Some(result)) => Out {
+            is_ok: result.status.success(),
+            status: result.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&result.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&result.stderr).into_owned(),
+        },
+        Ok(None) => unanswered(format!("timeout: no answer in {} s", wait.limit.as_secs())),
+        Err(error) => unanswered(error.to_string()),
+    }
+}
+
 /// `git <args>` in `dir`, quiet, never failing, `input` on its stdin.
 pub fn git(dir: &Path, args: &[&str], input: Option<&str>) -> Out {
     output("git", args, dir, input)
@@ -183,6 +307,42 @@ mod tests {
         let out = output("cat", &[], Path::new("/"), Some("a\nb\n"));
         assert!(out.is_ok);
         assert_eq!(out.stdout, "a\nb\n");
+    }
+
+    fn quick(limit: u64) -> Wait {
+        Wait {
+            what: "a test".into(),
+            notice: Duration::from_millis(10),
+            limit: Duration::from_millis(limit),
+        }
+    }
+
+    #[test]
+    fn a_call_that_answers_in_time_is_its_answer() {
+        let out = output_within(
+            "sh",
+            &["-c", "echo yes; echo no >&2; exit 3"],
+            Path::new("/"),
+            &quick(5000),
+        );
+        assert!(!out.is_ok);
+        assert_eq!(out.status, 3);
+        assert_eq!(out.stdout, "yes\n");
+        assert_eq!(out.stderr, "no\n");
+        assert!(output_within("true", &[], Path::new("/"), &quick(5000)).is_ok);
+    }
+
+    #[test]
+    fn a_call_that_does_not_answer_is_given_up() {
+        let started = Instant::now();
+        let out = output_within("sleep", &["5"], Path::new("/"), &quick(200));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!out.is_ok);
+        assert!(out.stderr.starts_with("timeout"));
+        assert_eq!(
+            Wait::new("GitLab (the MRs of fix/3-x)", Duration::from_secs(15)).line(),
+            "  waiting for GitLab (the MRs of fix/3-x), at most 15 s"
+        );
     }
 
     #[test]

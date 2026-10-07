@@ -334,7 +334,7 @@ async fn later_deploy_of(gitlab: &Gitlab, sha: &str, after: i64, web: &str) -> R
 // ---------------------------------------------------------------------------
 
 /// What an orchestration's read asks about.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ask {
     /// Its branches: the record's and those of worktrees started for it.
     pub branches: Vec<String>,
@@ -661,7 +661,7 @@ pub async fn read_orchestration(
 // ---------------------------------------------------------------------------
 
 /// An open MR another worktree's branch is: what WAITING FOR names (waiting.mjs).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OpenMr {
     pub iid: i64,
     pub title: String,
@@ -675,7 +675,7 @@ pub struct OpenMr {
 /// One worktree's part of GitLab: its MR (open, else the latest) with its
 /// pipeline's jobs, its issue, and the open MRs of the project (waiting.mjs
 /// picks those it builds on).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct WorktreeRemote {
     pub mr: Option<Mr>,
     pub jobs: Vec<Job>,
@@ -791,7 +791,7 @@ pub async fn read_worktree(
 // ---------------------------------------------------------------------------
 
 /// An open MR in the view of everything.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListedMr {
     pub iid: i64,
     pub title: String,
@@ -804,7 +804,7 @@ pub struct ListedMr {
 }
 
 /// An open issue in the view of everything, with the branch that claims it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListedIssue {
     pub iid: i64,
     pub title: String,
@@ -815,7 +815,7 @@ pub struct ListedIssue {
     pub mr: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EverythingRemote {
     pub mrs: Vec<ListedMr>,
     /// Claimed ones first: that is the work in flight.

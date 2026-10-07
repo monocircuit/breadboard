@@ -43,6 +43,7 @@ pub fn show(file: &str, at: &str) -> Act {
     Act::Hunks {
         file: file.to_string(),
         at: at.to_string(),
+        is_whole: false,
     }
 }
 
@@ -284,9 +285,25 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
     let biggest = shown.iter().map(|area| area.added + area.removed).max().unwrap_or(0);
     let bar_at = name + counts_width;
     // The bars narrower in a narrow pane, so the last cell keeps its room.
-    let cells = (line.saturating_sub(bar_at + 2 + want) as u64)
-        .clamp(MIN_BAR, BAR)
-        .min(line.saturating_sub(bar_at + 2 + MIN_WRAP).max(1) as u64);
+    let cells_for = |want: u16| {
+        (line.saturating_sub(bar_at + 2 + want) as u64)
+            .clamp(MIN_BAR, BAR)
+            .min(line.saturating_sub(bar_at + 2 + MIN_WRAP).max(1) as u64)
+    };
+    // A file named after its bar that doesn't fit there goes under its area:
+    // its row asks only for `1 file`, and the bars take back what it would have had.
+    let last_at = bar_at + cells_for(want) as u16 + 2;
+    let want = shown
+        .iter()
+        .zip(&named)
+        .map(|(area, last)| match width(last) {
+            wants if last_at + wants <= line => wants,
+            _ => width(&counted(area.files as u64, "file")),
+        })
+        .max()
+        .unwrap_or(0)
+        .clamp(MIN_WRAP, want);
+    let cells = cells_for(want);
     let columns = Columns {
         plus: name + 2,
         minus: name + 2 + plus + 2,
@@ -309,8 +326,10 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
             counts(scene, &columns, area.added, area.removed, after);
             scene.atom_gap(bar(area.added, area.removed, biggest, cells), 0);
             columns.to(scene, columns.last, width(&last).min(MIN_WRAP));
-            let parts: Vec<&str> = last.split(" · ").collect();
-            scene.parts(&parts, theme::dim());
+            match area.changes.first().filter(|_| is_named) {
+                Some(change) => named_file(scene, area, change),
+                None => scene.parts(&[last.as_str()], theme::dim()),
+            }
             scene.indent(0);
         });
         if files.is_empty() {
@@ -366,13 +385,30 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
     }
 }
 
-/// What follows the bar of an area of one file: `1 file · name`; `N files` for more.
+/// What follows the bar of an area of one file: `1 file · M name`, and
+/// `uncommitted` when it is; `N files` for more.
 fn named_last(area: &Area) -> String {
     let count = counted(area.files as u64, "file");
-    if area.changes.len() < 2 {
-        format!("{count} · {}", basename(&area.top))
-    } else {
-        count
+    match area.changes.first().filter(|_| area.changes.len() < 2) {
+        Some(change) if change.is_uncommitted => {
+            format!("{count} · {} {}  {UNCOMMITTED}", change.status, basename(&area.top))
+        }
+        Some(change) => format!("{count} · {} {}", change.status, basename(&area.top)),
+        None => count,
+    }
+}
+
+/// `1 file · M name  uncommitted` after an area's bar: the file's letter in
+/// its colour as on a file's row, so one file alone tells what happened to it too.
+fn named_file(scene: &mut Scene<Act>, area: &Area, change: &Change) {
+    scene.atom(vec![look::dim(format!("{} ·", counted(area.files as u64, "file")))]);
+    scene.atom(vec![
+        status_mark(change.status),
+        Span::raw(" "),
+        look::dim(basename(&area.top)),
+    ]);
+    if change.is_uncommitted {
+        scene.atom_gap(vec![look::dim(UNCOMMITTED)], 2);
     }
 }
 
@@ -680,7 +716,7 @@ mod tests {
                 "breadboard/overview  +4  −0  ████████████████████████  2 files",
                 "  M  files.mjs       +3  −0",
                 "  ?  lib/tty.mjs     +1  −0  uncommitted",
-                "README.md            +1  −0  ██████                    1 file · README.md",
+                "README.md            +1  −0  ██████                    1 file · M README.md  uncommitted",
             ]
         );
         assert_eq!(
@@ -761,12 +797,14 @@ mod tests {
         assert_eq!(
             text(&scene)[2..],
             [
-                "monolithium/components                                              +40  −0  ██████████████████████  1 file · Button.tsx",
-                "breadboard/overview                                                 +28  −0  ███████████████         3 files",
+                "monolithium/components                                              +40  −0  ████████████████████████  1 file",
+                "  ?  Button.tsx                                                     +40  −0  uncommitted",
+                "breadboard/overview                                                 +28  −0  █████████████████         3 files",
                 "  A  gx-render.mjs                                                  +15  −0",
                 "  ?  view.mjs                                                       +12  −0  uncommitted",
                 "  ?  render-worktree-with-a-really-long-file-name-for-wrapping.mjs  +1   −0  uncommitted",
-                "vita                                                                +3   −0  ██                      1 file · .env.local",
+                "vita                                                                +3   −0  ██                        1 file",
+                "  ?  .env.local                                                     +3   −0  uncommitted",
             ]
         );
         let mut scene = Scene::new(64);
@@ -777,22 +815,24 @@ mod tests {
         assert_eq!(
             lines[2..],
             [
-                "monolithium/components  +40  −0  ██████████  1 file · Button.tsx",
-                "breadboard/overview     +28  −0  ███████     3 files",
+                "monolithium/components  +40  −0  █████████████  1 file",
+                "  ?  Button.tsx         +40  −0  uncommitted",
+                "breadboard/overview     +28  −0  █████████      3 files",
                 "  A  gx-render.mjs      +15  −0",
                 "  ?  view.mjs           +12  −0  uncommitted",
                 "  ?  render-worktree-with-a-really-long-file-name-for-wrapping.",
                 "     mjs                +1   −0  uncommitted",
-                "vita                    +3   −0  █           1 file · .env.local",
+                "vita                    +3   −0  █              1 file",
+                "  ?  .env.local         +3   −0  uncommitted",
             ]
         );
         // Both lines of the long file's row open it.
         assert_eq!(
-            act_at(&scene, 3, 6),
+            act_at(&scene, 3, 7),
             shows(&rich().areas[1].changes[2].file, "file").as_ref()
         );
         assert_eq!(
-            act_at(&scene, 30, 7),
+            act_at(&scene, 30, 8),
             shows(&rich().areas[1].changes[2].file, "file").as_ref()
         );
     }

@@ -11,7 +11,7 @@
 //! with `--no-focus` at startup) or tabs closed by hand. And `release_space`,
 //! what goes with a worktree that wt:remove took.
 
-mod nvim;
+pub mod nvim;
 pub mod orchestrations;
 pub mod spaces;
 pub mod tabs;
@@ -20,7 +20,7 @@ use super::args::{Args, Takes};
 use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::plugin;
-use super::proc::{Done, done, fail, step};
+use super::proc::{Done, NOTICE, done, fail, say_wait, step};
 use super::repo::{Repo, VITA, compose_args, env_file_of, offset_of};
 use breadboard_core::record::SPACE;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
@@ -89,7 +89,17 @@ pub fn exclusive<T>(run: impl FnOnce() -> T) -> T {
     }
     let lock = breadboard_core::lock::layout_lock();
     let started = Instant::now();
+    let mut is_said = false;
     while fs::create_dir(&lock).is_err() {
+        // Another process lays herdr out (a wt:new, the overview): said once it takes a while.
+        if !is_said && started.elapsed() >= NOTICE {
+            say_wait(&format!(
+                "  waiting for another change of herdr's layout to finish, at most {} s ({})",
+                STALE.as_secs(),
+                lock.display()
+            ));
+            is_said = true;
+        }
         let age = fs::metadata(&lock)
             .and_then(|meta| meta.modified())
             .map(|at| SystemTime::now().duration_since(at).unwrap_or_default())

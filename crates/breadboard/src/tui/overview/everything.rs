@@ -15,14 +15,15 @@
 //! (render.mjs), at least 3, then `… N more: glab issue list`; `--once`
 //! prints them all. Every row is a block (#296); a click goes where it names.
 
-use super::{Act, Ctx, look};
+use super::{Act, Ctx, Fold, look};
 use crate::tui::band;
+use crate::tui::page::guarded;
 use crate::tui::scene::width_of;
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Header, Page, Scene, Section};
 use breadboard_core::check::CheckState;
 use breadboard_core::git::orchestrations_dir;
-use breadboard_core::gitlab::read::{EverythingRemote, ListedIssue, ListedMr};
+use breadboard_core::gitlab::read::{ListedIssue, ListedMr};
 use breadboard_core::herdr;
 use breadboard_core::model::everything::{EverythingModel, TreeRow, stack_cell};
 use breadboard_core::model::order::Go;
@@ -38,11 +39,8 @@ const GAP: u16 = 2;
 /// The least a worktree's work column gets before its rows become cards: its
 /// check in short (`untested`, `✓ tested`, `checking…`), wider ones wrap in it.
 const WORK_AT_LEAST: u16 = 9;
-/// The fewest issues the live view shows, however full the pane (render.mjs).
-const ISSUES_AT_LEAST: usize = 3;
-/// The rows under the issues: the `… N more` line, the blank after the
-/// section, the footer and the blank after it.
-const UNDER_ISSUES: u16 = 4;
+/// The rows of the two lists that are no item: each one's title and the blank after it.
+const LIST_FRAMES: u16 = 4;
 /// Where a worktree's name starts: after the `→` of the one the overview runs in.
 const NAME_AT: u16 = 2;
 
@@ -77,16 +75,39 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
             }
         }
         Some(remote) => {
-            page.section("MERGE REQUESTS", |scene| {
-                merge_requests(scene, remote, rows, main.as_ref())
-            });
-            // What the pane has left under the band, the rows so far, the
-            // section's title and what comes under it (render.mjs `used`).
+            let width = page.inner();
+            let folds = (ctx.folds.is_every_mr_shown, ctx.folds.is_every_issue_shown);
+            // What the pane has left under the band and the rows so far, the
+            // two lists' titles and the blank after each: the lists share it,
+            // so both stand on the first screen (`--once`: all of them).
             let room = height.map(|height| {
-                let band = band::lines(&Header::default(), "", page.inner() + 2).len() as u16;
-                height.saturating_sub(band + page.rows() + 1 + UNDER_ISSUES)
+                let band = band::shown(&Header::default(), "", width + 2, height).len() as u16;
+                height.saturating_sub(band + page.rows() + LIST_FRAMES)
             });
-            page.section("ISSUES", |scene| issues(scene, remote, rows, main.as_ref(), room));
+            // Laid out before either is drawn, guarded as a section is (#306).
+            let planned = guarded(|| {
+                let mrs = MrTable::new(&remote.mrs, rows, width);
+                let list = IssueTable::new(&remote.issues, width);
+                let shown = match room {
+                    None => (remote.mrs.len(), remote.issues.len()),
+                    Some(room) => shares(&mrs.heights(width), &list.heights(width), room, folds),
+                };
+                (mrs, list, shown)
+            });
+            match planned {
+                Ok((mrs, list, (shown_mrs, shown_issues))) => {
+                    page.section("MERGE REQUESTS", |scene| {
+                        merge_requests(scene, &mrs, shown_mrs, rows, main.as_ref(), folds.0)
+                    });
+                    page.section("ISSUES", |scene| {
+                        issues(scene, &list, shown_issues, rows, main.as_ref(), folds.1)
+                    });
+                }
+                Err(why) => {
+                    page.failed("MERGE REQUESTS", &why);
+                    page.failed("ISSUES", &why);
+                }
+            }
         }
     }
     page.section(Section::new("FOOTER").plain(), |scene| {
@@ -260,31 +281,73 @@ fn work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
     parts
 }
 
-/// The check in a word (`untested`, `✓ tested`, `✗ failed`, `checking…`),
-/// for a column too narrow for its whole fact.
-fn check_word(row: &TreeRow) -> Option<Vec<Span<'static>>> {
+/// The check in a word (`untested`, `✓ tested`, `✗ failed`, `checking…`):
+/// `2 untested` when fewer commits than its ahead are untested.
+fn check_word(row: &TreeRow) -> Option<Span<'static>> {
     let (word, tone) = match &row.tree.checked {
-        CheckState::Tested { .. } => ("✓ tested", Tone::Green),
-        CheckState::Checking { .. } => ("checking…", Tone::Cyan),
-        CheckState::Failed { .. } => ("✗ failed", Tone::Red),
-        CheckState::Untested { .. } => ("untested", Tone::Yellow),
+        CheckState::Tested { .. } => ("✓ tested".to_string(), Tone::Green),
+        CheckState::Checking { .. } => ("checking…".into(), Tone::Cyan),
+        CheckState::Failed { .. } => ("✗ failed".into(), Tone::Red),
+        CheckState::Untested { count } if *count > 0 && *count != row.tree.ahead => {
+            (format!("{count} untested"), Tone::Yellow)
+        }
+        CheckState::Untested { .. } => ("untested".into(), Tone::Yellow),
         CheckState::None => return None,
     };
-    Some(vec![look::span(word, theme::tone(tone))])
+    Some(look::span(word, theme::tone(tone)))
 }
 
-/// The work for a column `room` wide: all of it when each fact fits the
-/// column whole, wrapping under itself in the column like any last cell;
-/// else the check in a word there (or the first fact) and all of it on a
-/// line of its own under the name. Nothing is dropped (#304).
+/// The work in short, as lazygit counts a branch: the check in a word and
+/// `↑N` commits ahead of develop (`untested ↑1`), then `N changed`.
+fn short_work(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
+    let tree = &row.tree;
+    let mut first: Vec<Span<'static>> = check_word(row).into_iter().collect();
+    if tree.ahead > 0 {
+        if !first.is_empty() {
+            first.push(Span::raw(" "));
+        }
+        first.push(look::span(format!("↑{}", tree.ahead), Style::new()));
+    }
+    let mut parts: Vec<_> = [first].into_iter().filter(|part| !part.is_empty()).collect();
+    if tree.changed > 0 {
+        parts.push(vec![look::span(
+            format!("{} changed", tree.changed),
+            theme::tone(Tone::Yellow),
+        )]);
+    }
+    if parts.is_empty() {
+        parts.push(vec![look::dim("clean")]);
+    }
+    parts
+}
+
+/// Facts on one line, parted by ` · `.
+fn line_width(parts: &[Vec<Span<'static>>]) -> u16 {
+    let gaps = 3 * parts.len().saturating_sub(1) as u16;
+    parts.iter().map(|part| width_of(part)).sum::<u16>() + gaps
+}
+
+/// The work for a column `room` wide, the first that holds: all of it on
+/// one line; in short on one line (a failure's what then stands under the
+/// name); in short wrapping in the column; the check in a word there and
+/// all of it on a line of its own under the name. Nothing is lost (#304).
 fn work_in(row: &TreeRow, room: u16) -> (Vec<Vec<Span<'static>>>, Option<Vec<Vec<Span<'static>>>>) {
     let all = work_of(row);
-    // Each but the last carries its ` ·`.
-    let fits = |part: &Vec<Span<'static>>| width_of(part) + 2 <= room;
-    if all.iter().all(fits) {
+    if line_width(&all) <= room {
         return (all, None);
     }
-    let word = check_word(row).or_else(|| all.first().cloned()).filter(fits);
+    let short = short_work(row);
+    let is_failed = matches!(row.tree.checked, CheckState::Failed { .. });
+    let detail = is_failed.then(|| all.clone());
+    // Each but the last carries its ` ·`.
+    let fits = |part: &Vec<Span<'static>>| width_of(part) + 2 <= room;
+    if line_width(&short) <= room || short.iter().all(fits) {
+        return (short, detail);
+    }
+    let word = check_word(row)
+        .map(|word| vec![word])
+        .or_else(|| short.first().cloned())
+        .filter(fits);
     (word.into_iter().collect(), Some(all))
 }
 
@@ -492,12 +555,12 @@ fn group_of(rows: &[TreeRow], branch: Option<&str>, main: Option<&PathBuf>) -> O
 
 /// The least a column of titles gets: half the line, so a title reads in
 /// two lines, not five; less, and rows are cards.
-fn prose(scene: &Scene<Act>) -> u16 {
-    (scene.width() / 2).max(MIN_WRAP)
+fn prose(width: u16) -> u16 {
+    (width / 2).max(MIN_WRAP)
 }
 
 /// How many rows `draw` writes in a scene `width` wide: a list is laid out
-/// the way that takes fewer, and the issues are cut by rows.
+/// the way that takes fewer, and the lists share the pane by rows.
 fn rows_in(width: u16, draw: impl FnOnce(&mut Scene<Act>)) -> u16 {
     let mut scene = Scene::new(width);
     draw(&mut scene);
@@ -508,6 +571,9 @@ fn rows_in(width: u16, draw: impl FnOnce(&mut Scene<Act>)) -> u16 {
 /// `spans` GAP columns after what is on the line: whole there or on the
 /// next line when they fit one from `indent`, else as words.
 fn trail(scene: &mut Scene<Act>, spans: Vec<Span<'static>>, indent: u16) {
+    if spans.is_empty() {
+        return;
+    }
     if width_of(&spans) <= scene.width().saturating_sub(indent) {
         scene.atom_gap(spans, GAP);
     } else {
@@ -516,95 +582,200 @@ fn trail(scene: &mut Scene<Act>, spans: Vec<Span<'static>>, indent: u16) {
     }
 }
 
-/// Dim `<branch> · <who>` (render.mjs), after an MR's title.
-fn mr_tail(mr: &ListedMr) -> Vec<Span<'static>> {
-    let mut tail = vec![look::dim(&mr.branch)];
-    if let Some(who) = &mr.who {
-        tail.push(look::dim(format!(" · {who}")));
+/// How many of a list fit `share` rows: all when they do, else as many as
+/// fit with the line about the rest under them, at least one.
+fn fitting(heights: &[u16], share: u16) -> usize {
+    let total: u32 = heights.iter().map(|&height| u32::from(height)).sum();
+    if total <= u32::from(share) {
+        return heights.len();
     }
-    tail
-}
-
-/// An MR as a table row: its cells, then its title wrapping under the title
-/// column, its branch and owner after the title, on the title's last line
-/// when they fit there.
-fn mr_wide(scene: &mut Scene<Act>, at: &[u16], cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
-    let column = at.last().copied().unwrap_or(0);
-    table_row(scene, at, cells, |scene| {
-        look::flow(scene, &[look::span(&mr.title, Style::new())]);
-        trail(scene, mr_tail(mr), column);
-    });
-}
-
-/// An MR where its cells leave the title too little room: `!iid`, then its
-/// title with the room of the line; under it, always at the start of its
-/// own line, its state and pipeline padded to their columns, so the eye runs
-/// down them as at 120 columns, then branch and owner where they fit whole.
-fn mr_stacked(scene: &mut Scene<Act>, column: u16, widths: &[u16], cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
-    let mut cells = cells.into_iter();
-    scene.atom(cells.next().unwrap_or_default());
-    scene.indent(column);
-    scene.pad_to(column);
-    look::flow(scene, &[look::span(&mr.title, Style::new())]);
-    scene.end_line();
-    scene.pad_to(column);
-    let mut state: Vec<Span<'static>> = vec![];
-    for (cell, &width) in cells.zip(&widths[1..]) {
-        if !state.is_empty() {
-            state.push(Span::raw(" ".repeat(usize::from(GAP))));
+    let mut used = 1u32;
+    let mut count = 0;
+    for &height in heights {
+        if used + u32::from(height) > u32::from(share) {
+            break;
         }
-        state.extend(padded(cell, width));
+        used += u32::from(height);
+        count += 1;
     }
-    scene.atom(state);
-    trail(scene, mr_tail(mr), column);
-    scene.indent(0);
+    count.max(1).min(heights.len())
 }
 
-fn merge_requests(scene: &mut Scene<Act>, remote: &EverythingRemote, rows: &[TreeRow], main: Option<&PathBuf>) {
-    scene.note(format!("{} open", remote.mrs.len()));
-    let cells_of = |mr: &ListedMr| {
-        vec![
-            vec![look::span(format!("!{}", mr.iid), Style::new())],
-            vec![if mr.is_draft {
-                look::dim("draft")
-            } else {
-                look::span("ready", theme::tone(Tone::Green))
-            }],
-            look::spans(&[pipeline_mark(mr.pipeline.as_ref())]),
-        ]
+/// The rows the first `count` of a list take, with the line about the rest.
+fn rows_of(heights: &[u16], count: usize) -> u16 {
+    let rows: u16 = heights[..count].iter().sum();
+    rows + u16::from(count < heights.len())
+}
+
+/// How many MRs and issues a pane with `room` rows for both shows: all when
+/// they fit; else each gets half, a list that needs less leaves the rest to
+/// the other, and one the user opened (`… N more`) shows whole.
+fn shares(mrs: &[u16], issues: &[u16], room: u16, folds: (bool, bool)) -> (usize, usize) {
+    let need = |heights: &[u16]| heights.iter().map(|&height| u32::from(height)).sum::<u32>();
+    let (all_mrs, all_issues) = (mrs.len(), issues.len());
+    let rest = |used: u32| u16::try_from(u32::from(room).saturating_sub(used)).unwrap_or(0);
+    match folds {
+        (true, true) => return (all_mrs, all_issues),
+        (true, false) => return (all_mrs, fitting(issues, rest(need(mrs)))),
+        (false, true) => return (fitting(mrs, rest(need(issues))), all_issues),
+        (false, false) => {}
+    }
+    if need(mrs) + need(issues) <= u32::from(room) {
+        return (all_mrs, all_issues);
+    }
+    let half = room - room / 2;
+    if need(mrs) <= u32::from(half) {
+        return (all_mrs, fitting(issues, rest(need(mrs))));
+    }
+    if need(issues) <= u32::from(room / 2) {
+        return (fitting(mrs, rest(need(issues))), all_issues);
+    }
+    let shown = fitting(mrs, half);
+    (shown, fitting(issues, rest(u32::from(rows_of(mrs, shown)))))
+}
+
+/// The line under a list the pane cut: how many more, and that a click shows
+/// them; under one the user opened, that a click folds it again.
+fn more_line(scene: &mut Scene<Act>, more: usize, is_open: bool, fold: Fold, glab: &str) {
+    let text = match (more, is_open) {
+        (0, true) => "click to show fewer".to_string(),
+        (0, false) => return,
+        (more, _) => format!("… {more} more · click to show them · {glab}"),
     };
-    let cells: Vec<_> = remote.mrs.iter().map(cells_of).collect();
-    let widths: Vec<u16> = (0..3).map(|i| widest(cells.iter().map(|row| &row[i]))).collect();
-    let width = scene.width();
-    let at = columns(0, &widths, width, MIN_WRAP);
-    let column = widths[0] + GAP;
-    // The cells beside the title, unless under it takes fewer rows (80 columns).
-    let is_stacked = at.as_ref().is_none_or(|at| {
-        let count = |stacked: bool| -> u32 {
-            remote
-                .mrs
-                .iter()
-                .zip(&cells)
-                .map(|(mr, cells)| {
-                    u32::from(rows_in(width, |scene| match stacked {
-                        true => mr_stacked(scene, column, &widths, cells.clone(), mr),
-                        false => mr_wide(scene, at, cells.clone(), mr),
-                    }))
-                })
-                .sum()
+    scene.end_line();
+    scene.block(Act::Fold(fold), |scene| look::say(scene, &text, theme::dim()));
+}
+
+/// The open MRs as a table: `!iid`, draft or ready, the pipeline, the
+/// title, then the branch and owner.
+struct MrTable<'a> {
+    mrs: &'a [ListedMr],
+    cells: Vec<Vec<Vec<Span<'static>>>>,
+    widths: Vec<u16>,
+    at: Option<Vec<u16>>,
+    is_stacked: bool,
+    /// The branches of the worktrees here: their MR's row names no branch,
+    /// the worktree's row above has it with the same `!iid`.
+    locals: Vec<&'a str>,
+}
+
+impl<'a> MrTable<'a> {
+    fn new(mrs: &'a [ListedMr], rows: &'a [TreeRow], width: u16) -> Self {
+        let cells_of = |mr: &ListedMr| {
+            vec![
+                vec![look::span(format!("!{}", mr.iid), Style::new())],
+                vec![if mr.is_draft {
+                    look::dim("draft")
+                } else {
+                    look::span("ready", theme::tone(Tone::Green))
+                }],
+                look::spans(&[pipeline_mark(mr.pipeline.as_ref())]),
+            ]
         };
-        count(true) < count(false)
-    });
-    for (mr, cells) in remote.mrs.iter().zip(cells) {
+        let cells: Vec<_> = mrs.iter().map(cells_of).collect();
+        let widths: Vec<u16> = (0..3).map(|i| widest(cells.iter().map(|row| &row[i]))).collect();
+        let at = columns(0, &widths, width, MIN_WRAP);
+        let locals = rows.iter().map(|row| row.tree.branch.as_str()).collect();
+        let mut table = Self {
+            mrs,
+            cells,
+            widths,
+            at,
+            is_stacked: false,
+            locals,
+        };
+        // The cells beside the title, unless under it takes fewer rows (80 columns).
+        table.is_stacked = table.at.is_none() || {
+            let wide: u32 = table.heights(width).iter().map(|&rows| u32::from(rows)).sum();
+            table.is_stacked = true;
+            let stacked: u32 = table.heights(width).iter().map(|&rows| u32::from(rows)).sum();
+            stacked < wide
+        };
+        table
+    }
+
+    fn heights(&self, width: u16) -> Vec<u16> {
+        (0..self.mrs.len())
+            .map(|i| rows_in(width, |scene| self.draw(scene, i)))
+            .collect()
+    }
+
+    /// Dim `<branch> · <who>` (render.mjs), after an MR's title; a worktree's MR only `<who>`.
+    fn tail(&self, mr: &ListedMr) -> Vec<Span<'static>> {
+        let is_local = self.locals.contains(&mr.branch.as_str());
+        let parts: Vec<&str> = [(!is_local).then_some(mr.branch.as_str()), mr.who.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if parts.is_empty() {
+            return vec![];
+        }
+        vec![look::dim(parts.join(" · "))]
+    }
+
+    fn draw(&self, scene: &mut Scene<Act>, i: usize) {
+        let (mr, cells) = (&self.mrs[i], self.cells[i].clone());
+        match (&self.at, self.is_stacked) {
+            (Some(at), false) => self.wide(scene, at, cells, mr),
+            _ => self.stacked(scene, cells, mr),
+        }
+    }
+
+    /// An MR as a table row: its cells, then its title wrapping under the
+    /// title column, its branch and owner after the title, on the title's
+    /// last line when they fit there.
+    fn wide(&self, scene: &mut Scene<Act>, at: &[u16], cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
+        let column = at.last().copied().unwrap_or(0);
+        table_row(scene, at, cells, |scene| {
+            look::flow(scene, &[look::span(&mr.title, Style::new())]);
+            trail(scene, self.tail(mr), column);
+        });
+    }
+
+    /// An MR where its cells leave the title too little room: `!iid`, then
+    /// its title with the room of the line; under it, always at the start of
+    /// its own line, its state and pipeline padded to their columns, so the
+    /// eye runs down them as at 120 columns, then branch and owner where
+    /// they fit whole.
+    fn stacked(&self, scene: &mut Scene<Act>, cells: Vec<Vec<Span<'static>>>, mr: &ListedMr) {
+        let column = self.widths[0] + GAP;
+        let mut cells = cells.into_iter();
+        scene.atom(cells.next().unwrap_or_default());
+        scene.indent(column);
+        scene.pad_to(column);
+        look::flow(scene, &[look::span(&mr.title, Style::new())]);
+        scene.end_line();
+        scene.pad_to(column);
+        let mut state: Vec<Span<'static>> = vec![];
+        for (cell, &width) in cells.zip(&self.widths[1..]) {
+            if !state.is_empty() {
+                state.push(Span::raw(" ".repeat(usize::from(GAP))));
+            }
+            state.extend(padded(cell, width));
+        }
+        scene.atom(state);
+        trail(scene, self.tail(mr), column);
+        scene.indent(0);
+    }
+}
+
+fn merge_requests(
+    scene: &mut Scene<Act>,
+    table: &MrTable,
+    shown: usize,
+    rows: &[TreeRow],
+    main: Option<&PathBuf>,
+    is_open: bool,
+) {
+    scene.note(format!("{} open", table.mrs.len()));
+    for (i, mr) in table.mrs.iter().enumerate().take(shown) {
         let click = Act::Go(Go::Show {
             url: mr.url.clone(),
             dir: group_of(rows, Some(&mr.branch), main),
         });
-        scene.block(click, |scene| match (&at, is_stacked) {
-            (Some(at), false) => mr_wide(scene, at, cells, mr),
-            _ => mr_stacked(scene, column, &widths, cells, mr),
-        });
+        scene.block(click, |scene| table.draw(scene, i));
     }
+    more_line(scene, table.mrs.len() - shown, is_open, Fold::Mrs, "glab mr list");
 }
 
 /// An issue's claim, short so the titles of all issues line up: cyan
@@ -617,11 +788,12 @@ fn claim_of(issue: &ListedIssue) -> Vec<Span<'static>> {
     }]
 }
 
-/// After an issue's title: the branch that claims it in cyan, then dim
-/// `<labels> @<who>` (render.mjs), each whole on a line when it fits one.
+/// After an issue's title: the branch that claims it in cyan when no MR
+/// names it yet, then dim `<labels> @<who>` (render.mjs), each whole on a
+/// line when it fits one.
 fn issue_tail(issue: &ListedIssue) -> Vec<Vec<Span<'static>>> {
     let mut tail = vec![];
-    if let Some(branch) = &issue.branch {
+    if let Some(branch) = issue.branch.as_ref().filter(|_| issue.mr.is_none()) {
         tail.push(vec![look::span(branch, theme::tone(Tone::Cyan))]);
     }
     let who = issue.who.as_ref().map(|who| format!("@{who}"));
@@ -635,74 +807,85 @@ fn issue_tail(issue: &ListedIssue) -> Vec<Vec<Span<'static>>> {
     tail
 }
 
-/// An issue's row: `#iid`, its claim, its title and what follows it; a card
-/// (the number and claim on a line, the rest under it) where there's no room.
-fn issue_row(scene: &mut Scene<Act>, at: Option<&[u16]>, cells: Vec<Vec<Span<'static>>>, issue: &ListedIssue) {
-    let column = at.and_then(|at| at.last().copied()).unwrap_or(GAP);
-    let rest = |scene: &mut Scene<Act>| {
-        look::say(scene, &issue.title, Style::new());
-        for part in issue_tail(issue) {
-            trail(scene, part, column);
-        }
-    };
-    match at {
-        Some(at) => table_row(scene, at, cells, rest),
-        None => {
-            for (i, cell) in cells.into_iter().enumerate() {
-                scene.atom_gap(cell, if i == 0 { 0 } else { GAP });
+/// The open issues as a table: `#iid`, the claim, the title and what follows
+/// it; cards (the number and claim on a line, the rest under it) where
+/// there's no room.
+struct IssueTable<'a> {
+    issues: &'a [ListedIssue],
+    cells: Vec<Vec<Vec<Span<'static>>>>,
+    at: Option<Vec<u16>>,
+}
+
+impl<'a> IssueTable<'a> {
+    fn new(issues: &'a [ListedIssue], width: u16) -> Self {
+        let cells_of = |issue: &ListedIssue| {
+            vec![
+                vec![look::span(format!("#{}", issue.iid), Style::new())],
+                claim_of(issue),
+            ]
+        };
+        let mut cells: Vec<_> = issues.iter().map(cells_of).collect();
+        let widths: Vec<u16> = (0..2).map(|i| widest(cells.iter().map(|row| &row[i]))).collect();
+        // The title column holds a claiming branch whole.
+        let branch = issues
+            .iter()
+            .filter(|issue| issue.mr.is_none())
+            .filter_map(|issue| issue.branch.as_ref())
+            .map(|branch| branch.chars().count() as u16)
+            .max()
+            .unwrap_or(0);
+        let at = columns(0, &widths, width, prose(width).max(branch));
+        if at.is_none() {
+            // A card's number padded, so the claims line up.
+            for row in &mut cells {
+                row[0] = padded(std::mem::take(&mut row[0]), widths[0]);
             }
-            scene.end_line();
-            scene.indent(GAP);
-            scene.pad_to(GAP);
-            rest(scene);
-            scene.indent(0);
+        }
+        Self { issues, cells, at }
+    }
+
+    fn heights(&self, width: u16) -> Vec<u16> {
+        (0..self.issues.len())
+            .map(|i| rows_in(width, |scene| self.draw(scene, i)))
+            .collect()
+    }
+
+    fn draw(&self, scene: &mut Scene<Act>, i: usize) {
+        let (issue, cells) = (&self.issues[i], self.cells[i].clone());
+        let column = self.at.as_ref().and_then(|at| at.last().copied()).unwrap_or(GAP);
+        let rest = |scene: &mut Scene<Act>| {
+            look::say(scene, &issue.title, Style::new());
+            for part in issue_tail(issue) {
+                trail(scene, part, column);
+            }
+        };
+        match &self.at {
+            Some(at) => table_row(scene, at, cells, rest),
+            None => {
+                for (i, cell) in cells.into_iter().enumerate() {
+                    scene.atom_gap(cell, if i == 0 { 0 } else { GAP });
+                }
+                scene.end_line();
+                scene.indent(GAP);
+                scene.pad_to(GAP);
+                rest(scene);
+                scene.indent(0);
+            }
         }
     }
 }
 
-/// The issues, claimed first; with a `room` (live) as many as fit in that
-/// many rows, at least ISSUES_AT_LEAST, then how many more there are.
+/// The first `shown` issues, claimed first, then how many more there are.
 fn issues(
     scene: &mut Scene<Act>,
-    remote: &EverythingRemote,
+    table: &IssueTable,
+    shown: usize,
     rows: &[TreeRow],
     main: Option<&PathBuf>,
-    room: Option<u16>,
+    is_open: bool,
 ) {
-    scene.note(format!("{} open, claimed first", remote.issues.len()));
-    let cells_of = |issue: &ListedIssue| {
-        vec![
-            vec![look::span(format!("#{}", issue.iid), Style::new())],
-            claim_of(issue),
-        ]
-    };
-    let cells: Vec<_> = remote.issues.iter().map(cells_of).collect();
-    let widths: Vec<u16> = (0..2).map(|i| widest(cells.iter().map(|row| &row[i]))).collect();
-    // The title column holds a claiming branch whole.
-    let branch = remote
-        .issues
-        .iter()
-        .filter_map(|issue| issue.branch.as_ref())
-        .map(|branch| branch.chars().count() as u16)
-        .max()
-        .unwrap_or(0);
-    let at = columns(0, &widths, scene.width(), prose(scene).max(branch));
-    let width = scene.width();
-    let mut used = 0u16;
-    let mut shown = 0;
-    for (issue, mut cells) in remote.issues.iter().zip(cells) {
-        if at.is_none() {
-            // A card's number padded, so the claims line up.
-            cells[0] = padded(std::mem::take(&mut cells[0]), widths[0]);
-        }
-        if let Some(room) = room {
-            let height = rows_in(width, |scene| issue_row(scene, at.as_deref(), cells.clone(), issue));
-            if shown >= ISSUES_AT_LEAST && used + height > room {
-                break;
-            }
-            used += height;
-        }
-        shown += 1;
+    scene.note(format!("{} open, claimed first", table.issues.len()));
+    for (i, issue) in table.issues.iter().enumerate().take(shown) {
         let tree = issue
             .branch
             .as_ref()
@@ -714,13 +897,15 @@ fn issues(
                 dir: main.cloned(),
             }),
         };
-        scene.block(click, |scene| issue_row(scene, at.as_deref(), cells, issue));
+        scene.block(click, |scene| table.draw(scene, i));
     }
-    let more = remote.issues.len() - shown;
-    if more > 0 {
-        scene.end_line();
-        scene.text(&format!("… {more} more: glab issue list"), theme::dim());
-    }
+    more_line(
+        scene,
+        table.issues.len() - shown,
+        is_open,
+        Fold::Issues,
+        "glab issue list",
+    );
 }
 
 #[cfg(test)]
@@ -730,6 +915,7 @@ mod tests {
     use crate::tui::page::Sheet;
     use breadboard_core::check::CheckState;
     use breadboard_core::gitlab::Pipeline;
+    use breadboard_core::gitlab::read::EverythingRemote;
     use breadboard_core::model::Tree;
     use breadboard_core::record::Origin;
 
@@ -825,10 +1011,14 @@ mod tests {
 
     /// The live view in a pane `height` rows high; None: `--once`.
     fn sheet_in(model: &EverythingModel, width: u16, height: Option<u16>) -> Sheet<Act> {
+        sheet_with(model, width, height, Default::default())
+    }
+
+    fn sheet_with(model: &EverythingModel, width: u16, height: Option<u16>, folds: super::super::Folds) -> Sheet<Act> {
         let gitlab = super::super::GitlabState::default();
         let ctx = Ctx {
             is_once: height.is_none(),
-            folds: Default::default(),
+            folds,
             gitlab: &gitlab,
             now: 0,
             main_name: "platform",
@@ -938,31 +1128,49 @@ mod tests {
         sheet.block_at(1, row).map(|(_, region)| region.area.height).unwrap()
     }
 
-    #[test]
-    fn an_mr_is_its_title_then_branch_and_who_after_it() {
-        let mut model = model(0);
+    /// The MRs of the world: its own worktrees', a long title and a short one of others.
+    fn with_others(mut model: EverythingModel) -> EverythingModel {
         if let Some(remote) = &mut model.remote {
+            remote.mrs.push(ListedMr {
+                title:
+                    "perf(breadboard): an orchestration's GitLab refresh in a few calls, final things read once (#305)"
+                        .into(),
+                ..mr(318, "fix/305-overview-gitlab-refresh-makes-312", "pending")
+            });
+            remote.mrs.push(ListedMr {
+                title: "fix(scripts): wt:mr and wt:tick pass the description as text".into(),
+                ..mr(187, "fix/157-wt-mr-wt-tick-fail", "success")
+            });
             remote.mrs.push(ListedMr {
                 title: "build: short".into(),
                 ..mr(102, "feature/102-x", "success")
             });
         }
-        let sheet = sheet(&model, 120);
+        model
+    }
+
+    #[test]
+    fn an_mr_is_its_title_then_branch_and_who_after_it() {
+        let sheet = sheet(&with_others(model(0)), 120);
         let text = sheet.text();
-        // A long title: branch and owner on the line under it, in the title's column.
-        let at = text
-            .iter()
-            .position(|line| line.trim_start().starts_with("!308"))
-            .unwrap();
-        assert!(!text[at].contains("lukasdiegelmann1"), "{text:#?}");
+        // A worktree's MR names no branch, its row in WORKTREES does: one line.
+        let own = row_of(&text, "!308");
+        assert!(text[own].ends_with("under the pointer  lukasdiegelmann1"), "{text:#?}");
+        assert_eq!(block_rows(&sheet, "!308"), 1);
+        // A long title wraps in its column, branch and owner after its last word.
+        let long = row_of(&text, "!318");
         let column = |line: &str, word: &str| line.find(word).map(|at| line[..at].chars().count());
         assert_eq!(
-            column(&text[at + 1], "feature/296"),
-            column(&text[at], "feat(breadboard)"),
+            column(&text[long + 1], "(#305)"),
+            column(&text[long], "perf(breadboard)"),
+            "{text:#?}"
+        );
+        assert!(
+            text[long + 1].ends_with("(#305)  fix/305-overview-gitlab-refresh-makes-312 · lukasdiegelmann1"),
             "{text:#?}"
         );
         // A short one is one line, as in Node.
-        let short = text.iter().find(|line| line.trim_start().starts_with("!102")).unwrap();
+        let short = &text[row_of(&text, "!102")];
         assert!(
             short.contains("build: short  feature/102-x · lukasdiegelmann1"),
             "{text:#?}"
@@ -971,44 +1179,39 @@ mod tests {
     }
 
     #[test]
-    fn at_80_an_mr_puts_its_cells_under_its_title_and_takes_at_most_3_rows() {
-        let mut model = model(0);
-        if let Some(remote) = &mut model.remote {
-            remote.mrs.push(ListedMr {
-                title: "fix(scripts): wt:mr and wt:tick pass the description as text".into(),
-                ..mr(187, "fix/157-wt-mr-wt-tick-fail", "success")
-            });
-        }
-        let sheet = sheet(&model, 80);
+    fn at_80_every_mr_keeps_its_state_in_one_column_in_few_rows() {
+        let sheet = sheet(&with_others(model(0)), 80);
         let text = sheet.text();
-        let at = text
-            .iter()
-            .position(|line| line.trim_start().starts_with("!187"))
-            .unwrap();
-        assert!(text[at].contains("!187  fix(scripts): wt:mr"), "{text:#?}");
+        let mut columns = vec![];
+        for iid in ["!308", "!318", "!187", "!102"] {
+            let at = row_of(&text, iid);
+            let rows = block_rows(&sheet, iid);
+            // A title of two lines and a long branch: 4, the rest 2 at most.
+            assert!(rows <= if iid == "!318" { 4 } else { 2 }, "{iid}: {text:#?}");
+            let block = &text[at..at + usize::from(rows)];
+            let state = block
+                .iter()
+                .find_map(|line| line.find(" draft ").or_else(|| line.find(" ready ")))
+                .unwrap();
+            columns.push(state);
+            assert!(
+                block.iter().any(|line| line.contains("lukasdiegelmann1")),
+                "{iid}: {text:#?}"
+            );
+        }
         assert!(
-            text[at + 1]
-                .trim_start()
-                .starts_with("ready  ✓ passed   fix/157-wt-mr-wt-tick-fail · lukasdiegelmann1"),
-            "{text:#?}"
+            columns.windows(2).all(|pair| pair[0] == pair[1]),
+            "{columns:?} {text:#?}"
         );
-        assert_eq!(block_rows(&sheet, "!187"), 2, "{text:#?}");
-        // State and pipeline start every MR's second line, in columns: the eye runs down them.
-        let other = text
-            .iter()
-            .position(|line| line.trim_start().starts_with("!308"))
-            .unwrap();
-        assert_eq!(text[other + 1].find("draft"), text[at + 1].find("ready"), "{text:#?}");
-        assert_eq!(
-            text[other + 1].find("◐ running"),
-            text[at + 1].find("✓ passed"),
-            "{text:#?}"
+        let all = text.join("\n");
+        assert!(
+            all.contains("fix/157-wt-mr-wt-tick-fail") && !all.contains("feature/296"),
+            "{all}"
         );
-        assert!(block_rows(&sheet, "!308") <= 3, "{text:#?}");
     }
 
     #[test]
-    fn at_80_a_worktree_keeps_its_check_in_the_column_and_all_its_work_under_it() {
+    fn at_80_a_worktree_is_one_line_with_its_work_in_short() {
         let mut model = model(0);
         if let Ok(rows) = &mut model.trees {
             rows[2].tree.changed = 2;
@@ -1018,11 +1221,12 @@ mod tests {
         let at = |name: &str| text.iter().position(|line| line.contains(name)).unwrap();
         let first = at("292-overview-every-agent-has-name");
         assert!(
-            text[first].contains("!303") && text[first].contains("✓ passed") && text[first].ends_with("untested"),
+            text[first].contains("!303") && text[first].contains("✓ passed") && text[first].ends_with("untested ↑1"),
             "{text:#?}"
         );
-        // Nothing dropped: `1 ahead` and the commit count on the row's second line, under its name.
-        assert_eq!(text[first + 1], "     untested: 1 commit · 1 ahead", "{text:#?}");
+        assert_eq!(block_rows(&sheet, "292-"), 1, "{text:#?}");
+        assert_eq!(block_rows(&sheet, "303-"), 1, "{text:#?}");
+        // What the column can't hold in short goes under the name whole: nothing dropped.
         let second = at("296-");
         assert!(text[second].contains("!308 draft ✓ passed  untested"), "{text:#?}");
         assert_eq!(
@@ -1030,13 +1234,10 @@ mod tests {
             "untested: 1 commit · 2 changed · 1 ahead",
             "{text:#?}"
         );
-        for name in ["292-", "296-", "303-"] {
-            assert_eq!(block_rows(&sheet, name), 2, "{text:#?}");
-        }
         // The check stands in one column on every row.
         let column = |row: usize| text[row].find("untested").unwrap();
         assert_eq!(column(first), column(second), "{text:#?}");
-        // Where the column holds it all, the row stays one line.
+        // Where the column holds it all, the row says it in words.
         let wide = sheet_of(&model, 200);
         let line = wide.iter().position(|line| line.contains("292-")).unwrap();
         assert!(wide[line].ends_with("untested: 1 commit · 1 ahead"), "{wide:#?}");
@@ -1044,7 +1245,7 @@ mod tests {
     }
 
     #[test]
-    fn the_work_wraps_in_its_column_else_goes_under_the_name() {
+    fn the_work_is_said_whole_else_short_else_under_the_name() {
         let text = |parts: &[Vec<Span<'static>>]| {
             parts
                 .iter()
@@ -1058,18 +1259,34 @@ mod tests {
             branch: None,
         };
         row.tree.changed = 1;
-        // At 120 beside an app and a stack: each fact fits the column, they wrap in it.
-        let (column, rest) = work_in(&row, 26);
-        assert_eq!(text(&column), "untested: 1 commit · 1 changed · 1 ahead");
-        assert!(rest.is_none());
-        // Too narrow for the fact: its word, all of it under the name.
-        let (column, rest) = work_in(&row, 14);
-        assert_eq!(text(&column), "untested");
-        assert_eq!(text(&rest.unwrap()), "untested: 1 commit · 1 changed · 1 ahead");
-        // Room for all: one line.
+        // Room for all: one line in words.
         let (column, rest) = work_in(&row, 60);
         assert_eq!(text(&column), "untested: 1 commit · 1 changed · 1 ahead");
         assert!(rest.is_none());
+        // Less: in short on one line, lazygit's ↑ for ahead.
+        let (column, rest) = work_in(&row, 26);
+        assert_eq!(text(&column), "untested ↑1 · 1 changed");
+        assert!(rest.is_none());
+        // Less: in short, wrapping in the column.
+        let (column, rest) = work_in(&row, 14);
+        assert_eq!(text(&column), "untested ↑1 · 1 changed");
+        assert!(rest.is_none());
+        // Too narrow for that: the check's word, all of it under the name.
+        let (column, rest) = work_in(&row, 10);
+        assert_eq!(text(&column), "untested");
+        assert_eq!(text(&rest.unwrap()), "untested: 1 commit · 1 changed · 1 ahead");
+        // Fewer untested commits than ahead: the count stays.
+        row.tree.checked = CheckState::Untested { count: 1 };
+        row.tree.ahead = 3;
+        assert_eq!(text(&work_in(&row, 20).0), "1 untested ↑3 · 1 changed");
+        // A failure's what never goes: in short beside, whole under the name.
+        row.tree.checked = CheckState::Failed {
+            sha: "1a2b3c4d".into(),
+            failures: vec![],
+        };
+        let (column, rest) = work_in(&row, 26);
+        assert_eq!(text(&column), "✗ failed ↑3 · 1 changed");
+        assert!(text(&rest.unwrap()).starts_with("✗ check failed: see pnpm wt:check"));
     }
 
     #[test]
@@ -1080,12 +1297,10 @@ mod tests {
         let title_at = |line: &str| line[..line.find("overview:").unwrap()].chars().count();
         assert_eq!(title_at(issues[0]), 18, "{text:#?}");
         assert!(issues.iter().all(|line| title_at(line) == 18), "{text:#?}");
+        // Its MR names the claim: the branch isn't said again.
         assert!(issues[0].contains("← !308"), "{text:#?}");
         let all = text.join("\n");
-        assert!(
-            all.contains("feature/296-overview-hover-highlights-whole-block"),
-            "{all}"
-        );
+        assert!(!all.contains("feature/296-"), "{all}");
     }
 
     #[test]
@@ -1169,26 +1384,80 @@ mod tests {
         assert!(!text.iter().any(|line| line.contains("more: glab issue list")));
     }
 
+    /// The row of the first line that starts with `start`.
+    fn row_of(text: &[String], start: &str) -> usize {
+        text.iter()
+            .position(|line| line.trim_start().starts_with(start))
+            .unwrap()
+    }
+
     #[test]
-    fn live_the_issues_get_what_the_pane_has_left() {
-        let model = model(64);
-        // A full pane: at least 3, then how many more.
-        let text = sheet_in(&model, 120, Some(24)).text();
-        assert_eq!(issues_in(&text), 3, "{text:#?}");
+    fn live_the_mrs_and_issues_share_what_the_pane_has_left() {
+        let mut model = model(64);
+        if let Some(remote) = &mut model.remote {
+            remote.mrs = (0..14)
+                .map(|i| mr(100 + i, &format!("feature/{i}-x"), "success"))
+                .collect();
+        }
+        // 80x24: both lists start on the first screen, each with what it holds.
+        let height = 24;
+        let band = band::shown(&Header::default(), "", 80, height).len();
+        let sheet = sheet_in(&model, 80, Some(height));
+        let text = sheet.text();
+        let screen = usize::from(height) - band;
+        assert!(row_of(&text, "MERGE REQUESTS") < screen, "{text:#?}");
+        assert!(row_of(&text, "#300") < screen, "{text:#?}");
+        assert!(row_of(&text, "!100") < screen, "{text:#?}");
         assert!(
-            text.iter().any(|line| line.trim() == "… 61 more: glab issue list"),
+            text.iter()
+                .any(|line| line.trim_start().starts_with("… 63 more · click")),
             "{text:#?}"
         );
-        // A tall one: as many as fit, the page no taller than the pane.
-        let sheet = sheet_in(&model, 120, Some(60));
-        let text = sheet.text();
-        let shown = issues_in(&text);
-        assert!(shown > 3 && shown < 64, "{text:#?}");
-        let band = band::lines(&Header::default(), "", 120).len();
-        assert!(band + text.len() <= 60, "{} rows: {text:#?}", band + text.len());
-        // Room for all: no line about more.
+        // The line about the rest opens its list.
+        let more = row_of(&text, "… 63 more") as u16;
+        assert_eq!(
+            sheet.hit(4, more).map(|(_, region)| region.action().clone()),
+            Some(Act::Fold(Fold::Issues))
+        );
+        let mrs_more = text
+            .iter()
+            .position(|line| line.contains("more · click to show them · glab mr list"))
+            .unwrap();
+        assert_eq!(
+            sheet.hit(4, mrs_more as u16).map(|(_, region)| region.action().clone()),
+            Some(Act::Fold(Fold::Mrs))
+        );
+        // Opened: every issue, and a line that folds it again.
+        let folds = super::super::Folds {
+            is_every_issue_shown: true,
+            ..Default::default()
+        };
+        let text = sheet_with(&model, 80, Some(height), folds).text();
+        assert_eq!(issues_in(&text), 64);
+        assert!(
+            text.iter().any(|line| line.trim() == "click to show fewer"),
+            "{text:#?}"
+        );
+        // A tall pane: all of both, no line about more.
         let text = sheet_in(&model, 120, Some(500)).text();
         assert_eq!(issues_in(&text), 64);
-        assert!(!text.iter().any(|line| line.contains("more: glab issue list")));
+        assert!(!text.iter().any(|line| line.contains("more ·")), "{text:#?}");
+    }
+
+    #[test]
+    fn a_list_that_needs_less_than_half_leaves_the_rest_to_the_other() {
+        let mrs = [2u16; 3];
+        let issues = [1u16; 40];
+        // Room for all.
+        assert_eq!(shares(&mrs, &issues[..4], 10, (false, false)), (3, 4));
+        // The MRs need 6 of 20: the issues get 14, one of them the line about more.
+        assert_eq!(shares(&mrs, &issues, 20, (false, false)), (3, 13));
+        // Both need more than half: half each, the line about more in each half.
+        assert_eq!(shares(&[2; 10], &issues, 10, (false, false)), (2, 4));
+        // No room: one of each still.
+        assert_eq!(shares(&[2; 10], &issues, 0, (false, false)), (1, 1));
+        // Opened by the user: whole, the other gets what is left.
+        assert_eq!(shares(&[2; 10], &issues, 10, (true, false)), (10, 1));
+        assert_eq!(shares(&[], &[], 0, (false, false)), (0, 0));
     }
 }

@@ -13,6 +13,7 @@ use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 /// What to do when the MR took its last commit already: the change is work of its own.
 fn late_text(iid: &str, state: &str, text: &str) -> String {
@@ -25,7 +26,11 @@ fn late_text(iid: &str, state: &str, text: &str) -> String {
     )
 }
 
+/// How long each GitLab call of a change may take.
+const LIMIT: Duration = Duration::from_secs(15);
+
 pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
+    crate::cli::lifecycle::proc::say_waits();
     let main = here.main.clone().unwrap_or_else(|| here.dir().to_path_buf());
     let (dir, mr): (Option<PathBuf>, Option<Value>) = if argv.given("--orchestration").is_some() {
         let Some(iid) = argv
@@ -36,7 +41,7 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
             return Err("which MR? --mr !N".into());
         };
         // glab failing is no "no MR": the change would block nothing (rule 6).
-        let Some(mr) = glab::view(&main, "mr", iid)? else {
+        let Some(mr) = glab::view_within(&main, "mr", iid, LIMIT)? else {
             return Err(format!("GitLab knows no MR !{iid}"));
         };
         let source = glab::text_of(&mr, "source_branch");
@@ -52,7 +57,7 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
         };
         let branch = here.branch();
         let mr = match Some(branch).filter(|b| !b.is_empty()) {
-            Some(branch) => glab::view(&main, "mr", &branch)?,
+            Some(branch) => glab::view_within(&main, "mr", &branch, LIMIT)?,
             None => None,
         };
         (Some(dir.to_path_buf()), mr)
@@ -69,9 +74,14 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
     }
 
     // First blocked, then built: the user can't merge it meanwhile.
-    let drafted = iid
-        .as_ref()
-        .map(|iid| glab::glab(&main, &["mr", "update", iid, "--draft"]));
+    let drafted = iid.as_ref().map(|iid| {
+        glab::glab_within(
+            &main,
+            &["mr", "update", iid, "--draft"],
+            &format!("!{iid} as a draft"),
+            LIMIT,
+        )
+    });
     let withdrawn = match &dir {
         Some(dir) => {
             let branch = match &mr {

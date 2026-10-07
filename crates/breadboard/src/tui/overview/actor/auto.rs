@@ -189,7 +189,7 @@ fn tell(app: &mut Overview, tells: &[Tell], agents: &HashMap<String, Agent>) {
                             app.actor.auto.sent.insert(key.clone());
                             app.actor.auto.pipeline_status.remove(&key);
                             app.state.pipeline_tries.remove(&key);
-                            app.actor.log(Paint::Green, format!("told {who}: {line}"));
+                            app.actor.told(&who, &about_of(&key), &line, true);
                             if key.starts_with("conflicts:") {
                                 // Its MR row shows where the order stands, as after a click.
                                 let mr = app.mr_of_dir(&dir).filter(|mr| mr.iid == iid);
@@ -236,17 +236,42 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
             if is_in {
                 app.actor.auto.sent.insert(key.clone());
                 app.state.pipeline_tries.remove(&key);
-                app.actor.log(Paint::Green, format!("told {who}: {line}"));
+                app.actor.told(&who, &about_of(&key), &line, true);
                 app.redraw();
             } else {
-                app.actor.log(
+                app.actor.log_as(
+                    &format!("told:{who}:{line}"),
                     Paint::Yellow,
                     format!("{who} didn't take the line: {}", fallback_text(&fallback)),
+                    Some(herdr::overview_line(&line)),
                 );
                 super::super::act::go_to(app, fallback);
             }
         }) as Effect)
     });
+}
+
+/// What a sent line told its agent, in a few words, by its key (auto-actions.mjs's keys).
+fn about_of(key: &str) -> String {
+    let iid = |rest: &str| {
+        let digits: String = rest
+            .trim_start_matches('!')
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        format!("!{digits}")
+    };
+    if let Some(rest) = key.strip_prefix("conflicts:") {
+        format!("to merge develop in ({} conflicts with it)", iid(rest))
+    } else if let Some(rest) = key.strip_prefix("pipeline:") {
+        format!("that the pipeline of {} failed", iid(rest))
+    } else if key.starts_with("unpushed:") {
+        "to push its commits".into()
+    } else if let Some(rest) = key.strip_prefix("boxes:") {
+        format!("to tick the done boxes of {}'s issue", iid(rest))
+    } else {
+        String::new()
+    }
 }
 
 fn fallback_text(go: &Go) -> &'static str {
@@ -294,10 +319,18 @@ fn start_run(
     let mut argv = vec!["wt:orchestrate".to_string(), name.to_string(), number.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
     let shown = format!("pnpm {}", argv.join(" "));
-    let what = match to {
-        Some(to) => format!("handing #{number} to {to}"),
-        None => format!("a fresh agent for #{number}"),
+    let (what, done) = match to {
+        Some(to) => (
+            format!("handing #{number} to {to}"),
+            format!("handed #{number} to {to}"),
+        ),
+        None => (
+            format!("starting a fresh agent for #{number}"),
+            format!("a fresh agent took #{number}"),
+        ),
     };
+    let key = format!("start:{number}");
+    let done_key = key.clone();
     let poster = app.actor.poster();
     let started = spawn::start(
         Background {
@@ -317,8 +350,13 @@ fn start_run(
                     run.error = error.clone();
                 }
                 match error {
-                    None => app.actor.log(Paint::Green, format!("#{number} started: {last}")),
-                    Some(why) => app.actor.log(Paint::Red, format!("#{number} didn't start: {why}")),
+                    None => app
+                        .actor
+                        .log_as(&done_key, Paint::Green, format!("{done}: {last}"), None),
+                    Some(why) => {
+                        app.actor
+                            .log_as(&done_key, Paint::Red, format!("#{number} didn't start: {why}"), None)
+                    }
                 }
                 app.redraw();
             });
@@ -334,10 +372,10 @@ fn start_run(
     };
     app.state.runs.insert(number, run);
     match started {
-        Ok(()) => app.actor.log(Paint::Yellow, format!("{what}: {shown} …")),
+        Ok(()) => app.actor.log_as(&key, Paint::Yellow, format!("{what} …"), Some(shown)),
         Err(why) => app
             .actor
-            .log(Paint::Red, format!("#{number} didn't start: {why} ({shown})")),
+            .log_as(&key, Paint::Red, format!("#{number} didn't start: {why}"), Some(shown)),
     }
     true
 }
@@ -549,9 +587,14 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
                     removal.is_running = false;
                     removal.error = error.clone();
                 }
+                let key = format!("remove:{done_feature}");
                 match error {
-                    None => app.actor.log(Paint::Green, format!("removed {done_feature}")),
-                    Some(why) => app.actor.log(Paint::Red, format!("{done_feature} stays: {why}")),
+                    None => app
+                        .actor
+                        .log_as(&key, Paint::Green, format!("removed {done_feature}"), None),
+                    Some(why) => app
+                        .actor
+                        .log_as(&key, Paint::Red, format!("{done_feature} stays: {why}"), None),
                 }
                 app.redraw();
             });
@@ -570,11 +613,15 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
         },
     };
     app.state.removals.insert(dir.to_path_buf(), removal);
-    if started.is_ok() {
-        app.actor.log(
-            Paint::Yellow,
-            format!("removing {feature}: pnpm wt:remove {feature} --close-space"),
-        );
+    let key = format!("remove:{feature}");
+    let command = format!("pnpm wt:remove {feature} --close-space");
+    match started {
+        Ok(()) => app
+            .actor
+            .log_as(&key, Paint::Yellow, format!("removing {feature} …"), Some(command)),
+        Err(why) => app
+            .actor
+            .log_as(&key, Paint::Red, format!("{feature} stays: {why}"), Some(command)),
     }
 }
 
@@ -676,7 +723,7 @@ fn deliver_waits(app: &mut Overview, local: &OrchestrationLocal, remote: &Remote
                 app.actor.auto.waits_in_flight.remove(&dir);
                 if let Some(line) = delivered {
                     let who = feature_of(&app.actor.main, &dir);
-                    app.actor.log(Paint::Green, format!("told {who}: {line}"));
+                    app.actor.told(&who, "that its wait ended", &line, true);
                 }
             }) as Effect)
         });
@@ -787,6 +834,17 @@ mod tests {
             "{text}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn says_what_a_line_told_in_a_few_words() {
+        assert_eq!(
+            about_of("conflicts:316"),
+            "to merge develop in (!316 conflicts with it)"
+        );
+        assert_eq!(about_of("pipeline:!318:2901"), "that the pipeline of !318 failed");
+        assert_eq!(about_of("unpushed:feature/x:2:none"), "to push its commits");
+        assert_eq!(about_of("boxes:!303"), "to tick the done boxes of !303's issue");
     }
 
     #[test]

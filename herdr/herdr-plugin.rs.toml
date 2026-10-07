@@ -1,0 +1,111 @@
+# The herdr plugin of monocircuit/platform, see README.md next to it: the
+# manifest of the Rust rewrite (#314). At the cut-over it replaces
+# herdr-plugin.toml (`pnpm herdr --reload` relinks it: its sha256 changes).
+#
+# Everything here calls the binary of this checkout, `breadboard herdr
+# <action>`: herdr runs plugin commands in this directory, so the path is
+# relative to it (`pnpm build:rs` builds it); the logic stays in the binary,
+# where it also works without herdr.
+id = "monocircuit.platform"
+name = "Monocircuit platform"
+description = "Worktrees, dev stacks and the live overview of monocircuit/platform"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+
+# After a herdr restart the layout comes back: the main space with `root` and
+# `overview`, a space per worktree, the way pnpm wt:herdr builds it. The tabs
+# herdr restores as bare shells run their command again, and a worktree's tab
+# resumes its claude conversation.
+[[startup]]
+command = ["../target/release/breadboard", "herdr", "restore", "--startup"]
+
+# Actions are what a key triggers (type = "plugin_action"). The ones that
+# show something open a pane of this plugin; the focused tab decides which
+# worktree the stack commands act on.
+[[actions]]
+id = "overview"
+title = "Overview: worktrees, stacks, MRs, issues"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "overview"]
+
+[[actions]]
+id = "commands"
+title = "Every pnpm command of the repo"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "commands"]
+
+[[actions]]
+id = "stack-up"
+title = "Start the stack of this worktree"
+contexts = ["tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "stack-up"]
+
+[[actions]]
+id = "stack-down"
+title = "Stop the stack of this worktree"
+contexts = ["tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "stack-down"]
+
+[[actions]]
+id = "stack-ps"
+title = "The containers of this worktree's stack"
+contexts = ["tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "stack-ps"]
+
+[[actions]]
+id = "reload"
+title = "Load new workflow code, conversations keep running"
+contexts = ["global", "workspace", "tab", "pane"]
+command = ["../target/release/breadboard", "herdr", "open", "reload"]
+
+[[actions]]
+id = "restore"
+title = "Rebuild the layout: overview, root and a space per worktree"
+contexts = ["global", "workspace"]
+command = ["../target/release/breadboard", "herdr", "restore"]
+
+[[panes]]
+id = "overview"
+title = "Overview"
+placement = "zoomed"
+command = ["../target/release/breadboard", "herdr", "pane", "overview"]
+
+[[panes]]
+id = "commands"
+title = "Commands"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["../target/release/breadboard", "herdr", "pane", "commands"]
+
+[[panes]]
+id = "reload"
+title = "Reload"
+placement = "popup"
+width = "80%"
+height = "50%"
+command = ["../target/release/breadboard", "herdr", "pane", "reload"]
+
+[[panes]]
+id = "stack-up"
+title = "Stack up"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["../target/release/breadboard", "herdr", "pane", "stack-up"]
+
+[[panes]]
+id = "stack-down"
+title = "Stack down"
+placement = "popup"
+width = "80%"
+height = "60%"
+command = ["../target/release/breadboard", "herdr", "pane", "stack-down"]
+
+[[panes]]
+id = "stack-ps"
+title = "Stack"
+placement = "popup"
+width = "90%"
+height = "50%"
+command = ["../target/release/breadboard", "herdr", "pane", "stack-ps"]

@@ -3,7 +3,11 @@
 //!
 //! The readers run beside the view: the local one on a thread of its own
 //! (git, herdr and the disk block), every 2 s but only when a file it reads
-//! or herdr's state of an agent changed, or 15 s went by; GitLab on the runtime, every 30 s and on `r`.
+//! or herdr's state of an agent changed, or 15 s went by; GitLab every 30 s
+//! and on `r`, read by the daemon (`breadboard serve`) for every overview of
+//! the same view, or by the overview itself where it can't be reached. herdr's
+//! reads go through the daemon too; the looks of all overviews fall on the
+//! same even seconds, so one herdr call answers them all.
 //! Each sends what it read; the app builds the view's model from both
 //! (core's `model_of`) and the page from the model, one file per section:
 //!
@@ -34,8 +38,9 @@ pub use act::{Act, Fold};
 
 use super::page::guarded;
 use super::{App, Flow, Header, Input, Page, view};
+use crate::daemon::{self, Feed};
+use breadboard_core::gitlab;
 use breadboard_core::gitlab::client::Rate;
-use breadboard_core::gitlab::{self, waiting_text};
 use breadboard_core::model::orchestration::ViewState;
 use breadboard_core::reader::{Local, LocalReader, Model, RemoteAsk, RemoteOf, RemoteReader, View, model_of};
 use breadboard_core::time::now_ms;
@@ -45,14 +50,10 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
-/// How often the local read looks whether a file it reads changed (args.mjs `LOCAL_MS`).
-const LOCAL_EVERY: Duration = Duration::from_millis(2000);
+/// How often the local read looks whether a file it reads changed (args.mjs `LOCAL_MS`), on the clock's even seconds.
+const LOCAL_EVERY_MS: i64 = 2000;
 /// A local read at the latest after this: herdr's states and edits in a working tree touch no file.
 const LOCAL_AT_LEAST: Duration = Duration::from_millis(breadboard_core::reader::STALE_MS as u64);
-/// GitLab is read this often (overview.mjs `REMOTE_MS`).
-const REMOTE_EVERY: Duration = Duration::from_secs(30);
-/// While GitLab hasn't answered yet, its progress shows at most this often.
-const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
 /// What the command line asks for (overview/args.mjs).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +119,7 @@ pub fn main(args: &[String]) -> ExitCode {
     let (wake, woken) = std::sync::mpsc::sync_channel(1);
     app.wake_local = Some(wake);
     act::start(&mut app, sender.clone());
+    daemon::client::share_herdr();
     read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
     runtime.spawn(read_gitlab(main, asked, refreshes, sender));
     super::serve(runtime, &mut app, models)
@@ -137,11 +139,11 @@ fn once(mut app: Overview, mut reader: LocalReader) -> ExitCode {
     };
     let mut remote = RemoteReader::new(&reader.main);
     let result = runtime.block_on(remote.read(&ask, true));
-    app.update(Msg::Remote {
+    app.update(Msg::Gitlab(Feed::Remote {
         result: result.map(Box::new).map_err(|error| error.to_string()),
         at: now_ms(),
         rate: remote.gitlab.rate(),
-    });
+    }));
     print!("{}", view::once(&app, super::columns()));
     ExitCode::SUCCESS
 }
@@ -180,105 +182,42 @@ fn read_locally(
                     return;
                 }
             }
-            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = woken.recv_timeout(LOCAL_EVERY) {
+            // The next even second: every overview looks then, the daemon asks herdr once for all.
+            let wait = LOCAL_EVERY_MS - now_ms().rem_euclid(LOCAL_EVERY_MS);
+            let wait = Duration::from_millis(u64::try_from(wait).unwrap_or(0));
+            if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = woken.recv_timeout(wait) {
                 return;
             }
         }
     });
 }
 
-/// GitLab, one read at a time: the first full, then every REMOTE_EVERY fast;
-/// `r` reads again at once and full, so does the read after one that failed
-/// being full, and the one after more MRs got merged.
+/// GitLab's reads of the view: the daemon's feed of it, else (no daemon to
+/// be had, or it got lost) read here on the same cadence (`daemon::read_gitlab`).
 async fn read_gitlab(
     main: PathBuf,
     mut asks: watch::Receiver<Option<RemoteAsk>>,
     mut refreshes: mpsc::UnboundedReceiver<()>,
     sender: mpsc::UnboundedSender<Msg>,
 ) {
-    let mut reader = RemoteReader::new(&main);
-    let mut is_full = true;
-    let mut has_data = false;
-    let mut merged: Option<usize> = None;
-    loop {
-        let ask = loop {
-            if let Some(ask) = asks.borrow_and_update().clone() {
-                break ask;
-            }
-            if asks.changed().await.is_err() {
+    let (out, mut said) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(feed) = said.recv().await {
+            if sender.send(Msg::Gitlab(feed)).is_err() {
                 return;
             }
-        };
-        let gitlab = reader.gitlab.clone();
-        let result = {
-            let read = reader.read(&ask, is_full);
-            tokio::pin!(read);
-            let mut tick = tokio::time::interval(PROGRESS_EVERY);
-            loop {
-                tokio::select! {
-                    result = &mut read => break result,
-                    _ = tick.tick(), if !has_data => {
-                        let _ = sender.send(Msg::Progress(waiting_text(&gitlab.progress())));
-                    }
-                }
-            }
-        };
-        let was_full = std::mem::take(&mut is_full);
-        let result = match result {
-            Ok(remote) => {
-                has_data = true;
-                let count = merged_in(&remote);
-                is_full = merged.is_some_and(|was| count > was);
-                merged = Some(count);
-                Ok(Box::new(remote))
-            }
-            Err(error) => {
-                is_full = was_full;
-                Err(error.to_string())
-            }
-        };
-        let message = Msg::Remote {
-            result,
-            at: now_ms(),
-            rate: gitlab.rate(),
-        };
-        if sender.send(message).is_err() {
-            return;
         }
-        tokio::select! {
-            _ = tokio::time::sleep(REMOTE_EVERY) => {}
-            asked = refreshes.recv() => match asked {
-                Some(()) => is_full = true,
-                None => return,
-            },
-        }
-        // Asks that came in meanwhile count as one.
-        while refreshes.try_recv().is_ok() {}
-    }
-}
-
-/// How many of an orchestration's MRs are merged: more, and the next read is full.
-fn merged_in(remote: &RemoteOf) -> usize {
-    match remote {
-        RemoteOf::Orchestration(remote) => remote
-            .of
-            .values()
-            .filter(|part| part.mr.as_ref().is_some_and(|mr| mr.is_merged()))
-            .count(),
-        _ => 0,
+    });
+    if daemon::client::follow(&main, &mut asks, &mut refreshes, &out).await == daemon::client::Followed::Lost {
+        daemon::read_gitlab(main, asks, refreshes, out).await;
     }
 }
 
 /// What the readers send.
 pub enum Msg {
     Local(Box<Local>),
-    Remote {
-        result: Result<Box<RemoteOf>, String>,
-        at: i64,
-        rate: Option<Rate>,
-    },
-    /// GitLab's read under way, before its first answer: `GitLab: 4/7 · pipelines`.
-    Progress(String),
+    /// A GitLab read ended, or one under way before the first answer (`GitLab: 4/7 · pipelines`).
+    Gitlab(Feed),
     /// What the actor did, back on the view (act.rs).
     Acted(actor::Effect),
 }
@@ -311,6 +250,9 @@ pub struct Folds {
     pub removed: Option<bool>,
     pub is_queued_folded: bool,
     pub is_merged_folded: bool,
+    /// The view of everything: every open MR, every issue, past what fits the pane.
+    pub is_every_mr_shown: bool,
+    pub is_every_issue_shown: bool,
 }
 
 /// What every section knows besides its model.
@@ -461,7 +403,10 @@ impl App for Overview {
     }
 
     fn update(&mut self, message: Msg) {
-        let (is_local, is_remote) = (matches!(message, Msg::Local(_)), matches!(message, Msg::Remote { .. }));
+        let (is_local, is_remote) = (
+            matches!(message, Msg::Local(_)),
+            matches!(message, Msg::Gitlab(Feed::Remote { .. })),
+        );
         match message {
             Msg::Acted(effect) => {
                 effect(self);
@@ -472,7 +417,7 @@ impl App for Overview {
                 return;
             }
             Msg::Local(local) => self.local = Some(*local),
-            Msg::Remote { result, at, rate } => {
+            Msg::Gitlab(Feed::Remote { result, at, rate }) => {
                 self.gitlab.rate = rate;
                 match result {
                     Ok(remote) => {
@@ -485,7 +430,7 @@ impl App for Overview {
                     }
                 }
             }
-            Msg::Progress(progress) => {
+            Msg::Gitlab(Feed::Progress(progress)) => {
                 self.gitlab.progress = progress;
                 return;
             }

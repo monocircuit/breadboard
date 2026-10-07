@@ -70,18 +70,7 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&st
         scene.text("none: an agent asks with pnpm wt:action <kind> <text>", theme::dim());
         return;
     }
-    let is_auto = items.iter().any(|item| item.is_auto);
-    let rest = rest_does(items);
-    scene.note(format!(
-        "{} for you · buttons and options answer its agent{}{}",
-        items.len(),
-        if rest.is_empty() {
-            String::new()
-        } else {
-            format!(" · a click on the rest {rest}")
-        },
-        if is_auto { " · auto ones go by themselves" } else { "" }
-    ));
+    scene.note(note_of(items));
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
             scene.rule();
@@ -107,19 +96,51 @@ fn shown_in_next(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
     }
 }
 
+/// ACTIONS' note: what waits for the user, the answers on their way apart
+/// (they wait for their agent, not for the user), what a click does.
+fn note_of(items: &[Item]) -> String {
+    let answered = items.iter().filter(|item| shown_answer(item).is_some()).count();
+    let open = items.len() - answered;
+    let mut parts = vec![match open {
+        0 => "nothing waits for you".to_string(),
+        n => format!("{n} for you"),
+    }];
+    match answered {
+        0 => {}
+        1 => parts.push("1 answered, on its way".into()),
+        n => parts.push(format!("{n} answered, on their way")),
+    }
+    if open > 0 {
+        parts.push("buttons and options answer its agent".into());
+    }
+    let rest = rest_does(items);
+    if !rest.is_empty() {
+        parts.push(format!("a click on the rest {rest}"));
+    }
+    if items.iter().any(|item| item.is_auto) {
+        parts.push("auto ones go by themselves".into());
+    }
+    parts.join(" · ")
+}
+
+/// What a click on the body of an item going to `go` does, in words.
+fn does_of(go: &Go) -> Option<&'static str> {
+    Some(match go {
+        Go::FocusSpace(_) => "opens its space",
+        Go::FocusAgent(_) => "opens its agent's tab",
+        Go::Try { .. } => "runs its try",
+        Go::Merge { .. } => "merges",
+        Go::Show { .. } => "opens its page",
+        _ => return None,
+    })
+}
+
 /// What a click on the rest of the blocks of `items` does, in words, by
 /// their first appearance: `opens its space or runs its try`; "" for none.
 fn rest_does(items: &[Item]) -> String {
     let mut does: Vec<&str> = Vec::new();
     for item in items.iter().filter(|item| !item.is_inert()) {
-        let what = match &item.go {
-            Go::FocusSpace(_) => "opens its space",
-            Go::FocusAgent(_) => "opens its agent's tab",
-            Go::Try { .. } => "runs its try",
-            Go::Merge { .. } => "merges",
-            Go::Show { .. } => "opens its page",
-            _ => continue,
-        };
+        let Some(what) = does_of(&item.go) else { continue };
         if !does.contains(&what) {
             does.push(what);
         }
@@ -289,7 +310,15 @@ fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool) {
     }
     if let Some((answer, waits)) = shown_answer(item) {
         scene.atom(vec![look::span(format!("→ {answer}"), theme::tone(Tone::Yellow))]);
-        look::say(scene, &waits, theme::dim());
+        // Apart from the answer: `→ Rust + ratatui its agent …` reads as one answer without colour.
+        let mut words = look::words_of(&[look::dim(&waits)]).into_iter();
+        if let Some(mut first) = words.next() {
+            first.insert(0, look::dim("· "));
+            scene.atom(first);
+        }
+        for word in words {
+            scene.atom(word);
+        }
         scene.end_line();
         return;
     }
@@ -357,39 +386,58 @@ pub fn keyed(item: &Item) -> Vec<String> {
     stored::answers_of(action)
 }
 
-/// What NEXT says under a block the keys answer: each key and where its
-/// answer goes, as lazygit's menu names what each row does. Enter is not
-/// one: it runs only the row picked with Tab, which is lit.
-pub fn key_hint(item: &Item) -> Option<String> {
+/// Whether `item` is drawn with the ✓ of a kind without answers.
+fn has_tick(item: &Item) -> bool {
+    let Some(action) = &item.action else { return false };
+    item.file.is_some()
+        && !item.is_auto
+        && !item.is_waiting()
+        && shown_answer(item).is_none()
+        && stored::answers_of(action).is_empty()
+}
+
+/// What NEXT says under its block, in parts, as lazygit's options bar names
+/// each key and what it does: each digit (cyan, as on its button) and where
+/// its answer goes; for a ✓ (no key: it tells no one) what a click on the
+/// rest does, the way to its agent. Enter is not one: it runs only the row
+/// picked with Tab, which is lit. None for the rest.
+pub fn hint(item: &Item) -> Vec<Vec<Span<'static>>> {
+    let Some(action) = item.action.as_ref() else {
+        return vec![];
+    };
+    let key = |text: String| look::span(text, theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD));
     let answers = keyed(item);
-    let action = item.action.as_ref()?;
-    let is_draft = |answer: &str| {
-        stored::is_draft(&Action {
-            answer: Some(answer.to_string()),
-            ..action.clone()
-        })
-    };
-    let hint = match answers.len() {
-        0 => return None,
-        n if action.kind == "decide" => format!("press 1-{n} or click an option: typed to its agent"),
-        1 => format!("press 1 or click {}: typed to its agent", answers[0]),
-        _ => {
-            let keys: Vec<String> = answers
-                .iter()
-                .enumerate()
-                .map(|(at, answer)| {
-                    let goes = if is_draft(answer) {
-                        "written into its agent's input, for you to finish"
-                    } else {
-                        "typed to its agent"
-                    };
-                    format!("{} {answer}: {goes}", at + 1)
-                })
-                .collect();
-            format!("press {} · or click", keys.join(" · "))
+    if answers.is_empty() {
+        // A merge's own text says what its two clicks do.
+        if !has_tick(item) || item.merge.is_some() || item.is_inert() {
+            return vec![];
         }
-    };
-    Some(hint)
+        return does_of(&item.go)
+            .map(|does| vec![vec![look::dim(format!("a click on the rest {does}"))]])
+            .unwrap_or_default();
+    }
+    if action.kind == "decide" {
+        let keys = match answers.len() {
+            1 => "1".to_string(),
+            n => format!("1-{n}"),
+        };
+        return vec![vec![key(keys), look::dim(" picks that option: typed to its agent")]];
+    }
+    answers
+        .iter()
+        .enumerate()
+        .map(|(at, answer)| {
+            let goes = if stored::is_draft(&Action {
+                answer: Some(answer.clone()),
+                ..action.clone()
+            }) {
+                "a draft in its agent's input for you to finish"
+            } else {
+                "typed to its agent"
+            };
+            vec![key((at + 1).to_string()), look::dim(format!(" {answer}: {goes}"))]
+        })
+        .collect()
 }
 
 /// A digit (`act::key`): the answer it gives the action NEXT shows,
@@ -949,7 +997,7 @@ mod tests {
         let item = item_with(action.clone());
         let file = item.file.clone().unwrap();
         remember(&file, 77, "Rust + ratatui", TYPING);
-        let typing = "→ Rust + ratatui typing it into its agent's pane …";
+        let typing = "→ Rust + ratatui · typing it into its agent's pane …";
         let (text, scene) = drawn(&item, 60);
         assert_eq!(text.last().unwrap(), typing);
         assert!(
@@ -965,7 +1013,7 @@ mod tests {
         // Once the delivery is done with, a read that has the answer takes over, with why it waits.
         remember(&file, 77, "Rust + ratatui", "at its next stop");
         let (text, _) = drawn(&item_with(action), 60);
-        assert_eq!(text.last().unwrap(), "→ Rust + ratatui at its next stop");
+        assert_eq!(text.last().unwrap(), "→ Rust + ratatui · at its next stop");
         assert!(!locked(&CLICKED).contains_key(&(file, 77)));
     }
 
@@ -973,10 +1021,7 @@ mod tests {
     fn in_next_the_digits_answer_only_what_is_typed_to_the_agent() {
         let item = item_with(decide());
         assert_eq!(keyed(&item), ["Rust + ratatui", "Bun: flexbox"]);
-        assert_eq!(
-            key_hint(&item).as_deref(),
-            Some("press 1-2 or click an option: typed to its agent")
-        );
+        assert_eq!(hint_text(&item), ["1-2 picks that option: typed to its agent"]);
         let try_item = item_with(Action {
             id: 5,
             kind: "try".into(),
@@ -985,22 +1030,21 @@ mod tests {
         });
         assert_eq!(keyed(&try_item), ["looks good", "broken"]);
         assert_eq!(
-            key_hint(&try_item).as_deref(),
-            Some(
-                "press 1 looks good: typed to its agent · 2 broken: written into its agent's input, \
-                 for you to finish · or click"
-            )
+            hint_text(&try_item),
+            [
+                "1 looks good: typed to its agent",
+                "2 broken: a draft in its agent's input for you to finish"
+            ]
         );
+        // The digit is a key, as on its button.
+        assert_eq!(hint(&try_item)[0][0].style.fg, theme::tone(Tone::Cyan).fg);
         let look_item = item_with(Action {
             id: 9,
             kind: "look".into(),
             text: "read it".into(),
             ..Default::default()
         });
-        assert_eq!(
-            key_hint(&look_item).as_deref(),
-            Some("press 1 or click done: typed to its agent")
-        );
+        assert_eq!(hint_text(&look_item), ["1 done: typed to its agent"]);
         let gitlab = super::super::GitlabState::default();
         let mut scene = Scene::new(60);
         let ctx = Ctx {
@@ -1024,17 +1068,57 @@ mod tests {
             text: "ready".into(),
             ..Default::default()
         });
-        assert!(keyed(&merge).is_empty() && key_hint(&merge).is_none());
+        assert!(keyed(&merge).is_empty() && hint(&merge).is_empty());
         let open_question = item_with(Action {
             id: 10,
             kind: "decide".into(),
             text: "Keep Node running?".into(),
             ..Default::default()
         });
-        assert!(keyed(&open_question).is_empty() && key_hint(&open_question).is_none());
+        assert!(keyed(&open_question).is_empty() && hint(&open_question).is_empty());
+        // Its way to the agent instead: what a click on the rest does.
+        let mut in_space = open_question.clone();
+        in_space.go = Go::FocusSpace(PathBuf::from("/w"));
+        assert_eq!(hint_text(&in_space), ["a click on the rest opens its space"]);
         let mut auto = item_with(decide());
         auto.is_auto = true;
-        assert!(keyed(&auto).is_empty() && key_hint(&auto).is_none());
+        assert!(keyed(&auto).is_empty() && hint(&auto).is_empty());
+    }
+
+    fn hint_text(item: &Item) -> Vec<String> {
+        hint(item)
+            .iter()
+            .map(|part| part.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_note_counts_apart_what_is_answered_and_on_its_way() {
+        let mut first = item_with(decide());
+        first.go = Go::FocusSpace(PathBuf::from("/w"));
+        let mut second = item_with(Action {
+            id: 31,
+            kind: "look".into(),
+            text: "read it".into(),
+            answer: Some("done".into()),
+            ..Default::default()
+        });
+        second.go = Go::FocusSpace(PathBuf::from("/w"));
+        assert_eq!(
+            note_of(&[first.clone(), second.clone()]),
+            "1 for you · 1 answered, on its way · buttons and options answer its agent · \
+             a click on the rest opens its space"
+        );
+        let mut third = second.clone();
+        third.action.as_mut().unwrap().id = 32;
+        assert_eq!(
+            note_of(&[second, third]),
+            "nothing waits for you · 2 answered, on their way · a click on the rest opens its space"
+        );
+        assert_eq!(
+            note_of(&[first]),
+            "1 for you · buttons and options answer its agent · a click on the rest opens its space"
+        );
     }
 
     #[test]

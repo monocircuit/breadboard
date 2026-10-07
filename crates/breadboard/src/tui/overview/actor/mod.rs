@@ -48,13 +48,19 @@ type Job = Box<dyn FnOnce() -> Option<Effect> + Send>;
 /// How many things done the log keeps.
 const DID_KEPT: usize = 20;
 
-/// A thing done, for the log: when, how it went, what.
+/// A thing done, for the log: when, how it went, what — in words, and
+/// what exactly was run or typed, the way lazygit's command log puts the
+/// command under its action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Did {
     pub at: i64,
     /// Green done, red failed, yellow under way or waiting.
     pub paint: Paint,
     pub text: String,
+    /// The command run or the line typed, word for word.
+    pub detail: Option<String>,
+    /// One act's entry: its end replaces its start, never a second entry.
+    pub key: Option<String>,
 }
 
 /// The actor of one overview.
@@ -162,13 +168,59 @@ impl Actor {
         });
     }
 
-    /// A thing done into the log.
+    /// A thing done into the log. One that was under way with the same
+    /// words before its ` · ` (an answer waiting for its agent) is replaced.
     pub fn log(&mut self, paint: Paint, text: impl Into<String>) {
-        self.did.push_front(Did {
+        let text = text.into();
+        let head = head_of(&text).to_string();
+        self.did
+            .retain(|did| !(did.key.is_none() && did.paint == Paint::Yellow && head_of(&did.text) == head));
+        self.push(Did {
+            at: now_ms(),
+            paint,
+            text,
+            detail: None,
+            key: None,
+        });
+    }
+
+    /// One act into the log under `key`: its start (yellow) and its end
+    /// (green or red) are one entry, the newest on top; `detail` the
+    /// command or line, word for word.
+    pub fn log_as(&mut self, key: &str, paint: Paint, text: impl Into<String>, detail: Option<String>) {
+        let detail = detail.or_else(|| {
+            let known = self.did.iter().find(|did| did.key.as_deref() == Some(key))?;
+            known.detail.clone()
+        });
+        self.did.retain(|did| did.key.as_deref() != Some(key));
+        self.push(Did {
             at: now_ms(),
             paint,
             text: text.into(),
+            detail,
+            key: Some(key.to_string()),
         });
+    }
+
+    /// A line typed into an agent, or held until it can take it: in words
+    /// what it was told (`about`), the line word for word under it.
+    pub fn told(&mut self, who: &str, about: &str, line: &str, is_in: bool) {
+        let key = format!("told:{who}:{line}");
+        let line = herdr::overview_line(line);
+        if is_in {
+            self.log_as(&key, Paint::Green, format!("told {who} {about}"), Some(line));
+        } else {
+            self.log_as(
+                &key,
+                Paint::Yellow,
+                format!("waits for {who}'s agent: {about}"),
+                Some(line),
+            );
+        }
+    }
+
+    fn push(&mut self, did: Did) {
+        self.did.push_front(did);
         self.did.truncate(DID_KEPT);
     }
 }
@@ -211,6 +263,11 @@ pub fn pid_file(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("platform-overview-{uid}-{name}.pid"))
 }
 
+/// What a logged text says before its ` · `.
+fn head_of(text: &str) -> &str {
+    text.split(" · ").next().unwrap_or(text)
+}
+
 /// The first line of a text that says something: `#>*-` and spaces in front gone (auto-actions.mjs `firstLine`).
 pub fn first_line(text: &str) -> String {
     text.lines()
@@ -238,6 +295,22 @@ mod tests {
         assert!(!actor.delivers("b"));
         actor.log(Paint::Green, "x");
         assert_eq!(actor.did.len(), 1);
+    }
+
+    #[test]
+    fn an_act_keeps_one_entry_from_its_start_to_its_end() {
+        let mut actor = Actor::new(&View::Orchestration("b".into()), Path::new("/r"), false, false);
+        actor.log_as("remove:x", Paint::Yellow, "removing x", Some("pnpm wt:remove x".into()));
+        actor.log(Paint::Green, "something else");
+        actor.log_as("remove:x", Paint::Green, "removed x", None);
+        let texts: Vec<&str> = actor.did.iter().map(|did| did.text.as_str()).collect();
+        assert_eq!(texts, ["removed x", "something else"]);
+        assert_eq!(actor.did[0].detail.as_deref(), Some("pnpm wt:remove x"));
+        // An answer waiting for its agent, then typed in: one entry.
+        actor.log(Paint::Yellow, "decide #2 of 307-x → “a” · waits for its agent");
+        actor.log(Paint::Green, "decide #2 of 307-x → “a” · typed into its agent's pane");
+        assert_eq!(actor.did.len(), 3);
+        assert_eq!(actor.did[0].paint, Paint::Green);
     }
 
     #[test]

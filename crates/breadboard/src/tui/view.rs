@@ -473,12 +473,20 @@ impl<A: Clone + PartialEq> View<A> {
         {
             Some(at) => (at as i64 + i64::from(by)).clamp(0, last as i64) as usize,
             None => {
+                // Where the reader looks: scrolled down, a block in the rows
+                // that scrolled there, before the sticky rows that never moved.
                 let is_shown = |i: &usize| window.screen_y(sheet.regions[*i].area.y).is_some();
-                if by > 0 {
-                    order.iter().position(is_shown).unwrap_or(0)
+                let is_scrolled_to =
+                    |i: &usize| is_shown(i) && (window.scroll == 0 || sheet.regions[*i].area.y >= window.sticky);
+                let found = if by > 0 {
+                    order
+                        .iter()
+                        .position(is_scrolled_to)
+                        .or_else(|| order.iter().position(is_shown))
                 } else {
-                    order.iter().rposition(is_shown).unwrap_or(last)
-                }
+                    order.iter().rposition(is_shown)
+                };
+                found.unwrap_or(if by > 0 { 0 } else { last })
             }
         };
         let index = order[at];
@@ -1781,6 +1789,23 @@ mod tests {
         // The pointer moving takes the light back.
         assert!(screen.view.hover(Some((60, 10))));
         assert_eq!(screen.view.selected(), None);
+    }
+
+    #[test]
+    fn tab_after_a_scroll_picks_the_first_block_scrolled_to_not_a_sticky_one() {
+        let mut screen = Screen::new(120, 24);
+        let sticky = screen.view.sheet().sticky;
+        assert!(sticky > 0, "the demo has a sticky part");
+        screen.view.scroll_bottom();
+        screen.draw();
+        screen.view.select_by(1);
+        screen.draw();
+        let index = screen.view.selected_index().expect("picked");
+        let area = screen.view.sheet().regions[index].area;
+        assert!(area.y >= sticky, "picked a sticky block at row {}", area.y);
+        assert!(screen.view.screen_y(area.y).is_some());
+        // Nothing scrolled for it: it was on screen.
+        assert_eq!(screen.view.scroll(), screen.view.window(0).max_scroll);
     }
 
     #[test]

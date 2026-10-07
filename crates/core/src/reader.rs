@@ -34,12 +34,14 @@ use crate::record::{self, record_of};
 use crate::setups::live_setups_of;
 use crate::time::now_ms;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// How long a worktree's facts hold without a change of its files: edits in the working tree touch none.
 pub const STALE_MS: i64 = 15_000;
+/// How long docker's stacks hold for WORKTREES (#331: one docker read every 10–15 s, never a poll per read).
+pub const DOCKER_EVERY_MS: i64 = 12_000;
 
 /// Which view is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +59,8 @@ pub enum Local {
     Everything(EverythingLocal),
 }
 
-/// What a GitLab read found, by view.
-#[derive(Debug, Clone)]
+/// What a GitLab read found, by view; it goes over the socket of `breadboard serve` as JSON.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum RemoteOf {
     Orchestration(Remote),
     Worktree(Box<WorktreeRemote>),
@@ -76,7 +78,7 @@ impl RemoteOf {
 }
 
 /// What a GitLab read asks for, from the local read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RemoteAsk {
     Orchestration(Ask),
     Worktree { branch: Option<String> },
@@ -127,6 +129,8 @@ pub struct LocalReader {
     /// Where each conversation's transcript is: it stays where claude put it.
     transcripts: HashMap<String, PathBuf>,
     diffs: diff::DiffCache,
+    /// docker's stacks as last read for WORKTREES, and when.
+    docker: Option<(i64, Option<BTreeMap<String, String>>)>,
 }
 
 impl LocalReader {
@@ -142,6 +146,7 @@ impl LocalReader {
             git_dirs: HashMap::new(),
             transcripts: HashMap::new(),
             diffs: diff::DiffCache::default(),
+            docker: None,
         })
     }
 
@@ -324,7 +329,16 @@ impl LocalReader {
                 (panes, chat)
             }
         });
-        let trees = self.trees(&list, None, true, &running, now);
+        let mut trees = self.trees(&list, None, true, &running, now);
+        // The stacks of their own (#332): docker only for those, once in DOCKER_EVERY_MS (#331).
+        if trees.iter().any(|tree| tree.has_env && tree.has_own_port) {
+            let projects = self.projects(now);
+            for tree in &mut trees {
+                tree.stack = projects
+                    .as_ref()
+                    .and_then(|projects| projects.get(&tree.project).cloned());
+            }
+        }
         let (panes, chat) = herdr_read.join().unwrap_or_default();
         OrchestrationLocal {
             name: name.to_string(),
@@ -341,6 +355,18 @@ impl LocalReader {
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
             record,
+        }
+    }
+
+    /// docker's stacks, read again once DOCKER_EVERY_MS passed.
+    fn projects(&mut self, now: i64) -> Option<BTreeMap<String, String>> {
+        match &self.docker {
+            Some((at, projects)) if now - at < DOCKER_EVERY_MS => projects.clone(),
+            _ => {
+                let projects = compose_projects();
+                self.docker = Some((now, projects.clone()));
+                projects
+            }
         }
     }
 

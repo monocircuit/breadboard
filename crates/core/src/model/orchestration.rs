@@ -575,7 +575,10 @@ fn merge_requests_of(
                 .unwrap_or(&[]);
             row_blockers_of(mr, boxes, behind, after, &part.jobs, tree, done)
         };
-        let status = if is_merged {
+        let status = if is_merged && mr.state == "closed" {
+            // Closed without a merge: never `merged` (Node said so for both).
+            Some(Span::dim("closed"))
+        } else if is_merged {
             let when = mr
                 .merged_at
                 .as_deref()
@@ -1013,6 +1016,19 @@ mod tests {
             .into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_closed_mr_says_closed_not_merged() {
+        let mut remote = remote();
+        let part = remote.of.get_mut("feature/3-three").unwrap();
+        part.mr = Some(mr(13, "feature/3-three", "closed", "success"));
+        let mut state = ViewState::default();
+        let model = orchestration_of(&local(), Some(&remote), &mut state, NOW);
+        let mrs = model.merge_requests.unwrap();
+        let closed = mrs.merged[0].mr.as_ref().unwrap();
+        assert_eq!(closed.status.as_ref().unwrap().text, "closed");
+        assert!(!mrs.counts.contains("merged"), "{}", mrs.counts);
     }
 
     #[test]

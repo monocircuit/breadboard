@@ -76,90 +76,141 @@ fn is_conversation_running(id: &str) -> bool {
     running_claudes().iter().any(|claude| claude.id == id)
 }
 
-/// The click (`restoreChat` with `isClick`): what happened, None when herdr did nothing.
+/// Where the chat of a space stands (`chatStateOf`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// The recorded conversation runs in a pane, or a claude in the tab `orchestrator`, or the lone claude.
+    Alive,
+    /// The tab is there, a shell alone idles in it: its claude died.
+    Idle,
+    /// The tab is there, something else runs in it.
+    Busy,
+    /// No tab `orchestrator`.
+    Missing,
+}
+
+/// The state of a space's chat, its pane, and whether that is a lone claude
+/// still to be named (`chatStateOf`). `idle`: whether a pane's shell idles.
+fn state_of<'a>(
+    tabs: &[Tab],
+    panes: &'a [Pane],
+    all: &'a [Pane],
+    session: Option<&str>,
+    idle: impl Fn(&str) -> bool,
+) -> (State, Option<&'a Pane>, bool) {
+    if let Some(running) = session.and_then(|id| all.iter().find(|pane| pane.session.as_deref() == Some(id))) {
+        return (State::Alive, Some(running), false);
+    }
+    let Some(tab) = tabs.iter().find(|tab| tab.label == ORCHESTRATOR_TAB) else {
+        return match chat_pane_of(tabs, panes) {
+            Some(lone) => (State::Alive, Some(lone), true),
+            None => (State::Missing, None, false),
+        };
+    };
+    let own: Vec<&Pane> = panes.iter().filter(|pane| pane.tab == tab.id).collect();
+    if let Some(claude) = own.iter().find(|pane| pane.agent.is_some()) {
+        return (State::Alive, Some(claude), false);
+    }
+    if own.len() == 1 && idle(&own[0].id) {
+        return (State::Idle, Some(own[0]), false);
+    }
+    (State::Busy, own.first().copied(), false)
+}
+
+/// What the tab `orchestrator` runs (`chatCommand`): the recorded
+/// conversation, else a fresh claude in the main checkout; `--ide` where the
+/// nvim integration is on.
+fn chat_command(main: &Path, chat: Option<&(String, PathBuf)>) -> String {
+    use crate::cli::lifecycle::layout::nvim::ide_flag;
+    match chat {
+        Some((id, cwd)) => format!(
+            "cd {} && claude --resume {id}{}",
+            herdr::quote(&cwd.to_string_lossy()),
+            ide_flag(cwd)
+        ),
+        None => format!(
+            "cd {} && claude{}",
+            herdr::quote(&main.to_string_lossy()),
+            ide_flag(main)
+        ),
+    }
+}
+
+/// The click (`restoreChat` with `isClick`): the space made if it is gone, a
+/// live chat focused, a dead one resumed in its tab, a missing tab made with
+/// it running, then in front. What happened, None when herdr did nothing.
 fn restore(main: &Path, name: &str) -> Option<String> {
+    use crate::cli::lifecycle::layout::{orchestrations, tabs::keep_order};
     let label = orchestrator_label(main, name);
-    let Some(workspace) = spaces()
-        .into_iter()
-        .find(|space| space.label == label)
-        .map(|space| space.id)
-    else {
-        return Some(format!("its space {label} is gone: pnpm wt:herdr brings it back"));
+    let repo = crate::cli::lifecycle::repo::Repo {
+        main: main.to_path_buf(),
+    };
+    let workspace = match spaces().into_iter().find(|space| space.label == label) {
+        Some(space) => space.id,
+        None => orchestrations::orchestrator_space(&repo, name, false)?,
     };
     let chat = chat_of(main, name);
     let tabs = tabs_of(&workspace);
     let panes = panes_of(&workspace);
     let all = all_panes();
-    let tab = tabs.iter().find(|tab| tab.label == ORCHESTRATOR_TAB);
-    let running = chat
-        .as_ref()
-        .and_then(|(id, _)| all.iter().find(|pane| pane.session.as_deref() == Some(id)));
+    let (state, pane, is_lone) = state_of(&tabs, &panes, &all, chat.as_ref().map(|(id, _)| id.as_str()), is_idle);
     let focus = |workspace: &str, tab: &str| {
         herdr::did(&["workspace", "focus", workspace]) && herdr::did(&["tab", "focus", tab])
     };
-    if let Some(pane) = running {
-        focus(&pane.workspace, &pane.tab);
-        return Some("focused the orchestrator".into());
+    if let (true, Some(lone)) = (is_lone, pane) {
+        herdr::did(&["tab", "rename", &lone.tab, ORCHESTRATOR_TAB]);
+        record_chat(main, name, chat_of_pane(main, lone));
     }
-    let Some(tab) = tab else {
-        if let Some(lone) = chat_pane_of(&tabs, &panes) {
-            herdr::did(&["tab", "rename", &lone.tab, ORCHESTRATOR_TAB]);
-            record_chat(main, name, chat_of_pane(main, lone));
-            focus(&lone.workspace, &lone.tab);
+    match (state, pane) {
+        (State::Alive | State::Busy, None) => return None,
+        (State::Alive, Some(pane)) => {
+            let space = if pane.workspace.is_empty() {
+                &workspace
+            } else {
+                &pane.workspace
+            };
+            focus(space, &pane.tab);
             return Some("focused the orchestrator".into());
         }
-        return resume(main, &workspace, chat, true, &tabs);
-    };
-    let own: Vec<&Pane> = panes.iter().filter(|pane| pane.tab == tab.id).collect();
-    if let Some(claude) = own.iter().find(|pane| pane.agent.is_some()) {
-        focus(&workspace, &claude.tab);
-        return Some("focused the orchestrator".into());
+        (State::Busy, Some(pane)) => {
+            focus(&workspace, &pane.tab);
+            return Some(format!("focused the tab {ORCHESTRATOR_TAB}, something else runs in it"));
+        }
+        _ => {}
     }
-    if own.len() == 1 && is_idle(&own[0].id) {
-        return resume(main, &workspace, chat, false, &tabs)
-            .map(|said| said.replace(" in a new tab orchestrator", " in its tab"));
-    }
-    focus(&workspace, &tab.id);
-    Some(format!("focused the tab {ORCHESTRATOR_TAB}, something else runs in it"))
-}
-
-/// The recorded conversation resumed (a fresh claude without one): in the
-/// idle tab, or in a new tab `orchestrator`; then in front.
-fn resume(
-    main: &Path,
-    workspace: &str,
-    chat: Option<(String, PathBuf)>,
-    is_missing: bool,
-    tabs: &[Tab],
-) -> Option<String> {
     // A second claude in the same conversation would write into the same transcript.
     if let Some((id, _)) = chat.as_ref().filter(|(id, _)| is_conversation_running(id)) {
         return Some(format!("the conversation {id} runs elsewhere, outside herdr's panes"));
     }
-    let command = match &chat {
-        Some((id, cwd)) => format!("cd {} && claude --resume {id}", herdr::quote(&cwd.to_string_lossy())),
-        None => format!("cd {} && claude", herdr::quote(&main.to_string_lossy())),
-    };
-    if is_missing {
-        if !herdr::ensure_tab(workspace, ORCHESTRATOR_TAB, main, Some(&command), tabs) {
-            return None;
+    let command = chat_command(main, chat.as_ref());
+    match (state, pane) {
+        (State::Idle, Some(pane)) => {
+            if !herdr::did(&["pane", "run", &pane.id, &command]) {
+                return None;
+            }
         }
-    } else {
-        let tab = tabs.iter().find(|tab| tab.label == ORCHESTRATOR_TAB)?;
-        let pane = panes_of(workspace).into_iter().find(|pane| pane.tab == tab.id)?;
-        if !herdr::did(&["pane", "run", &pane.id, &command]) {
-            return None;
+        _ => {
+            if !herdr::ensure_tab(&workspace, ORCHESTRATOR_TAB, main, Some(&command), &tabs) {
+                return None;
+            }
+            keep_order(&workspace, &orchestrations::ORDER);
         }
     }
-    if let Some(tab) = tabs_of(workspace).into_iter().find(|tab| tab.label == ORCHESTRATOR_TAB) {
-        herdr::did(&["workspace", "focus", workspace]);
-        herdr::did(&["tab", "focus", &tab.id]);
+    if let Some(tab) = tabs_of(&workspace)
+        .into_iter()
+        .find(|tab| tab.label == ORCHESTRATOR_TAB)
+    {
+        focus(&workspace, &tab.id);
     }
     let what = match &chat {
         Some((id, _)) => format!("resumed {id}"),
         None => "started a fresh claude".into(),
     };
-    Some(format!("{what} in a new tab {ORCHESTRATOR_TAB}"))
+    Some(if state == State::Idle {
+        format!("{what} in its tab")
+    } else {
+        format!("{what} in a new tab {ORCHESTRATOR_TAB}")
+    })
 }
 
 /// A click on the chat row (`clickChat`): its answer shown for a while.
@@ -219,5 +270,45 @@ mod tests {
         assert_eq!(chat_pane_of(&tabs, &panes).map(|pane| pane.id.as_str()), Some("p2"));
         let tabs = [tab("t1", ORCHESTRATOR_TAB), tab("t2", "2")];
         assert_eq!(chat_pane_of(&tabs, &panes), None);
+    }
+
+    #[test]
+    fn tells_where_the_chat_stands_as_node_does() {
+        let idle = |_: &str| true;
+        let busy = |_: &str| false;
+        // The recorded conversation runs somewhere: alive, wherever it is.
+        let elsewhere = [pane("p9", "t9", Some("s1"))];
+        let (state, found, is_lone) = state_of(&[], &[], &elsewhere, Some("s1"), idle);
+        assert_eq!(
+            (state, found.map(|p| p.id.as_str()), is_lone),
+            (State::Alive, Some("p9"), false)
+        );
+        // No tab orchestrator: the lone claude is it, to be named; none, missing.
+        let tabs = [tab("t1", "root"), tab("t2", "2")];
+        let panes = [pane("p1", "t1", None), pane("p2", "t2", Some("s2"))];
+        let (state, found, is_lone) = state_of(&tabs, &panes, &panes, Some("s1"), idle);
+        assert_eq!(
+            (state, found.map(|p| p.id.as_str()), is_lone),
+            (State::Alive, Some("p2"), true)
+        );
+        assert_eq!(state_of(&tabs, &panes[..1], &panes, None, idle).0, State::Missing);
+        // The tab: its shell idles (its claude died) or something else runs.
+        let tabs = [tab("t1", ORCHESTRATOR_TAB)];
+        let shell = [pane("p1", "t1", None)];
+        assert_eq!(state_of(&tabs, &shell, &shell, None, idle).0, State::Idle);
+        assert_eq!(state_of(&tabs, &shell, &shell, None, busy).0, State::Busy);
+        let claude = [pane("p1", "t1", Some("s3"))];
+        assert_eq!(state_of(&tabs, &claude, &claude, None, busy).0, State::Alive);
+    }
+
+    #[test]
+    fn resumes_the_recorded_conversation_where_it_ran() {
+        let chat = ("0123abcd".to_string(), PathBuf::from("/r/it's"));
+        let command = chat_command(Path::new("/r"), Some(&chat));
+        assert!(
+            command.starts_with(r"cd '/r/it'\''s' && claude --resume 0123abcd"),
+            "{command}"
+        );
+        assert!(chat_command(Path::new("/r"), None).starts_with("cd /r && claude"));
     }
 }

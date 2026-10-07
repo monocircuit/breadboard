@@ -16,7 +16,7 @@ pub mod handover;
 mod herdr;
 pub mod layout;
 pub mod plugin;
-mod proc;
+pub mod proc;
 mod prune;
 pub mod remove;
 pub mod repo;
@@ -31,13 +31,14 @@ use args::Args;
 /// `herdr` is not taken: `breadboard herdr` is left to `pnpm herdr`, and the
 /// plugin's restore calls `wt:herdr --no-focus` (rewrite-log 2026-10-02).
 pub fn run(command: &str, words: &[String]) -> Option<ExitCode> {
-    let args = Args::new(words);
-    let done = match command {
-        "wt:remove" | "remove" => remove::command(&args),
-        "wt:prune" | "prune" => prune::command(&args),
-        "wt:herdr" => layout::command(&args),
-        "wt:orchestrate" | "orchestrate" if handover::is_handover(words) => handover::command(&args),
+    let command: fn(&Args) -> proc::Done = match command {
+        "wt:remove" | "remove" => remove::command,
+        "wt:prune" | "prune" => prune::command,
+        "wt:herdr" => layout::command,
+        "wt:orchestrate" | "orchestrate" if handover::is_handover(words) => handover::command,
         _ => return None,
     };
-    Some(proc::finish(done))
+    // Run from the command line: what it waits for is said (never in the overview's screen).
+    proc::say_waits();
+    Some(proc::finish(command(&Args::new(words))))
 }

@@ -4,6 +4,37 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-07 20:50 · overview / MERGE REQUESTS · round 1 of the rebuild loop: the merged rows' age alone, closed apart, `→ you` bold
+Checked against the spec (§11) first: merge order with lanes and joins
+(core's `graph_of`, Node's glyphs, probed with `needs`/`after` edges:
+`├─┐`, `├─┘`, lanes through bars and reasons), pipeline marks that open
+their pipeline, whole titles (#304), the bar (#294), reasons with `→ who`,
+the conflict cell and its button, the two-click merge (probed in a world:
+`click again to merge` in red in the button's own cells, the second click
+a single `PUT merge_requests/308/merge`, then `[overview] !308 merged` to
+its agent), the merged fold kept over redraws, all of it in `--once`.
+Nothing of Node's is missing; three things change:
+Chose: a merged row's status is its age alone (`6 days ago`), dim, under
+the fold's `▾ 42 merged`. Against: Node's `merged 6 days ago` on each of
+42 rows. Why: rule 4 (the fold and the title say `merged` already; git
+log and lazygit show a date column, not a word), and #304: the 7 columns
+go to the title, so at 120 columns 13 of the fixture's 42 merged titles
+fit on one line that wrapped a single orphan word (`back`, `agent`,
+`(#293)`) onto a second.
+Chose: an MR closed without a merge says `closed` (core's
+`merge_requests_of`, a 3-line change there) and the fold counts it apart:
+`▾ 41 merged · 1 closed`. Against: Node, whose rows and fold said
+`merged` for a closed MR too. Why: rule 3 deviation, logged: a closed MR
+read as merged is a wrong fact, not a wording; the title's `N merged`
+already counted only the merged.
+Chose: in what an MR lacks, `→ you` is bold, every other who stays dim.
+Against: Node's dim for all. Why: the bar (lazygit's status colours say
+at a glance which rows are yours); the words are Node's.
+Kept: the bar under every open MR with boxes, a full one too (#294's
+acceptance, rule 2); `checking for conflicts …` on each unsettled row
+(rule 1, the `…` after a space).
+Suite: content 24/24, hover 4/4, buttons 23/23 (before and after).
+
 ## 2026-10-07 20:40 · suite · the CLI clone's checks reviewed
 Kept: `lifecycle.check.mjs`, `setup.check.mjs`, the CLI checks (blocked-by
 links with and without GraphQL, GitLab down, a note on a stale issue, the

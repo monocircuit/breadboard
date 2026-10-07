@@ -56,9 +56,12 @@ pub struct Merge {
 #[derive(Debug, Default)]
 pub struct Merges {
     pub of: HashMap<i64, Merge>,
-    pending: Arc<Mutex<Vec<(PathBuf, String)>>>,
+    pending: Arc<Mutex<Vec<Pending>>>,
     seq: u64,
 }
+
+/// A line after a merge that didn't get in yet: its worktree, what it tells in words, the line.
+type Pending = (PathBuf, String, String);
 
 /// Whether `text` holds one of `codes` as a word of its own (`\b405\b`).
 fn has_code(text: &str, codes: &[&str]) -> bool {
@@ -236,7 +239,8 @@ pub fn click(app: &mut Overview, go: &Go) {
     } else {
         "merging"
     };
-    app.actor.log(Paint::Yellow, format!("{verb} !{iid} …"));
+    app.actor
+        .log_as(&format!("merge:{iid}"), Paint::Yellow, format!("{verb} !{iid} …"), None);
     let others: Vec<PathBuf> = offer
         .others
         .iter()
@@ -265,7 +269,7 @@ struct Running {
     can_mark_ready: bool,
     action: Option<(PathBuf, i64)>,
     others: Vec<PathBuf>,
-    pending: Arc<Mutex<Vec<(PathBuf, String)>>>,
+    pending: Arc<Mutex<Vec<Pending>>>,
     poster: Poster,
 }
 
@@ -277,6 +281,11 @@ impl Running {
             Ok(_) => (Phase::Merged, None),
             Err(why) => (Phase::Failed, Some(why.clone())),
         };
+        // The call that merged, word for word, as lazygit's log shows its command.
+        let call = result
+            .as_ref()
+            .ok()
+            .map(|(fresh, squash)| merge_call(iid, *squash, fresh));
         self.poster.post(move |app: &mut Overview| {
             app.actor.merges.of.insert(
                 iid,
@@ -286,23 +295,21 @@ impl Running {
                     seq: 0,
                 },
             );
+            let key = format!("merge:{iid}");
             match &error {
-                None => app.actor.log(Paint::Green, format!("merged !{iid}")),
-                Some(why) => app.actor.log(Paint::Red, format!("!{iid} not merged: {why}")),
+                None => app.actor.log_as(&key, Paint::Green, format!("merged !{iid}"), call),
+                Some(why) => app
+                    .actor
+                    .log_as(&key, Paint::Red, format!("!{iid} not merged: {why}"), None),
             }
             // GitLab now, not in half a minute: NEXT moves on, the clean-up shows.
             app.refresh_gitlab();
         });
-        if let Ok(fresh) = result {
+        if let Ok((fresh, _)) = result {
             let told = self.carry_on(&fresh);
             self.poster.post(move |app: &mut Overview| {
-                for (who, line, is_in) in told {
-                    if is_in {
-                        app.actor.log(Paint::Green, format!("told {who}: {line}"));
-                    } else {
-                        app.actor
-                            .log(Paint::Yellow, format!("{who} gets it once it can: {line}"));
-                    }
+                for (who, about, line, is_in) in told {
+                    app.actor.told(&who, &about, &line, is_in);
                 }
             });
         }
@@ -316,8 +323,8 @@ impl Running {
         })
     }
 
-    /// Steps 1–5 of `runMerge`: Ok with the MR as merged at, Err why not.
-    fn merge(&self) -> Result<Mr, String> {
+    /// Steps 1–5 of `runMerge`: Ok with the MR as merged at and its squash setting, Err why not.
+    fn merge(&self) -> Result<(Mr, bool), String> {
         let boxes = match self.number {
             Some(number) => glab::get(&self.main, &format!("projects/:fullpath/issues/{number}"))
                 .map(|issue| boxes_of(issue.get("description").and_then(Value::as_str).unwrap_or_default()))
@@ -363,7 +370,7 @@ impl Running {
             }
             self.put_merge(&fresh, squash).map_err(|error| reason_of(&error))?;
         }
-        Ok(fresh)
+        Ok((fresh, squash))
     }
 
     /// The worktree's tries fresh from its file: the overview's copy may be old.
@@ -403,36 +410,37 @@ impl Running {
         glab::write(
             &self.main,
             "PUT",
-            &format!("{}/merge", mr_endpoint(self.iid)),
-            &[
-                ("should_remove_source_branch", "true".into()),
-                ("squash", squash.to_string()),
-                ("sha", fresh.sha.clone().unwrap_or_default()),
-            ],
+            &merge_endpoint(self.iid),
+            &merge_fields(squash, fresh),
         )
         .map(|_| ())
     }
 
     /// After the merge (`carryOn`): its posted merge done, its agent told, every
     /// other open MR whose branch lacks the merge and shares files with it too.
-    /// What was typed: (feature, line, got in).
-    fn carry_on(&self, fresh: &Mr) -> Vec<(String, String, bool)> {
+    /// What was typed: (feature, in words, line, got in).
+    fn carry_on(&self, fresh: &Mr) -> Vec<(String, String, String, bool)> {
         let mut told = Vec::new();
         if let Some((file, id)) = &self.action {
             let _ = done_action(file, *id);
         }
-        let mut tell = |dir: &Path, line: String| {
+        let mut tell = |dir: &Path, about: String, line: String| {
             let is_in = herdr::deliver_to(&self.main, dir, &line);
             if !is_in {
-                self.pending
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push((dir.to_path_buf(), line.clone()));
+                self.pending.lock().unwrap_or_else(|e| e.into_inner()).push((
+                    dir.to_path_buf(),
+                    about.clone(),
+                    line.clone(),
+                ));
             }
-            told.push((breadboard_core::git::feature_of(&self.main, dir), line, is_in));
+            told.push((breadboard_core::git::feature_of(&self.main, dir), about, line, is_in));
         };
         if let Some(dir) = &self.dir {
-            tell(dir, format!("[overview] !{} merged", self.iid));
+            tell(
+                dir,
+                format!("that !{} is merged", self.iid),
+                format!("[overview] !{} merged", self.iid),
+            );
         }
         let sha = fresh.sha.clone().unwrap_or_default();
         // A branch built on the merged one has its commits already.
@@ -461,6 +469,7 @@ impl Running {
             if !shared.is_empty() {
                 tell(
                     dir,
+                    format!("to merge develop in (!{} touched its files)", self.iid),
                     format!(
                         "[overview] !{} is merged and touched your files too ({}): merge develop in (git fetch origin, git merge origin/develop)",
                         self.iid,
@@ -471,6 +480,28 @@ impl Running {
         }
         told
     }
+}
+
+fn merge_endpoint(iid: i64) -> String {
+    format!("{}/merge", mr_endpoint(iid))
+}
+
+/// The fields of the merge: the source branch deleted, the MR's squash, at the commit whose pipeline passed.
+fn merge_fields(squash: bool, fresh: &Mr) -> [(&'static str, String); 3] {
+    [
+        ("should_remove_source_branch", "true".into()),
+        ("squash", squash.to_string()),
+        ("sha", fresh.sha.clone().unwrap_or_default()),
+    ]
+}
+
+/// The merge's call as a command line, for the log.
+fn merge_call(iid: i64, squash: bool, fresh: &Mr) -> String {
+    let fields: Vec<String> = merge_fields(squash, fresh)
+        .iter()
+        .map(|(key, value)| format!(" --field {key}={value}"))
+        .collect();
+    format!("glab api --method PUT {}{}", merge_endpoint(iid), fields.concat())
 }
 
 /// The files of `mine` the merged MR touched too, sorted.
@@ -503,21 +534,21 @@ pub fn retry_lines(actor: &Actor, dirs: Vec<PathBuf>) {
         let lines = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
         let mut typed = Vec::new();
         let mut left = Vec::new();
-        for (dir, line) in lines {
+        for (dir, about, line) in lines {
             if !dirs.contains(&dir) {
                 continue;
             }
             if herdr::deliver_to(&main, &dir, &line) {
-                typed.push((breadboard_core::git::feature_of(&main, &dir), line));
+                typed.push((breadboard_core::git::feature_of(&main, &dir), about, line));
             } else {
-                left.push((dir, line));
+                left.push((dir, about, line));
             }
         }
         pending.lock().unwrap_or_else(|e| e.into_inner()).extend(left);
         (!typed.is_empty()).then(|| {
             Box::new(move |app: &mut Overview| {
-                for (who, line) in typed {
-                    app.actor.log(Paint::Green, format!("told {who}: {line}"));
+                for (who, about, line) in typed {
+                    app.actor.told(&who, &about, &line, true);
                 }
             }) as super::Effect
         })

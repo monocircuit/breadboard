@@ -35,8 +35,12 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     actions::action_block(scene, item, ctx, true)
                 });
                 // Off the block: a click on the hint does nothing.
-                if let Some(hint) = actions::key_hint(item) {
-                    look::gutter(scene, under(), under(), |scene| look::say(scene, &hint, theme::dim()));
+                let hint = actions::hint(item);
+                if !hint.is_empty() {
+                    look::gutter(scene, under(), under(), |scene| {
+                        let room = scene.width();
+                        look::whole(scene, &hint, room);
+                    });
                 }
             }
             NextBand::UpNext(item) => {

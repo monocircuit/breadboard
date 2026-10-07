@@ -14,8 +14,37 @@ pub fn is_in_herdr() -> bool {
     std::env::var("HERDR_ENV").as_deref() == Ok("1")
 }
 
+/// What answers herdr's reads in place of a call of this process: the
+/// overviews' shared reader (`breadboard serve`); its None: ask herdr here.
+pub type SharedReads = fn(&[&str]) -> Option<Option<Value>>;
+
+static SHARED: std::sync::OnceLock<SharedReads> = std::sync::OnceLock::new();
+
+/// From now on this process's reads go to `shared` first (a live overview does this; never a command that writes).
+pub fn share_reads(shared: SharedReads) {
+    let _ = SHARED.set(shared);
+}
+
+/// Whether `args` only read: lists and a pane's process. Nothing else is ever shared.
+pub fn is_read(args: &[&str]) -> bool {
+    matches!(
+        args,
+        ["workspace", "list", ..] | ["tab", "list", ..] | ["pane", "list", ..] | ["pane", "process-info", ..]
+    )
+}
+
 /// `herdr <args>` → its `result`, None if herdr is missing, old or unhappy.
 pub fn herdr(args: &[&str]) -> Option<Value> {
+    if is_read(args)
+        && let Some(answer) = SHARED.get().and_then(|shared| shared(args))
+    {
+        return answer;
+    }
+    herdr_here(args)
+}
+
+/// `herdr <args>` run by this process.
+pub fn herdr_here(args: &[&str]) -> Option<Value> {
     let output = Command::new("herdr")
         .args(args)
         .stdin(Stdio::null())

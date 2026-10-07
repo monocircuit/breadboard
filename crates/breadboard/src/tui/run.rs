@@ -9,7 +9,7 @@ use super::links::Links;
 use super::term::{self, Tty};
 use super::view::View;
 use super::{App, Flow, Input};
-use crossterm::event::{EventStream, KeyCode};
+use crossterm::event::{Event, EventStream, KeyCode};
 use futures_util::StreamExt;
 use std::io;
 use std::time::Duration;
@@ -60,7 +60,8 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
         }
         let draw_at = is_dirty.then(|| last_draw + FRAME);
         let tick_at = view.redraw_at().map(Instant::from_std);
-        let wake = [draw_at, tick_at].into_iter().flatten().min();
+        let escape_at = rejoin.escape_at().map(Instant::from_std);
+        let wake = [draw_at, tick_at, escape_at].into_iter().flatten().min();
 
         tokio::select! {
             biased;
@@ -167,6 +168,17 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                 if tick_at.is_some_and(|at| at <= Instant::now()) {
                     view.stale();
                     is_dirty = true;
+                }
+                // A lone Escape nothing followed: the Escape key, the app's.
+                if let Some(Event::Key(key)) = rejoin.take_escape() {
+                    match app.act(Input::Key(key)) {
+                        Flow::Quit => return Ok(()),
+                        Flow::Redraw => {
+                            view.acted(None);
+                            is_dirty = true;
+                        }
+                        Flow::Same => {}
+                    }
                 }
             }
         }

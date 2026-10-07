@@ -54,19 +54,24 @@ pub enum Act {
         file: String,
         line: Option<u64>,
     },
-    /// A file's changes inline under the row `at` of DIFF or DEVELOP, or closed again.
+    /// A file's changes inline under the row `at` of DIFF or DEVELOP, or closed again;
+    /// `is_whole`: all of its lines, past the first screenful.
     Hunks {
         file: String,
         at: String,
+        is_whole: bool,
     },
 }
 
-/// What folds: the removed worktrees, the queue, the merged MRs.
+/// What folds: the removed worktrees, the queue, the merged MRs; in the
+/// view of everything the open MRs and issues the pane cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
     Queued,
     Merged,
+    Mrs,
+    Issues,
 }
 
 /// How long a first click keeps the end armed.
@@ -83,6 +88,8 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
                 Fold::Queued => folds.is_queued_folded = !folds.is_queued_folded,
                 Fold::Merged => folds.is_merged_folded = !folds.is_merged_folded,
+                Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
+                Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
             }
             return Flow::Redraw;
         }
@@ -198,8 +205,8 @@ fn end(app: &mut Overview) {
             poster.post(move |app: &mut Overview| {
                 let error = actor::spawn::error_of(code, &last, "");
                 match &error {
-                    None => app.actor.log(Paint::Green, format!("ended: {last}")),
-                    Some(why) => app.actor.log(Paint::Red, format!("not ended: {why}")),
+                    None => app.actor.log_as("end", Paint::Green, format!("ended: {last}"), None),
+                    Some(why) => app.actor.log_as("end", Paint::Red, format!("not ended: {why}"), None),
                 }
                 app.actor.end = Some(Run {
                     error,
@@ -212,13 +219,15 @@ fn end(app: &mut Overview) {
     match started {
         Ok(()) => {
             app.actor.end = Some(Run::running(&log));
-            app.actor.log(
+            app.actor.log_as(
+                "end",
                 Paint::Yellow,
-                format!("ending ⇶ {name}: pnpm wt:orchestrate {name} --end"),
+                format!("ending ⇶ {name} …"),
+                Some(format!("pnpm wt:orchestrate {name} --end")),
             );
         }
         Err(why) => {
-            app.actor.log(Paint::Red, format!("not ended: {why}"));
+            app.actor.log_as("end", Paint::Red, format!("not ended: {why}"), None);
             app.actor.end = Some(Run {
                 error: Some(why),
                 ..Run::default()
@@ -254,7 +263,9 @@ fn dismiss(app: &mut Overview, id: &str) {
     } else {
         row.display.clone()
     };
-    app.actor.log(Paint::Yellow, format!("dismissing {who} …"));
+    let key = format!("dismiss:{id}");
+    app.actor
+        .log_as(&key, Paint::Yellow, format!("dismissing {who} …"), None);
     app.actor.queue(move || {
         if let Some(tab) = &row.tab {
             herdr::did(&["tab", "close", tab]);
@@ -264,11 +275,15 @@ fn dismiss(app: &mut Overview, id: &str) {
             breadboard_core::record::write_worker(&main, &name, &id, fields.as_object().cloned().unwrap_or_default());
         Some(Box::new(move |app: &mut Overview| {
             match result {
-                Ok(()) => app.actor.log(
+                Ok(()) => app.actor.log_as(
+                    &key,
                     Paint::Green,
                     format!("dismissed {who}: its tab closed, its conversation stays in /resume"),
+                    None,
                 ),
-                Err(error) => app.actor.log(Paint::Red, format!("{who} not dismissed: {error}")),
+                Err(error) => app
+                    .actor
+                    .log_as(&key, Paint::Red, format!("{who} not dismissed: {error}"), None),
             }
             app.redraw();
         }) as actor::Effect)
@@ -309,12 +324,15 @@ fn resolve(app: &mut Overview, iid: i64) {
         let who = breadboard_core::git::feature_of(&main, &tree.dir);
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
+            let about = format!("to merge develop in and resolve the conflicts of !{}", mr.iid);
             if is_sent {
-                app.actor.log(Paint::Green, format!("told {who}: {line}"));
+                app.actor.told(&who, &about, &line, true);
             } else {
-                app.actor.log(
+                app.actor.log_as(
+                    &format!("told:{who}:{line}"),
                     Paint::Red,
-                    format!("{who} didn't take the line: !{} has merge conflicts …", mr.iid),
+                    format!("{who} didn't take the line: {about}"),
+                    Some(actor::herdr::overview_line(&line)),
                 );
                 // Its note goes after a while.
                 app.actor

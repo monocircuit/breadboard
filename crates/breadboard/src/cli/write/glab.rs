@@ -13,6 +13,9 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::LazyLock;
+use std::time::Duration;
+
+use crate::cli::lifecycle::proc::{Wait, wait_within};
 
 /// What a glab call answered.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -195,6 +198,32 @@ pub fn start(dir: &Path, args: &[&str]) -> std::io::Result<Child> {
 
 pub fn finish(child: std::io::Result<Child>) -> Ran {
     Ran::of(child.and_then(Child::wait_with_output))
+}
+
+/// `glab <args>` in `dir`, given at most `limit`, `what` it asks said once it
+/// takes a while: a GitLab that accepts and never answers held wt:action
+/// change without end. Past the limit, a failure saying so.
+pub fn glab_within(dir: &Path, args: &[&str], what: &str, limit: Duration) -> Ran {
+    let wait = Wait::new(format!("GitLab ({what})"), limit);
+    match command(dir, args).spawn().and_then(|child| wait_within(child, &wait)) {
+        Ok(Some(output)) => Ran::of(Ok(output)),
+        Ok(None) => Ran {
+            stderr: format!("GitLab did not answer in {} s", limit.as_secs()),
+            ..Ran::default()
+        },
+        Err(error) => Ran::of(Err(error)),
+    }
+}
+
+/// [`view`] given at most `limit`.
+pub fn view_within(dir: &Path, what: &str, reference: &str, limit: Duration) -> Result<Option<Value>, String> {
+    let asked = format!("{what} {reference}");
+    viewed(&glab_within(
+        dir,
+        &[what, "view", reference, "-F", "json"],
+        &asked,
+        limit,
+    ))
 }
 
 /// An issue or MR as `glab issue|mr view <ref> -F json` gives it: None when

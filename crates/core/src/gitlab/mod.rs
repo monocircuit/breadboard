@@ -153,7 +153,7 @@ impl Issue {
 
 /// One branch's part of GitLab: its MR (open, else the latest), the jobs of
 /// its pipeline, its issue.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BranchRemote {
     pub mr: Option<Mr>,
     pub jobs: Vec<Job>,
@@ -162,7 +162,7 @@ pub struct BranchRemote {
 
 /// develop's last finished pipeline; its jobs only when it failed (a job
 /// failing there too is not an MR's doing).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct DevelopPipeline {
     pub id: i64,
     pub status: String,
@@ -171,7 +171,7 @@ pub struct DevelopPipeline {
 }
 
 /// What a read of an orchestration found (gitlab.mjs `readRemoteOfOrchestration`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Remote {
     /// branch → its MR, jobs and issue.
     pub of: HashMap<String, BranchRemote>,

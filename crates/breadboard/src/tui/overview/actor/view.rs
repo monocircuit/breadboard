@@ -313,6 +313,12 @@ pub fn done(page: &mut Page<Act>, ctx: &Ctx) {
                 theme::dim()
             };
             look::flow(scene, &[look::span(&did.text, text)]);
+            // What was run or typed, word for word, under it (lazygit's command log).
+            if let Some(detail) = &did.detail {
+                scene.end_line();
+                scene.pad_to(11);
+                look::flow(scene, &[look::dim(detail)]);
+            }
             scene.indent(0);
             scene.end_line();
         }

@@ -2,6 +2,8 @@
 //! lib/mouse.mjs), and the mouse reports a read cut after their escape put
 //! back together (#303).
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 /// Lines per notch of the wheel.
@@ -79,13 +81,19 @@ fn mouse_command(mouse: &MouseEvent) -> Option<Command> {
 /// Mouse reports a read cut right after their escape, put back together.
 /// crossterm reads a lone `ESC` at the end of a read as the Escape key and
 /// the rest of the report as loose characters, so the click was lost (#303).
-/// An Escape is held until the next input says what it was; the views have
-/// no use for a lone Escape (as in the Node overview).
+/// An Escape is held until the next input says what it was, or until
+/// `ESCAPE_WAIT` passed with nothing after it: then it was the Escape key
+/// (the worktree view closes a file's hunks with it).
 #[derive(Default)]
 pub struct Rejoin {
     held: Vec<Event>,
     text: String,
+    held_at: Option<Instant>,
 }
+
+/// How long a lone Escape waits for the rest of a cut report: a cut read's
+/// rest comes within a millisecond, a person's next key not within this.
+pub const ESCAPE_WAIT: Duration = Duration::from_millis(40);
 
 impl Rejoin {
     /// The events `event` completes: none while a report may still be coming.
@@ -93,6 +101,7 @@ impl Rejoin {
         if self.held.is_empty() {
             if is_escape(&event) {
                 self.held.push(event);
+                self.held_at = Some(Instant::now());
                 return vec![];
             }
             return vec![event];
@@ -119,7 +128,22 @@ impl Rejoin {
         }
         // Not a report: everything as it came.
         self.text.clear();
+        self.held_at = None;
         std::mem::take(&mut self.held)
+    }
+
+    /// When a held lone Escape is the Escape key, if one is held.
+    pub fn escape_at(&self) -> Option<Instant> {
+        (self.held.len() == 1).then_some(self.held_at? + ESCAPE_WAIT)
+    }
+
+    /// The lone Escape, once nothing came after it in `ESCAPE_WAIT`.
+    pub fn take_escape(&mut self) -> Option<Event> {
+        if self.escape_at()? > Instant::now() {
+            return None;
+        }
+        self.held_at = None;
+        self.held.pop()
     }
 }
 
@@ -273,6 +297,21 @@ mod tests {
         );
         // And after that, keys pass straight through.
         assert_eq!(rejoin.feed(key(KeyCode::Char('j'))), [key(KeyCode::Char('j'))]);
+    }
+
+    #[test]
+    fn a_lone_escape_is_the_escape_key_once_nothing_follows() {
+        let mut rejoin = Rejoin::default();
+        assert!(rejoin.feed(key(KeyCode::Esc)).is_empty());
+        assert!(rejoin.escape_at().is_some());
+        assert_eq!(rejoin.take_escape(), None, "not before its wait");
+        std::thread::sleep(ESCAPE_WAIT);
+        assert_eq!(rejoin.take_escape(), Some(key(KeyCode::Esc)));
+        assert_eq!(rejoin.escape_at(), None);
+        // A report begun after it waits for its rest.
+        rejoin.feed(key(KeyCode::Esc));
+        rejoin.feed(key(KeyCode::Char('[')));
+        assert_eq!(rejoin.escape_at(), None);
     }
 
     #[test]

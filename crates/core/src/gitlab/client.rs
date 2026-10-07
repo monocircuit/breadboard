@@ -54,7 +54,7 @@ pub fn remote_of(url: &str) -> Option<(String, String)> {
 }
 
 /// GitLab's word on the minute of this user, all its clients together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Rate {
     pub limit: u64,
     pub observed: u64,

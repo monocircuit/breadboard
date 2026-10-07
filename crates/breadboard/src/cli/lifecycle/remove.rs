@@ -10,9 +10,10 @@ use super::gitlab;
 use super::herdr;
 use super::layout::{orchestrations::prune_orchestrators, release_space};
 use super::plugin;
-use super::proc::{Done, Fail, done, exe, fail, git, run_inherit, step, text};
+use super::proc::{Done, Fail, Wait, done, exe, fail, git, output_within, run_inherit, step, text, wait_within};
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
+use crate::cli::typo::nearest;
 use breadboard_core::git::{is_inside, own_commits};
 use breadboard_core::json::str_of;
 use breadboard_core::record::{self, origin_of};
@@ -78,6 +79,28 @@ pub fn feature_given(main: &Path, given: &str) -> String {
         .to_string()
 }
 
+/// The refusal of a `feature` that is no worktree: the one likely meant
+/// (`296` → `296-overview-hover-…`, a typo), else every worktree. Named,
+/// never taken: a removal goes only by the name it was given.
+fn not_a_worktree(dir: &str, feature: &str, names: &[String]) -> String {
+    let all: Vec<&str> = names.iter().map(String::as_str).collect();
+    let numbered = format!("{feature}-");
+    let mut by_number = all.iter().filter(|name| name.starts_with(&numbered));
+    let meant = by_number
+        .next()
+        .filter(|_| by_number.next().is_none())
+        .copied()
+        .or_else(|| nearest(feature, &all));
+    match meant {
+        Some(name) => format!("{dir} is not a worktree: did you mean {name}? (pnpm wt:remove {name})"),
+        None if all.is_empty() => format!("{dir} is not a worktree, and there is none (pnpm wt:list)"),
+        None => format!(
+            "{dir} is not a worktree (pnpm wt:list); the worktrees: {}",
+            all.join(", ")
+        ),
+    }
+}
+
 /// Whether the claim of `branch` on origin can go with its worktree (#272):
 /// nothing on it develop lacks and no open MR builds on it; the reason it goes.
 pub fn empty_claim(is_on_origin: bool, has_own: bool, open_mrs: Option<usize>) -> Option<&'static str> {
@@ -94,15 +117,38 @@ fn remove_dir(dir: &Path) {
     }
 }
 
+/// How long origin may take for a fetch or a push before the command goes on without it.
+const ORIGIN_LIMIT: Duration = Duration::from_secs(60);
+
+/// `git fetch --prune`, said while it waits for origin. One that does not
+/// answer leaves the refs of the last fetch, which only keep more: a develop
+/// that lacks a merge refuses its branch, a branch still listed stays.
+pub fn fetch(repo: &Repo) {
+    let out = output_within(
+        "git",
+        &["fetch", "--prune"],
+        &repo.main,
+        &Wait::new("origin (git fetch --prune)", ORIGIN_LIMIT),
+    );
+    if out.stderr.starts_with("timeout") {
+        step(&format!(
+            "origin did not answer git fetch in {} s: develop and the branches as of the last fetch",
+            ORIGIN_LIMIT.as_secs()
+        ));
+    }
+}
+
 /// Every MR of `branch`, None when GitLab does not answer: one read for
 /// both questions of a removal, an open MR on its claim and when it was
 /// merged (Node asked twice, #305).
-fn mrs_of(repo: &Repo, branch: &str) -> Option<Vec<Value>> {
+fn mrs_of(repo: &Repo, branch: &str, limit: Duration) -> Option<Vec<Value>> {
     let endpoint = format!(
         "projects/:fullpath/merge_requests?state=all&per_page=100&source_branch={}",
         gitlab::encode(branch)
     );
-    gitlab::api(&repo.main, &endpoint)?.as_array().cloned()
+    gitlab::api(&repo.main, &endpoint, &format!("the MRs of {branch}"), limit)?
+        .as_array()
+        .cloned()
 }
 
 /// The uncommitted files a refusal lists.
@@ -132,7 +178,9 @@ fn not_in_develop(branch: &str, own: usize, mrs: Option<&[Value]>) -> String {
         (Some(_), None, None) => {
             format!("{branch} has {commits} not in develop and no MR. pnpm wt:mr, {keep}")
         }
-        (None, ..) => format!("{branch} has {commits} not in develop. Merge its MR first, {keep}"),
+        (None, ..) => format!(
+            "{branch} has {commits} not in develop (GitLab did not answer which MR it has). Merge its MR first, {keep}"
+        ),
     }
 }
 
@@ -240,6 +288,9 @@ pub struct Rewrite {
     child: std::io::Result<Child>,
 }
 
+/// How long a changelog's rewrite may take: it asks GitLab per issue.
+const REWRITE_LIMIT: Duration = Duration::from_secs(90);
+
 impl Rewrite {
     /// Starts the rewrite of the changelog of `name`.
     pub fn start(repo: &Repo, name: &str) -> Rewrite {
@@ -265,8 +316,14 @@ impl Rewrite {
     /// from GitLab for them: the changelog before is put back (#306).
     pub fn wait(self) {
         let name = &self.name;
-        let reason = match self.child.and_then(Child::wait_with_output) {
-            Ok(done) if done.status.success() => {
+        let wait = Wait::new(
+            format!("the changelog of {name} (GitLab, an issue at a time)"),
+            REWRITE_LIMIT,
+        );
+        let reason = match self.child.and_then(|child| wait_within(child, &wait)) {
+            // Killed before its atomic write: the changelog is as it was.
+            Ok(None) => format!("GitLab did not answer in {} s", REWRITE_LIMIT.as_secs()),
+            Ok(Some(done)) if done.status.success() => {
                 let Some(before) = &self.before else {
                     return;
                 };
@@ -282,7 +339,7 @@ impl Rewrite {
                 }
                 UNANSWERED.to_string()
             }
-            Ok(done) => String::from_utf8_lossy(&done.stderr)
+            Ok(Some(done)) => String::from_utf8_lossy(&done.stderr)
                 .lines()
                 .find_map(|line| line.strip_prefix("✗ "))
                 .unwrap_or("it failed")
@@ -302,14 +359,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     let trees = repo.trees();
     let Some(worktree) = trees.iter().find(|tree| tree.dir == dir).cloned() else {
         let names: Vec<String> = trees.iter().map(|tree| repo.feature_of(&tree.dir)).collect();
-        return fail(format!(
-            "{dir_text} is not a worktree (pnpm wt:list); the worktrees: {}",
-            if names.is_empty() {
-                "none".into()
-            } else {
-                names.join(", ")
-            }
-        ));
+        return fail(not_a_worktree(&dir_text, feature, &names));
     };
     if std::env::current_dir().is_ok_and(|here| is_inside(&here, &dir)) {
         return fail(format!("run it from outside {dir_text}"));
@@ -358,12 +408,17 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     let mut is_merged = false;
     if let Some(branch) = &branch {
         if !options.is_fetched {
-            git(&repo.main, &["fetch", "--prune"], None);
+            fetch(repo);
         }
         let own = own_commits(&dir, branch);
         is_merged = own == 0;
         if !is_merged && !options.is_keeping_branch {
-            return fail(not_in_develop(branch, own, mrs_of(repo, branch).as_deref()));
+            // GitLab only names its MR here: not waited for as long.
+            return fail(not_in_develop(
+                branch,
+                own,
+                mrs_of(repo, branch, gitlab::NAMING).as_deref(),
+            ));
         }
     }
 
@@ -415,10 +470,31 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         let remote = format!("refs/remotes/origin/{branch}");
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;
         if is_on_origin && !has_own_commits(&remote, &repo.main) {
-            let open_mrs = mrs.get_or_init(|| mrs_of(repo, branch)).as_deref().map(open_count);
+            let open_mrs = mrs
+                .get_or_init(|| mrs_of(repo, branch, gitlab::LIMIT))
+                .as_deref()
+                .map(open_count);
             if let Some(claim) = empty_claim(true, false, open_mrs) {
                 step(&format!("delete {branch} on origin ({claim})"));
-                run_inherit("git", &["push", "--quiet", "origin", "--delete", branch], &repo.main);
+                let wait = Wait::new(format!("origin (git push --delete {branch})"), ORIGIN_LIMIT);
+                let pushed = output_within(
+                    "git",
+                    &["push", "--quiet", "origin", "--delete", branch],
+                    &repo.main,
+                    &wait,
+                );
+                if !pushed.is_ok {
+                    // Not the removal's point: said, and the way to do it by hand.
+                    let why = pushed
+                        .stderr
+                        .lines()
+                        .rfind(|line| !line.trim().is_empty())
+                        .unwrap_or("it failed");
+                    step(&format!(
+                        "kept {branch} on origin: {}; by hand: git push origin --delete {branch}",
+                        why.trim()
+                    ));
+                }
             } else if open_mrs.is_none() {
                 // Not deleted blind: an open MR may build on it.
                 step(&format!(
@@ -430,7 +506,9 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     // The overview of the orchestration lists it under "done and removed", with the times.
     if let (Some(origin), Some(branch)) = (&origin, &branch) {
         let merged_at = if is_merged {
-            mrs.get_or_init(|| mrs_of(repo, branch)).as_deref().and_then(merged_at)
+            mrs.get_or_init(|| mrs_of(repo, branch, gitlab::LIMIT))
+                .as_deref()
+                .and_then(merged_at)
         } else {
             None
         };
@@ -566,8 +644,26 @@ mod tests {
         assert!(not_in_develop(b, 1, Some(&[])).contains("and no MR. pnpm wt:mr"));
         assert!(
             not_in_develop(b, 3, None).ends_with(
-                "3 commits that are not in develop. Merge its MR first, or keep the branch with --keep-branch"
+                "3 commits that are not in develop (GitLab did not answer which MR it has). Merge its MR first, or keep the branch with --keep-branch"
             )
+        );
+    }
+
+    #[test]
+    fn names_the_worktree_meant_never_takes_it() {
+        let names = ["296-overview-hover".to_string(), "303-overview-buttons".to_string()];
+        assert_eq!(
+            not_a_worktree("/r/platform-296", "296", &names),
+            "/r/platform-296 is not a worktree: did you mean 296-overview-hover? (pnpm wt:remove 296-overview-hover)"
+        );
+        assert!(not_a_worktree("/r/p", "303-overview-butons", &names).contains("did you mean 303-overview-buttons?"));
+        assert_eq!(
+            not_a_worktree("/r/platform-9", "9", &names),
+            "/r/platform-9 is not a worktree (pnpm wt:list); the worktrees: 296-overview-hover, 303-overview-buttons"
+        );
+        assert_eq!(
+            not_a_worktree("/r/platform-9", "9", &[]),
+            "/r/platform-9 is not a worktree, and there is none (pnpm wt:list)"
         );
     }
 

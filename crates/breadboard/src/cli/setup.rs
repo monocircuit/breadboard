@@ -137,10 +137,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:orchestrate" => orchestrate::command(&args),
         "wt:stack" => stack::wt_stack(),
         _ if command.starts_with("stack:") => stack::control(&command["stack:".len()..], &args),
-        "wt:check" => {
-            heal_plugin();
-            check::command()
-        }
+        "wt:check" => check::command(),
         "changelog" => changelog::overall_command(&args),
         _ if command.starts_with("changelog:") => fragments::command(&command["changelog:".len()..], &args),
         "commands" => commands::command(args.has("--all")),

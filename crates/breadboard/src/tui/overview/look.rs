@@ -191,16 +191,14 @@ pub fn say<A: Clone>(scene: &mut Scene<A>, text: &str, style: Style) {
     }
 }
 
-/// Facts parted by a dim ` · `, each whole on a line when it fits one
-/// (`untested: 1 commit` never splits): the separator ends the line before a break.
-pub fn facts<A: Clone>(scene: &mut Scene<A>, facts: &[Fact]) {
-    let parts: Vec<Vec<Span<'static>>> = facts
+/// The facts that say something, each as its spans: the parts of `whole`,
+/// each whole on a line when it fits one (`untested: 1 commit` never splits).
+pub fn parts(facts: &[Fact]) -> Vec<Vec<Span<'static>>> {
+    facts
         .iter()
         .filter(|fact| !model::text_of(fact).trim().is_empty())
         .map(|fact| spans(fact))
-        .collect();
-    let room = scene.width();
-    whole(scene, &parts, room);
+        .collect()
 }
 
 /// Parts parted by a dim ` · `, each whole on a line when `room` holds it,
@@ -330,14 +328,12 @@ mod tests {
     #[test]
     fn facts_stay_whole_with_the_separator_at_the_end() {
         let mut scene = Scene::<u8>::new(20);
-        facts(
-            &mut scene,
-            &[
-                vec![model::Span::plain("#305"), model::Span::plain(" open")],
-                vec![model::Span::plain("untested: 1 commit")],
-                vec![model::Span::plain("waits for !316, !314, !318")],
-            ],
-        );
+        let facts = parts(&[
+            vec![model::Span::plain("#305"), model::Span::plain(" open")],
+            vec![model::Span::plain("untested: 1 commit")],
+            vec![model::Span::plain("waits for !316, !314, !318")],
+        ]);
+        whole(&mut scene, &facts, 20);
         scene.finish();
         // A fact wider than a line wraps at its words.
         assert_eq!(

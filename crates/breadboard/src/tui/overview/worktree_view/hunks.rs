@@ -13,7 +13,8 @@ use ratatui::text::Span;
 use std::cell::RefCell;
 use std::path::Path;
 
-/// How many lines of a file's hunks show before `… N more lines`.
+/// How many lines of a file's hunks show before `… N more lines`, a click
+/// on which shows them all.
 pub const LINES: usize = 30;
 /// Where the hunks' lines start: under a file's letter.
 const AT: u16 = 2;
@@ -23,6 +24,8 @@ const AT: u16 = 2;
 pub struct Shown {
     pub file: String,
     pub at: String,
+    /// All of its lines, not only the first LINES.
+    pub is_whole: bool,
     /// The file's counts it was read at, and what it read.
     read: RefCell<Option<(Key, Read)>>,
 }
@@ -59,6 +62,7 @@ impl Shown {
         Self {
             file,
             at,
+            is_whole: false,
             read: RefCell::new(None),
         }
     }
@@ -157,8 +161,9 @@ pub fn parse(diff: &str) -> Vec<Line> {
 }
 
 /// The hunks of `shown` under the row that opened them: a dim line with the
-/// file's path, then each line of the diff as a block that opens nvim at it,
-/// a line too long for the pane wrapping under its text.
+/// file's path, then each line of the diff as a block that opens nvim at it
+/// (a file deleted here has none to open), a line too long for the pane
+/// wrapping under its text.
 pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untracked: bool) {
     let file = &shown.file;
     let open_at = |line: u64| Act::OpenFile {
@@ -169,6 +174,12 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
     let close = Act::Hunks {
         file: file.clone(),
         at: shown.at.clone(),
+        is_whole: false,
+    };
+    let whole = Act::Hunks {
+        file: file.clone(),
+        at: shown.at.clone(),
+        is_whole: true,
     };
     let lines = match shown.read(dir, key, is_untracked) {
         Read::Lines(lines) => lines,
@@ -182,15 +193,22 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
         .unwrap_or(1)
         .max(3) as u16;
     let text_at = AT + gutter + 3;
+    let is_gone = !dir.join(file).is_file();
     scene.block(close, |scene| {
         scene.pad_to(AT);
         scene.indent(AT);
         scene.atom_gap(vec![look::dim(file)], 0);
-        look::say(scene, "· a line: nvim there · Esc closes", theme::dim());
+        let hint = if is_gone {
+            "· deleted here · Esc closes"
+        } else {
+            "· a line: nvim there · Esc closes"
+        };
+        look::say(scene, hint, theme::dim());
         scene.indent(0);
     });
-    for line in lines.iter().take(LINES) {
-        scene.block(open_at(line.at), |scene| {
+    let shown_lines = if shown.is_whole { lines.len() } else { LINES };
+    for line in lines.iter().take(shown_lines) {
+        let draw = |scene: &mut Scene<Act>| {
             scene.pad_to(AT);
             if line.kind == Kind::Head {
                 scene.indent(AT + 2);
@@ -218,14 +236,20 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
             scene.indent(text_at);
             code(scene, &line.text, style);
             scene.indent(0);
-        });
+        };
+        if is_gone {
+            draw(scene);
+            scene.end_line();
+        } else {
+            scene.block(open_at(line.at), draw);
+        }
     }
-    if let Some(next) = lines.get(LINES) {
-        let more = lines.len() - LINES;
-        scene.block(open_at(next.at), |scene| {
+    if lines.len() > shown_lines {
+        let more = lines.len() - shown_lines;
+        scene.block(whole, |scene| {
             scene.indent(AT);
             let rows = if more == 1 { "line" } else { "lines" };
-            scene.text(&format!("… {more} more {rows}, click: nvim there"), theme::dim());
+            scene.text(&format!("… {more} more {rows}, click: all of them"), theme::dim());
             scene.indent(0);
         });
     }
@@ -317,8 +341,11 @@ mod tests {
             at: 4,
         });
         *shown.read.borrow_mut() = Some(((1, 1, false), Read::Lines(lines)));
+        let dir = std::env::temp_dir().join(format!("breadboard-hunks-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.ts"), "one\nzwei\nthree\n").unwrap();
         let mut scene = Scene::new(40);
-        draw(&mut scene, &shown, Path::new("/w"), (1, 1, false), false);
+        draw(&mut scene, &shown, &dir, (1, 1, false), false);
         scene.finish();
         assert_eq!(
             text(&scene),
@@ -344,7 +371,7 @@ mod tests {
         };
         let open = |line| {
             Some(Act::OpenFile {
-                dir: "/w".into(),
+                dir: dir.clone(),
                 file: "src/a.ts".into(),
                 line: Some(line),
             })
@@ -355,8 +382,21 @@ mod tests {
             act_at(0),
             Some(Act::Hunks {
                 file: "src/a.ts".into(),
-                at: "row".into()
+                at: "row".into(),
+                is_whole: false,
             })
+        );
+        // Deleted here: nothing to open in nvim, the header says so.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let mut scene = Scene::new(60);
+        draw(&mut scene, &shown, &dir, (1, 1, false), false);
+        scene.finish();
+        assert_eq!(text(&scene)[0], "  src/a.ts · deleted here · Esc closes");
+        assert!(
+            !scene
+                .regions
+                .iter()
+                .any(|region| matches!(region.action(), Act::OpenFile { .. }))
         );
     }
 
@@ -374,6 +414,30 @@ mod tests {
         let mut scene = Scene::new(60);
         draw(&mut scene, &shown, Path::new("/w"), (0, 0, true), true);
         scene.finish();
-        assert_eq!(text(&scene).last().unwrap(), "  … 5 more lines, click: nvim there");
+        assert_eq!(text(&scene).last().unwrap(), "  … 5 more lines, click: all of them");
+        let more = scene.lines.len() as u16 - 1;
+        let act = scene
+            .regions
+            .iter()
+            .rev()
+            .find(|region| region.contains(4, more) && matches!(region.target, Target::Block(_)))
+            .map(|region| region.action().clone());
+        assert_eq!(
+            act,
+            Some(Act::Hunks {
+                file: "a".into(),
+                at: "row".into(),
+                is_whole: true
+            })
+        );
+        // Whole: every line, no count.
+        let mut whole = Shown::new("a".into(), "row".into());
+        whole.is_whole = true;
+        *whole.read.borrow_mut() = shown.read.borrow().clone();
+        let mut scene = Scene::new(60);
+        draw(&mut scene, &whole, Path::new("/w"), (0, 0, true), true);
+        scene.finish();
+        assert_eq!(text(&scene).len(), 1 + LINES + 5);
+        assert!(!text(&scene).last().unwrap().contains("more"));
     }
 }

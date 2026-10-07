@@ -53,7 +53,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Migrate(dir) => acts::migrate(state, &dir),
         Act::Storybook(_) => acts::start_storybook(state, model, &main),
         Act::OpenFile { file, line, .. } => acts::open_file(state, model, &main, &file, line),
-        Act::Hunks { file, at } => acts::toggle_hunks(state, file, at),
+        Act::Hunks { file, at, is_whole } => acts::toggle_hunks(state, file, at, is_whole),
         _ => Flow::Same,
     }
 }

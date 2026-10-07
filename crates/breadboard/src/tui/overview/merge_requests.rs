@@ -28,6 +28,8 @@ const MIN_BAR: u16 = 8;
 /// The status of an open MR nothing holds up, and its button.
 const READY: &str = "ready to merge";
 const MERGE: &str = "merge";
+/// Core's status of an MR closed without a merge.
+const CLOSED: &str = "closed";
 /// The button once a first click armed it: as wide as `ready to merge` and its
 /// button, so nothing on the row moves (merge.mjs `mergeText`'s armed words).
 const ARMED: &str = "click again to merge";
@@ -125,7 +127,7 @@ fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
         (false, false) => " · click to fold",
     };
     let mark = if is_folded { "▸" } else { "▾" };
-    let fold = format!("{mark} {} merged{hint}", mrs.merged.len());
+    let fold = format!("{mark} {}{hint}", done_counts(mrs));
     if ctx.is_once {
         scene.end_line();
         look::say(scene, &fold, theme::dim());
@@ -144,17 +146,40 @@ fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
     }
 }
 
+/// The fold's words: `42 merged`, `41 merged · 1 closed` (closed without a
+/// merge, core's `closed`): a closed MR is never counted as merged.
+fn done_counts(mrs: &MergeRequests) -> String {
+    let rows = mrs.merged.iter().filter_map(|row| row.mr.as_ref());
+    let closed = rows.filter(|mr| is_closed(mr)).count();
+    let merged = mrs.merged.len() - closed;
+    match (merged, closed) {
+        (_, 0) => format!("{merged} merged"),
+        (0, _) => format!("{closed} closed"),
+        _ => format!("{merged} merged · {closed} closed"),
+    }
+}
+
+/// Closed without a merge.
+fn is_closed(mr: &MrFacts) -> bool {
+    mr.status.as_ref().is_some_and(|status| status.text == CLOSED)
+}
+
 /// The merged, the last merged first (lazygit's and git log's order): what
-/// just went in stands right under the fold. The closed (no merge time) after.
+/// just went in stands right under the fold. Those without a merge time
+/// (the closed, a merge GitLab gave no time for) after.
 fn newest_first(mrs: &MergeRequests) -> impl Iterator<Item = &MrFacts> {
     let rows = || mrs.merged.iter().filter_map(|row| row.mr.as_ref());
-    let is_closed = |mr: &&MrFacts| mr.status.as_ref().is_none_or(|status| status.text == "merged");
+    let is_untimed = |mr: &&MrFacts| {
+        mr.status
+            .as_ref()
+            .is_none_or(|status| status.text == "merged" || status.text == CLOSED)
+    };
     rows()
-        .filter(|mr| !is_closed(mr))
+        .filter(|mr| !is_untimed(mr))
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .chain(rows().filter(is_closed))
+        .chain(rows().filter(is_untimed))
 }
 
 /// A click on an MR's row: its page, in the tab group of its worktree.
@@ -277,6 +302,12 @@ fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static>> {
     let Some(status) = mr.status.as_ref() else {
         return vec![];
     };
+    if mr.is_merged {
+        // Under `▾ 42 merged` its age alone, as git log's dates: `merged`
+        // on each row said the fold's word again and cost the title 7 columns.
+        let text = status.text.strip_prefix("merged ").unwrap_or(&status.text);
+        return vec![look::dim(text)];
+    }
     let mut spans = look::spans(std::slice::from_ref(status));
     if !is_ready(mr) {
         return spans;
@@ -627,10 +658,15 @@ fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
             Some(head) => format!("{head}\u{a0}…"),
             None => reason.text.clone(),
         };
-        parts.push(glue(vec![
-            look::span(&text, theme::tone(Tone::Yellow)),
-            look::dim(format!("\u{a0}→\u{a0}{}", reason.who.replace(' ', "\u{a0}"))),
-        ]));
+        // What waits for you stands out of what others do (lazygit's status
+        // colours): `→ you` bold, every other who dim.
+        let who = format!("\u{a0}→\u{a0}{}", reason.who.replace(' ', "\u{a0}"));
+        let who = if reason.who == "you" {
+            look::bold(who)
+        } else {
+            look::dim(who)
+        };
+        parts.push(glue(vec![look::span(&text, theme::tone(Tone::Yellow)), who]));
     }
     parts
 }
@@ -854,6 +890,42 @@ mod tests {
     }
 
     #[test]
+    fn the_fold_counts_the_closed_apart() {
+        let done = |iid: i64, status: &str| MrRow {
+            number: Some(iid),
+            graph: String::new(),
+            below: String::new(),
+            mr: Some(MrFacts {
+                iid,
+                is_merged: true,
+                ..facts("x", Some(breadboard_core::model::Span::dim(status)))
+            }),
+        };
+        let mut mrs = MergeRequests {
+            merged: vec![done(1, "merged 3 h ago"), done(2, "closed")],
+            ..Default::default()
+        };
+        assert_eq!(done_counts(&mrs), "1 merged · 1 closed");
+        mrs.merged.remove(1);
+        assert_eq!(done_counts(&mrs), "1 merged");
+        // A closed row says so; a merged one its age alone.
+        let closed = done(2, "closed");
+        assert_eq!(text(&status_of(closed.mr.as_ref().unwrap(), None)), "closed");
+        assert_eq!(text(&status_of(mrs.merged[0].mr.as_ref().unwrap(), None)), "3 h ago");
+    }
+
+    #[test]
+    fn what_waits_for_you_stands_out() {
+        let parts = reasons_of(
+            &[reason("try #2 broken", "you"), reason("pipeline pending", "GitLab")],
+            80,
+        );
+        let who = |part: &Vec<Span<'static>>| part.last().unwrap().style;
+        assert!(who(&parts[0]).add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(who(&parts[1]).add_modifier.contains(ratatui::style::Modifier::DIM));
+    }
+
+    #[test]
     fn a_title_says_its_type_quieter() {
         let spans = title_spans("feat(breadboard): a bar", false);
         assert_eq!(text(&spans), "feat(breadboard): a bar");
@@ -948,12 +1020,12 @@ mod tests {
         head(&mut scene, mrs.merged[0].mr.as_ref().unwrap(), &columns, None);
         scene.finish();
         let lines = lines(&scene);
-        // Its pipeline as an open one's, `merged <ago>` dim at the right (§11.3).
+        // Its pipeline as an open one's, its age dim at the right (§11.3), `merged` said by the fold.
         assert!(
-            lines[0].starts_with("!311  ✓ passed  fix(breadboard): the orchestrator"),
+            lines[0].starts_with("!311  ✓ passed  fix(breadboard): the orchestrator no"),
             "{lines:?}"
         );
-        assert!(lines[0].ends_with("  merged 25 h ago"), "{lines:?}");
+        assert!(lines[0].ends_with("  25 h ago"), "{lines:?}");
         // The rest of the title runs under the status's column too: two lines, not three.
         assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(lines.len() > 1 && lines[1].starts_with(&" ".repeat(columns.title_at() as usize)));
@@ -962,7 +1034,7 @@ mod tests {
             .iter()
             .map(|line| {
                 line.trim_end()
-                    .trim_end_matches("merged 25 h ago")
+                    .trim_end_matches("25 h ago")
                     .trim_start_matches("!311  ✓ passed")
             })
             .flat_map(str::split_whitespace)

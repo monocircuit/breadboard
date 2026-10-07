@@ -189,7 +189,10 @@ pub fn command(args: &Args) -> ExitCode {
         && wanted.is_empty()
         && is_valid
     {
-        crate::cli::setup::heal_plugin();
+        // A dry run writes nothing, to herdr neither (the plugin's link).
+        if !is_dry {
+            crate::cli::setup::heal_plugin();
+        }
         return retitle(name.as_deref().unwrap_or_default(), title, is_dry);
     }
     if !is_valid {
@@ -207,7 +210,6 @@ pub fn command(args: &Args) -> ExitCode {
     let given = brief_file
         .as_ref()
         .map(|file| fs::read_to_string(file).unwrap_or_else(|_| fail(&format!("{file} does not exist"))));
-    crate::cli::setup::heal_plugin();
     let main = repo::main_dir();
     let found = record::record_of(&main, &name);
     let peer = args
@@ -218,6 +220,9 @@ pub fn command(args: &Args) -> ExitCode {
         .map(|(values, _)| parse_after(values).unwrap_or_else(|error| fail(&error)));
     if after.is_some() && !args.has("--to") && !args.has("--queue") {
         fail("--after needs --queue (the issues wait in the queue for the MRs) or --to (a handover announced)");
+    }
+    if !is_dry {
+        crate::cli::setup::heal_plugin();
     }
 
     let mut plan: Vec<Item> = wanted.iter().map(|arg| read_or_fail(arg)).collect();
