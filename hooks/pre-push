@@ -1,0 +1,18 @@
+#!/bin/sh
+# monocircuit push guard (#184), installed by pnpm wt:new and wt:mr.
+# The guard of the pushing branch: its own binary where it is built, the Node
+# hook of a branch from before the rewrite (#314), else the main checkout's
+# binary. With none of them the push is refused: a guard that is off says so.
+top="$(git rev-parse --show-toplevel)"
+own="$top/packages/breadboard/target/release/breadboard"
+[ -x "$own" ] && exec "$own" hook pre-push "$@"
+for package in breadboard workflow; do
+  hook="$top/packages/$package/src/git-hooks/pre-push.mjs"
+  [ -f "$hook" ] && exec node "$hook" "$@"
+done
+main="$(git rev-parse --path-format=absolute --git-common-dir)/.."
+shared="$main/packages/breadboard/target/release/breadboard"
+[ -x "$shared" ] && exec "$shared" hook pre-push "$@"
+echo "✗ push refused: no push guard to run (#184, #298): breadboard isn't built here or in the main checkout.
+  Run pnpm build:rs in packages/breadboard of the main checkout, then push again." >&2
+exit 1

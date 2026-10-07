@@ -6,7 +6,7 @@
 //! until breadboard-core offers it (herdr, GitLab, local time).
 
 mod browser;
-mod changelog;
+pub(in crate::cli) mod changelog;
 mod check;
 mod commands;
 mod conversations;
@@ -15,7 +15,6 @@ mod gitlab;
 mod herdr;
 mod hook;
 mod new;
-mod nvim;
 mod orchestrate;
 mod proc;
 mod repo;
@@ -23,6 +22,7 @@ mod stack;
 mod sweep;
 mod view;
 
+pub(super) use proc::PLUGIN_CHECKED;
 use proc::{Args, Shape, outln, refuse_misuse, wants_help};
 use std::process::ExitCode;
 

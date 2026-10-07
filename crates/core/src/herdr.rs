@@ -162,6 +162,11 @@ pub fn panes_of(workspace: &str) -> Vec<Pane> {
     panes_in(herdr(&["pane", "list", "--workspace", workspace]))
 }
 
+/// `panes_of` asked of herdr by this process, never a shared answer: the read a write into a pane follows.
+pub fn panes_of_now(workspace: &str) -> Vec<Pane> {
+    panes_in(herdr_here(&["pane", "list", "--workspace", workspace]))
+}
+
 /// Every pane of every space, none outside herdr.
 pub fn all_panes() -> Vec<Pane> {
     if !is_in_herdr() {
@@ -203,7 +208,16 @@ pub fn agents() -> HashMap<String, Agent> {
 
 /// Whether the shell of a pane has the terminal to itself: nothing runs in it (tabs.mjs `isIdle`).
 pub fn is_idle(pane: &str) -> bool {
-    let Some(info) = herdr(&["pane", "process-info", "--pane", pane]) else {
+    is_idle_in(herdr(&["pane", "process-info", "--pane", pane]))
+}
+
+/// `is_idle` asked of herdr by this process, never a shared answer: the read a write into the pane follows.
+pub fn is_idle_now(pane: &str) -> bool {
+    is_idle_in(herdr_here(&["pane", "process-info", "--pane", pane]))
+}
+
+fn is_idle_in(info: Option<Value>) -> bool {
+    let Some(info) = info else {
         return false;
     };
     let info = info.get("process_info").cloned().unwrap_or(Value::Null);

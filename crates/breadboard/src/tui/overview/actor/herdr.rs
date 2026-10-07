@@ -105,7 +105,8 @@ pub fn agent_pane_of(main: &Path, to: &Target) -> Option<Pane> {
         .into_iter()
         .find(|found| found.label == tab)?
         .id;
-    herdr::panes_of(&workspace)
+    // Fresh, never the daemon's shared answer: what it says decides whether a line is typed in.
+    herdr::panes_of_now(&workspace)
         .into_iter()
         .find(|pane| pane.tab == tab && pane.agent.is_some())
 }
@@ -154,7 +155,8 @@ pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Tab]) -> Option<String
         return None;
     }
     let pane = herdr::panes_of(workspace).into_iter().find(|pane| pane.tab == tab.id)?;
-    herdr::is_idle(&pane.id).then_some(pane.id)
+    // Fresh: a command is run in it next.
+    herdr::is_idle_now(&pane.id).then_some(pane.id)
 }
 
 /// A tab by its label, made unfocused with `command` running in it when it is

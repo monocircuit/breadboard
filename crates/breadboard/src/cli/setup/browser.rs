@@ -26,7 +26,7 @@ fn install_dir() -> PathBuf {
 }
 
 fn source() -> PathBuf {
-    super::proc::package_dir(&super::repo::main_dir()).join("chromium")
+    crate::cli::lifecycle::repo::package_dir().join("chromium")
 }
 
 /// Whether `command` is on the PATH.

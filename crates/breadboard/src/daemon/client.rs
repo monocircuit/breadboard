@@ -1,16 +1,21 @@
 //! An overview as the daemon's client: herdr's reads through it from any
 //! thread (`share_herdr`), its view's GitLab feed followed (`follow`), the
 //! daemon started when none answers. Whatever fails, the overview reads by
-//! itself: a herdr read goes to herdr, a lost feed to `read_gitlab`.
+//! itself: a herdr read goes to herdr, a lost feed to `read_gitlab`. A daemon
+//! that hangs (stopped, wedged) counts as lost too: a herdr read it doesn't
+//! answer in HERDR_WAIT skips it for HERDR_SKIP, a feed silent for SILENT
+//! (the daemon says it is there every ALIVE_EVERY) is given up at once.
 
 use super::gitlab::Feed;
-use super::{REFRESH, Request};
+use super::{ALIVE_EVERY, Request, Said};
 use breadboard_core::herdr;
 use breadboard_core::reader::RemoteAsk;
+use breadboard_core::time::now_ms;
 use serde_json::Value;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -18,41 +23,68 @@ use tokio::sync::{mpsc, watch};
 
 /// A herdr read through the daemon may take this long (it waits for another's read at most): else herdr is asked here.
 const HERDR_WAIT: Duration = Duration::from_secs(3);
+/// After a herdr read the daemon didn't answer, herdr is asked here this long before the daemon is tried again.
+const HERDR_SKIP: Duration = Duration::from_secs(30);
+/// A feed that said nothing this long (not even that it is there): its daemon hangs.
+const SILENT: Duration = Duration::from_secs(ALIVE_EVERY.as_secs() * 3);
 /// Daemons lost in a row, no answer between them, before the overview reads by itself.
 const MAX_LOSSES: usize = 3;
-/// How long a started daemon gets to answer.
-const START_WAIT: Duration = Duration::from_millis(1500);
+/// How long a daemon that said it listens gets to answer.
+const START_WAIT: Duration = Duration::from_millis(500);
 
 /// From now on this process's herdr reads go through the daemon while it answers.
 pub fn share_herdr() {
     herdr::share_reads(herdr_read);
 }
 
+/// Until when (ms) herdr's reads skip the daemon: it left one unanswered.
+static HERDR_SKIPPED_UNTIL: AtomicI64 = AtomicI64::new(0);
+
 /// herdr's answer to `args` from the daemon; None when it doesn't answer (herdr is asked here then).
 fn herdr_read(args: &[&str]) -> Option<Option<Value>> {
-    herdr_read_at(super::socket(), args)
+    if !super::is_socket_ours() {
+        return None;
+    }
+    herdr_read_at(super::socket(), args, HERDR_WAIT, &HERDR_SKIPPED_UNTIL)
 }
 
-fn herdr_read_at(socket: &Path, args: &[&str]) -> Option<Option<Value>> {
+/// One read through the daemon at `socket`, waiting `wait` at most; one it
+/// leaves unanswered makes the reads skip it for HERDR_SKIP (`skipped_until`).
+fn herdr_read_at(socket: &Path, args: &[&str], wait: Duration, skipped_until: &AtomicI64) -> Option<Option<Value>> {
+    if now_ms() < skipped_until.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
-    stream.set_read_timeout(Some(HERDR_WAIT)).ok()?;
-    stream.set_write_timeout(Some(HERDR_WAIT)).ok()?;
     let request = Request::Herdr {
         args: args.iter().map(|arg| arg.to_string()).collect(),
     };
     let mut line = serde_json::to_string(&request).ok()?;
     line.push('\n');
-    stream.write_all(line.as_bytes()).ok()?;
-    let mut answer = String::new();
-    StdBufReader::new(stream).read_line(&mut answer).ok()?;
+    let answer = (|| {
+        stream.set_read_timeout(Some(wait)).ok()?;
+        stream.set_write_timeout(Some(wait)).ok()?;
+        stream.write_all(line.as_bytes()).ok()?;
+        let mut answer = String::new();
+        StdBufReader::new(&stream).read_line(&mut answer).ok()?;
+        Some(answer)
+    })();
+    // Connected but no answer: a daemon that hangs, not one that is gone.
+    let Some(answer) = answer.filter(|answer| answer.ends_with('\n')) else {
+        let skip = i64::try_from(HERDR_SKIP.as_millis()).unwrap_or(i64::MAX);
+        skipped_until.store(now_ms().saturating_add(skip), Ordering::Relaxed);
+        return None;
+    };
     serde_json::from_str(&answer).ok()
 }
 
 /// A connection to the daemon, which is started when none answers; None when it can't be.
 pub async fn connect() -> Option<UnixStream> {
+    if !super::is_socket_ours() {
+        return None;
+    }
     connect_at(super::socket(), || {
         let exe = std::env::current_exe().ok()?;
-        // It detaches at once: what is waited for is only its first half.
+        // It detaches: what is waited for is its first half, until the daemon listens or can't.
         Command::new(exe)
             .arg("serve")
             .stdin(Stdio::null())
@@ -60,6 +92,7 @@ pub async fn connect() -> Option<UnixStream> {
             .stderr(Stdio::null())
             .status()
             .ok()
+            .filter(|status| status.success())
             .map(|_| ())
     })
     .await
@@ -87,18 +120,42 @@ pub enum Followed {
     Done,
     /// The daemon can't be reached: the overview reads GitLab itself now.
     Lost,
+    /// The daemon is there but says nothing (stopped, wedged): the overview
+    /// reads GitLab itself now and its error line says why.
+    Silent,
 }
 
-/// The GitLab feed of the ask `asks` holds, from the daemon, into `out`; `r`
-/// (`refreshes`) goes to it; a new ask follows another feed. A daemon that
-/// went away is started again once; one that can't be is `Lost`.
+/// The GitLab feed of the view `view` from the daemon, into `out`: the ask
+/// `asks` holds goes to it whenever it changes (its next read takes it, as
+/// here), `r` (`refreshes`) too. A daemon that went away is started again,
+/// a few times in a row at most; then it is `Lost`. One that is there but
+/// silent for SILENT is `Silent` at once: it holds its socket and pid file,
+/// so no other one can be started in its place.
 pub async fn follow(
     main: &Path,
+    view: &str,
     asks: &mut watch::Receiver<Option<RemoteAsk>>,
     refreshes: &mut mpsc::UnboundedReceiver<()>,
     out: &mpsc::UnboundedSender<Feed>,
 ) -> Followed {
-    let mut stream = connect().await;
+    let followed = follow_at(main, view, asks, refreshes, out, SILENT, connect).await;
+    if followed == Followed::Silent {
+        // Given up for GitLab, given up for herdr: no read waits for it again.
+        HERDR_SKIPPED_UNTIL.store(i64::MAX, Ordering::Relaxed);
+    }
+    followed
+}
+
+/// `follow` with its silence and its way to the daemon given (tests).
+async fn follow_at<C: Future<Output = Option<UnixStream>>>(
+    main: &Path,
+    view: &str,
+    asks: &mut watch::Receiver<Option<RemoteAsk>>,
+    refreshes: &mut mpsc::UnboundedReceiver<()>,
+    out: &mpsc::UnboundedSender<Feed>,
+    silent: Duration,
+    connect: impl Fn() -> C,
+) -> Followed {
     let mut losses = 0;
     loop {
         let ask = loop {
@@ -109,66 +166,68 @@ pub async fn follow(
                 return Followed::Done;
             }
         };
-        let Some(open) = stream.take() else {
+        if losses > MAX_LOSSES {
+            return Followed::Lost;
+        }
+        losses += 1;
+        let Some(stream) = connect().await else {
             return Followed::Lost;
         };
-        let (read, mut write) = open.into_split();
+        let (read, mut write) = stream.into_split();
         let request = Request::Gitlab {
             main: main.to_path_buf(),
-            ask: ask.clone(),
+            view: view.to_string(),
+            ask,
         };
-        let Ok(mut line) = serde_json::to_string(&request) else {
-            return Followed::Lost;
-        };
-        line.push('\n');
-        if write.write_all(line.as_bytes()).await.is_err() {
-            losses += 1;
-            if losses > MAX_LOSSES {
-                return Followed::Lost;
-            }
-            stream = connect().await;
+        if !send(&mut write, &request).await {
             continue;
         }
         let mut lines = BufReader::new(read).lines();
-        let is_lost = loop {
+        let silence = tokio::time::sleep(silent);
+        tokio::pin!(silence);
+        loop {
             tokio::select! {
-                said = lines.next_line() => match said {
-                    Ok(Some(said)) => {
-                        let Ok(feed) = serde_json::from_str::<Feed>(&said) else { continue };
-                        losses = 0;
-                        if out.send(feed).is_err() {
-                            return Followed::Done;
-                        }
+                said = lines.next_line() => {
+                    // The daemon went (killed, its binary rebuilt): another one.
+                    let Ok(Some(said)) = said else { break };
+                    silence.as_mut().reset(tokio::time::Instant::now() + silent);
+                    // An empty line: it is there (ALIVE_EVERY).
+                    let Ok(feed) = serde_json::from_str::<Feed>(&said) else { continue };
+                    losses = 0;
+                    if out.send(feed).is_err() {
+                        return Followed::Done;
                     }
-                    _ => break true,
                 },
+                () = &mut silence => return Followed::Silent,
                 changed = asks.changed() => {
                     if changed.is_err() {
                         return Followed::Done;
                     }
-                    if asks.borrow().as_ref() != Some(&ask) {
-                        break false;
+                    let ask = asks.borrow_and_update().clone();
+                    if let Some(ask) = ask && !send(&mut write, &Said::Ask(ask)).await {
+                        break;
                     }
                 },
                 asked = refreshes.recv() => {
                     if asked.is_none() {
                         return Followed::Done;
                     }
-                    if write.write_all(format!("{REFRESH}\n").as_bytes()).await.is_err() {
-                        break true;
+                    if !send(&mut write, &Said::Refresh).await {
+                        break;
                     }
                 },
             }
-        };
-        if is_lost {
-            // The daemon went (killed, its binary rebuilt): one again, but not one that keeps going.
-            losses += 1;
-            if losses > MAX_LOSSES {
-                return Followed::Lost;
-            }
         }
-        stream = connect().await;
     }
+}
+
+/// One line to the daemon; false when it didn't go.
+async fn send(write: &mut tokio::net::unix::OwnedWriteHalf, what: &impl serde::Serialize) -> bool {
+    let Ok(mut line) = serde_json::to_string(what) else {
+        return false;
+    };
+    line.push('\n');
+    write.write_all(line.as_bytes()).await.is_ok()
 }
 
 #[cfg(test)]
@@ -202,8 +261,10 @@ mod tests {
     fn reads_herdr_through_the_daemon_and_by_itself_without_one() {
         let scratch = Scratch::new("herdr");
         let socket = scratch.join("serve.sock");
-        // No daemon: the caller asks herdr itself.
-        assert_eq!(herdr_read_at(&socket, &["pane", "list"]), None);
+        let skipped = AtomicI64::new(0);
+        // No daemon: the caller asks herdr itself, at once next time too (nothing to skip).
+        assert_eq!(herdr_read_at(&socket, &["pane", "list"], HERDR_WAIT, &skipped), None);
+        assert_eq!(skipped.load(Ordering::Relaxed), 0);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -215,7 +276,95 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         // A write is never made by the daemon, whatever is asked.
-        assert_eq!(herdr_read_at(&socket, &["tab", "close", "t1"]), Some(None));
+        assert_eq!(
+            herdr_read_at(&socket, &["tab", "close", "t1"], HERDR_WAIT, &skipped),
+            Some(None)
+        );
+        assert_eq!(skipped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn skips_a_daemon_that_hangs_after_one_wait() {
+        let scratch = Scratch::new("hang");
+        let socket = scratch.join("serve.sock");
+        // Bound, never accepted: connects go through, nothing answers (a stopped daemon).
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let skipped = AtomicI64::new(0);
+        let wait = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        assert_eq!(herdr_read_at(&socket, &["pane", "list"], wait, &skipped), None);
+        assert!(started.elapsed() >= wait);
+        assert!(skipped.load(Ordering::Relaxed) > now_ms());
+        // The next reads go to herdr at once, not after another wait.
+        let started = std::time::Instant::now();
+        for _ in 0..5 {
+            assert_eq!(herdr_read_at(&socket, &["pane", "list"], wait, &skipped), None);
+        }
+        assert!(started.elapsed() < wait, "{:?}", started.elapsed());
+    }
+
+    /// `follow_at` on a daemon at `socket` that answers each connection with `answer`, silent after `silent`.
+    fn followed(
+        name: &str,
+        silent: Duration,
+        answer: fn(tokio::net::UnixStream) -> tokio::task::JoinHandle<()>,
+    ) -> Option<Followed> {
+        let scratch = Scratch::new(name);
+        let socket = scratch.join("serve.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    held.push(answer(stream));
+                }
+            });
+            let (_asks, mut asked) = watch::channel(Some(RemoteAsk::Everything));
+            let (_refresh, mut refreshes) = mpsc::unbounded_channel();
+            let (out, _said) = mpsc::unbounded_channel();
+            let connect = || async { UnixStream::connect(&socket).await.ok() };
+            let follow = follow_at(
+                Path::new("/repo"),
+                "everything",
+                &mut asked,
+                &mut refreshes,
+                &out,
+                silent,
+                connect,
+            );
+            tokio::time::timeout(silent * 4, follow).await.ok()
+        })
+    }
+
+    #[test]
+    fn gives_up_a_feed_whose_daemon_says_nothing() {
+        let silent = Duration::from_millis(200);
+        // It takes the request and never answers: given up after `silent`, not reconnected.
+        let started = std::time::Instant::now();
+        let quiet = |stream: tokio::net::UnixStream| {
+            tokio::spawn(async move {
+                let _held = stream;
+                std::future::pending::<()>().await;
+            })
+        };
+        assert_eq!(followed("silent", silent, quiet), Some(Followed::Silent));
+        assert!(started.elapsed() < silent * 2, "{:?}", started.elapsed());
+        // It says it is there, nothing else (GitLab slow): followed on.
+        let alive = |mut stream: tokio::net::UnixStream| {
+            tokio::spawn(async move {
+                loop {
+                    if stream.write_all(b"\n").await.is_err() {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+        };
+        assert_eq!(followed("alive", silent, alive), None);
     }
 
     #[test]

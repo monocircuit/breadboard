@@ -153,8 +153,10 @@ pub fn combine(groups: &[Value]) -> Vec<Value> {
     combined
 }
 
-/// What `name` changed: `{ name, title, root, groups, combined, missing }`, None without a record.
-pub fn read_change_set(name: &str) -> Option<Value> {
+/// What `name` changed: `{ name, title, root, groups, combined, missing }`,
+/// None without a record. Err: the branch GitLab didn't answer for after its
+/// tries, and why: no set that leaves its MRs out as if there were none (#306).
+pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;
     git(&["fetch", "--quiet", "--prune", "origin"], &main);
@@ -166,13 +168,17 @@ pub fn read_change_set(name: &str) -> Option<Value> {
             branches.push(branch.clone());
         }
     }
-    let read_mrs = gitlab::in_turns(&branches, 12, |branch| {
+    let read_mrs = gitlab::all_in_turns(&branches, 12, |branch| {
         gitlab::list(&format!(
             "projects/:fullpath/merge_requests?source_branch={}",
             gitlab::encode(branch)
         ))
-        .unwrap_or_default()
+        .map_err(|failure| (branch.clone(), failure.reason))
     });
+    let read_mrs = match read_mrs {
+        Ok(read) => read,
+        Err(unanswered) => return Some(Err(unanswered)),
+    };
     let mut groups: Vec<Value> = Vec::new();
     let mut missing: Vec<i64> = Vec::new();
     for (branch, mrs) in branches.iter().zip(read_mrs) {
@@ -219,10 +225,10 @@ pub fn read_change_set(name: &str) -> Option<Value> {
         .collect();
     missing.sort();
     let combined = combine(&groups);
-    Some(json!({
+    Some(Ok(json!({
         "name": name, "title": record::title_of(&main, name), "root": main.to_string_lossy(),
         "groups": groups, "combined": combined, "missing": missing,
-    }))
+    })))
 }
 
 #[cfg(test)]

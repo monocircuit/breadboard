@@ -16,7 +16,9 @@
 use super::{SPACE, USAGE};
 use breadboard_core::git::{self, git};
 use breadboard_core::herdr::{plugin_context, plugin_id, save_context, where_from};
+use breadboard_core::local::{self, StackContainer};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -89,10 +91,11 @@ fn worktree_of(dir: &Path, repo: &Path) -> Option<PathBuf> {
     (Some(common) == common_dir(repo)).then(|| PathBuf::from(top.out()))
 }
 
-/// This binary with `args` in `dir`, as pnpm runs a script there:
-/// `INIT_CWD` is where the commands look for "you are here".
+/// This binary (as it was started: a rebuild meanwhile doesn't lose it)
+/// with `args` in `dir`, as pnpm runs a script there: `INIT_CWD` is where
+/// the commands look for "you are here".
 fn this(args: &[&str], dir: &Path) -> Command {
-    let mut command = Command::new(std::env::current_exe().unwrap_or_else(|_| PathBuf::from("breadboard")));
+    let mut command = Command::new(super::started_binary());
     command
         .args(args)
         .current_dir(dir)
@@ -210,39 +213,55 @@ fn wait_for_key() {
     }
 }
 
-/// `status`: one line for the tab bar, every 10 s in every session: the
-/// running vita stacks (one docker call) and the agents in the repo's spaces
-/// that ask something (two herdr calls, nothing to GitLab, #305). Hostile
-/// answers count as nothing; it always exits 0.
+/// `status`: one line for the tab bar, every 10 s in every herdr server:
+/// the running vita stacks and the agents in the repo's spaces that ask
+/// something (two herdr calls, nothing to GitLab, #305). docker is read
+/// through core's shared file (#331): no call while another process's read
+/// is fresh, one `docker ps` by the lock holder otherwise. Hostile answers
+/// count as nothing; it always exits 0.
 fn status() -> ExitCode {
-    let listed = Command::new("docker")
-        .args(["compose", "ls", "--format", "json"])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok());
-    let main = std::env::current_dir().ok().and_then(|cwd| git::main_dir(&cwd));
+    let containers = local::containers();
+    let main = status_main();
     let waiting = needs_you(main.as_deref(), ask(&["workspace", "list"]).as_ref(), || {
         ask(&["pane", "list"])
     });
-    println!("{}", status_line(stacks_in(listed.as_ref()), waiting));
+    println!("{}", status_line(stacks_in(containers.as_deref()), waiting));
     ExitCode::SUCCESS
 }
 
-/// How many compose projects are vita's stacks.
-fn stacks_in(listed: Option<&Value>) -> usize {
-    listed.and_then(Value::as_array).map_or(0, |projects| {
-        projects
-            .iter()
-            .filter(|project| {
-                project
-                    .get("Name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name.starts_with("vita"))
-            })
-            .count()
-    })
+/// The main checkout the status counts for. herdr runs the tab bar's
+/// command in its server's cwd (your home, mostly), not the plugin's
+/// directory: the cwd's checkout when it is one of this repo, else the
+/// checkout of the binary as it was started (`argv[0]`, a link not
+/// resolved), else of the file it is (Node: the script's own checkout).
+fn status_main() -> Option<PathBuf> {
+    let cwd = std::env::current_dir().ok();
+    let started = std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .filter(|path| path.components().count() > 1)
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    let file = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf));
+    [cwd, started, file]
+        .into_iter()
+        .flatten()
+        .filter(|dir| dir.is_dir())
+        .filter_map(|dir| git::main_dir(&dir))
+        .find(|main| main.join("packages/breadboard/herdr/herdr-plugin.toml").is_file())
+}
+
+/// How many vita stacks run: compose projects named `vita…` with a running
+/// container (what `compose ls` lists without `--all`, as Node counted).
+fn stacks_in(containers: Option<&[StackContainer]>) -> usize {
+    let running: BTreeSet<&str> = containers
+        .unwrap_or_default()
+        .iter()
+        .filter(|container| container.state == "running" && container.project.starts_with("vita"))
+        .map(|container| container.project.as_str())
+        .collect();
+    running.len()
 }
 
 /// The blocked agents in the spaces of the repo: the main space, its
@@ -311,9 +330,23 @@ mod tests {
         assert_eq!(status_line(1, 0), "⬢ 1 stack");
         assert_eq!(status_line(2, 1), "⬢ 2 stacks · 1 needs you");
         assert_eq!(status_line(0, 3), "⬡ no stack · 3 need you");
-        let listed = json!([{ "Name": "vita" }, { "Name": "vita-12" }, { "Name": "other" }, { "Status": "x" }]);
+        let container = |project: &str, service: &str, state: &str| StackContainer {
+            project: project.to_string(),
+            service: service.to_string(),
+            state: state.to_string(),
+            health: String::new(),
+        };
+        let listed = [
+            container("vita", "web", "running"),
+            container("vita", "db", "running"),
+            container("vita-12", "db", "exited"),
+            container("vita-12", "web", "running"),
+            container("vita-7", "db", "exited"),
+            container("other", "db", "running"),
+        ];
+        // Two stacks run; one only stopped and another project's don't count.
         assert_eq!(stacks_in(Some(&listed)), 2);
-        assert_eq!(stacks_in(Some(&json!({ "Name": "vita" }))), 0);
+        assert_eq!(stacks_in(Some(&[])), 0);
         assert_eq!(stacks_in(None), 0);
     }
 

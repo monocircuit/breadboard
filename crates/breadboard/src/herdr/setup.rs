@@ -14,7 +14,7 @@ use std::time::Duration;
 
 /// `pnpm herdr [--here] [--no-attach]`.
 pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
-    let exe = std::env::current_exe().map_err(|error| format!("where this binary is: {error}"))?;
+    let exe = super::started_binary();
     let window = terminal_window(
         &session.main,
         &[exe.display().to_string(), "herdr".into(), "--here".into()],
@@ -30,6 +30,7 @@ pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
         }
     }
     ensure_binary(session)?;
+    ensure_breadboard(session);
     let written = write_config(session)?;
     let base = match written.base.strip_prefix(&session.main) {
         Ok(rest) => rest.display().to_string(),
@@ -179,23 +180,47 @@ pub fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
-/// The old form of the status command (`node <…>/run.mjs status`): a config
-/// written before the binary, or a line you added by hand.
-fn old_status() -> &'static Regex {
-    static OLD: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    OLD.get_or_init(|| Regex::new(r"node [^\s\x22']*/run\.mjs status").expect("a valid pattern"))
+/// A tab bar status command as a config's `command = "…"` holds it:
+/// Node's (`node <…>/run.mjs status`, a config written before the binary,
+/// a line you added by hand, a moved package's) or a binary's (`<…>/breadboard
+/// herdr status`, maybe of a checkout that moved or isn't built). Group 2 is
+/// the command, 1 and 3 what is around it.
+fn status_value() -> &'static Regex {
+    static VALUE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    VALUE.get_or_init(|| {
+        Regex::new(
+            r#"(command\s*=\s*["'])((?:node\s+[^\s"']*/run\.mjs|(?:[^\s"']*/)?breadboard\s+herdr)\s+status)(["'])"#,
+        )
+        .expect("a valid pattern")
+    })
+}
+
+/// Whether a config's text runs a status command of the plugin, any form.
+pub fn has_status(text: &str) -> bool {
+    status_value().is_match(text)
+}
+
+/// `text` with every status command that isn't `command` replaced by it in
+/// place, the rest byte for byte (#230: a move, or the switch to the binary,
+/// needs no hand work).
+pub fn with_current_status(text: &str, command: &str) -> String {
+    status_value()
+        .replace_all(text, |caps: &regex::Captures| {
+            format!("{}{command}{}", &caps[1], &caps[3])
+        })
+        .into_owned()
 }
 
 /// A config with the plugin's status first in the tab bar (`⬢ 2 stacks · 1
 /// needs you`): put in front of the base's own `tab_bar_right`, else given
 /// one of its own with herdr's zoom; unchanged when it runs `command`
-/// already. The old `node …/run.mjs status` is `command` now (#230: moving
-/// to the binary needs no hand work, and adds no second entry).
+/// already. An old status command is `command` now (`with_current_status`:
+/// no second entry). Node's form of `command` keeps Node's cases exact.
 pub fn with_status_entry(text: &str, command: &str) -> String {
     let text = if command.contains("/run.mjs ") {
         text.to_string()
     } else {
-        old_status().replace_all(text, regex::NoExpand(command)).into_owned()
+        with_current_status(text, command)
     };
     if text.contains(command) {
         return text;
@@ -225,6 +250,39 @@ pub fn with_status_entry(text: &str, command: &str) -> String {
             .into_owned()
     };
     format!("{}{with_entry}{}", &text[..ui], &text[end..])
+}
+
+/// `cargo build --release` of the breadboard package in `package`, its
+/// progress on this terminal. Whether it built.
+pub fn build(package: &Path) -> bool {
+    Command::new("cargo")
+        .args(["build", "--release"])
+        .current_dir(package)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// The breadboard the plugin's manifest and the tab bar's status run (the
+/// plugin's checkout's): built when it is missing, else said with what to
+/// run. Never a failure: the session itself runs without it, but without
+/// a word its actions and the tab bar would fail every 10 s.
+pub fn ensure_breadboard(session: &Session) {
+    let binary = session.breadboard();
+    if binary.is_file() {
+        return;
+    }
+    let package = session.plugin_dir.parent().unwrap_or(&session.plugin_dir);
+    if package.join("Cargo.toml").is_file() {
+        step(&format!("{} isn't built: cargo build --release", shown(&binary)));
+        if build(package) && binary.is_file() {
+            return;
+        }
+    }
+    println!(
+        "! {} is missing: the plugin's keys and the tab bar's status fail until it is built (pnpm build:rs in {})",
+        shown(&binary),
+        shown(package)
+    );
 }
 
 /// What `write_config` wrote.
@@ -483,6 +541,36 @@ mod tests {
         // A moved package's old path too (#230).
         let moved = "[ui]\ntab_bar_right = [{ type = \"command\", command = \"node /gone/packages/workflow/herdr/run.mjs status\" }]";
         assert_eq!(with_status_entry(moved, command).matches(command).count(), 1);
+    }
+
+    #[test]
+    fn finds_every_form_of_the_status_and_nothing_else() {
+        let command = "/r/packages/breadboard/target/release/breadboard herdr status";
+        for old in [
+            "command = \"node /a b/run.mjs status\"",
+            "command='node /x/herdr/run.mjs status'",
+            "command = \"/y/target/release/breadboard herdr status\"",
+            "command = \"breadboard herdr status\"",
+        ] {
+            let text = format!("[ui]\ntab_bar_right = [{{ type = \"command\", {old} }}]\n");
+            let next = with_current_status(&text, command);
+            if old.contains("/a b/") {
+                // A path with a space isn't a command herdr could run either.
+                assert_eq!(next, text);
+                continue;
+            }
+            assert!(has_status(&text), "{old}");
+            assert_eq!(next.matches(command).count(), 1, "{old}");
+            assert_eq!(with_current_status(&next, command), next);
+        }
+        for other in [
+            "command = \"date\"",
+            "command = \"node run.mjs status\"",
+            "# node /x/run.mjs status",
+            "command = \"/y/breadboard herdr statusbar\"",
+        ] {
+            assert!(!has_status(other), "{other}");
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
-use super::everything::{app_cell, stack_cell};
+use super::everything::app_cell;
 use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
@@ -19,7 +19,7 @@ use super::merge::checks_of;
 use super::numbering::numbers_of;
 use super::order::Go;
 use super::workers::{Suggestion, TRIES_AGAIN};
-use super::{Entry, Fact, Paint, Span, Tone, Tree, text_of};
+use super::{Docker, Entry, Fact, Paint, Span, Tone, Tree, text_of};
 use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
@@ -252,17 +252,61 @@ pub struct Node {
     /// Its app and its stack (#332, render.mjs's columns): None without a worktree or its .env.local.
     pub app: Option<Span>,
     pub stack: Option<Span>,
+    /// Whether docker answered for its stack (#331): `docker does not answer` is said once, over the tree.
+    pub docker: Docker,
     /// Where its open work collides (#332, DIFF's `⚠ also changed …`):
     /// develop first (named `develop`), then the orchestration's other
     /// worktrees, each by its issue (`#304`), else its feature.
     pub collides: Vec<Overlap>,
+    /// The files of its work and of the worktrees it collides with: a
+    /// colliding file is named by the shortest end of its path none of the
+    /// others shares, so `index.ts` says which one.
+    pub near: Vec<String>,
+    /// Its worktree, where a click on a colliding file opens it.
+    pub dir: Option<PathBuf>,
     pub title: String,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
 
+/// A worktree's stack as WORKTREES says it (#332): `stack running`, `stack
+/// down`, `stack 2 running, 1 exited`; `stack …` while docker hasn't
+/// answered, `stack ?` when it didn't (#331); `shared` on the main
+/// checkout's. Its `+N` is left out: the app's port says it (`○ :3002`).
+pub fn stack_of(tree: &Tree) -> Span {
+    if !tree.has_own_port {
+        return Span::dim("shared");
+    }
+    let Some(status) = tree.stack.as_deref().filter(|_| tree.docker == Docker::Answered) else {
+        return match tree.docker {
+            Docker::NotYet => Span::dim("stack …"),
+            Docker::Silent => Span::new("stack ?", Paint::Yellow),
+            Docker::Answered => Span::dim("stack down"),
+        };
+    };
+    // compose's `exited(1), running(2)`: the running first; one state alone without its count.
+    let mut states: Vec<(&str, &str)> = status
+        .split(", ")
+        .map(|part| part.trim_end_matches(')').split_once('(').unwrap_or((part, "")))
+        .collect();
+    states.sort_by_key(|(state, _)| *state != "running");
+    let is_running = states.iter().all(|(state, _)| *state == "running");
+    let text = match states.as_slice() {
+        [(state, _)] => format!("stack {state}"),
+        _ => format!(
+            "stack {}",
+            states
+                .iter()
+                .map(|(state, count)| format!("{count} {state}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    Span::new(text, if is_running { Paint::Green } else { Paint::Yellow })
+}
+
 /// The agent of a node (#292, tree.mjs `agentLine`): `● Mira Albrecht · 3
-/// issues · 2 MRs merged`, the dot in the colour of whom it waits for, else
+/// issues · 2 merged`, the dot in the colour of whom it waits for, else
 /// of herdr's state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentLine {
@@ -275,12 +319,12 @@ pub struct AgentLine {
 }
 
 impl AgentLine {
-    /// `· 3 issues · 2 MRs merged`.
+    /// `· 3 issues · 2 merged`: of its issues, how many MRs are merged.
     pub fn counts(&self) -> String {
         format!(
             "· {} · {} merged",
             super::counted(self.issues as u64, "issue"),
-            super::counted(self.merged as u64, "MR")
+            self.merged
         )
     }
 }
@@ -392,12 +436,14 @@ fn facts_of(
     let mut all: Vec<Fact> = Vec::new();
     if let Some(number) = issue.number {
         let link = Span::link(format!("#{number}"), found.map(|found| found.url.as_str()));
+        // Open is what an issue of a worktree is: only the exception is said
+        // (lazygit's marks), `?` / `…` while GitLab doesn't tell.
         let state = match found {
-            Some(found) if found.state == "closed" => Span::new(" closed", Paint::Cyan),
-            Some(_) => Span::plain(" open"),
-            None => Span::dim(if facts.has_remote { " ?" } else { " …" }),
+            Some(found) if found.state == "closed" => Some(Span::new(" closed", Paint::Cyan)),
+            Some(_) => None,
+            None => Some(Span::dim(if facts.has_remote { " ?" } else { " …" })),
         };
-        all.push(vec![link, state]);
+        all.push([link].into_iter().chain(state).collect());
     }
     let merged_at = issue
         .merged_at
@@ -600,6 +646,18 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             .filter(|other| !other.files.is_empty());
         develop.into_iter().chain(others).collect()
     };
+    let near_of = |index: usize, collides: &[Overlap]| -> Vec<String> {
+        let Some((_, _, mine)) = works.iter().find(|(at, _, _)| *at == index) else {
+            return Vec::new();
+        };
+        let mut near: std::collections::BTreeSet<&String> = mine.iter().collect();
+        for (_, name, files) in &works {
+            if collides.iter().any(|overlap| &overlap.name == name) {
+                near.extend(files.iter());
+            }
+        }
+        near.into_iter().cloned().collect()
+    };
     let mut rows: Vec<Node> = issues
         .iter()
         .enumerate()
@@ -675,14 +733,18 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 (None, None) => Go::Nothing,
             };
             let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged);
+            let collides = collides_of(index);
             Node {
                 index,
                 number: issue.number,
                 agent,
                 facts: facts_of(issue, found, mr, &state, handover.as_ref(), facts),
                 app: tree.filter(|tree| tree.has_env).map(app_cell),
-                stack: tree.filter(|tree| tree.has_env).map(stack_cell),
-                collides: collides_of(index),
+                stack: tree.filter(|tree| tree.has_env).map(stack_of),
+                docker: tree.map(|tree| tree.docker).unwrap_or_default(),
+                near: near_of(index, &collides),
+                collides,
+                dir: tree.map(|tree| tree.dir.clone()),
                 state,
                 place: numbers[index],
                 name: issue.feature.clone(),
@@ -1157,14 +1219,53 @@ mod tests {
         assert_eq!(collides(1), ["develop: b.md", "#2: a.md"]);
         assert_eq!(collides(2), ["#1: a.md"]);
         assert!(collides(3).is_empty() && collides(4).is_empty());
+        // Named against its own files and those of whom it collides with; c.md is no one's it meets.
+        assert_eq!(node(1).near, ["a.md", "b.md"]);
+        assert_eq!(node(3).near, ["c.md"]);
         assert!(facts_text(&node(1).facts).contains("↑1 ↓3"));
         assert!(!facts_text(&node(4).facts).contains('↓'));
         assert_eq!(node(3).app.as_ref().map(|app| app.text.as_str()), Some("○ :3003"));
         assert_eq!(
             node(3).stack.as_ref().map(|stack| stack.text.as_str()),
-            Some("+3 running(5)")
+            Some("stack running")
         );
         assert_eq!(tree_of(&[gone(5)], None, &TreeFacts::default()).removed[0].app, None);
+    }
+
+    #[test]
+    fn a_stack_says_its_states_in_words_and_never_down_while_docker_has_not_answered() {
+        let own = |docker: Docker, stack: Option<&str>| Tree {
+            has_env: true,
+            has_own_port: true,
+            offset: 2,
+            docker,
+            stack: stack.map(str::to_string),
+            ..tree()
+        };
+        let cell = |tree: Tree| {
+            let span = stack_of(&tree);
+            (span.text, span.paint)
+        };
+        assert_eq!(cell(own(Docker::NotYet, None)), ("stack …".into(), Paint::Dim));
+        assert_eq!(cell(own(Docker::Silent, None)), ("stack ?".into(), Paint::Yellow));
+        assert_eq!(cell(own(Docker::Answered, None)), ("stack down".into(), Paint::Dim));
+        assert_eq!(
+            cell(own(Docker::Answered, Some("running(5)"))),
+            ("stack running".into(), Paint::Green)
+        );
+        assert_eq!(
+            cell(own(Docker::Answered, Some("exited(1), running(2)"))),
+            ("stack 2 running, 1 exited".into(), Paint::Yellow)
+        );
+        assert_eq!(
+            cell(own(Docker::Answered, Some("exited(3)"))),
+            ("stack exited".into(), Paint::Yellow)
+        );
+        let shared = Tree {
+            has_own_port: false,
+            ..own(Docker::NotYet, None)
+        };
+        assert_eq!(cell(shared), ("shared".into(), Paint::Dim));
     }
 
     #[test]
@@ -1257,7 +1358,7 @@ mod tests {
         let found = tree_of(&[fresh], None, &TreeFacts::default());
         let agent = found.live[0].agent.clone().unwrap();
         assert_eq!(agent.name, pick_name("c1", []));
-        assert_eq!(agent.counts(), "· 1 issue · 0 MRs merged");
+        assert_eq!(agent.counts(), "· 1 issue · 0 merged");
         assert!(!facts_text(&found.live[0].facts).contains("agent: "));
         let known = [Worker {
             id: "c1".into(),
@@ -1306,7 +1407,7 @@ mod tests {
         // Its agent moved on to #3: #1's worktree has none.
         assert_eq!(of(1).agent, None);
         let agent = of(3).agent.clone().unwrap();
-        assert_eq!(agent.counts(), "· 2 issues · 1 MR merged");
+        assert_eq!(agent.counts(), "· 2 issues · 1 merged");
         assert_eq!(agent.dot, Paint::Wait(Tone::Free));
         // No conversation read for #3's worktree: the record's worker still names it.
         let third = Entry {
@@ -1604,7 +1705,10 @@ mod tests {
             facts: vec![],
             app: None,
             stack: None,
+            docker: Docker::Answered,
             collides: vec![],
+            near: vec![],
+            dir: None,
             title: String::new(),
             go: Go::Nothing,
         }
@@ -1716,10 +1820,10 @@ mod tests {
                 facts_text(&one.facts).as_str(),
                 one.title.as_str()
             ),
-            ("no agent", "#1 open · no MR yet · ↑2", "the title of 1")
+            ("no agent", "#1 · no MR yet · ↑2", "the title of 1")
         );
         assert_eq!(two.state.text, "free");
-        assert!(facts_text(&two.facts).starts_with("#2 open · no MR yet · no answer yet"));
+        assert!(facts_text(&two.facts).starts_with("#2 · no MR yet · no answer yet"));
         assert!(!found.is_removed_folded);
     }
 

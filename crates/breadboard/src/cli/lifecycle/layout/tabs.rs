@@ -246,9 +246,30 @@ pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Value]) -> Option<Stri
 /// missing, the command run again if the tab is there but its shell idles.
 /// Whether either happened.
 pub fn ensure_tab(workspace: &str, want: &Want, tabs: &[Value]) -> bool {
+    open_tab(workspace, want, tabs) != Opened::Kept
+}
+
+/// What [`open_tab`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    /// The tab was there and its command runs (or it has none), or herdr made none.
+    Kept,
+    /// Created, or its idle shell given its command again: the command runs.
+    Started,
+    /// Created, but herdr gave it no pane or took no command: nothing runs there.
+    Empty,
+}
+
+/// [`ensure_tab`], saying whether the command runs: a tab herdr created
+/// without a pane is no running stack (rewrite-log 2026-10-02 00:45).
+pub fn open_tab(workspace: &str, want: &Want, tabs: &[Value]) -> Opened {
     if tabs.iter().any(|tab| s(tab, "label") == want.label) {
-        let Some(command) = &want.command else { return false };
-        return idle_pane_of(workspace, want.label, tabs).is_some_and(|idle| did(&["pane", "run", &idle, command]));
+        let Some(command) = &want.command else {
+            return Opened::Kept;
+        };
+        let is_run =
+            idle_pane_of(workspace, want.label, tabs).is_some_and(|idle| did(&["pane", "run", &idle, command]));
+        return if is_run { Opened::Started } else { Opened::Kept };
     }
     let cwd = text(want.cwd);
     let Some(created) = call(&[
@@ -262,12 +283,13 @@ pub fn ensure_tab(workspace: &str, want: &Want, tabs: &[Value]) -> bool {
         want.label,
         "--no-focus",
     ]) else {
-        return false;
+        return Opened::Kept;
     };
-    if let (Some(command), Some(pane)) = (&want.command, id_at(&created, &["root_pane", "pane_id"])) {
-        did(&["pane", "run", &pane, command]);
-    }
-    true
+    let Some(command) = &want.command else {
+        return Opened::Started;
+    };
+    let is_run = id_at(&created, &["root_pane", "pane_id"]).is_some_and(|pane| did(&["pane", "run", &pane, command]));
+    if is_run { Opened::Started } else { Opened::Empty }
 }
 
 /// Which tabs `keep_order` moves to the end, by index into `labels` (the

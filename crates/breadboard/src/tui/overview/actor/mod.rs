@@ -22,6 +22,7 @@ pub mod browser;
 pub mod chat;
 pub mod glab;
 pub mod herdr;
+pub mod layout_log;
 pub mod merge;
 pub mod spawn;
 pub mod sync;
@@ -31,6 +32,7 @@ pub mod view;
 use super::{Msg, Overview};
 use breadboard_core::lock::PidFile;
 use breadboard_core::model::Paint;
+use breadboard_core::model::display_names::Names;
 use breadboard_core::reader::View;
 use breadboard_core::time::now_ms;
 use spawn::Run;
@@ -45,8 +47,8 @@ pub type Effect = Box<dyn FnOnce(&mut Overview) + Send>;
 /// Work for the actor's thread: herdr, git, GitLab; its effect, if any, goes to the view.
 type Job = Box<dyn FnOnce() -> Option<Effect> + Send>;
 
-/// How many things done the log keeps.
-const DID_KEPT: usize = 20;
+/// How many things done the log keeps: a `--herdr` layout alone may say a dozen.
+const DID_KEPT: usize = 40;
 
 /// A thing done, for the log: when, how it went, what — in words, and
 /// what exactly was run or typed, the way lazygit's command log puts the
@@ -61,6 +63,8 @@ pub struct Did {
     pub detail: Option<String>,
     /// One act's entry: its end replaces its start, never a second entry.
     pub key: Option<String>,
+    /// How often it was done: an act done again at the next tick counts here.
+    pub times: u32,
 }
 
 /// The actor of one overview.
@@ -90,6 +94,9 @@ pub struct Actor {
     pub sync: sync::Sync,
     /// What was done, newest first.
     pub did: VecDeque<Did>,
+    /// The names the orchestration shows its agents by (#292), as of its last
+    /// read: what the log says an agent was told or given goes by them.
+    pub names: Names,
 }
 
 impl Actor {
@@ -111,6 +118,7 @@ impl Actor {
             tries: tries::Tries::default(),
             sync: sync::Sync::default(),
             did: VecDeque::new(),
+            names: Names::default(),
         }
     }
 
@@ -181,6 +189,7 @@ impl Actor {
             text,
             detail: None,
             key: None,
+            times: 1,
         });
     }
 
@@ -199,24 +208,45 @@ impl Actor {
             text: text.into(),
             detail,
             key: Some(key.to_string()),
+            times: 1,
         });
+    }
+
+    /// The act under `key` done once more: counted on its entry, which stays where it is.
+    pub fn again(&mut self, key: &str) {
+        if let Some(did) = self.did.iter_mut().find(|did| did.key.as_deref() == Some(key)) {
+            did.times += 1;
+        }
     }
 
     /// A line typed into an agent, or held until it can take it: in words
     /// what it was told (`about`), the line word for word under it.
+    /// `who`: the agent's worktree or record name; the log names it as the overview shows it.
     pub fn told(&mut self, who: &str, about: &str, line: &str, is_in: bool) {
         let key = format!("told:{who}:{line}");
         let line = herdr::overview_line(line);
+        let shown = self.names.shown(who);
         if is_in {
-            self.log_as(&key, Paint::Green, format!("told {who} {about}"), Some(line));
+            self.log_as(&key, Paint::Green, format!("told {shown} {about}"), Some(line));
         } else {
+            // What it will be told in front: the band shows what stands before ` · `.
+            let whom = if shown == who {
+                format!("the agent of {who}")
+            } else {
+                shown
+            };
             self.log_as(
                 &key,
                 Paint::Yellow,
-                format!("waits for {who}'s agent: {about}"),
+                format!("will tell {whom} {about} · it takes the line once it is free"),
                 Some(line),
             );
         }
+    }
+
+    /// `who` (a worktree's or a record's name) as the overview shows its agent.
+    pub fn shown(&self, who: &str) -> String {
+        self.names.shown(who)
     }
 
     fn push(&mut self, did: Did) {
@@ -311,6 +341,23 @@ mod tests {
         actor.log(Paint::Green, "decide #2 of 307-x → “a” · typed into its agent's pane");
         assert_eq!(actor.did.len(), 3);
         assert_eq!(actor.did[0].paint, Paint::Green);
+        // Done again at the next tick: counted, in place.
+        actor.again("remove:x");
+        assert_eq!(actor.did.len(), 3);
+        assert_eq!(actor.did[1].times, 2);
+    }
+
+    #[test]
+    fn a_held_line_says_what_it_will_tell_before_why() {
+        let mut actor = Actor::new(&View::Orchestration("b".into()), Path::new("/r"), false, false);
+        actor.told("307-x-y", "that !316 is merged", "!316 merged", false);
+        assert_eq!(
+            view::short_of(&actor.did[0].text).replace('\u{a0}', " "),
+            "will tell the agent of #307 that !316 is merged"
+        );
+        actor.told("307-x-y", "that !316 is merged", "!316 merged", true);
+        assert_eq!(actor.did.len(), 1);
+        assert_eq!(actor.did[0].text, "told 307-x-y that !316 is merged");
     }
 
     #[test]

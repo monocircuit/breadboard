@@ -130,6 +130,8 @@ pub struct Page<A> {
     top: Part<A>,
     rest: Part<A>,
     redraw_in: Option<Duration>,
+    /// The block picked with Tab when the page is built: its keys are drawn with it.
+    picked: Option<A>,
 }
 
 /// The page laid out: rows and their regions in page coordinates, the first
@@ -150,7 +152,19 @@ impl<A: Clone> Page<A> {
             top: Part::new(),
             rest: Part::new(),
             redraw_in: None,
+            picked: None,
         }
+    }
+
+    /// The page of a view whose block `picked` is picked with Tab.
+    pub fn picking(mut self, picked: Option<A>) -> Self {
+        self.picked = picked;
+        self
+    }
+
+    /// The block picked with Tab, as lazygit's selected row: the keys act on it.
+    pub fn picked(&self) -> Option<&A> {
+        self.picked.as_ref()
     }
 
     /// The columns inside an island: a column of margin on both sides.

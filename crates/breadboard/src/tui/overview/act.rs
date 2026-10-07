@@ -23,8 +23,15 @@ use std::time::Duration;
 /// What a click on a block or a button of the overview runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Act {
-    /// What core's model says a click does (an action, a node, NEXT).
+    /// What core's model says a click does (a node, NEXT's row, an UP NEXT row).
     Go(Go),
+    /// An action's block (actions.rs): a click does `go`; `key` names the
+    /// action, so a Tab pick and its digit keys stay on that one action even
+    /// where two share a `go` (two of one agent open its tab).
+    Action {
+        key: String,
+        go: Go,
+    },
     /// A page in the browser.
     Open(String),
     Fold(Fold),
@@ -100,6 +107,10 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         }
         // The stack of the main checkout from the view of everything: the worktree view has its own.
         Act::StartStack(dir) if !matches!(app.model, Some(Model::Worktree(_))) => tries::start_stack(app, &dir, None),
+        // A colliding file of a WORKTREES node (#332): in that worktree's nvim.
+        Act::OpenFile { dir, file, line } if !matches!(app.model, Some(Model::Worktree(_))) => {
+            open_file(app, &dir, &file, line)
+        }
         // The view of a worktree's own: its delete, stack, migrations, Storybook, nvim.
         Act::Delete
         | Act::StartStack(_)
@@ -111,13 +122,28 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         }
         // Stored, typed into the agent's pane, shown at once (actions.rs, answers.mjs).
         Act::Answer { file, id, answer } => return super::actions::answer(app, &file, id, &answer),
-        Act::Go(go) => go_to(app, go),
+        Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
     }
     app.redraw();
     Flow::Redraw
+}
+
+/// A file of a worktree in its nvim, from a view of more than it; why not in the band.
+fn open_file(app: &mut Overview, dir: &Path, file: &str, line: Option<u64>) {
+    let main = app.actor.main.clone();
+    let feature = breadboard_core::git::feature_of(&main, dir);
+    let checkout = super::worktree_view::editor::Checkout {
+        dir,
+        main: &main,
+        is_main: false,
+        feature: &feature,
+    };
+    if let Err(why) = super::worktree_view::editor::open_file(&checkout, file, line) {
+        app.actor.log(Paint::Red, format!("nvim: {why}"));
+    }
 }
 
 /// What a `Go` of the model does.
@@ -205,7 +231,12 @@ fn end(app: &mut Overview) {
             poster.post(move |app: &mut Overview| {
                 let error = actor::spawn::error_of(code, &last, "");
                 match &error {
-                    None => app.actor.log_as("end", Paint::Green, format!("ended: {last}"), None),
+                    None => app.actor.log_as(
+                        "end",
+                        Paint::Green,
+                        format!("ended: {}", actor::spawn::said(&last)),
+                        None,
+                    ),
                     Some(why) => app.actor.log_as("end", Paint::Red, format!("not ended: {why}"), None),
                 }
                 app.actor.end = Some(Run {
@@ -331,7 +362,7 @@ fn resolve(app: &mut Overview, iid: i64) {
                 app.actor.log_as(
                     &format!("told:{who}:{line}"),
                     Paint::Red,
-                    format!("{who} didn't take the line: {about}"),
+                    format!("{} didn't take the line: {about}", app.actor.shown(&who)),
                     Some(actor::herdr::overview_line(&line)),
                 );
                 // Its note goes after a while.
@@ -343,9 +374,10 @@ fn resolve(app: &mut Overview, iid: i64) {
     });
 }
 
-/// A key the frame has no use for: a digit answers NEXT's action (actions.rs), `u` the worktree view's.
-pub fn key(app: &mut Overview, key: KeyEvent) -> Flow {
-    super::actions::key(app, key).unwrap_or_else(|| super::worktree_view::key(app, key))
+/// A key the frame has no use for: a digit answers the action picked with
+/// Tab, or NEXT's while none is (actions.rs); `u` the worktree view's.
+pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
+    super::actions::key(app, key, picked).unwrap_or_else(|| super::worktree_view::key(app, key))
 }
 
 /// What a read sets off, by the view: the orchestration's own acts, the main space's `--herdr` sync.

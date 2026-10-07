@@ -24,6 +24,7 @@ mod setup;
 mod sidebar;
 
 use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// The plugin's id: the manifest's, every sidebar token's source, the block
@@ -97,6 +98,35 @@ pub fn finish(done: Done) -> ExitCode {
     }
 }
 
+/// This binary as it was started: `argv[0]` against the cwd it started in
+/// (the manifest's `../target/release/breadboard`), not the file
+/// `/proc/self/exe` names. A rebuild replaces that file while a pane runs,
+/// and the kernel then names the old one `… (deleted)`: every command the
+/// pane started after it failed with ENOENT. A bare name (found on PATH)
+/// takes current_exe, without that suffix.
+pub fn started_binary() -> PathBuf {
+    started_from(
+        std::env::args_os().next().map(PathBuf::from),
+        std::env::current_dir().ok().as_deref(),
+        std::env::current_exe().ok(),
+    )
+}
+
+fn started_from(arg0: Option<PathBuf>, cwd: Option<&Path>, exe: Option<PathBuf>) -> PathBuf {
+    if let Some(arg0) = arg0.filter(|path| path.components().count() > 1) {
+        match cwd {
+            _ if arg0.is_absolute() => return arg0,
+            Some(cwd) => return cwd.join(arg0),
+            None => {}
+        }
+    }
+    let exe = exe.unwrap_or_else(|| PathBuf::from("breadboard"));
+    match exe.to_str().and_then(|path| path.strip_suffix(" (deleted)")) {
+        Some(path) => PathBuf::from(path),
+        None => exe,
+    }
+}
+
 fn usage_error(reason: &str) -> ExitCode {
     let _ = writeln!(std::io::stderr(), "\n✗ {reason}\n\n{USAGE}");
     ExitCode::FAILURE
@@ -151,4 +181,29 @@ fn session_flags(args: &[String]) -> ExitCode {
         }
         setup::start(&session, has("--here"), has("--no-attach"))
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_binary_is_the_path_it_was_started_by() {
+        let exe = Some(PathBuf::from("/r/target/release/breadboard (deleted)"));
+        let plugin = Path::new("/r/herdr");
+        assert_eq!(
+            started_from(Some("../target/release/breadboard".into()), Some(plugin), exe.clone()),
+            PathBuf::from("/r/herdr/../target/release/breadboard")
+        );
+        assert_eq!(
+            started_from(Some("/x/breadboard".into()), None, exe.clone()),
+            PathBuf::from("/x/breadboard")
+        );
+        // Found on PATH: the file it is, a rebuild's suffix dropped.
+        assert_eq!(
+            started_from(Some("breadboard".into()), Some(plugin), exe),
+            PathBuf::from("/r/target/release/breadboard")
+        );
+        assert_eq!(started_from(None, None, None), PathBuf::from("breadboard"));
+    }
 }

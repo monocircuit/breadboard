@@ -9,6 +9,7 @@ use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
 use super::repo::{self, VITA};
 use super::stack::{self, Summary};
 use super::sweep;
+use crate::cli::lifecycle::handover::claim_on_origin;
 use breadboard_core::git::Worktree;
 use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
@@ -20,34 +21,6 @@ const PRETTIER: &str = "pnpm --filter @monocircuit/prettier-config build";
 const ESLINT: &str = "pnpm --filter @monocircuit/eslint-config build:prod";
 
 pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>]";
-
-/// `34-…` claims issue 34: a branch of someone else for that issue on
-/// origin (`feature/34-…`, `fix/34-…`, not `…/134-…`) means it is taken.
-/// The first such branch, or None.
-pub fn claimed_elsewhere(feature: &str) -> Option<String> {
-    let digits: String = feature.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() || !feature[digits.len()..].starts_with('-') {
-        return None;
-    }
-    let patterns = [format!("feature/{digits}-*"), format!("fix/{digits}-*")];
-    let out = proc::git(
-        &["ls-remote", "--heads", "origin", &patterns[0], &patterns[1]],
-        &repo::main_dir(),
-    )
-    .out;
-    first_claim(&out, &digits)
-}
-
-/// The first branch of `ls-remote` output that claims issue `digits`.
-fn first_claim(ls_remote: &str, digits: &str) -> Option<String> {
-    ls_remote.split('\n').find_map(|line| {
-        let (_, branch) = line.split_once("refs/heads/")?;
-        let (kind, rest) = branch.split_once('/')?;
-        let is_claim =
-            matches!(kind, "feature" | "fix") && rest.strip_prefix(digits).is_some_and(|after| after.starts_with('-'));
-        is_claim.then(|| branch.trim().to_string())
-    })
-}
 
 /// The worktree an agent leaves for the new one: the space its tab stands
 /// in, else where it ran this. None for a human.
@@ -154,7 +127,9 @@ pub fn command(args: &Args) -> ExitCode {
     if proc::git(&["ls-remote", "--exit-code", "--heads", "origin", &branch], &main).is_ok {
         fail(&format!("origin has a branch {branch} already"));
     }
-    if let Some(taken) = claimed_elsewhere(&feature) {
+    // One claim check with wt:orchestrate's (handover.rs): `feature/34-…`, `fix/34-…`, not `…/134-…`.
+    // An origin that doesn't answer stops nothing here: the push of the claim says so.
+    if let Ok(Some(taken)) = claim_on_origin(&main, &feature) {
         fail(&format!(
             "origin has the branch {taken} — someone works on that issue already"
         ));
@@ -206,7 +181,10 @@ pub fn command(args: &Args) -> ExitCode {
     };
     set_hint(&finish(&[INSTALL, PRETTIER, ESLINT]));
 
-    step(&format!("push guard: {} (#184)", sweep::install_push_guard(&dir)));
+    step(&format!(
+        "push guard: {} (#184)",
+        crate::cli::write::mr::install_push_guard(&dir)
+    ));
     step(&format!("git push -u origin {branch} (the empty claim on the issue)"));
     let pushed = proc::run(
         "git",
@@ -288,23 +266,7 @@ pub fn command(args: &Args) -> ExitCode {
         left,
         origin: origin.as_ref().map(|origin| origin.name.as_str()),
         is_stack_only: false,
+        is_stackless: !main_env.exists(),
     });
     ExitCode::SUCCESS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_claim_is_of_that_issue_only() {
-        let out = "a\trefs/heads/fix/305-overview-gitlab-refresh-makes-312\nb\trefs/heads/feature/123-x\nc\trefs/heads/chore/5-x\n";
-        assert_eq!(first_claim(out, "5"), None);
-        assert_eq!(first_claim(out, "23"), None);
-        assert_eq!(first_claim(out, "123").as_deref(), Some("feature/123-x"));
-        assert_eq!(
-            first_claim(out, "305").as_deref(),
-            Some("fix/305-overview-gitlab-refresh-makes-312")
-        );
-    }
 }

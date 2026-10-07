@@ -7,22 +7,24 @@
 //! whole layout (wt:herdr's, `cli::lifecycle::layout`, in this process) when the set of worktrees
 //! changed, a stack's tabs when it came up or went down.
 
+use super::layout_log::{Logged, said};
 use super::{Effect, glab, herdr};
+use crate::cli::lifecycle::herdr::journaled;
 use crate::cli::lifecycle::layout;
 use crate::cli::lifecycle::layout::spaces::space_of;
 use crate::cli::lifecycle::repo::Repo;
 use crate::tui::overview::Overview;
 use breadboard_core::conversations::{bound_session, session_file};
 use breadboard_core::git::feature_of;
-use breadboard_core::gitlab::Mr;
+use breadboard_core::gitlab::{Mr, Pipeline};
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
 use breadboard_core::local::ORCHESTRATOR_TAB;
-use breadboard_core::model::agent_state::{Facts, sidebar_line_of};
+use breadboard_core::model::agent_state::{Facts, NextIssue, sidebar_line_of};
 use breadboard_core::model::merge::checks_of;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, RemoteOf};
-use breadboard_core::record::{SPACE, orchestration_of_label, record_of, titles};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use breadboard_core::record::{SPACE, orchestration_of_label, orchestrator_label, record_of, recorded, titles};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,6 +35,12 @@ const STATE_TOKEN: &str = "wt_state";
 const REPO_TOKEN: &str = "wt_repo";
 /// Tokens of an older breadboard, always cleared.
 const GONE: [&str; 2] = ["wt_head", "wt_tree"];
+
+/// A pane's tokens with their values, None to clear, in the order they are reported.
+type Tokens = Vec<(String, Option<String>)>;
+
+/// An open MR as the sync needs it: its branch, iid, pipeline (its status and the commit it ran for).
+type OpenMr = (String, i64, Option<Pipeline>);
 
 /// What a worktree looked like at the last tick, for its notifications.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +53,8 @@ struct Seen {
 /// What the sync remembers between ticks, shared with its job.
 #[derive(Debug, Default)]
 struct Memory {
-    /// pane → token → value, as reported last.
-    reported: HashMap<String, BTreeMap<String, Option<String>>>,
+    /// pane → its tokens, as reported last.
+    reported: HashMap<String, Tokens>,
     /// The panes reported to: one not in it gets every token, clears too.
     known: HashSet<String>,
     /// worktree → its state at the last tick.
@@ -56,31 +64,38 @@ struct Memory {
 #[derive(Debug, Default)]
 pub struct Sync {
     is_busy: Arc<AtomicBool>,
+    /// A read came in while a tick was busy: one more tick as soon as it ends
+    /// (Node's `r` during a read queues one more), so GitLab's answer is never
+    /// left waiting for the next local change or poll.
+    is_due: bool,
     memory: Arc<Mutex<Memory>>,
     /// The worktrees and whether their stack runs, at the last tick; None before the first.
     known: Option<BTreeMap<PathBuf, bool>>,
+    /// The acts the last tick logged: one that a tick does again is the same
+    /// entry, counted, never a new one (with the world's herdr, which never
+    /// drops a closed tab, a prune repeats on every tick).
+    previous: HashSet<String>,
 }
 
 /// After a read of the view of everything with `--herdr`.
 pub fn after_read(app: &mut Overview) {
-    if !app.actor.is_sync || app.actor.sync.is_busy.load(Ordering::SeqCst) {
+    if !app.actor.is_sync {
         return;
     }
+    if app.actor.sync.is_busy.load(Ordering::SeqCst) {
+        app.actor.sync.is_due = true;
+        return;
+    }
+    app.actor.sync.is_due = false;
     let Some(Local::Everything(local)) = app.local.clone() else {
         return;
     };
-    let mrs: Option<Vec<(String, i64, Option<String>)>> = match &app.remote {
+    let mrs: Option<Vec<OpenMr>> = match &app.remote {
         Some(RemoteOf::Everything(remote)) => Some(
             remote
                 .mrs
                 .iter()
-                .map(|mr| {
-                    (
-                        mr.branch.clone(),
-                        mr.iid,
-                        mr.pipeline.as_ref().map(|pipeline| pipeline.status.clone()),
-                    )
-                })
+                .map(|mr| (mr.branch.clone(), mr.iid, mr.pipeline.clone()))
                 .collect(),
         ),
         _ => None,
@@ -114,51 +129,163 @@ pub fn after_read(app: &mut Overview) {
     let is_busy = app.actor.sync.is_busy.clone();
     is_busy.store(true, Ordering::SeqCst);
     app.actor.queue(move || {
-        let said = tick(&main, &trees, mrs.as_deref(), &memory);
-        // One change of the layout at a time, with wt:herdr and the other overviews.
-        let repo = Repo { main: main.clone() };
-        layout::exclusive(|| {
-            if is_layout {
-                layout::layout(&repo, false);
+        // Free again however the job ends: a panic costs this tick, not every next one.
+        let _free = Free(is_busy);
+        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), &memory);
+        if is_layout || !stacks.is_empty() {
+            // One change of the layout at a time, with wt:herdr and the other overviews.
+            let repo = Repo { main: main.clone() };
+            let (lines, journal) = journaled(|| {
+                layout::exclusive(|| {
+                    let mut lines = Vec::new();
+                    if is_layout && let Some((_, report)) = layout::layout(&repo, false) {
+                        lines.extend(report);
+                    }
+                    for dir in &stacks {
+                        let changed = layout::sync_stack_tabs(&repo, dir, space_of(&repo, dir).as_deref());
+                        if !changed.is_empty() {
+                            lines.push(format!("{}: {}", feature_of(&main, dir), changed.join(" ")));
+                        }
+                    }
+                    lines
+                })
+            });
+            // The spaces it opened, by their ids, for its commands.
+            if !journal.writes.is_empty() {
+                known.extend(spaces().into_iter().map(|space| (space.id, space.label)));
             }
-            for dir in &stacks {
-                layout::sync_stack_tabs(&repo, dir, space_of(&repo, dir).as_deref());
-            }
-        });
-        is_busy.store(false, Ordering::SeqCst);
+            logged.extend(said(&lines, &journal, &known));
+        }
         Some(Box::new(move |app: &mut Overview| {
-            for (paint, text) in said {
-                app.actor.log(paint, text);
+            let keys: HashSet<String> = logged.iter().map(Logged::key).collect();
+            let mut is_done: HashSet<String> = HashSet::new();
+            for act in logged {
+                let key = act.key();
+                // The layout prunes too: the same act twice in one tick is one.
+                if !is_done.insert(key.clone()) {
+                    continue;
+                }
+                if app.actor.sync.previous.contains(&key) {
+                    app.actor.again(&key);
+                } else {
+                    app.actor.log_as(&key, act.paint, act.text, act.detail);
+                }
+            }
+            app.actor.sync.previous = keys;
+            // What came in meanwhile, at once: the newest local and GitLab read.
+            if app.actor.sync.is_due {
+                after_read(app);
             }
         }) as Effect)
     });
 }
 
-/// One tick: sessions, chats, the sidebar's lines, the notifications. What it did, for the log.
+/// Marks the sync free when dropped, at the end of its job.
+struct Free(Arc<AtomicBool>);
+
+impl Drop for Free {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// One tick: sessions, chats, the spaces pruned and sorted, the sidebar's
+/// lines, the notifications. What it did, for the log, and the spaces it
+/// read (id → label) for the layout's commands.
 fn tick(
     main: &Path,
     trees: &[Tree],
-    mrs: Option<&[(String, i64, Option<String>)]>,
+    mrs: Option<&[OpenMr]>,
     memory: &Mutex<Memory>,
-) -> Vec<(Paint, String)> {
-    let mut said = Vec::new();
+) -> (Vec<Logged>, HashMap<String, String>) {
+    let mut logged = Vec::new();
     let panes = all_panes();
     let all_spaces = spaces();
+    let known: HashMap<String, String> = all_spaces
+        .iter()
+        .map(|space| (space.id.clone(), space.label.clone()))
+        .collect();
     let names = titles(main);
-    remember_sessions(main, trees, &panes, &all_spaces, &mut said);
-    remember_chats(main, &panes, &all_spaces, &names, &mut said);
+    remember_sessions(main, trees, &panes, &all_spaces, &mut logged);
+    remember_chats(main, &panes, &all_spaces, &names, &mut logged);
     let repo = Repo {
         main: main.to_path_buf(),
     };
-    layout::exclusive(|| {
-        layout::prune_spaces(&repo);
-        // Cheap when the order stands: a plan or a handover may have changed it (#255).
-        layout::orchestrations::sort_spaces(&repo);
+    let before = Leftovers::of(main);
+    let (lines, journal) = journaled(|| {
+        layout::exclusive(|| {
+            let mut lines = layout::prune_spaces(&repo);
+            // Cheap when the order stands: a plan or a handover may have changed it (#255).
+            lines.extend(layout::orchestrations::sort_spaces(&repo));
+            lines
+        })
     });
+    logged.extend(said(&lines, &journal, &known));
+    logged.extend(before.gone(&Leftovers::of(main), main, &names));
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
     report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
-    notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut said);
-    said
+    notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut logged);
+    (logged, known)
+}
+
+/// The records and checkouts of the orchestrations, before and after a
+/// prune: what it removed has no line of its own (`pruneOrchestrators`).
+struct Leftovers {
+    records: BTreeSet<String>,
+    checkouts: BTreeSet<String>,
+}
+
+impl Leftovers {
+    fn of(main: &Path) -> Leftovers {
+        let dir = breadboard_core::git::orchestrations_dir(main);
+        let checkouts = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Leftovers {
+            records: recorded(main).into_iter().collect(),
+            checkouts,
+        }
+    }
+
+    /// What went between `self` and `now`, in words: `removed the record of ⇶ x`.
+    fn gone(&self, now: &Leftovers, main: &Path, names: &[(String, String)]) -> Vec<Logged> {
+        let label = |name: &str| match names.iter().find(|(known, _)| known == name) {
+            Some((_, title)) => format!("⇶ {title}"),
+            None => orchestrator_label(main, name),
+        };
+        let dir = breadboard_core::git::orchestrations_dir(main);
+        let mut out = Vec::new();
+        for name in self.records.difference(&now.records) {
+            out.push(Logged::new(
+                Paint::Green,
+                format!(
+                    "removed the record of {} · neither a worktree nor a space of it is left",
+                    label(name)
+                ),
+                Some(format!(
+                    "rm {}",
+                    herdr::quote(&dir.join(format!("{name}.json")).to_string_lossy())
+                )),
+            ));
+        }
+        for name in self.checkouts.difference(&now.checkouts) {
+            out.push(Logged::new(
+                Paint::Green,
+                format!("removed the checkout of {} · its worktrees are gone", label(name)),
+                Some(format!(
+                    "git worktree remove {}",
+                    herdr::quote(&dir.join(name).to_string_lossy())
+                )),
+            ));
+        }
+        out
+    }
 }
 
 /// Each worktree's conversation bound to it (`rememberSessions`): the claude
@@ -168,8 +295,9 @@ fn remember_sessions(
     trees: &[Tree],
     panes: &[Pane],
     all_spaces: &[breadboard_core::herdr::Space],
-    said: &mut Vec<(Paint, String)>,
+    logged: &mut Vec<Logged>,
 ) {
+    let mut written: Vec<(String, String)> = Vec::new();
     for tree in trees.iter().filter(|tree| tree.dir != main) {
         // Never into a worktree being removed.
         if !tree.dir.join(".git").exists() || !tree.dir.join(".claude").is_dir() {
@@ -189,9 +317,32 @@ fn remember_sessions(
             continue;
         }
         if std::fs::write(session_file(&tree.dir), format!("{first}\n")).is_ok() {
-            said.push((Paint::Dim, format!("{label}: its conversation {first} written down")));
+            written.push((label, first.to_string()));
         }
     }
+    if written.is_empty() {
+        return;
+    }
+    let features: Vec<&str> = written.iter().map(|(label, _)| label.as_str()).collect();
+    let (what, them) = if written.len() == 1 {
+        ("conversation", "it")
+    } else {
+        ("conversations", "them")
+    };
+    logged.push(Logged::new(
+        Paint::Green,
+        format!(
+            "wrote down the {what} of {} · a restart of herdr resumes {them}",
+            features.join(", ")
+        ),
+        Some(
+            written
+                .iter()
+                .map(|(label, id)| format!("{id} → {label}/.claude/herdr-session"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        ),
+    ));
 }
 
 /// Every orchestration's chat written down (`rememberChats`): the claude of
@@ -201,7 +352,7 @@ fn remember_chats(
     panes: &[Pane],
     all_spaces: &[breadboard_core::herdr::Space],
     names: &[(String, String)],
-    said: &mut Vec<(Paint, String)>,
+    logged: &mut Vec<Logged>,
 ) {
     for space in all_spaces {
         let Some(name) = orchestration_of_label(&space.label, names) else {
@@ -234,9 +385,13 @@ fn remember_chats(
         };
         let Some(pane) = pane else { continue };
         if tab.is_none() && herdr::did(&["tab", "rename", &pane.tab, ORCHESTRATOR_TAB]) {
-            said.push((
-                Paint::Dim,
-                format!("{}: its chat's tab named {ORCHESTRATOR_TAB}", space.label),
+            logged.push(Logged::new(
+                Paint::Green,
+                format!(
+                    "named the tab of the chat of {} {ORCHESTRATOR_TAB} · its lone claude",
+                    space.label
+                ),
+                Some(format!("herdr tab rename {} {ORCHESTRATOR_TAB}", pane.tab)),
             ));
         }
         let cwd = breadboard_core::conversations::running_claudes()
@@ -255,7 +410,7 @@ fn remember_chats(
 fn report_states(
     main: &Path,
     trees: &[Tree],
-    mrs: Option<&[(String, i64, Option<String>)]>,
+    mrs: Option<&[OpenMr]>,
     panes: &[Pane],
     all_spaces: &[breadboard_core::herdr::Space],
     memory: &mut Memory,
@@ -276,13 +431,10 @@ fn report_states(
         let tree = breadboard_core::local::with_orchestration_facts(listed.clone(), &claudes);
         let mr = mrs
             .and_then(|mrs| mrs.iter().find(|(branch, _, _)| *branch == tree.branch))
-            .map(|(_, iid, status)| Mr {
+            .map(|(_, iid, pipeline)| Mr {
                 iid: *iid,
                 state: "opened".into(),
-                pipeline: status.as_ref().map(|status| breadboard_core::gitlab::Pipeline {
-                    status: status.clone(),
-                    ..Default::default()
-                }),
+                pipeline: pipeline.clone(),
                 ..Mr::default()
             });
         // Before GitLab's first answer an awaited MR counts as open.
@@ -294,6 +446,7 @@ fn report_states(
                 .unwrap_or_default(),
             None => HashSet::new(),
         };
+        let handover = handover_of(main, &tree, mrs.map(|_| &open));
         let checks = checks_of(&[], &tree.actions, &tree.answered);
         for pane in own {
             let line = sidebar_line_of(
@@ -302,7 +455,7 @@ fn report_states(
                     mr: mr.as_ref(),
                     status: pane.status.as_deref(),
                     merged: Some(&merged),
-                    handover: None,
+                    handover: handover.as_ref(),
                     checks: &checks,
                 },
             );
@@ -313,16 +466,49 @@ fn report_states(
     let mut ids: HashSet<String> = agents.iter().map(|pane| pane.id.clone()).collect();
     ids.extend(memory.reported.keys().cloned());
     for pane in &ids {
-        let mut tokens: BTreeMap<String, Option<String>> = BTreeMap::new();
-        tokens.insert(STATE_TOKEN.into(), lines.get(pane).cloned());
-        tokens.insert(REPO_TOKEN.into(), repos.get(pane).cloned());
-        for gone in GONE {
-            tokens.insert(gone.into(), None);
-        }
+        // In Node's order: the state, the repo, the gone ones.
+        let mut tokens: Tokens = vec![
+            (STATE_TOKEN.into(), lines.get(pane).cloned()),
+            (REPO_TOKEN.into(), repos.get(pane).cloned()),
+        ];
+        tokens.extend(GONE.iter().map(|gone| (gone.to_string(), None)));
         report(pane, tokens, memory);
     }
     // A pane that is gone is forgotten: herdr may give its id to a new one.
     memory.known.retain(|pane| ids.contains(pane));
+}
+
+/// The handover announced for the agent of a worktree (agent-state.mjs
+/// `handoverOf`): from the record of the orchestration that started it, by
+/// the names its agent goes by; `open`: the iids GitLab has open, None
+/// before it answered (every awaited one counts as open then).
+fn handover_of(main: &Path, tree: &Tree, open: Option<&HashSet<i64>>) -> Option<NextIssue> {
+    let record = record_of(main, &tree.origin.as_ref()?.name)?;
+    let worker = tree
+        .claude
+        .as_ref()
+        .and_then(|claude| record.workers.iter().find(|worker| worker.id == claude.id));
+    let names: Vec<&str> = [
+        Some(tree.name.as_str()),
+        worker.and_then(|worker| worker.name.as_deref()),
+        worker.and_then(|worker| worker.was.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let handover = record
+        .handovers
+        .iter()
+        .find(|handover| names.contains(&handover.to.as_str()))?;
+    Some(NextIssue {
+        number: handover.number,
+        open: handover
+            .after
+            .iter()
+            .copied()
+            .filter(|iid| open.is_none_or(|open| open.contains(iid)))
+            .collect(),
+    })
 }
 
 /// pane → the repo of its agent, for one in a linked worktree's space (`repoOfAgents`).
@@ -367,12 +553,18 @@ fn repos_of(all_spaces: &[breadboard_core::herdr::Space], agents: &[&Pane]) -> H
 }
 
 /// The tokens of one pane: set what changed, clear what went.
-fn report(pane: &str, tokens: BTreeMap<String, Option<String>>, memory: &mut Memory) {
+fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
     let is_new = memory.known.insert(pane.to_string());
     let before = memory.reported.get(pane).cloned().unwrap_or_default();
+    let was = |token: &str| {
+        before
+            .iter()
+            .find(|(known, _)| known == token)
+            .and_then(|(_, value)| value.clone())
+    };
     let mut args: Vec<String> = Vec::new();
     for (token, value) in &tokens {
-        if !is_new && before.get(token).cloned().flatten() == *value {
+        if !is_new && was(token) == *value {
             continue;
         }
         match value {
@@ -385,7 +577,7 @@ fn report(pane: &str, tokens: BTreeMap<String, Option<String>>, memory: &mut Mem
         all.extend(args.iter().map(String::as_str));
         herdr::did(&all);
     }
-    if tokens.values().any(Option::is_some) {
+    if tokens.iter().any(|(_, value)| value.is_some()) {
         memory.reported.insert(pane.to_string(), tokens);
     } else {
         memory.reported.remove(pane);
@@ -399,12 +591,12 @@ fn report(pane: &str, tokens: BTreeMap<String, Option<String>>, memory: &mut Mem
 fn notify_changes(
     main: &Path,
     trees: &[Tree],
-    mrs: Option<&[(String, i64, Option<String>)]>,
+    mrs: Option<&[OpenMr]>,
     panes: &[Pane],
     all_spaces: &[breadboard_core::herdr::Space],
     names: &[(String, String)],
     memory: &mut Memory,
-    said: &mut Vec<(Paint, String)>,
+    logged: &mut Vec<Logged>,
 ) {
     let open: HashSet<String> = all_spaces
         .iter()
@@ -425,7 +617,7 @@ fn notify_changes(
             }),
             mr: mrs
                 .and_then(|mrs| mrs.iter().find(|(branch, _, _)| *branch == tree.branch))
-                .map(|(_, iid, status)| (*iid, status.clone())),
+                .map(|(_, iid, pipeline)| (*iid, pipeline.as_ref().map(|pipeline| pipeline.status.clone()))),
             has_remote: mrs.is_some(),
         };
         let before = memory.last.insert(tree.dir.clone(), now.clone());
@@ -434,8 +626,17 @@ fn notify_changes(
             glab::get(main, &glab::mr_endpoint(iid))
                 .is_ok_and(|mr| mr.get("state").and_then(|state| state.as_str()) == Some("merged"))
         }) {
-            herdr::notify(&feature, &body, sound);
-            said.push((Paint::Dim, format!("notified {feature}: {body}")));
+            if herdr::notify(&feature, &body, sound) {
+                logged.push(Logged::new(
+                    Paint::Green,
+                    format!("notified you about {feature}: {body}"),
+                    Some(format!(
+                        "herdr notification show {} --body {} --sound {sound}",
+                        herdr::quote(&feature),
+                        herdr::quote(&body)
+                    )),
+                ));
+            }
         }
     }
     let current: HashSet<&PathBuf> = trees.iter().map(|tree| &tree.dir).collect();
@@ -500,15 +701,11 @@ mod tests {
     #[test]
     fn reports_only_what_changed_all_to_a_new_pane() {
         let mut memory = Memory::default();
-        let tokens = |state: Option<&str>| {
-            let mut tokens = BTreeMap::new();
-            tokens.insert(STATE_TOKEN.to_string(), state.map(String::from));
-            tokens
-        };
+        let tokens = |state: Option<&str>| vec![(STATE_TOKEN.to_string(), state.map(String::from))];
         // Outside herdr nothing is called; the memory still follows.
         report("p1", tokens(Some("at work")), &mut memory);
         assert!(memory.known.contains("p1"));
-        assert_eq!(memory.reported["p1"][STATE_TOKEN].as_deref(), Some("at work"));
+        assert_eq!(memory.reported["p1"][0].1.as_deref(), Some("at work"));
         report("p1", tokens(None), &mut memory);
         assert!(!memory.reported.contains_key("p1"));
     }

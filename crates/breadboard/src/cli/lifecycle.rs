@@ -10,10 +10,11 @@
 //! parse it: the overview's ✕, wt:orchestrate's undo).
 
 mod args;
-mod claude;
+mod changelog;
+pub mod claude;
 mod gitlab;
 pub mod handover;
-mod herdr;
+pub mod herdr;
 pub mod layout;
 pub mod plugin;
 pub mod proc;

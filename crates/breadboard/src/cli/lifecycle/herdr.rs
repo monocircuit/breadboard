@@ -15,13 +15,86 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use super::proc::{Wait, wait_within};
 
 thread_local! {
     /// How deep this thread is in `remembering`.
     static REMEMBERING: Cell<u32> = const { Cell::new(0) };
     /// The answers of reads since the last write inside `remembering`, by their arguments.
     static READS: RefCell<HashMap<String, Option<Value>>> = RefCell::new(HashMap::new());
+    /// What this thread asked herdr to do inside `journaled`, None outside it.
+    static JOURNAL: RefCell<Option<Journal>> = const { RefCell::new(None) };
+}
+
+/// The herdr writes of a stretch of code, for whoever says what it did (the
+/// overview's log, lazygit's command log): each write herdr did, word for
+/// word, and the labels of the tabs it read meanwhile, so a `tab close
+/// <id>` can be named by the tab it closed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Journal {
+    /// The writes herdr did (exit 0), in order; a socket call as `socket <method> <params>`.
+    pub writes: Vec<Vec<String>>,
+    /// tab id → its label.
+    pub tabs: HashMap<String, String>,
+    /// pane id → the id of its tab.
+    pub panes: HashMap<String, String>,
+}
+
+impl Journal {
+    /// The label of a tab, or of the tab a pane stands in, as last read.
+    pub fn tab_label(&self, id: &str) -> Option<&str> {
+        let tab = self.panes.get(id).map_or(id, String::as_str);
+        self.tabs.get(tab).map(String::as_str)
+    }
+}
+
+/// `run` with what it made herdr do written down (a journal inside another one adds to it).
+pub fn journaled<T>(run: impl FnOnce() -> T) -> (T, Journal) {
+    let outer = JOURNAL.replace(Some(Journal::default()));
+    let result = run();
+    let journal = JOURNAL.replace(outer).unwrap_or_default();
+    JOURNAL.with_borrow_mut(|outer| {
+        if let Some(outer) = outer {
+            outer.writes.extend(journal.writes.iter().cloned());
+            outer.tabs.extend(journal.tabs.clone());
+            outer.panes.extend(journal.panes.clone());
+        }
+    });
+    (result, journal)
+}
+
+/// A call herdr answered, into the journal when one is kept: a write it did, the tabs and panes a read named.
+fn note(args: &[&str], output: &std::process::Output) {
+    JOURNAL.with_borrow_mut(|journal| {
+        let Some(journal) = journal else { return };
+        if !output.status.success() {
+            return;
+        }
+        if !is_read(args) {
+            journal.writes.push(args.iter().map(|arg| arg.to_string()).collect());
+            return;
+        }
+        let Some(result) = serde_json::from_slice::<Value>(&output.stdout)
+            .ok()
+            .and_then(|answer| answer.get("result").cloned())
+        else {
+            return;
+        };
+        let items = |key: &str| result.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+        for tab in items("tabs") {
+            journal
+                .tabs
+                .insert(s(&tab, "tab_id").to_string(), s(&tab, "label").to_string());
+        }
+        for pane in items("panes") {
+            journal
+                .panes
+                .insert(s(&pane, "pane_id").to_string(), s(&pane, "tab_id").to_string());
+        }
+    });
 }
 
 /// `run` with herdr's reads remembered until a write: for a stretch of
@@ -63,14 +136,64 @@ fn is_read(args: &[&str]) -> bool {
         .any(|read| args.len() >= 2 && args[0] == read[0] && args[1] == read[1])
 }
 
+/// How long one herdr call may take: they answer in milliseconds.
+pub const LIMIT: Duration = Duration::from_secs(10);
+
+/// After a call went past [`LIMIT`], herdr counts as gone this long: every
+/// call answers None at once (a layout makes ~80, a removal ~20), then it is
+/// asked again (the overview runs for days).
+const SILENCE: Duration = Duration::from_secs(60);
+
+/// Since when herdr did not answer, if it did not.
+static SILENT_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Set on the commands this one starts while herdr is silent: they don't
+/// wait for it again (a handover's undo, a removal's changelog, 10 s each).
+const SILENT_ENV: &str = "BREADBOARD_HERDR_SILENT";
+
+/// Whether herdr went silent less than [`SILENCE`] ago, here or in the
+/// command that started this one: its calls answer None.
+pub fn is_silent() -> bool {
+    std::env::var_os(SILENT_ENV).is_some_and(|value| value == "1")
+        || SILENT_SINCE
+            .lock()
+            .ok()
+            .and_then(|since| *since)
+            .is_some_and(|since| since.elapsed() < SILENCE)
+}
+
+/// `command` (a child of this one) told that herdr is silent, when it is.
+pub fn pass_silence(command: &mut Command) -> &mut Command {
+    if is_silent() {
+        command.env(SILENT_ENV, "1");
+    }
+    command
+}
+
+/// `herdr <args>`, given at most [`LIMIT`]: a herdr server that hangs never
+/// holds a removal that is done (today's waited without end).
 fn spawn(args: &[&str]) -> Option<std::process::Output> {
-    Command::new("herdr")
+    if is_silent() {
+        return None;
+    }
+    let child = Command::new("herdr")
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .ok()
+        .spawn()
+        .ok()?;
+    let what = format!("herdr ({})", args.iter().take(2).copied().collect::<Vec<_>>().join(" "));
+    let output = wait_within(child, &Wait::new(what, LIMIT)).ok()?;
+    if let Some(output) = &output {
+        note(args, output);
+    }
+    if output.is_none()
+        && let Ok(mut since) = SILENT_SINCE.lock()
+    {
+        *since = Some(Instant::now());
+    }
+    output
 }
 
 /// `herdr <args>` → its `result`, None when herdr is missing, failed or
@@ -108,6 +231,13 @@ fn answer(args: &[&str], ask: impl FnOnce() -> Option<Value>) -> Option<Value> {
 pub fn did(args: &[&str]) -> bool {
     forget();
     spawn(args).is_some_and(|output| output.status.success())
+}
+
+/// `herdr <args>` with its whole answer, within the limit of every call;
+/// None when herdr didn't start or didn't answer. Forgets every read.
+pub fn raw(args: &[&str]) -> Option<std::process::Output> {
+    forget();
+    spawn(args)
 }
 
 /// Every read asks herdr again.
@@ -155,6 +285,46 @@ pub fn panes_of(workspace: &str) -> Vec<Value> {
 /// The panes of every space.
 pub fn all_panes() -> Vec<Value> {
     list(&["pane", "list"], "panes")
+}
+
+/// The panes of every space as herdr answers, or why it gave none: an
+/// empty list is an answer, a herdr that hung or failed is not (a handover
+/// must not take it for "no claude runs the agent").
+pub fn all_panes_answered() -> Result<Vec<Value>, String> {
+    let args = ["pane", "list"];
+    forget();
+    let Some(output) = spawn(&args) else {
+        return Err(if is_silent() {
+            format!("herdr did not answer in {} s (herdr pane list)", LIMIT.as_secs())
+        } else {
+            "herdr could not be started (herdr pane list)".into()
+        });
+    };
+    panes_answered(&output)
+}
+
+/// The panes in herdr's answer to `pane list`, or why it is none.
+fn panes_answered(output: &std::process::Output) -> Result<Vec<Value>, String> {
+    let result = serde_json::from_slice::<Value>(&output.stdout)
+        .ok()
+        .and_then(|answer| answer.get("result").cloned())
+        .filter(|_| output.status.success());
+    match result {
+        // A result without panes is none (lib/herdr.mjs read it so).
+        Some(result) => Ok(result
+            .get("panes")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()),
+        None => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let first = stderr.lines().map(str::trim).find(|line| !line.is_empty());
+            Err(match first {
+                Some(line) => format!("herdr pane list failed: {line}"),
+                None => "herdr pane list answered no JSON".into(),
+            })
+        }
+    }
 }
 
 /// The space with this label.
@@ -238,11 +408,24 @@ pub fn api(method: &str, params: Value) -> Option<Value> {
     stream.write_all(format!("{request}\n").as_bytes()).ok()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).ok()?;
-    serde_json::from_str::<Value>(&line)
+    let result = serde_json::from_str::<Value>(&line)
         .ok()?
         .get("result")
         .cloned()
-        .filter(|result| !result.is_null())
+        .filter(|result| !result.is_null())?;
+    JOURNAL.with_borrow_mut(|journal| {
+        if let Some(journal) = journal {
+            journal
+                .writes
+                .push(vec!["socket".into(), method.into(), params_text(&request)]);
+        }
+    });
+    Some(result)
+}
+
+/// The params of a socket request as one word of the journal.
+fn params_text(request: &Value) -> String {
+    request.get("params").map(Value::to_string).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -290,6 +473,30 @@ mod tests {
         });
         assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(3)));
         remembering(|| assert_eq!(answer(&tabs, || ask(&asked)), Some(json!(4))));
+    }
+
+    #[test]
+    fn a_failed_pane_list_is_no_empty_one() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |code: i32, stdout: &str, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        let panes = output(0, r#"{"result":{"panes":[{"pane_id":"p1"}]}}"#, "");
+        assert_eq!(panes_answered(&panes).unwrap(), vec![json!({ "pane_id": "p1" })]);
+        assert_eq!(
+            panes_answered(&output(0, r#"{"result":{}}"#, "")).unwrap(),
+            Vec::<Value>::new()
+        );
+        assert_eq!(
+            panes_answered(&output(1, "", "\nerror: no server on the socket\n")).unwrap_err(),
+            "herdr pane list failed: error: no server on the socket"
+        );
+        assert_eq!(
+            panes_answered(&output(0, "garbage", "")).unwrap_err(),
+            "herdr pane list answered no JSON"
+        );
     }
 
     #[test]

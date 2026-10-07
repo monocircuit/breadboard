@@ -273,7 +273,9 @@ fn words_of(text: &str) -> String {
         .map(|word| {
             let digits = word.chars().take_while(char::is_ascii_digit).count();
             if digits > 0 && word[digits..].starts_with('-') && word.len() > digits + 1 {
-                format!("#{}", &word[..digits])
+                // A list keeps its commas: `of #292, #307`.
+                let mark = word.strip_suffix(',').map_or("", |_| ",");
+                format!("#{}{mark}", &word[..digits])
             } else {
                 word.to_string()
             }
@@ -313,6 +315,9 @@ pub fn done(page: &mut Page<Act>, ctx: &Ctx) {
                 theme::dim()
             };
             look::flow(scene, &[look::span(&did.text, text)]);
+            if did.times > 1 {
+                look::flow(scene, &[look::dim(format!("· {} times", did.times))]);
+            }
             // What was run or typed, word for word, under it (lazygit's command log).
             if let Some(detail) = &did.detail {
                 scene.end_line();
@@ -336,6 +341,14 @@ mod tests {
             "typed into the agent\u{a0}of\u{a0}#305"
         );
         assert_eq!(short_of("merged !316"), "merged !316");
+        assert_eq!(
+            short_of("wrote down the conversation of 307-rust-gauntlet · a restart of herdr resumes it"),
+            "wrote down the conversation\u{a0}of\u{a0}#307"
+        );
+        assert_eq!(
+            short_of("closed the overview tab of 292-a-b, 307-c-d · #332: x"),
+            "closed the overview tab\u{a0}of\u{a0}#292, #307"
+        );
         assert_eq!(
             short_of("removing the worktree 303-a-b: pnpm wt:remove 303-a-b"),
             "removing the worktree #303"

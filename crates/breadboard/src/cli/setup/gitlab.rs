@@ -14,7 +14,7 @@ use serde_json::Value;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -127,15 +127,23 @@ fn once(endpoint: &str) -> Result<Value, Failure> {
 }
 
 /// What a failed `glab api` said, in the words of lib/glab.mjs (`HTTP 502
-/// Bad Gateway`, `HTTP 429, rate limit`, `timeout`, `network: …`), and
-/// whether another try may pass.
+/// Bad Gateway`, `HTTP 429, rate limit`, `timeout`), the network's in a few
+/// words (`connection refused`, anywhere in what it said: a crash names it
+/// above its last line), and whether another try may pass.
 fn reason_of(stderr: &str) -> (String, bool) {
     static STATUS: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^(?:HTTP )?([1-5]\d\d)\b(?: ([A-Za-z][A-Za-z' ]*[A-Za-z]))?|\(HTTP ([1-5]\d\d)\)").unwrap()
     });
-    static NETWORK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)connection (?:refused|reset)|no such host|network is unreachable|unexpected EOF|tls handshake")
-            .unwrap()
+    static NETWORK: [(&str, &str); 6] = [
+        ("connection refused", "connection refused"),
+        ("econnrefused", "connection refused"),
+        ("connection reset", "connection reset"),
+        ("econnreset", "connection reset"),
+        ("no such host", "host not found"),
+        ("enotfound", "host not found"),
+    ];
+    static NETWORK_ELSE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)network is unreachable|enetunreach|unexpected EOF|tls handshake|fetch failed").unwrap()
     });
     static TIMEOUT_SAID: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)timeout|timed out|deadline exceeded").unwrap());
@@ -161,8 +169,13 @@ fn reason_of(stderr: &str) -> (String, bool) {
     if TIMEOUT_SAID.is_match(said) {
         return ("timeout".to_string(), true);
     }
-    if NETWORK.is_match(said) {
-        return (format!("network: {said}"), true);
+    let all = stderr.to_lowercase();
+    if let Some((_, kind)) = NETWORK.iter().find(|(said, _)| all.contains(said)) {
+        return (kind.to_string(), true);
+    }
+    // `fetch failed`: what Node's fetch says without a connection.
+    if NETWORK_ELSE.is_match(stderr) {
+        return ("no connection".to_string(), true);
     }
     (said.to_string(), false)
 }
@@ -191,6 +204,30 @@ pub fn in_turns<T: Sync, R: Send>(items: &[T], at_once: usize, run: impl Fn(&T) 
     });
     done.sort_by_key(|(at, _)| *at);
     done.into_iter().map(|(_, result)| result).collect()
+}
+
+/// `in_turns` of reads worth nothing without each other: the first that
+/// fails for good is the answer, and no read starts after it (a GitLab that
+/// is gone costs one round of tries, not one per read).
+pub fn all_in_turns<T: Sync, V: Send, E: Send>(
+    items: &[T],
+    at_once: usize,
+    run: impl Fn(&T) -> Result<V, E> + Sync,
+) -> Result<Vec<V>, E> {
+    let is_failed = AtomicBool::new(false);
+    in_turns(items, at_once, |item| {
+        if is_failed.load(Ordering::Relaxed) {
+            return None;
+        }
+        let result = run(item);
+        if result.is_err() {
+            is_failed.store(true, Ordering::Relaxed);
+        }
+        Some(result)
+    })
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// `encodeURIComponent`.
@@ -222,6 +259,17 @@ mod tests {
     }
 
     #[test]
+    fn stops_at_the_first_read_that_fails() {
+        let asked = AtomicUsize::new(0);
+        let read = all_in_turns(&[1, 2, 3, 4, 5], 1, |n| {
+            asked.fetch_add(1, Ordering::Relaxed);
+            if *n == 2 { Err(*n) } else { Ok(*n) }
+        });
+        assert_eq!((read, asked.load(Ordering::Relaxed)), (Err(2), 2));
+        assert_eq!(all_in_turns(&[1, 2], 2, |n| Ok::<_, ()>(n * 3)), Ok(vec![3, 6]));
+    }
+
+    #[test]
     fn tells_what_passes_from_what_does_not() {
         assert_eq!(
             reason_of("glab: 502 Bad Gateway\n"),
@@ -243,7 +291,21 @@ mod tests {
             reason_of("Get \"https://gitlab.com/api/v4/x\": dial tcp: i/o timeout"),
             ("timeout".to_string(), true)
         );
-        assert!(reason_of("dial tcp: lookup gitlab.com: no such host").1);
+        assert_eq!(
+            reason_of("dial tcp: lookup gitlab.com: no such host"),
+            ("host not found".to_string(), true)
+        );
+        // A crash of what answers for glab: its cause, not its last line.
+        assert_eq!(
+            reason_of(
+                "TypeError: fetch failed\n  [cause]: Error: connect ECONNREFUSED 127.0.0.1:9\n}\n\nNode.js v25.8.0\n"
+            ),
+            ("connection refused".to_string(), true)
+        );
+        assert_eq!(
+            reason_of("[TypeError: fetch failed] {\n  [cause]: Error: bad port\n}\n\nNode.js v25.8.0\n"),
+            ("no connection".to_string(), true)
+        );
         assert_eq!(
             reason_of("no merge request for x"),
             ("no merge request for x".to_string(), false)

@@ -477,14 +477,6 @@ pub fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// The non-empty lines of a text.
-pub fn lines(text: &str) -> Vec<String> {
-    text.split('\n')
-        .filter(|line| !line.is_empty())
-        .map(String::from)
-        .collect()
-}
-
 /// Whether claude runs this (Claude Code sets CLAUDECODE): an agent stays in its tab.
 pub fn is_agent() -> bool {
     std::env::var_os("CLAUDECODE").is_some_and(|value| !value.is_empty())
@@ -503,17 +495,6 @@ pub fn child() -> std::process::Command {
     let mut command = std::process::Command::new(entry());
     command.env(PLUGIN_CHECKED, "1");
     command
-}
-
-/// The folder of the breadboard package this binary was built in
-/// (`packages/breadboard`): its `nvim/` and `chromium/` lie there. Found
-/// above the binary, else in the main checkout.
-pub fn package_dir(main: &Path) -> PathBuf {
-    entry()
-        .ancestors()
-        .find(|dir| dir.join("nvim").join("changes.lua").is_file())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| main.join("packages").join("breadboard"))
 }
 
 #[cfg(test)]

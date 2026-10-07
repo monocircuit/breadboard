@@ -4,10 +4,13 @@
 //! of its boxes (#294) and what it still lacks with who acts on it; the
 //! merged below a fold. Titles wrap in their column, reasons under the
 //! title's, nothing is cut (#304). Hover lights a whole row (#296); a click
-//! opens the MR, its buttons resolve conflicts or merge on two clicks.
+//! opens the MR, its pipeline mark the pipeline, its one button resolves
+//! conflicts (§11.3). The merge on two clicks is the posted merge action's
+//! (ACTIONS, rule 6); a row only says when the overview merges it.
 
 use super::actor::merge::{Merge, Phase};
 use super::{Act, Ctx, Fold, look};
+use crate::tui::links;
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Page, Scene};
@@ -25,14 +28,10 @@ use ratatui::text::{Line, Span};
 const MIN_TITLE: u16 = 24;
 /// The fewest columns the bar keeps before its counts go (#294 `MIN_BAR`).
 const MIN_BAR: u16 = 8;
-/// The status of an open MR nothing holds up, and its button.
+/// The status of an open MR nothing holds up.
 const READY: &str = "ready to merge";
-const MERGE: &str = "merge";
 /// Core's status of an MR closed without a merge.
 const CLOSED: &str = "closed";
-/// The button once a first click armed it: as wide as `ready to merge` and its
-/// button, so nothing on the row moves (merge.mjs `mergeText`'s armed words).
-const ARMED: &str = "click again to merge";
 /// Below this many columns for the title the row is one flow of words, no columns.
 const MIN_COLUMNS: u16 = 16;
 
@@ -295,9 +294,10 @@ fn failed_of<'a>(ctx: &'a Ctx, mr: &MrFacts) -> Option<&'a str> {
         .and_then(|merge| merge.error.as_deref())
 }
 
-/// What an MR's status says, at the right of its head: `merged 2 h ago`, or
-/// `ready to merge` and the button that merges on two clicks; once the first
-/// click armed it, the button says so in red, then `merging …`, `merged`.
+/// What an MR's status says, at the right of its head: `2 h ago` under the
+/// merged fold, or `ready to merge`; while the overview merges it (two clicks
+/// on its merge action) `merging …`, then `merged`. Never a button: the row's
+/// click opens the MR, as Node's (§11.3).
 fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static>> {
     let Some(status) = mr.status.as_ref() else {
         return vec![];
@@ -308,31 +308,25 @@ fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static>> {
         let text = status.text.strip_prefix("merged ").unwrap_or(&status.text);
         return vec![look::dim(text)];
     }
-    let mut spans = look::spans(std::slice::from_ref(status));
-    if !is_ready(mr) {
-        return spans;
-    }
     match merge.map(|merge| merge.phase) {
-        Some(Phase::Armed) => return vec![Span::styled(format!(" {ARMED} "), Tone::Red.button())],
-        Some(Phase::Running) => return vec![look::span("merging …", theme::tone(Tone::Yellow))],
-        Some(Phase::Merged) => return vec![look::span("merged", theme::tone(Tone::Green))],
-        Some(Phase::Failed) | None => {}
+        Some(Phase::Running) if is_ready(mr) => vec![look::span("merging …", theme::tone(Tone::Yellow))],
+        Some(Phase::Merged) if is_ready(mr) => vec![look::span("merged", theme::tone(Tone::Green))],
+        _ => look::spans(std::slice::from_ref(status)),
     }
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(format!(" {MERGE} "), Tone::Green.button()));
-    spans
 }
 
 /// `!iid  mark  title  status`: the title wraps in its column, the status at
 /// the right of its first line; a narrow row is one flow of words. The
-/// layout is the one of the status before any click: arming, merging never
-/// move the row.
+/// layout is the one of the status before a merge: merging never moves the row.
 fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&Merge>) {
+    // `!iid` is the MR's link, open and merged alike (§11.3): a Ctrl-click
+    // in herdr opens its page, as on the worktree's node.
     let iid = if mr.is_merged {
         look::dim(format!("!{}", mr.iid))
     } else {
         look::bold(format!("!{}", mr.iid))
     };
+    let iid = Span::styled(iid.content, links::style(iid.style, Some(&mr.url)));
     let title = title_spans(&mr.title, mr.is_merged);
     let mark = mark_of(mr);
     let status = {
@@ -359,16 +353,7 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&
         }
         look::flow(scene, &title);
         if !status.is_empty() {
-            let x = scene.x();
-            let rects = scene.atom(status.clone());
-            merge_region(
-                scene,
-                mr,
-                merge,
-                &status,
-                rects.first().map(|rect| rect.x).unwrap_or(x),
-                scene.y(),
-            );
+            scene.atom(status);
         }
         scene.indent(0);
         scene.end_line();
@@ -425,7 +410,6 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&
             let x = width - status_width;
             pad(&mut spans, x);
             spans.extend(status.iter().cloned());
-            merge_region(scene, mr, merge, &status, x, top);
         }
         scene.lines.push(Line::from(spans));
     }
@@ -435,7 +419,6 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&
         let mut spans = Vec::new();
         pad(&mut spans, x);
         spans.extend(status.iter().cloned());
-        merge_region(scene, mr, merge, &status, x, scene.y());
         scene.lines.push(Line::from(spans));
     }
 }
@@ -477,33 +460,6 @@ fn pad(spans: &mut Vec<Span<'static>>, x: u16) {
     if short > 0 {
         spans.push(Span::raw(" ".repeat(short as usize)));
     }
-}
-
-/// The region of the merge button in a status drawn at `x`, line `y`: two
-/// clicks merge (merge.mjs `clickMerge`), the actor arms and merges; none
-/// while it merges.
-fn merge_region(scene: &mut Scene<Act>, mr: &MrFacts, merge: Option<&Merge>, status: &[Span<'static>], x: u16, y: u16) {
-    if !is_ready(mr) {
-        return;
-    }
-    let (label, tone) = match merge.map(|merge| merge.phase) {
-        Some(Phase::Armed) => (ARMED, Tone::Red),
-        Some(Phase::Running | Phase::Merged) => return,
-        Some(Phase::Failed) | None => (MERGE, Tone::Green),
-    };
-    let width = Span::raw(format!(" {label} ")).width() as u16;
-    let at = x + width_of(status) - width;
-    scene.regions.push(Region {
-        area: Rect::new(at, y, width, 1),
-        target: Target::Button {
-            label: label.into(),
-            tone,
-            action: Act::Go(Go::Merge {
-                branch: mr.branch.clone(),
-                action: None,
-            }),
-        },
-    });
 }
 
 /// A title, its conventional-commit type and scope (`feat(breadboard): `)
@@ -811,6 +767,40 @@ mod tests {
     }
 
     #[test]
+    fn the_iid_is_the_mrs_link_open_and_merged_wide_and_narrow() {
+        // §11.3: `!iid` linked on every row, so a Ctrl-click opens the MR.
+        let linked = links::style(Style::default(), Some("https://gitlab/mr/311")).underline_color;
+        assert!(linked.is_some());
+        for is_merged in [false, true] {
+            for width in [100, 24] {
+                let mr = MrFacts {
+                    is_merged,
+                    ..facts("feat(x): one two three four five six seven", None)
+                };
+                let mrs = MergeRequests {
+                    open: vec![MrRow {
+                        number: Some(311),
+                        graph: "●".into(),
+                        below: String::new(),
+                        mr: Some(mr.clone()),
+                    }],
+                    ..Default::default()
+                };
+                let mut scene = Scene::<Act>::new(width);
+                head(&mut scene, &mr, &Columns::of(&mrs), None);
+                scene.finish();
+                let iid = scene
+                    .lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .find(|span| span.content == "!311")
+                    .unwrap_or_else(|| panic!("no !311 at {width}: {:?}", lines(&scene)));
+                assert_eq!(iid.style.underline_color, linked, "merged {is_merged}, width {width}");
+            }
+        }
+    }
+
+    #[test]
     fn a_sent_resolve_shows_its_mark_once() {
         let mr = MrFacts {
             conflict: Some(Conflict::Sent {
@@ -957,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_mr_offers_its_merge_beside_the_title() {
+    fn a_ready_mr_says_so_beside_the_title_and_offers_no_merge() {
         let ready = breadboard_core::model::Span::new(READY, breadboard_core::model::Paint::Green);
         let mrs = MergeRequests {
             open: vec![MrRow {
@@ -969,36 +959,21 @@ mod tests {
             ..Default::default()
         };
         let columns = Columns::of(&mrs);
-        let mut scene = Scene::<Act>::new(70);
-        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
-        scene.finish();
-        let lines = lines(&scene);
-        assert!(lines[0].starts_with("!311  ✓ passed  feat(x): one two"), "{lines:?}");
-        assert!(lines[0].ends_with("ready to merge  merge "), "{lines:?}");
-        assert!(lines[1].trim_end().ends_with("six seven"), "{lines:?}");
-        let button = scene
-            .regions
-            .iter()
-            .find(|region| region.is_button())
-            .expect("the merge button");
-        assert_eq!(button.area, Rect::new(63, 0, 7, 1));
-        // Too narrow beside the title: the status on a line of its own, the button with it.
-        let mut scene = Scene::<Act>::new(60);
-        head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
-        scene.finish();
-        let lines = self::lines(&scene);
-        assert!(
-            lines.iter().all(|line| Span::raw(line.as_str()).width() <= 60),
-            "{lines:?}"
-        );
-        assert!(lines.last().unwrap().ends_with("ready to merge  merge "), "{lines:?}");
-        let button = scene
-            .regions
-            .iter()
-            .find(|region| region.is_button())
-            .expect("the merge button");
-        assert_eq!(button.area, Rect::new(53, lines.len() as u16 - 1, 7, 1));
-        assert!(matches!(button.action(), Act::Go(Go::Merge { branch, .. }) if branch == "feature/302-x"));
+        for width in [70, 50] {
+            let mut scene = Scene::<Act>::new(width);
+            head(&mut scene, mrs.open[0].mr.as_ref().unwrap(), &columns, None);
+            scene.finish();
+            let lines = lines(&scene);
+            assert!(lines[0].starts_with("!311  ✓ passed  feat(x): one two"), "{lines:?}");
+            assert!(lines.iter().any(|line| line.ends_with("  ready to merge")), "{lines:?}");
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| Span::raw(line.as_str()).width() <= width as usize)
+            );
+            // The merge is the posted action's two clicks (rule 6): the row only opens the MR.
+            assert!(scene.regions.iter().all(|region| !region.is_button()), "{width}");
+        }
     }
 
     #[test]
@@ -1044,11 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn an_armed_merge_says_so_on_its_button_and_moves_nothing() {
-        assert_eq!(
-            Span::raw(format!("{READY}  {MERGE} ")).width(),
-            Span::raw(format!(" {ARMED} ")).width()
-        );
+    fn the_overviews_merge_shows_on_its_row_and_moves_nothing() {
         let ready = breadboard_core::model::Span::new(READY, breadboard_core::model::Paint::Green);
         let mrs = MergeRequests {
             open: vec![MrRow {
@@ -1072,21 +1043,19 @@ mod tests {
             scene.finish();
             scene
         };
-        let (before, armed, running) = (draw(None), draw(Some(Phase::Armed)), draw(Some(Phase::Running)));
-        let armed_lines = lines(&armed);
-        assert!(armed_lines[0].ends_with(" click again to merge "), "{armed_lines:?}");
-        // The title wraps where it did: only the status changed.
-        for scene in [&armed, &running] {
-            let lines = lines(scene);
-            assert_eq!(lines.len(), self::lines(&before).len());
-            assert_eq!(lines[1..], self::lines(&before)[1..]);
-            assert_eq!(lines[0][..40], self::lines(&before)[0][..40]);
+        let before = lines(&draw(None));
+        // Armed on its action: the row is as before, it has no button to arm.
+        assert_eq!(lines(&draw(Some(Phase::Armed))), before);
+        for (phase, words) in [(Phase::Running, "merging …"), (Phase::Merged, "merged")] {
+            let scene = draw(Some(phase));
+            let lines = lines(&scene);
+            assert!(lines[0].trim_end().ends_with(words), "{lines:?}");
+            // The title wraps where it did: only the status changed.
+            assert_eq!(lines.len(), before.len());
+            assert_eq!(lines[1..], before[1..]);
+            assert_eq!(lines[0][..40], before[0][..40]);
+            assert!(scene.regions.iter().all(|region| !region.is_button()));
         }
-        let button = armed.regions.iter().find(|region| region.is_button()).expect("armed");
-        assert_eq!(button.area, Rect::new(48, 0, 22, 1));
-        assert!(matches!(&button.target, Target::Button { label, tone: Tone::Red, .. } if label == ARMED));
-        assert!(running.regions.iter().all(|region| !region.is_button()));
-        assert!(lines(&running)[0].trim_end().ends_with("merging …"));
     }
 
     #[test]

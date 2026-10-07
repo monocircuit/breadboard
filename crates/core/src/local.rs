@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// The .env.local of a checkout (stack.mjs `envFileOf`; an older one in products/vita is left where it is).
 pub fn env_file_of(dir: &Path) -> PathBuf {
@@ -67,8 +68,12 @@ pub fn is_port_taken(port: i64) -> bool {
 
 /// How long one read of docker holds for every process (#331: every 10–15 s).
 pub const CONTAINERS_EVERY_MS: i64 = 12_000;
-/// A reader that died holding the lock: taken over after this.
-const CONTAINERS_LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long one read of docker may take: a dockerd under load (#331) holds no process longer; it counts as not answering.
+const DOCKER_WAIT: Duration = Duration::from_secs(10);
+/// A reader that died holding the lock: taken over after this (its read ends after DOCKER_WAIT).
+const CONTAINERS_LOCK_STALE: Duration = Duration::from_secs(15);
+/// With no answer on file yet, how long another process waits for the one that reads docker.
+const CONTAINERS_FIRST_WAIT: Duration = Duration::from_secs(2);
 
 /// A container of a compose stack, as `docker ps` lists it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -97,9 +102,50 @@ pub fn runtime_dir() -> PathBuf {
     }
 }
 
-/// The file docker's read is shared through (#331).
+/// `dir` made (0700) where it is missing, and whether it is this user's
+/// alone: a real directory, owned by this user, no one else's access. One in
+/// a shared `/tmp` that someone else made first is never used: what it holds
+/// (a socket, docker's answer) would be theirs.
+pub fn own_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir);
+    // SAFETY: getuid never fails.
+    let uid = unsafe { libc::getuid() };
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o077 == 0)
+}
+
+/// The file docker's read is shared through (#331): `containers-<key>.json`,
+/// keyed like the serve socket by what decides which docker answers: the
+/// `docker` that PATH runs (resolved), DOCKER_HOST, DOCKER_CONTEXT,
+/// DOCKER_CONFIG and HOME (its `.docker` holds the current context). Two
+/// processes share an answer only when they would run the same docker: a
+/// gauntlet world's fake never answers for the user's real one, nor the other way.
 pub fn containers_file() -> PathBuf {
-    runtime_dir().join("containers.json")
+    static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| {
+        let env = ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "HOME"]
+            .map(|name| std::env::var_os(name).unwrap_or_default());
+        let docker = std::env::var_os("PATH").and_then(|path| docker_on(&path));
+        runtime_dir().join(containers_name(docker.as_deref(), &env))
+    })
+    .clone()
+}
+
+/// The `docker` executable `path` (a PATH) runs, its symlinks resolved; None without one.
+fn docker_on(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .map(|dir| dir.join("docker"))
+        .find(|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+        .map(|file| std::fs::canonicalize(&file).unwrap_or(file))
+}
+
+fn containers_name(docker: Option<&Path>, env: &[std::ffi::OsString]) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    docker.hash(&mut hasher);
+    env.hash(&mut hasher);
+    format!("containers-{:016x}.json", hasher.finish())
 }
 
 /// The template of `docker ps`: one container a line, tab-separated.
@@ -138,33 +184,76 @@ pub fn containers_in(text: &str) -> Vec<StackContainer> {
     found
 }
 
-/// One read of docker: every container of a compose stack; None when docker doesn't answer.
+/// One read of docker: every container of a compose stack; None when docker doesn't answer within DOCKER_WAIT.
 fn read_docker() -> Option<Vec<StackContainer>> {
-    let output = Command::new("docker")
-        .args([
-            "ps",
-            "--all",
-            "--filter",
-            "label=com.docker.compose.project",
-            "--format",
-            PS_FORMAT,
-        ])
+    let mut command = Command::new("docker");
+    command.args([
+        "ps",
+        "--all",
+        "--filter",
+        "label=com.docker.compose.project",
+        "--format",
+        PS_FORMAT,
+    ]);
+    let printed = output_within(command, DOCKER_WAIT)?;
+    Some(containers_in(&printed))
+}
+
+/// What `command` prints when it succeeds within `wait`; one still running then is killed (None).
+fn output_within(mut command: Command, wait: Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = command
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| containers_in(&String::from_utf8_lossy(&output.stdout)))
+    let mut stdout = child.stdout.take()?;
+    // Read meanwhile: a full pipe would hold the command.
+    let printed = std::thread::spawn(move || {
+        let mut printed = Vec::new();
+        let _ = stdout.read_to_end(&mut printed);
+        printed
+    });
+    let deadline = Instant::now() + wait;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let printed = printed.join().ok()?;
+    status
+        .filter(std::process::ExitStatus::success)
+        .map(|_| String::from_utf8_lossy(&printed).into_owned())
 }
 
 /// docker's containers, read at most once in CONTAINERS_EVERY_MS by all processes together: the one that finds the file old reads and writes it, the others take what it holds.
 pub fn containers() -> Option<Vec<StackContainer>> {
-    shared_containers(&containers_file(), crate::time::now_ms(), read_docker)
+    // Never the machine's docker, nor its file, from a test: `shared_containers` is tested with its own.
+    if cfg!(test) {
+        return None;
+    }
+    // No folder of this user's own to share it through: read here.
+    let Some(file) = shared_file() else {
+        return read_docker();
+    };
+    shared_containers(&file, crate::time::now_ms(), read_docker)
 }
 
-fn read_containers(file: &Path) -> Option<Containers> {
+/// The file docker's read is shared through, None where there is no folder of this user's own for it (or in a test).
+pub fn shared_file() -> Option<PathBuf> {
+    let file = containers_file();
+    (!cfg!(test) && file.parent().is_some_and(own_dir)).then_some(file)
+}
+
+/// What the shared file holds, None without one: no docker call, no lock.
+pub fn read_containers(file: &Path) -> Option<Containers> {
     serde_json::from_str(&std::fs::read_to_string(file).ok()?).ok()
 }
 
@@ -191,9 +280,24 @@ pub fn shared_containers(
         let _ = std::fs::remove_dir_all(&lock);
     }
     let is_ours = std::fs::create_dir(&lock).is_ok();
-    if !is_ours && let Some(known) = known {
+    if !is_ours {
         // Another process reads docker right now: what the file holds until then.
-        return known.containers;
+        if let Some(known) = known {
+            return known.containers;
+        }
+        // Nothing on file yet (the first look of many): its answer, not a docker call each.
+        let deadline = Instant::now() + CONTAINERS_FIRST_WAIT;
+        while Instant::now() < deadline && lock.exists() {
+            std::thread::sleep(Duration::from_millis(20));
+            if let Some(known) = read_containers(file) {
+                return known.containers;
+            }
+        }
+        if lock.exists() {
+            // Still reading (a docker under load): none yet, docker is asked by it alone.
+            return None;
+        }
+        return read_containers(file).and_then(|known| known.containers);
     }
     let containers = read();
     let fresh = Containers {
@@ -520,6 +624,128 @@ mod tests {
         );
         assert_eq!(reads.get(), 2);
         assert!(!crate::lock::lock_of(&file).exists());
+    }
+
+    #[test]
+    fn waits_for_the_first_read_of_another_instead_of_asking_docker_too() {
+        let scratch = Scratch::new();
+        let file = scratch.join("breadboard/containers.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let lock = crate::lock::lock_of(&file);
+        std::fs::create_dir(&lock).unwrap();
+        let asked = std::cell::Cell::new(false);
+        // The one that holds the lock still reads (docker under load): none yet, docker not asked here.
+        let started = Instant::now();
+        assert_eq!(
+            shared_containers(&file, 1_000, || {
+                asked.set(true);
+                None
+            }),
+            None
+        );
+        assert!(started.elapsed() >= CONTAINERS_FIRST_WAIT);
+        // Its answer comes while this one waits: taken.
+        let writer = {
+            let (file, lock) = (file.clone(), lock.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                let answer = Containers {
+                    at: 1_000,
+                    containers: Some(Vec::new()),
+                };
+                std::fs::write(&file, serde_json::to_string(&answer).unwrap()).unwrap();
+                std::fs::remove_dir(&lock).unwrap();
+            })
+        };
+        assert_eq!(
+            shared_containers(&file, 1_000, || {
+                asked.set(true);
+                None
+            }),
+            Some(Vec::new())
+        );
+        writer.join().unwrap();
+        assert!(!asked.get());
+    }
+
+    #[test]
+    fn gives_up_a_command_that_hangs() {
+        let mut slow = Command::new("sh");
+        slow.args(["-c", "echo started; exec sleep 5"]);
+        let started = Instant::now();
+        assert_eq!(output_within(slow, Duration::from_millis(200)), None);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        let mut quick = Command::new("sh");
+        quick.args(["-c", "echo vita"]);
+        assert_eq!(output_within(quick, Duration::from_secs(5)).as_deref(), Some("vita\n"));
+        assert_eq!(output_within(Command::new("false"), Duration::from_secs(5)), None);
+    }
+
+    #[test]
+    fn keeps_one_answer_per_docker() {
+        use std::ffi::OsString;
+        let env = |host: &str, context: &str| [host, context, "", "/home/me"].map(OsString::from);
+        let real = Some(Path::new("/usr/bin/docker"));
+        let name = containers_name(real, &env("", ""));
+        assert!(name.starts_with("containers-") && name.ends_with(".json"), "{name}");
+        // The same docker, the same answer: every process of the user shares one read.
+        assert_eq!(name, containers_name(real, &env("", "")));
+        // Another docker on PATH (a gauntlet world's fake), none at all, another host or context: never shared.
+        let fake = Some(Path::new("/tmp/world/bin/docker"));
+        let others = [
+            containers_name(fake, &env("", "")),
+            containers_name(None, &env("", "")),
+            containers_name(real, &env("ssh://build", "")),
+            containers_name(real, &env("", "remote")),
+            containers_name(
+                real,
+                &[
+                    OsString::new(),
+                    OsString::new(),
+                    OsString::new(),
+                    "/tmp/world/home".into(),
+                ],
+            ),
+        ];
+        for (index, other) in others.iter().enumerate() {
+            assert_ne!(&name, other, "{index}");
+            assert!(others[index + 1..].iter().all(|each| each != other), "{index}");
+        }
+    }
+
+    #[test]
+    fn finds_the_docker_path_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let (first, second, empty) = (scratch.join("a"), scratch.join("b"), scratch.join("c"));
+        for dir in [&first, &second, &empty] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // Not executable: skipped, as the shell would.
+        std::fs::write(first.join("docker"), "").unwrap();
+        std::fs::write(second.join("docker"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(second.join("docker"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths([&empty, &first, &second]).unwrap();
+        let found = docker_on(&path).unwrap();
+        assert_eq!(found, std::fs::canonicalize(second.join("docker")).unwrap());
+        assert_eq!(docker_on(&std::env::join_paths([&empty]).unwrap()), None);
+    }
+
+    #[test]
+    fn uses_only_a_folder_of_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let mine = scratch.join("run/breadboard");
+        assert!(own_dir(&mine));
+        assert_eq!(std::fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o700);
+        // One others can read and write (someone else's would fail the owner the same way): not used.
+        let open = scratch.join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!own_dir(&open));
+        let link = scratch.join("link");
+        std::os::unix::fs::symlink(&mine, &link).unwrap();
+        assert!(!own_dir(&link));
     }
 
     #[test]

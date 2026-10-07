@@ -52,6 +52,10 @@ pub async fn read_gitlab(
                 return;
             }
         };
+        // Its repo gone (a gauntlet world removed): nothing to read, no cache to write.
+        if !main.is_dir() {
+            return;
+        }
         let gitlab = reader.gitlab.clone();
         let result = {
             let read = reader.read(&ask, is_full);

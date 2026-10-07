@@ -4,7 +4,6 @@
 
 use super::setups::setups_dir;
 use super::space::{orchestrator_checkouts, remove_orchestrator_checkout, space_of_orchestration};
-use super::workers::checkout_of;
 use crate::cli::setup::conversations::keep_conversation;
 use crate::cli::setup::herdr::{self, field, herdr};
 use crate::cli::setup::proc::{self, fail, outln, step};
@@ -140,7 +139,7 @@ fn end_orchestration(name: &str) -> Result<Vec<String>, String> {
         done.push(format!("removed the record {relative}"));
     }
     let _ = fs::remove_dir_all(setups_dir(name));
-    if orchestrator_checkouts().contains(&checkout_of(name)) {
+    if orchestrator_checkouts().contains(&repo::lifecycle().checkout_of(name)) {
         done.push(remove_orchestrator_checkout(name).unwrap_or_else(|| format!("removed the checkout of {label}")));
     }
     let changelog = record::changelog_file(&main, name);
@@ -162,7 +161,7 @@ pub fn command(name: &str) -> ExitCode {
     let is_known = workspace.is_some()
         || record::record_file(&main, name).exists()
         || setups_dir(name).exists()
-        || orchestrator_checkouts().contains(&checkout_of(name));
+        || orchestrator_checkouts().contains(&repo::lifecycle().checkout_of(name));
     if !is_known {
         outln!("\n✓ {label} ended already: no herdr space, record, setups or checkout of {name} is left");
         return ExitCode::SUCCESS;

@@ -114,10 +114,14 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                         // Enter runs the block picked with Tab, as its click; else it is the app's.
                         Command::Key(key) => match view.selected() {
                             Some(action) if key.code == KeyCode::Enter && key.modifiers.is_empty() => {
+                                if view.show_selected() {
+                                    is_dirty = true;
+                                    continue;
+                                }
                                 held = view.hold_selected();
                                 Input::Click(action)
                             }
-                            _ => Input::Key(key),
+                            picked => Input::Key(key, picked),
                         },
                         Command::Click(x, y) => {
                             is_pressed = true;
@@ -171,7 +175,7 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                 }
                 // A lone Escape nothing followed: the Escape key, the app's.
                 if let Some(Event::Key(key)) = rejoin.take_escape() {
-                    match app.act(Input::Key(key)) {
+                    match app.act(Input::Key(key, view.selected())) {
                         Flow::Quit => return Ok(()),
                         Flow::Redraw => {
                             view.acted(None);

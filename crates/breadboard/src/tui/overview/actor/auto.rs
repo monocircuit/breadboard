@@ -14,6 +14,7 @@ use breadboard_core::herdr::{Agent, is_in_herdr};
 use breadboard_core::json;
 use breadboard_core::model::auto_actions::{Removal, Tell, sent_file};
 use breadboard_core::model::clean_up::{CleanUp, clean_up_of};
+use breadboard_core::model::display_names::names_of;
 use breadboard_core::model::handovers::{CONTEXT_LIMIT, agent_name_of};
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item};
@@ -28,6 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// What the last line of a handover says when its agent got the issue but wt:new failed after the setup.
+const HALF_SET_UP: &str = "wt:new failed after the setup";
 /// How many sent keys a worktree keeps, the newest.
 const SENT_KEPT: usize = 50;
 /// How long a first click keeps a removal armed.
@@ -99,12 +102,14 @@ fn issues(local: &OrchestrationLocal) -> Vec<Entry> {
 /// view.mjs `retryDeliveries`): only by the live overview that acts for it.
 pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     let Some(name) = app.orchestration_name() else { return };
-    if !app.actor.is_live {
-        return;
-    }
     let Some(local) = app.orchestration_local().cloned() else {
         return;
     };
+    let known = local.record.as_ref().map(|record| &record.workers[..]).unwrap_or(&[]);
+    app.actor.names = names_of(&issues(&local), known);
+    if !app.actor.is_live {
+        return;
+    }
     let remote = app.orchestration_remote().cloned();
     let Some(model) = app.orchestration().cloned() else {
         return;
@@ -242,7 +247,11 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
                 app.actor.log_as(
                     &format!("told:{who}:{line}"),
                     Paint::Yellow,
-                    format!("{who} didn't take the line: {}", fallback_text(&fallback)),
+                    format!(
+                        "{} didn't take the line: {}",
+                        app.actor.shown(&who),
+                        fallback_text(&fallback)
+                    ),
                     Some(herdr::overview_line(&line)),
                 );
                 super::super::act::go_to(app, fallback);
@@ -319,7 +328,7 @@ fn start_run(
     let mut argv = vec!["wt:orchestrate".to_string(), name.to_string(), number.to_string()];
     argv.extend(args.iter().map(|arg| arg.to_string()));
     let shown = format!("pnpm {}", argv.join(" "));
-    let (what, done) = match to {
+    let (what, done) = match to.map(|to| app.actor.shown(to)) {
         Some(to) => (
             format!("handing #{number} to {to}"),
             format!("handed #{number} to {to}"),
@@ -331,6 +340,8 @@ fn start_run(
     };
     let key = format!("start:{number}");
     let done_key = key.clone();
+    // A half set up one says where to read why: its log, under the command.
+    let half_detail = format!("{shown}  ·  its log: {}", log.display());
     let poster = app.actor.poster();
     let started = spawn::start(
         Background {
@@ -350,9 +361,16 @@ fn start_run(
                     run.error = error.clone();
                 }
                 match error {
+                    // The CLI goes on when wt:new failed after the setup (orchestrate.mjs): half set up, not done.
+                    None if last.contains(HALF_SET_UP) => app.actor.log_as(
+                        &done_key,
+                        Paint::Yellow,
+                        format!("{done}, half set up: {HALF_SET_UP}"),
+                        Some(half_detail),
+                    ),
                     None => app
                         .actor
-                        .log_as(&done_key, Paint::Green, format!("{done}: {last}"), None),
+                        .log_as(&done_key, Paint::Green, format!("{done}: {}", spawn::said(&last)), None),
                     Some(why) => {
                         app.actor
                             .log_as(&done_key, Paint::Red, format!("#{number} didn't start: {why}"), None)
@@ -457,7 +475,11 @@ fn free_then_remove(
             match freed {
                 Ok(agent) => app.actor.log(
                     Paint::Green,
-                    format!("{agent} is free in {}: its worktree goes once it left", free_label(app)),
+                    format!(
+                        "{} is free in {}: its worktree goes once it left",
+                        app.actor.shown(&agent),
+                        free_label(app)
+                    ),
                 ),
                 Err(why) => {
                     app.actor.log(
@@ -722,8 +744,12 @@ fn deliver_waits(app: &mut Overview, local: &OrchestrationLocal, remote: &Remote
             Some(Box::new(move |app: &mut Overview| {
                 app.actor.auto.waits_in_flight.remove(&dir);
                 if let Some(line) = delivered {
+                    app.state.undelivered_waits.remove(&dir);
                     let who = feature_of(&app.actor.main, &dir);
                     app.actor.told(&who, "that its wait ended", &line, true);
+                } else {
+                    // Not in (its agent blocked): the row keeps `waits for` until it is.
+                    app.state.undelivered_waits.insert(dir);
                 }
             }) as Effect)
         });

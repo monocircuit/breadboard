@@ -140,6 +140,11 @@ pub fn strip_escapes(text: &str) -> String {
     out
 }
 
+/// What a run's last line says after the overview's own mark: without its leading `✓ ` or `✗ `.
+pub fn said(last: &str) -> &str {
+    last.trim_start_matches("✓ ").trim_start_matches("✗ ").trim()
+}
+
 /// Why a run failed, for its row: its last log line without a leading `✗ `, else `<what> ended with <code>`.
 pub fn error_of(code: Option<i32>, last: &str, what: &str) -> Option<String> {
     if code == Some(0) {
@@ -171,6 +176,16 @@ mod tests {
         assert_eq!(last_line(&log), "two");
         assert_eq!(last_line(&dir.join("none")), "");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn says_what_a_run_said_without_its_mark() {
+        assert_eq!(
+            said("✓ ⇶ @monocircuit/breadboard ended"),
+            "⇶ @monocircuit/breadboard ended"
+        );
+        assert_eq!(said("✗ busy "), "busy");
+        assert_eq!(said("#301 went to the agent"), "#301 went to the agent");
     }
 
     #[test]

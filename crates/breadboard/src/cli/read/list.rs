@@ -5,10 +5,12 @@
 
 use super::args::{Takes, cwd, main_dir, pad};
 use breadboard_core::git::{self, Worktree};
+use breadboard_core::local::{self, StackContainer};
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::thread;
 
 /// Where vita's app and its `.env.local` live in a checkout (constants.mjs `VITA`).
@@ -32,7 +34,7 @@ pub fn run() -> ExitCode {
     };
     let here = cwd();
     let trees = git::worktrees(&main);
-    // A docker call per own stack: side by side, not one after the other.
+    // git and the ports per worktree side by side; docker is one shared read for all (#331).
     let rows: Vec<Row> = thread::scope(|scope| {
         let handles: Vec<_> = trees
             .iter()
@@ -78,7 +80,7 @@ fn row_of(is_main: bool, tree: &Worktree, is_answering: impl Fn(i64) -> bool) ->
     } else if offset == 0 {
         "shared with the main checkout — only one app at a time".to_string()
     } else {
-        let state = match containers_up(dir) {
+        let state = match containers_up(&env_file) {
             0 => "stopped".to_string(),
             count => format!("{count} containers up"),
         };
@@ -160,30 +162,31 @@ pub(super) fn port_answers(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_err())
 }
 
-/// The containers of a worktree's own stack that run: `docker compose ps -q`.
-fn containers_up(dir: &Path) -> usize {
-    let output = Command::new("docker")
-        .args([
-            "compose",
-            "--env-file",
-            ".env.local",
-            "-f",
-            "docker-compose.local.yml",
-            "ps",
-            "-q",
-        ])
-        .current_dir(dir.join(VITA))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output();
-    output
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter(|line| !line.is_empty())
-                .count()
-        })
-        .unwrap_or(0)
+/// The containers of a worktree's own stack that run (`docker compose ps -q`
+/// counted them), from core's one shared read of docker (#331): one
+/// `docker ps` for every stack, none while another process's read is fresh.
+fn containers_up(env_file: &Path) -> usize {
+    static CONTAINERS: OnceLock<Vec<StackContainer>> = OnceLock::new();
+    let Some(project) = local::read_env(env_file).and_then(|env| env.get("COMPOSE_PROJECT_NAME").cloned()) else {
+        return 0;
+    };
+    // Never the machine's docker from a test: `running_of` is tested with its own.
+    let containers = CONTAINERS.get_or_init(|| {
+        if cfg!(test) {
+            Vec::new()
+        } else {
+            local::containers().unwrap_or_default()
+        }
+    });
+    running_of(containers, &project)
+}
+
+/// How many of `containers` belong to `project` and run.
+fn running_of(containers: &[StackContainer], project: &str) -> usize {
+    containers
+        .iter()
+        .filter(|container| container.project == project && container.state == "running")
+        .count()
 }
 
 #[cfg(test)]
@@ -245,6 +248,26 @@ mod tests {
         let row = row_of(false, &tree(&dir), |port| port == 3002);
         assert_eq!(row.app, "● http://localhost:3002");
         assert!(row.stack.starts_with("own +2 (pg 5434), "), "{}", row.stack);
+    }
+
+    #[test]
+    fn counts_the_running_containers_of_its_own_stack_only() {
+        let container = |project: &str, service: &str, state: &str| StackContainer {
+            project: project.into(),
+            service: service.into(),
+            state: state.into(),
+            health: String::new(),
+        };
+        let containers = [
+            container("p2", "app", "running"),
+            container("p2", "db", "running"),
+            container("p2", "seed", "exited"),
+            container("p20", "db", "running"),
+            container("vita", "db", "running"),
+        ];
+        assert_eq!(running_of(&containers, "p2"), 2);
+        assert_eq!(running_of(&containers, "p3"), 0);
+        assert_eq!(running_of(&[], "p2"), 0);
     }
 
     #[test]

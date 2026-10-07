@@ -247,8 +247,57 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
     fs::rename(&temporary, file)
 }
 
-/// The changelog of `name` rewritten from its record and GitLab; None without a record.
-pub fn write_changelog(name: &str) -> Option<String> {
+/// How a `--changelog` that GitLab didn't answer for starts its `✗ ` line:
+/// the file stays as it was (#306). wt:remove reads it from its child.
+pub const UNANSWERED: &str = "GitLab did not answer";
+
+/// A rewrite of an orchestration's changelog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rewritten {
+    /// Written: the Markdown.
+    Written(String),
+    /// Not written: GitLab didn't answer for this issue (`#12`, or its
+    /// branch), and why.
+    Unanswered(String, String),
+}
+
+/// What GitLab said for one issue of the record: its latest merged MR, else
+/// the issue (when it is closed without one).
+type Read = (Option<i64>, Option<Value>, Option<Value>);
+
+/// One issue's MR, and its issue only when it has none: the link of an MR's
+/// issue is the MR's project's `issues/<n>`, as GitLab's `web_url` says it
+/// (#305: half the calls). Err: GitLab didn't answer, after its tries: for
+/// what, and why.
+fn read_issue(number: Option<i64>, branch: &str) -> Result<Read, (String, String)> {
+    let unanswered = |failure: gitlab::Failure| {
+        let what = number.map_or_else(|| branch.to_string(), |number| format!("#{number}"));
+        (what, failure.reason)
+    };
+    let mut mrs = gitlab::list(&format!(
+        "projects/:fullpath/merge_requests?state=merged&source_branch={}",
+        gitlab::encode(branch)
+    ))
+    .map_err(unanswered)?;
+    mrs.sort_by(|a, b| str_of(b, "merged_at").cmp(&str_of(a, "merged_at")));
+    if let Some(mr) = mrs.into_iter().next() {
+        return Ok((number, Some(mr), None));
+    }
+    let Some(number) = number else {
+        return Ok((None, None, None));
+    };
+    match gitlab::api(&format!("projects/:fullpath/issues/{number}")) {
+        Ok(issue) => Ok((Some(number), None, Some(issue))),
+        // An issue that is gone is no issue closed without a merge request.
+        Err(failure) if failure.reason.starts_with("HTTP 404") => Ok((Some(number), None, None)),
+        Err(failure) => Err(unanswered(failure)),
+    }
+}
+
+/// The changelog of `name` rewritten from its record and GitLab; None without
+/// a record. A merge never becomes unmerged: when GitLab didn't answer for an
+/// issue the file stays as it was, never "Nothing merged yet." (#306).
+pub fn write_changelog(name: &str) -> Option<Rewritten> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;
     let issues: Vec<(Option<i64>, String)> = found
@@ -256,16 +305,10 @@ pub fn write_changelog(name: &str) -> Option<String> {
         .iter()
         .filter_map(|issue| issue.branch.clone().map(|branch| (issue.number, branch)))
         .collect();
-    let read = gitlab::in_turns(&issues, 12, |(number, branch)| {
-        let mut mrs = gitlab::list(&format!(
-            "projects/:fullpath/merge_requests?state=merged&source_branch={}",
-            gitlab::encode(branch)
-        ))
-        .unwrap_or_default();
-        mrs.sort_by(|a, b| str_of(b, "merged_at").cmp(&str_of(a, "merged_at")));
-        let issue = number.and_then(|number| gitlab::api(&format!("projects/:fullpath/issues/{number}")).ok());
-        (*number, mrs.into_iter().next(), issue)
-    });
+    let read = match gitlab::all_in_turns(&issues, 12, |(number, branch)| read_issue(*number, branch)) {
+        Ok(read) => read,
+        Err((what, why)) => return Some(Rewritten::Unanswered(what, why)),
+    };
     let mut merged = Vec::new();
     let mut closed = Vec::new();
     for (number, mr, issue) in read {
@@ -276,17 +319,10 @@ pub fn write_changelog(name: &str) -> Option<String> {
                 merged.push(Merged {
                     iid: int_of(&mr, "iid").unwrap_or_default(),
                     issue: number.map(|number| {
-                        let link = issue
-                            .as_ref()
-                            .and_then(|issue| str_of(issue, "web_url"))
-                            .map(String::from)
-                            .unwrap_or_else(|| {
-                                let base = url
-                                    .rsplit_once("merge_requests/")
-                                    .map_or(url.as_str(), |(base, _)| base);
-                                format!("{base}issues/{number}")
-                            });
-                        (number, link)
+                        let base = url
+                            .rsplit_once("merge_requests/")
+                            .map_or(url.as_str(), |(base, _)| base);
+                        (number, format!("{base}issues/{number}"))
                     }),
                     summary: summary_of(str_of(&mr, "description").unwrap_or_default(), title),
                     title: untitled(title),
@@ -309,7 +345,7 @@ pub fn write_changelog(name: &str) -> Option<String> {
     }
     let text = changelog_text(&record::title_of(&main, name), &merged, &closed);
     let _ = write_atomic(&record::changelog_file(&main, name), &text);
-    Some(text)
+    Some(Rewritten::Written(text))
 }
 
 /// `wt:orchestrate <name> --changelog [--watch]`.
@@ -328,10 +364,13 @@ pub fn orchestration_command(name: &str, is_live: bool) -> ExitCode {
         return view::watch(&file, &empty);
     }
     let text = match write_changelog(name) {
-        Some(text) => {
+        Some(Rewritten::Written(text)) => {
             step(&format!("wrote {relative} from the record and GitLab"));
             text
         }
+        Some(Rewritten::Unanswered(what, why)) => fail(&format!(
+            "{UNANSWERED} for {what} ({why}): {relative} stays as it was\n  pnpm wt:orchestrate {name} --changelog tries again"
+        )),
         None if file.exists() => {
             step(&format!("{name} has no record any more: {relative} as it is"));
             fs::read_to_string(&file).unwrap_or_default()

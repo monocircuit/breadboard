@@ -191,7 +191,8 @@ fn focus(space: &str) {
 fn idle_pane_of(space: &str, label: &str, tabs: &[Tab]) -> Option<String> {
     let tab = tabs.iter().find(|tab| tab.label == label && tab.pane_count == 1)?;
     let pane = herdr::panes_of(space).into_iter().find(|pane| pane.tab == tab.id)?;
-    herdr::is_idle(&pane.id).then_some(pane.id)
+    // Fresh, never the daemon's shared answer: a command is run in it next.
+    herdr::is_idle_now(&pane.id).then_some(pane.id)
 }
 
 /// The tab `label` of `space` running `command`: created unfocused when it

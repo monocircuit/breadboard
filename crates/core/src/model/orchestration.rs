@@ -98,6 +98,10 @@ pub struct ViewState {
     pub resolves: Resolves,
     /// The one live overview that delivers and acts by itself (not a print, not a second overview).
     pub is_deliverer: bool,
+    /// The worktrees whose ended wait the overview tried to type and could
+    /// not (its agent blocked, no pane): their `waits for` stays drawn until
+    /// the line gets in, as Node's.
+    pub undelivered_waits: HashSet<PathBuf>,
 }
 
 /// NEXT before GitLab's first answer: what is for you depends on it.
@@ -667,8 +671,9 @@ fn merge_requests_of(
 /// a moment after this read (actor/auto.rs `deliver_waits`), as Node does
 /// before its first frame with GitLab's data. Drawn, `waits for` would come
 /// and go and everything below it jump (#296). Without GitLab's data only
-/// `until` tells.
-fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64) {
+/// `until` tells. A wait whose line could not get in (`undelivered`) stays:
+/// its agent still waits, so the row says so, as Node's.
+fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64, undelivered: &HashSet<PathBuf>) {
     let mut found: HashMap<i64, Awaited> = HashMap::new();
     if let Some(remote) = remote {
         for (iid, state) in &remote.awaited {
@@ -693,7 +698,11 @@ fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64) {
         }
     }
     let found: Vec<Awaited> = found.into_values().collect();
-    for tree in issues.iter_mut().filter_map(|issue| issue.tree.as_mut()) {
+    for tree in issues
+        .iter_mut()
+        .filter_map(|issue| issue.tree.as_mut())
+        .filter(|tree| !undelivered.contains(&tree.dir))
+    {
         let is_ended = tree.wait.as_ref().is_some_and(|wait| {
             !is_waiting(wait) && !matches!(verdict_of(wait, &found, now, &mut HashMap::new()), Verdict::Waiting(_))
         });
@@ -717,7 +726,7 @@ pub fn orchestration_of(
     let mut issues = super::issues_of(record.map(|record| &record.issues[..]).unwrap_or(&[]), &local.trees);
     issues.sort_by_key(|issue| place_in(work, issue.number));
     if state.is_deliverer {
-        drop_ended_waits(&mut issues, remote, now);
+        drop_ended_waits(&mut issues, remote, now, &state.undelivered_waits);
     }
     let label = format!("{ORCHESTRATOR} {}", local.title);
     let left: Vec<String> = local
@@ -1189,6 +1198,12 @@ mod tests {
         assert_eq!(reasons(&mut deliverer, &local), [Vec::<String>::new(), vec![]]);
         assert_eq!(
             reasons(&mut ViewState::default(), &local),
+            [vec!["waits for !12".to_string()], vec![]]
+        );
+        // Its line could not get in (the agent blocked): its agent still waits, the row says so.
+        deliverer.undelivered_waits.insert(local.trees[0].dir.clone());
+        assert_eq!(
+            reasons(&mut deliverer, &local),
             [vec!["waits for !12".to_string()], vec![]]
         );
     }

@@ -33,7 +33,7 @@ const COMMANDS: [&[&str]; 7] = [
         "changelog:notes",
         "changelog:check",
     ],
-    &["commands", "browser"],
+    &["commands", "browser", "herdr", "herdr:install"],
 ];
 
 /// The usage and every command, a group per line.

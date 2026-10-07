@@ -2,7 +2,7 @@
 //! where a checkout's space is; and what may close in them.
 
 use super::super::claude::{bound_session, is_conversation_running, session_cwd};
-use super::super::herdr::{self, did, has_agent, s};
+use super::super::herdr::{self, call, did, has_agent, s};
 use super::super::proc::{quote, text};
 use super::super::repo::Repo;
 use super::nvim::{can_edit, editor_command, ide_flag, ide_for};
@@ -10,7 +10,7 @@ use super::tabs::{
     CHANGELOG, EDITOR, OVERVIEW, ROOT, View, Want, drop_duplicates, ensure_space, ensure_tab, ensure_worktree_space,
     idle_pane_of, keep_order, mark_branch, overall_changelog_command, overview_command,
 };
-use breadboard_core::record::SPACE;
+use breadboard_core::record::{self, SPACE};
 use serde_json::Value;
 use std::path::Path;
 
@@ -90,8 +90,9 @@ pub fn ensure_editor(repo: &Repo, workspace: &str, dir: &Path, tabs: &[Value]) {
     );
 }
 
-/// The space of a worktree: `root`, its `overview`, the tab of its claude
-/// conversation (unless an agent brings its own) and `nvim`, in that order.
+/// The space of a worktree: `root`, its `overview` (none for an
+/// orchestration's, #332), the tab of its claude conversation (unless an
+/// agent brings its own) and `nvim`, in that order.
 /// `should_resume`: the conversation bound to it comes back in its tab.
 pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume: bool) -> Option<String> {
     let feature = repo.feature_of(dir);
@@ -108,15 +109,21 @@ pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume
     )?;
     mark_branch(repo, &workspace, dir);
     let tabs = herdr::tabs_of(&workspace);
-    ensure_tab(
-        &workspace,
-        &Want {
-            label: OVERVIEW,
-            cwd: dir,
-            command: Some(overview_command(View::Worktree(dir))),
-        },
-        &tabs,
-    );
+    // An orchestration's worktree shows in its orchestration's overview: no tab of its own (#332).
+    let is_orchestrated = record::is_orchestrated(&repo.main, dir);
+    if is_orchestrated {
+        close_overview(&workspace, &tabs);
+    } else {
+        ensure_tab(
+            &workspace,
+            &Want {
+                label: OVERVIEW,
+                cwd: dir,
+                command: Some(overview_command(View::Worktree(dir))),
+            },
+            &tabs,
+        );
+    }
     if has_work_tab {
         ensure_tab(
             &workspace,
@@ -145,8 +152,31 @@ pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume
     if should_resume {
         resume_session(repo, dir, &workspace);
     }
-    keep_order(&workspace, &[ROOT, OVERVIEW, &feature, EDITOR]);
+    keep_order(&workspace, &tab_order(is_orchestrated, &feature));
     Some(workspace)
+}
+
+/// The tabs of a worktree's space in their order; an orchestrated one has no `overview` (#332).
+pub fn tab_order(is_orchestrated: bool, feature: &str) -> Vec<&str> {
+    if is_orchestrated {
+        vec![ROOT, feature, EDITOR]
+    } else {
+        vec![ROOT, OVERVIEW, feature, EDITOR]
+    }
+}
+
+/// The `overview` tab an orchestrated worktree's space had before #332 closes,
+/// unless something else runs there (a second pane, an agent, this command).
+fn close_overview(workspace: &str, tabs: &[Value]) {
+    let olds: Vec<&Value> = tabs.iter().filter(|tab| s(tab, "label") == OVERVIEW).collect();
+    if olds.is_empty() {
+        return;
+    }
+    let panes = herdr::panes_of(workspace);
+    let current = herdr::current_pane();
+    for tab in olds.into_iter().filter(|tab| !is_busy(tab, &panes, current.as_ref())) {
+        call(&["tab", "close", s(tab, "tab_id")]);
+    }
 }
 
 /// After a restart: the conversation bound to the space runs again in its
@@ -220,6 +250,12 @@ pub fn busy_reason(tab: &Value, panes: &[Value], current: Option<&Value>) -> Opt
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_orchestrated_space_has_no_overview_tab() {
+        assert_eq!(tab_order(true, "332-x"), [ROOT, "332-x", EDITOR]);
+        assert_eq!(tab_order(false, "332-x"), [ROOT, OVERVIEW, "332-x", EDITOR]);
+    }
 
     #[test]
     fn a_tab_stays_for_its_agent_at_work() {

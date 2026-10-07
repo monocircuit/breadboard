@@ -171,6 +171,8 @@ pub struct Summary<'a> {
     pub origin: Option<&'a str>,
     /// wt:stack's: nothing was pushed, the agent stands in the worktree.
     pub is_stack_only: bool,
+    /// The main checkout had no .env.local: the worktree has no stack, shared or own.
+    pub is_stackless: bool,
 }
 
 impl Default for Summary<'_> {
@@ -185,6 +187,7 @@ impl Default for Summary<'_> {
             left: None,
             origin: None,
             is_stack_only: false,
+            is_stackless: false,
         }
     }
 }
@@ -200,6 +203,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         left,
         origin,
         is_stack_only,
+        is_stackless,
     } = summary;
     let dir = dir.display();
     let port = 3000 + u32::from(*offset);
@@ -257,7 +261,9 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stack = if *offset > 0 {
+    let stack = if *is_stackless {
+        "none: the main checkout has no .env.local (pnpm wt:stack once it has)".to_string()
+    } else if *offset > 0 {
         format!(
             "own: Postgres {}, Keycloak {}, SeaweedFS {}",
             5432 + u32::from(*offset),
@@ -278,8 +284,13 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
     } else {
         " (only one checkout at a time)"
     };
+    let vita = if *is_stackless {
+        "no stack, so no pnpm dev yet".to_string()
+    } else {
+        format!("cd {VITA} && pnpm dev{flag}   → http://localhost:{port}{only}")
+    };
     format!(
-        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from origin/develop)\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  cd {VITA} && pnpm dev{flag}   → http://localhost:{port}{only}{sweep}\n"
+        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from origin/develop)\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
     )
 }
 
@@ -487,5 +498,19 @@ mod tests {
         );
         assert!(human.starts_with("\n✓ platform-40-x is ready\n\n  directory  /r/platform-40-x\n"));
         assert!(human.ends_with("→ http://localhost:3000 (only one checkout at a time)\n"));
+        // Without the main checkout's .env.local: no stack is promised.
+        let stackless = summary_text(
+            &Summary {
+                dir,
+                branch: "feature/40-x",
+                is_stackless: true,
+                ..Summary::default()
+            },
+            false,
+            |name| name.into(),
+        );
+        assert!(stackless.contains("  stack      none: the main checkout has no .env.local"));
+        assert!(stackless.ends_with("  vita:  no stack, so no pnpm dev yet\n"));
+        assert!(!stackless.contains("shared with the main checkout") && !stackless.contains("localhost"));
     }
 }

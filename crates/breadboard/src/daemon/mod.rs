@@ -6,7 +6,7 @@
 //! - herdr's reads (`pane list`, `tab list`, …): answered from one call made
 //!   at most once in HERDR_FRESH for all overviews together (`client` puts
 //!   core's `herdr::herdr` reads through it);
-//! - GitLab: one feed per view's ask (`feed`), read on the overview's cadence
+//! - GitLab: one feed per view (`feed`), read on the overview's cadence
 //!   (`gitlab::read_gitlab`) and sent to every overview of that view; `r` in
 //!   any of them reads again for all; an overview opened later gets the last
 //!   answer at once;
@@ -39,8 +39,13 @@ use std::time::Duration;
 pub const HERDR_FRESH: Duration = Duration::from_millis(1000);
 /// How long the daemon stays after its last connection closed: an overview reloaded finds it warm.
 pub const GRACE: Duration = Duration::from_secs(30);
+/// How often the daemon says on a quiet feed that it is there (an empty line): a slow GitLab isn't a hung daemon.
+pub const ALIVE_EVERY: Duration = Duration::from_secs(5);
 /// The longest socket path the platforms take (`sun_path`, less its end).
 const SOCKET_MAX: usize = 100;
+
+/// Why an overview reads GitLab by itself after its daemon fell silent (its error line).
+pub const SILENT_TEXT: &str = "breadboard serve stopped answering: this overview reads GitLab by itself now";
 
 /// The first line a client sends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,18 +53,38 @@ const SOCKET_MAX: usize = 100;
 pub enum Request {
     /// One herdr read: answered with one line, its result (`null`: none).
     Herdr { args: Vec<String> },
-    /// The GitLab reads of a view: answered with a `Feed` a line while the
-    /// connection stays open; each line the client sends (REFRESH) reads again.
-    Gitlab { main: PathBuf, ask: RemoteAsk },
+    /// The GitLab reads of a view (`view`: which one, `ask`: what its local
+    /// read asks for): answered with a `Feed` a line while the connection
+    /// stays open; the client's lines are `Said`.
+    Gitlab {
+        main: PathBuf,
+        view: String,
+        ask: RemoteAsk,
+    },
 }
 
-/// A client's line on a GitLab feed: read again now, full (`r`).
-pub const REFRESH: &str = "refresh";
+/// What a client says on its GitLab feed after the request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Said {
+    /// Its local read asks for something else now: the feed's next read takes it.
+    Ask(RemoteAsk),
+    /// `r`: read again now, full, for every overview of the view.
+    Refresh,
+}
 
 /// The socket of the daemon of this binary and environment.
 pub fn socket() -> &'static Path {
     static SOCKET: OnceLock<PathBuf> = OnceLock::new();
     SOCKET.get_or_init(|| socket_in(&breadboard_core::local::runtime_dir(), key()))
+}
+
+/// Whether the socket's folder is this user's alone (made if missing): in
+/// one someone else made, no daemon is started or asked (its herdr reads
+/// decide what the overview does).
+pub fn is_socket_ours() -> bool {
+    static IS_OURS: OnceLock<bool> = OnceLock::new();
+    *IS_OURS.get_or_init(|| socket().parent().is_some_and(breadboard_core::local::own_dir))
 }
 
 /// `<dir>/serve-<key>.sock`, in `/tmp/breadboard-<uid>` where `dir` makes it too long for a socket.
@@ -124,10 +149,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);
         let request = Request::Gitlab {
             main: "/repo".into(),
+            view: "everything".into(),
             ask: RemoteAsk::Worktree { branch: None },
         };
         let line = serde_json::to_string(&request).unwrap();
         assert!(!line.contains('\n'));
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);
+        assert_eq!(serde_json::to_string(&Said::Refresh).unwrap(), r#""refresh""#);
     }
 }

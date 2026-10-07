@@ -74,7 +74,7 @@ fn button_width(label: &str) -> u16 {
 }
 
 /// `free  Nadia Moreau  298-breadboard-no-push     ✕ dismiss`, then dim
-/// `0 % · from 298-breadboard-no-push (!310) · 1 issue` under the name.
+/// `0 % · from !310 · 1 issue` under the name (core's text).
 /// The widest label not beside the widest name: the name and the text go
 /// under the display name, the button stays at the right edge of the first
 /// line. Not even beside the display name: the words as they

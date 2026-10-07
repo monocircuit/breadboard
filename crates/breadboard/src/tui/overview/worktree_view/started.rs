@@ -44,6 +44,23 @@ impl Started {
         Ok(Started { log, end })
     }
 
+    /// `spawn`, or, when it can't start, a start that ended badly and whose
+    /// log says why (`no pnpm on the PATH`): its error names the cause.
+    pub fn start(command: Command, log: PathBuf) -> Started {
+        let program = command.get_program().to_string_lossy().into_owned();
+        match Started::spawn(command, log.clone()) {
+            Ok(started) => started,
+            Err(error) => {
+                let why = match error.kind() {
+                    io::ErrorKind::NotFound => format!("no {program} on the PATH"),
+                    _ => format!("{program} didn't start: {error}"),
+                };
+                let _ = std::fs::write(&log, format!("{why}\n"));
+                Started::failed(log)
+            }
+        }
+    }
+
     /// A start that failed before it ran: shown like one that ended badly.
     pub fn failed(log: PathBuf) -> Started {
         Started {
@@ -188,6 +205,12 @@ mod tests {
         wait_for(&fine);
         assert!(fine.is_done() && fine.error("thing").is_none());
         assert_eq!(fine.last_line(), "fine");
+        // A program that isn't there: its error names it, not `ended with -1`.
+        let missing = Started::start(Command::new("no-such-program-bb"), dir.join("missing.log"));
+        assert_eq!(
+            missing.error("pg:migrate").as_deref(),
+            Some("no no-such-program-bb on the PATH")
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

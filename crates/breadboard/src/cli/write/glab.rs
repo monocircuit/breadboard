@@ -120,14 +120,18 @@ impl Ran {
     /// reach GitLab at all. Only a call that never got an answer points at
     /// the login: a 404 or 403 is no matter of `glab auth status`.
     pub fn why(&self) -> String {
-        if self.is_unstarted {
+        if self.is_unstarted || self.stderr.starts_with(UNANSWERED) {
             return self.stderr.clone();
         }
         if self.is_ok {
             return "glab answered no JSON".into();
         }
         let Some(status) = self.status() else {
-            return format!("{} (glab auth status)", self.first_line());
+            let line = self.first_line();
+            if UNREACHABLE.is_match(&line) {
+                return format!("GitLab is unreachable ({line}): check the network");
+            }
+            return format!("{line} (glab auth status)");
         };
         let reason = self.reason(status);
         let said = if reason.is_empty() {
@@ -145,7 +149,7 @@ impl Ran {
 
     /// The failure of a read as the commands say it: GitLab's answer, or `glab failed: <why>`.
     pub fn failure(&self) -> String {
-        if self.status().is_some() {
+        if self.status().is_some() || UNREACHABLE.is_match(&self.first_line()) {
             self.why()
         } else {
             format!("glab failed: {}", self.why())
@@ -171,6 +175,11 @@ fn spoken(value: &Value) -> String {
 /// `ERROR: 403 …`) or as `(HTTP 404)`; a number inside a branch name is none.
 static STATUS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(?:(?:glab|error):\s*)*([45]\d\d)\b|\bHTTP ([45]\d\d)\b").unwrap());
+
+/// Go's words for a GitLab glab could not reach (`dial tcp …: connect: connection refused`).
+static UNREACHABLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bdial tcp\b|connection refused|no such host|network is unreachable|i/o timeout").unwrap()
+});
 
 /// glab's words for a branch without an MR (`no open merge request available for "x"`).
 static NO_MR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bno (open )?merge requests?\b").unwrap());
@@ -200,6 +209,9 @@ pub fn finish(child: std::io::Result<Child>) -> Ran {
     Ran::of(child.and_then(Child::wait_with_output))
 }
 
+/// How [`glab_within`] says a call went past its limit.
+const UNANSWERED: &str = "GitLab did not answer";
+
 /// `glab <args>` in `dir`, given at most `limit`, `what` it asks said once it
 /// takes a while: a GitLab that accepts and never answers held wt:action
 /// change without end. Past the limit, a failure saying so.
@@ -208,7 +220,7 @@ pub fn glab_within(dir: &Path, args: &[&str], what: &str, limit: Duration) -> Ra
     match command(dir, args).spawn().and_then(|child| wait_within(child, &wait)) {
         Ok(Some(output)) => Ran::of(Ok(output)),
         Ok(None) => Ran {
-            stderr: format!("GitLab did not answer in {} s", limit.as_secs()),
+            stderr: format!("{UNANSWERED} in {} s", limit.as_secs()),
             ..Ran::default()
         },
         Err(error) => Ran::of(Err(error)),
@@ -365,10 +377,19 @@ mod tests {
             failed_with("glab: 503 Service Unavailable (HTTP 503)\n").why(),
             "GitLab failed (503 Service Unavailable): try again in a minute"
         );
-        // No answer at all: glab's line, and the login is worth a look.
+        // No answer at all: glab's line, and the login is worth a look; the network when Go names it.
+        assert_eq!(
+            failed_with("glab: something went wrong\n").failure(),
+            "glab failed: something went wrong (glab auth status)"
+        );
         assert_eq!(
             failed_with("dial tcp: lookup gitlab.com: no such host\n").why(),
-            "dial tcp: lookup gitlab.com: no such host (glab auth status)"
+            "GitLab is unreachable (dial tcp: lookup gitlab.com: no such host): check the network"
+        );
+        assert_eq!(
+            failed_with("glab: Get \"https://g/api/v4/x\": dial tcp 127.0.0.1:9: connect: connection refused\n")
+                .failure(),
+            "GitLab is unreachable (Get \"https://g/api/v4/x\": dial tcp 127.0.0.1:9: connect: connection refused): check the network"
         );
         let unstarted = Ran::of(Err(std::io::Error::from_raw_os_error(7)));
         assert!(
@@ -377,6 +398,17 @@ mod tests {
                 .starts_with("glab could not be started: Argument list too long")
         );
         assert!(!unstarted.why().contains("auth"));
+    }
+
+    #[test]
+    fn a_gitlab_that_does_not_answer_is_said_so_without_the_login_hint() {
+        let ran = Ran {
+            stderr: format!("{UNANSWERED} in 15 s"),
+            ..Ran::default()
+        };
+        assert_eq!(ran.failure(), "glab failed: GitLab did not answer in 15 s");
+        assert_eq!(ran.first_line(), "GitLab did not answer in 15 s");
+        assert!(!ran.is_not_there());
     }
 
     #[test]

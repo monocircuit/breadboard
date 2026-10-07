@@ -30,40 +30,9 @@ pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… 
        pnpm wt:orchestrate <name> --changelog [--watch]
        pnpm wt:orchestrate <name> --changes";
 
-/// The values of `--after` and where they stand (handovers.mjs `afterArgs`).
-pub fn after_args(argv: &[String]) -> Option<(Vec<String>, Vec<usize>)> {
-    let at = argv
-        .iter()
-        .position(|arg| arg == "--after" || arg.starts_with("--after="))?;
-    if let Some(inline) = argv[at].strip_prefix("--after=") {
-        return Some((vec![inline.to_string()], vec![at]));
-    }
-    let indexes: Vec<usize> = (at + 1..argv.len()).take_while(|i| argv[*i].starts_with('!')).collect();
-    let mut all = vec![at];
-    all.extend(&indexes);
-    Some((indexes.iter().map(|i| argv[*i].clone()).collect(), all))
-}
-
-/// The MRs after `--after`, each once, in order; or what is wrong.
-pub fn parse_after(values: &[String]) -> Result<Vec<i64>, String> {
-    let mut after = Vec::new();
-    for value in values.iter().flat_map(|arg| arg.split(',')) {
-        let trimmed = value.trim();
-        let digits = trimmed.strip_prefix('!').unwrap_or(trimmed);
-        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-            return Err(format!("{value} is no MR (!232)"));
-        }
-        let iid: i64 = digits.parse().map_err(|_| format!("{value} is no MR (!232)"))?;
-        if !after.contains(&iid) {
-            after.push(iid);
-        }
-    }
-    if after.is_empty() {
-        Err("--after names the MRs to wait for: --after !232".into())
-    } else {
-        Ok(after)
-    }
-}
+/// `--after`'s values and where they stand, the MRs in them: the handover's
+/// reading, one for `--queue --after` and `--to … --after`.
+use crate::cli::lifecycle::handover::{after_args, parse_after};
 
 fn is_issue_arg(arg: &str) -> bool {
     (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()))
@@ -71,7 +40,7 @@ fn is_issue_arg(arg: &str) -> bool {
 }
 
 fn read_or_fail(arg: &str) -> Item {
-    read_issue(arg).unwrap_or_else(|| fail(&format!("issue #{} could not be read", number_of(arg))))
+    read_issue(arg).unwrap_or_else(|why| fail(&why))
 }
 
 /// The brief text an issue of this run gets: only a `--brief` of this very
@@ -173,8 +142,12 @@ pub fn command(args: &Args) -> ExitCode {
             refuse_name();
         }
         let name = name.unwrap_or_default();
-        let Some(set) = changes::read_change_set(&name) else {
-            fail(&format!("no orchestration {name}"))
+        let set = match changes::read_change_set(&name) {
+            Some(Ok(set)) => set,
+            Some(Err((branch, why))) => fail(&format!(
+                "GitLab did not answer for {branch} ({why}): the change set would miss its merge requests"
+            )),
+            None => fail(&format!("no orchestration {name}")),
         };
         outln!("{}", serde_json::to_string(&set).unwrap_or_default());
         return ExitCode::SUCCESS;
@@ -217,7 +190,7 @@ pub fn command(args: &Args) -> ExitCode {
         .or_else(|| found.as_ref().and_then(|found| found.peer.clone()));
     let parsed_after = after
         .as_ref()
-        .map(|(values, _)| parse_after(values).unwrap_or_else(|error| fail(&error)));
+        .map(|(values, _)| parse_after(values).unwrap_or_else(|error| fail(&error.0)));
     if after.is_some() && !args.has("--to") && !args.has("--queue") {
         fail("--after needs --queue (the issues wait in the queue for the MRs) or --to (a handover announced)");
     }
@@ -259,7 +232,7 @@ pub fn command(args: &Args) -> ExitCode {
     };
     let items: Vec<(String, String)> = to_start
         .iter()
-        .map(|at| (plan[*at].number.clone(), plan[*at].description.clone()))
+        .map(|at| (plan[*at].number.to_string(), plan[*at].description.clone()))
         .collect();
     let starts = workers::starts_of(&items, &idle, args.has("--shared"), workers::free_memory());
     if !is_queued {
@@ -293,7 +266,7 @@ pub fn command(args: &Args) -> ExitCode {
             first.feature,
             quote(BRIEF_PROMPT)
         );
-        let extra = extra_for(&name, first.number(), given.as_deref());
+        let extra = extra_for(&name, first.number, given.as_deref());
         outln!(
             "{}",
             brief_of(&Brief {
@@ -309,7 +282,7 @@ pub fn command(args: &Args) -> ExitCode {
             let item = &plan[*at];
             let source = if given.is_some() {
                 format!("the brief of --brief {}", brief_file.as_deref().unwrap_or_default())
-            } else if !extra_for(&name, item.number(), None).is_empty() {
+            } else if !extra_for(&name, item.number, None).is_empty() {
                 "the brief an earlier run gave it".into()
             } else {
                 "no brief of the orchestrator".into()
@@ -332,13 +305,13 @@ pub fn command(args: &Args) -> ExitCode {
         let _ = record::update_record(&main, &name, object(json!({ "peer": peer })));
     }
     if let Some(given) = &given {
-        let numbers: Vec<i64> = to_start.iter().map(|at| plan[*at].number()).collect();
+        let numbers: Vec<i64> = to_start.iter().map(|at| plan[*at].number).collect();
         keep_briefs(&name, &numbers, given);
     }
     let queued_at = to_iso(now_ms());
     let known: Vec<(i64, Value)> = plan
         .iter()
-        .filter_map(|item| known_entry(&name, item.number()).map(|entry| (item.number(), entry)))
+        .filter_map(|item| known_entry(&name, item.number).map(|entry| (item.number, entry)))
         .collect();
     let known_of = |number: i64| {
         known
@@ -362,7 +335,7 @@ pub fn command(args: &Args) -> ExitCode {
             } else if item.why.is_some() {
                 record_entry(item, item.why.as_deref())
             } else {
-                issue::start_entry(item, known_of(item.number()).as_ref(), None)
+                issue::start_entry(item, known_of(item.number).as_ref(), None)
             }
         })
         .collect();
@@ -391,13 +364,13 @@ pub fn command(args: &Args) -> ExitCode {
     if !is_queued {
         for (at, start) in to_start.iter().zip(&starts) {
             let item = &mut plan[*at];
-            let number = item.number();
+            let number = item.number;
             match start {
                 Start::Worker { worker, shared } => {
                     let mut child = vec![
                         "wt:orchestrate".to_string(),
                         name.clone(),
-                        item.number.clone(),
+                        item.number.to_string(),
                         "--to".into(),
                         worker.name.clone(),
                     ];
@@ -416,7 +389,8 @@ pub fn command(args: &Args) -> ExitCode {
                             "✓ #{} {}: went to {}, idle{how}",
                             item.number, item.feature, worker.name
                         ));
-                        started.push(worker.name.clone());
+                        // Renamed after its new issue by the handover (#251): its name now.
+                        started.push(item.feature.clone());
                     } else {
                         results.push(format!(
                             "✗ #{} {}: the handover to {} failed (see above); a fresh agent: pnpm wt:orchestrate {name} {} --now",
@@ -593,28 +567,6 @@ fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn argv(list: &[&str]) -> Vec<String> {
-        list.iter().map(|arg| arg.to_string()).collect()
-    }
-
-    #[test]
-    fn reads_the_mrs_to_wait_for() {
-        assert_eq!(
-            after_args(&argv(&["b", "12", "--after", "!232", "!233", "13"])),
-            Some((argv(&["!232", "!233"]), vec![2, 3, 4]))
-        );
-        assert_eq!(
-            after_args(&argv(&["--after=!232,!233"])),
-            Some((argv(&["!232,!233"]), vec![0]))
-        );
-        assert_eq!(parse_after(&argv(&["!232,233", "!232"])), Ok(vec![232, 233]));
-        assert_eq!(parse_after(&argv(&["x"])), Err("x is no MR (!232)".into()));
-        assert_eq!(
-            parse_after(&[]),
-            Err("--after names the MRs to wait for: --after !232".into())
-        );
-    }
 
     #[test]
     fn takes_a_number_or_a_numbered_feature() {

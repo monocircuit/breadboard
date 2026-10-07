@@ -32,7 +32,7 @@ use std::fs;
 use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
-use tabs::{CHANGELOG, OVERVIEW, ROOT, Want, ensure_tab, is_grouped};
+use tabs::{CHANGELOG, OVERVIEW, Opened, ROOT, Want, is_grouped, open_tab};
 
 const TAKES: Takes = Takes {
     switches: &["--no-focus"],
@@ -51,15 +51,23 @@ pub fn command(args: &Args) -> Done {
         return fail("this runs inside herdr (HERDR_ENV is not set)");
     }
     let repo = Repo::here()?;
-    plugin::heal(&repo.main);
-    // Said first: the layout takes seconds, today's was silent until its end.
+    // Said first: the layout takes seconds, today's was silent until its end;
+    // a wait for herdr shows under the step it belongs to.
     let count = repo.trees().len();
     step(&format!(
         "herdr: the layout of {SPACE} and its {count} worktree{}",
         if count == 1 { "" } else { "s" }
     ));
+    plugin::heal(&repo.main);
     let Some((main, report)) = exclusive(|| layout(&repo, true)) else {
-        return fail("herdr did not answer, is its server running? (herdr status)");
+        return fail(if herdr::is_silent() {
+            format!(
+                "herdr did not answer in {} s: nothing was laid out; pnpm wt:herdr again once it answers",
+                herdr::LIMIT.as_secs()
+            )
+        } else {
+            "herdr did not answer, is its server running? (herdr status)".into()
+        });
     };
     for line in report {
         println!("  {line}");
@@ -276,22 +284,34 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
         if is_port_free(STUDIO_PORT + offset) {
             wanted.push((STUDIO.into(), format!("pnpm pg:studio --port {}", STUDIO_PORT + offset)));
         }
+        let mut empty = Vec::new();
         for (label, command) in wanted {
-            if ensure_tab(
-                workspace,
-                &Want {
-                    label: &label,
-                    cwd: &vita,
-                    command: Some(command),
-                },
-                &tabs,
-            ) {
-                changed.push(format!("+{label}"));
+            let want = Want {
+                label: &label,
+                cwd: &vita,
+                command: Some(command),
+            };
+            match open_tab(workspace, &want, &tabs) {
+                Opened::Started => changed.push(format!("+{label}")),
+                Opened::Empty => empty.push(label),
+                Opened::Kept => {}
             }
+        }
+        // A tab herdr gave no pane runs nothing: said, never counted as running (log 2026-10-02 00:45).
+        if !empty.is_empty() {
+            let dot = if changed.is_empty() { "" } else { "· " };
+            changed.push(format!(
+                "{dot}{} opened empty: herdr gave no pane, nothing runs there",
+                empty.join(" ")
+            ));
         }
         return changed;
     }
     let ours: BTreeSet<&str> = services.iter().map(String::as_str).chain([DEV, STUDIO]).collect();
+    // The panes and the one running this are read only when there is a tab to close (a read per pane).
+    if !tabs.iter().any(|tab| ours.contains(s(tab, "label"))) {
+        return changed;
+    }
     let panes = herdr::panes_of(workspace);
     let current = herdr::current_pane();
     for tab in &tabs {

@@ -3,7 +3,7 @@
 //! its config.
 
 use super::session::{self, Session, Target, shown};
-use super::setup::{fetch, link_plugin, write_linked};
+use super::setup::{ensure_breadboard, fetch, has_status, link_plugin, with_current_status, write_linked};
 use super::sidebar::sidebar_config;
 use super::{Fail, PLUGIN, SPACE, step};
 use regex::Regex;
@@ -181,6 +181,28 @@ fn write_own_block_with(
     Ok(true)
 }
 
+/// The tab bar's status in your config: a `node …/run.mjs status` or the
+/// binary of a checkout elsewhere becomes this checkout's binary, in place,
+/// the rest of the file byte for byte (#230: a move, or the switch to the
+/// binary, needs no hand work). A block can't add it to your `[ui]`: a
+/// config without one is left alone. Whether it changed.
+pub fn write_own_status(session: &Session, file: &Path) -> Result<bool, Fail> {
+    let Ok(text) = fs::read_to_string(file) else {
+        return Ok(false);
+    };
+    let next = with_current_status(&text, &session.status_command());
+    if next == text {
+        return Ok(false);
+    }
+    let shown = shown(file);
+    fs::write(file, next).map_err(|error| format!("{shown}: {error}"))?;
+    step(&format!(
+        "the tab bar's status in {shown} runs {}",
+        session::shown(&session.breadboard())
+    ));
+    Ok(true)
+}
+
 /// The plugin in your own herdr instead of the session `platform`. Your
 /// herdr and its running server have to load it (>= 0.9); then it is linked,
 /// its keys go into your config, and the space of the repo is built once.
@@ -208,7 +230,9 @@ pub fn install_into_own(session: &Session) -> Result<(), Fail> {
         step(&format!("plugin {PLUGIN} is linked from {dir}"));
     }
     write_linked(session, &target);
-    let is_changed = write_own_block(session, &session::own_config(), false)?;
+    ensure_breadboard(session);
+    let is_block_changed = write_own_block(session, &session::own_config(), false)?;
+    let is_changed = write_own_status(session, &session::own_config())? || is_block_changed;
     if !is_serving {
         println!(
             "\n✓ {PLUGIN} is ready. Your herdr doesn't run: start it (Omarchy: super+ctrl+enter), then pnpm herdr:install again for the space {SPACE}"
@@ -224,11 +248,10 @@ pub fn install_into_own(session: &Session) -> Result<(), Fail> {
     }
     println!("\n✓ {PLUGIN} runs in your herdr {version}: the space {SPACE}, a space per worktree, the plugin's keys");
     // A block can't add to your [ui]: the tab bar's line is yours to add (README).
-    let config = fs::read_to_string(session::own_config()).unwrap_or_default();
-    let status = session.status_command();
-    if !config.contains(&status) {
+    if !has_status(&fs::read_to_string(session::own_config()).unwrap_or_default()) {
         println!(
-            "  the tab bar's ⬢ stacks · needs you: add to tab_bar_right of your [ui]\n  {{ type = \"command\", command = \"{status}\", interval_seconds = 10, timeout_seconds = 3 }}"
+            "  the tab bar's ⬢ stacks · needs you: add to tab_bar_right of your [ui]\n  {{ type = \"command\", command = \"{}\", interval_seconds = 10, timeout_seconds = 3 }}",
+            session.status_command()
         );
     }
     Ok(())
@@ -340,6 +363,39 @@ mod tests {
         let text = fs::read_to_string(&file).unwrap();
         assert!(text.starts_with(&format!("[ui]\nx = 1\n\n{}\n", session::block_begin())));
         assert!(text.ends_with(&format!("{}\n", session::block_end())));
+    }
+
+    // #230: the user's own tab bar line follows the binary, the rest stays.
+    #[test]
+    fn moves_your_tab_bars_status_to_the_binary_in_place() {
+        let (dir, session) = scratch("status");
+        let status = session.status_command();
+        let mine = |command: &str| {
+            format!(
+                "[ui]\n# mine\ntab_bar_right = [{{ type = \"command\", command = \"{command}\", interval_seconds = 10, timeout_seconds = 3 }}, {{ type = \"zoom\" }}, {{ type = \"hostname\" }}]\n\n{}\nold = 1\n{}\n",
+                session::block_begin(),
+                session::block_end()
+            )
+        };
+        for old in [
+            "node /home/me/platform/packages/breadboard/herdr/run.mjs status",
+            "node /gone/packages/workflow/herdr/run.mjs status",
+            "/gone/packages/breadboard/target/release/breadboard herdr status",
+        ] {
+            let file = config_with(&dir.0, &mine(old));
+            assert!(write_own_status(&session, &file).unwrap(), "{old}");
+            assert_eq!(fs::read_to_string(&file).unwrap(), mine(&status));
+            assert!(!write_own_status(&session, &file).unwrap(), "the second time: nothing");
+        }
+        // Without a status of the plugin: nothing written, the hint is printed instead.
+        let file = config_with(
+            &dir.0,
+            "[ui]\ntab_bar_right = [{ type = \"command\", command = \"date\" }]\n",
+        );
+        assert!(!write_own_status(&session, &file).unwrap());
+        assert!(!has_status(&fs::read_to_string(&file).unwrap()));
+        assert!(!write_own_status(&session, &dir.0.join("none.toml")).unwrap());
+        assert!(!dir.0.join("none.toml").exists());
     }
 
     #[test]

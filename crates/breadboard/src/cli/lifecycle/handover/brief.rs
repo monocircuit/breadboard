@@ -79,6 +79,7 @@ mod tests {
         Issue {
             number: 12,
             title: "a title".into(),
+            description: String::new(),
             feature: "12-a-title".into(),
             is_fix: false,
             dir: PathBuf::from("/r/p-12-a-title"),

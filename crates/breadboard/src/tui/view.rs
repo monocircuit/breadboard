@@ -156,8 +156,11 @@ struct Anchor<A> {
 }
 
 /// The block a click or Enter ran, held at its screen row over the rebuild
-/// that run gives, as lazygit's selection stays put: what it opens shows
-/// under it, scrolled into view no further than the block's own top.
+/// that run gives, as lazygit's selection stays put. A click never scrolls:
+/// the row under the pointer stays under it, so a second click at the same
+/// cell closes what the first opened (a fold, DIFF), as Node's toggles. Enter
+/// on a Tab pick shows what it opened under it, scrolled into view no further
+/// than the block's own top: the pick moves with it, no pointer is left behind.
 /// Against the scroll anchor, which keeps the end the end and so pushed
 /// the clicked row off the top when it opened something at the end (DIFF).
 #[derive(Clone, Debug)]
@@ -172,6 +175,8 @@ pub struct Held<A> {
     at: u16,
     /// The blocks after it: which, and how many rows after its end.
     after: Vec<(A, usize, u16)>,
+    /// Run by a click: kept on its row, nothing scrolled to show what opened.
+    is_pointer: bool,
 }
 
 /// What a held run opened: the page's rows and scroll before, the rows
@@ -261,17 +266,17 @@ impl<A: Clone + PartialEq> View<A> {
             .filter(|(_, region)| !region.is_button() && region.area.y <= row && row < region.area.bottom())
             .min_by_key(|(_, region)| region.area.height)
             .map(|(index, _)| index)?;
-        self.held_of(&window, index, row, hit.action().clone())
+        self.held_of(&window, index, row, hit.action().clone(), true)
     }
 
     /// The block picked with Tab, held over the rebuild Enter gives.
     pub fn hold_selected(&self) -> Option<Held<A>> {
         let index = self.selected_index()?;
         let region = &self.sheet.as_ref()?.regions[index];
-        self.held_of(&self.shown(), index, region.area.y, region.action().clone())
+        self.held_of(&self.shown(), index, region.area.y, region.action().clone(), false)
     }
 
-    fn held_of(&self, window: &Window, index: usize, row: u16, ran: A) -> Option<Held<A>> {
+    fn held_of(&self, window: &Window, index: usize, row: u16, ran: A, is_pointer: bool) -> Option<Held<A>> {
         let sheet = self.sheet.as_ref()?;
         let y = window.screen_y(row)?;
         if row < window.sticky {
@@ -293,12 +298,13 @@ impl<A: Clone + PartialEq> View<A> {
             height: area.height,
             at: y - window.top,
             after,
+            is_pointer,
         })
     }
 
     /// The scroll that keeps `held` on its screen row in the page built
-    /// anew, then shows what opened under it (the rows up to the first
-    /// block after it that moved) as far as the block's top stays on screen.
+    /// anew; for Enter it then shows what opened under it (the rows up to the
+    /// first block after it that moved) as far as the block's top stays on screen.
     fn place_held(&self, held: &Held<A>) -> Option<u16> {
         let sheet = self.sheet.as_ref()?;
         let index = find(sheet, &held.block.0, held.block.1)?;
@@ -321,6 +327,9 @@ impl<A: Clone + PartialEq> View<A> {
         // A title pinned now (its section goes on below) would cover it: down from under the pin.
         while self.window(scroll).screen_y(row).is_none() && scroll > 0 {
             scroll -= 1;
+        }
+        if held.is_pointer {
+            return Some(scroll);
         }
         let moved = held.after.iter().find_map(|(action, nth, gap)| {
             let next = sheet.regions[find(sheet, action, *nth)?].area;
@@ -369,7 +378,8 @@ impl<A: Clone + PartialEq> View<A> {
         self.header = guarded(|| app.header()).unwrap_or_else(|why| {
             Header::new("breadboard").status(vec![Span::styled(format!("⚠ {why}"), theme::tone(theme::Tone::Red))])
         });
-        let mut page = Page::new(width);
+        // The pick from the page before: the app draws its keys with it.
+        let mut page = Page::new(width).picking(self.selected());
         self.sheet = match guarded(|| app.build(&mut page)) {
             Ok(()) => {
                 let mut sheet = page.finish();
@@ -456,6 +466,21 @@ impl<A: Clone + PartialEq> View<A> {
         Some(self.sheet.as_ref()?.regions[index].action().clone())
     }
 
+    /// Enter on a pick the wheel scrolled off screen: it is shown again
+    /// instead of run, so Enter never runs what the reader can't see.
+    /// Whether it had to be shown.
+    pub fn show_selected(&mut self) -> bool {
+        let Some(index) = self.selected_index() else {
+            return false;
+        };
+        let area = self.sheet.as_ref().map(|sheet| sheet.regions[index].area);
+        let Some(area) = area else { return false };
+        if self.shown().screen_y(area.y).is_some() {
+            return false;
+        }
+        self.reveal(area)
+    }
+
     /// Picks the next block (`by` > 0, Tab) or the one before (Shift-Tab),
     /// as lazygit's j/k move the selection: the first one on screen when
     /// none is picked yet, no further than the first or the last; the
@@ -467,8 +492,11 @@ impl<A: Clone + PartialEq> View<A> {
             return false;
         };
         let window = self.window(self.scroll);
+        // Without a pick, from the block under the pointer (the one just
+        // clicked), as lazygit's click selects the row j/k then move from.
         let at = match self
             .selected_index()
+            .or(self.lit.block)
             .and_then(|index| order.iter().position(|&i| i == index))
         {
             Some(at) => (at as i64 + i64::from(by)).clamp(0, last as i64) as usize,
@@ -499,6 +527,8 @@ impl<A: Clone + PartialEq> View<A> {
         let area = region.area;
         let is_new = self.selected != picked;
         self.selected = picked;
+        // Another pick: the page is built again, with its keys under it.
+        self.is_stale |= is_new;
         self.reveal(area) || is_new
     }
 
@@ -664,8 +694,9 @@ impl<A: Clone + PartialEq> View<A> {
         }
         self.area = area;
         if self.selected.is_some() && self.selected_index().is_none() {
-            // Its block is gone from the page built anew.
+            // Its block is gone from the page built anew: built once more without its keys.
             self.selected = None;
+            self.build(app, area.width);
         }
         let window = self.window(self.scroll);
         self.scroll = window.scroll;
@@ -1271,29 +1302,68 @@ mod tests {
         assert_eq!(screen.view.scroll(), 0);
     }
 
+    /// The fold's area in the page on screen.
+    fn fold_area(screen: &Screen) -> Rect {
+        screen
+            .regions()
+            .into_iter()
+            .find(|region| *region.action() == Action::Fold)
+            .unwrap()
+            .area
+    }
+
+    /// Scrolled to the end, the fold on screen: the scroll and the fold's screen row.
+    fn fold_at_the_end(screen: &mut Screen) -> (u16, u16) {
+        let area = fold_area(screen);
+        // At the end when the fold shows there, as DIFF at the end of a worktree.
+        screen.view.scroll_bottom();
+        screen.draw();
+        if screen.view.screen_y(area.y).is_none() {
+            screen.show(area.y);
+        }
+        (screen.view.scroll(), screen.view.screen_y(area.y).unwrap())
+    }
+
     #[test]
-    fn a_click_that_opens_rows_keeps_its_row_and_shows_them_under_it() {
+    fn a_click_keeps_its_row_under_the_pointer_and_a_second_there_closes_it() {
         for (width, height) in [(80, 24), (120, 40)] {
             let mut screen = Screen::new(width, height);
-            let fold = |screen: &Screen| {
-                let regions = screen.regions();
-                regions
-                    .into_iter()
-                    .find(|region| *region.action() == Action::Fold)
-                    .unwrap()
-                    .area
-            };
-            let area = fold(&screen);
-            // At the end when the fold shows there, as DIFF at the end of a worktree.
-            screen.view.scroll_bottom();
+            fold_at_the_end(&mut screen);
+            // Not the top row: a title its section pins once it opened would cover that one.
+            screen.view.scroll_by(-3);
             screen.draw();
-            if screen.view.screen_y(area.y).is_none() {
-                screen.show(area.y);
-            }
-            let (before, y) = (screen.view.scroll(), screen.view.screen_y(area.y).unwrap());
+            let before = screen.view.scroll();
+            let y = screen.view.screen_y(fold_area(&screen).y).expect("the fold on screen");
             screen.press(width / 2, y);
-            let area = fold(&screen);
-            let now = screen.view.screen_y(area.y).expect("the clicked row stays on screen");
+            // What opened shows under it as far as the room goes; nothing scrolls.
+            assert_eq!(screen.view.screen_y(fold_area(&screen).y), Some(y), "{width}");
+            // A second and a third click at the same cell close and open it again.
+            screen.press(width / 2, y);
+            assert_eq!(screen.view.scroll(), before, "{width}");
+            assert_eq!(screen.view.screen_y(fold_area(&screen).y), Some(y), "{width}");
+            screen.press(width / 2, y);
+            assert_eq!(screen.view.screen_y(fold_area(&screen).y), Some(y), "{width}");
+        }
+    }
+
+    #[test]
+    fn enter_on_a_pick_that_opens_rows_shows_them_under_it() {
+        for (width, height) in [(80, 24), (120, 40)] {
+            let mut screen = Screen::new(width, height);
+            let (before, y) = fold_at_the_end(&mut screen);
+            let area = fold_area(&screen);
+            screen.view.select_by(1);
+            while screen.view.selected() != Some(Action::Fold) {
+                assert!(screen.view.select_by(1), "{width}: the fold is picked");
+            }
+            screen.draw();
+            let y = screen.view.screen_y(area.y).unwrap_or(y);
+            let held = screen.view.hold_selected();
+            assert!(screen.app.act(Input::Click(Action::Fold)) == Flow::Redraw);
+            screen.view.acted(held);
+            screen.draw();
+            let area = fold_area(&screen);
+            let now = screen.view.screen_y(area.y).expect("the picked row stays on screen");
             // Up as far as what opened needs, or down by the title its section now pins.
             let pinned = screen.view.shown().pin.map_or(0, |pin| pin.rows);
             assert!(now <= y + pinned, "{width}: {now} > {y} + {pinned}");
@@ -1304,10 +1374,12 @@ mod tests {
             assert!(is_full, "{width}: {now}");
             let is_shown_up_to_top = screen.view.window(screen.view.scroll() + 1).screen_y(area.y).is_none();
             assert!(is_shown_up_to_top || screen.view.scroll() == screen.view.window(0).max_scroll);
-            // The second click closes it and gives back the frame before.
-            screen.press(width / 2, now);
+            // Enter again closes it and gives back the frame before.
+            let held = screen.view.hold_selected();
+            assert!(screen.app.act(Input::Click(Action::Fold)) == Flow::Redraw);
+            screen.view.acted(held);
+            screen.draw();
             assert_eq!(screen.view.scroll(), before, "{width}");
-            assert_eq!(screen.view.screen_y(fold(&screen).y), Some(y), "{width}");
         }
     }
 
@@ -1806,6 +1878,42 @@ mod tests {
         assert!(screen.view.screen_y(area.y).is_some());
         // Nothing scrolled for it: it was on screen.
         assert_eq!(screen.view.scroll(), screen.view.window(0).max_scroll);
+    }
+
+    #[test]
+    fn tab_without_a_pick_goes_on_from_the_block_under_the_pointer() {
+        let mut screen = Screen::new(120, 40);
+        let order = blocks(screen.view.sheet());
+        let second = screen.view.sheet().regions[order[1]].area;
+        let y = screen.view.screen_y(second.y).expect("on screen");
+        screen.view.hover(Some((60, y)));
+        screen.draw();
+        screen.view.select_by(1);
+        assert_eq!(screen.view.selected_index(), Some(order[2]));
+    }
+
+    #[test]
+    fn enter_on_a_pick_scrolled_off_shows_it_first() {
+        let mut screen = Screen::new(120, 24);
+        let sticky = screen.view.sheet().sticky;
+        // The first block that scrolls, picked at the top.
+        let top = loop {
+            screen.view.select_by(1);
+            screen.draw();
+            let index = screen.view.selected_index().unwrap();
+            let area = screen.view.sheet().regions[index].area;
+            if area.y >= sticky {
+                break area.y;
+            }
+        };
+        assert!(!screen.view.show_selected(), "on screen: Enter runs it");
+        screen.view.scroll_bottom();
+        screen.draw();
+        assert_eq!(screen.view.screen_y(top), None, "the wheel took it off screen");
+        assert!(screen.view.show_selected());
+        screen.draw();
+        assert!(screen.view.screen_y(top).is_some());
+        assert!(!screen.view.show_selected());
     }
 
     #[test]

@@ -1,13 +1,13 @@
-//! A view's GitLab feed in the daemon: one `read_gitlab` per ask, its lines
-//! sent to every overview that follows it, the last answer kept for one that
-//! comes later. A feed nobody followed for GRACE goes.
+//! A view's GitLab feed in the daemon: one `read_gitlab` per view, its lines
+//! sent to every overview that follows it, the last answer first to one that
+//! comes later. It reads while one follows it: the last to leave ends it
+//! (`serve` keeps its last answer for GRACE, for an overview opened again).
 
 use super::gitlab::{Feed as Said, read_gitlab};
 use breadboard_core::reader::RemoteAsk;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, watch};
 
 /// Lines a slow follower may fall behind before it skips some (progress, then answers).
@@ -19,22 +19,21 @@ pub struct Feed {
     last: Arc<Mutex<Option<Arc<str>>>>,
     /// Dropped with the feed: its reads end.
     refresh: mpsc::UnboundedSender<()>,
+    /// What its next read asks for: the last a follower said.
+    asks: watch::Sender<Option<RemoteAsk>>,
     followers: AtomicUsize,
-    left_at: Mutex<Instant>,
 }
 
 impl Feed {
-    /// The feed of `ask` in the repo `main`, its first read started.
-    pub fn start(main: PathBuf, ask: RemoteAsk) -> Arc<Feed> {
+    /// The feed of `ask` in the repo `main`, its first read started; `kept`:
+    /// the last answer of the feed of the view before, sent until it reads.
+    pub fn start(main: PathBuf, ask: RemoteAsk, kept: Option<Arc<str>>) -> Arc<Feed> {
         let (out, mut said) = mpsc::unbounded_channel::<Said>();
         let (refresh, refreshes) = mpsc::unbounded_channel();
         let (lines, _) = broadcast::channel(BACKLOG);
-        let last = Arc::new(Mutex::new(None));
+        let last = Arc::new(Mutex::new(kept));
         let (asks, asked) = watch::channel(Some(ask));
-        tokio::spawn(async move {
-            read_gitlab(main, asked, refreshes, out).await;
-            drop(asks);
-        });
+        tokio::spawn(read_gitlab(main, asked, refreshes, out));
         tokio::spawn({
             let (lines, last) = (lines.clone(), last.clone());
             async move {
@@ -55,8 +54,8 @@ impl Feed {
             lines,
             last,
             refresh,
+            asks,
             followers: AtomicUsize::new(0),
-            left_at: Mutex::new(Instant::now()),
         })
     }
 
@@ -68,20 +67,29 @@ impl Feed {
         (lines, last)
     }
 
-    pub fn leave(&self) {
-        if self.followers.fetch_sub(1, Ordering::SeqCst) == 1 {
-            *self.left_at.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-        }
+    /// A follower left; true when it was the last (the caller ends the feed).
+    pub fn leave(&self) -> bool {
+        self.followers.fetch_sub(1, Ordering::SeqCst) == 1
+    }
+
+    /// Its last answer.
+    pub fn last(&self) -> Option<Arc<str>> {
+        self.last.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// A follower's local read asks for something else: the next read takes it.
+    pub fn ask(&self, ask: RemoteAsk) {
+        self.asks.send_if_modified(|was| {
+            let is_new = was.as_ref() != Some(&ask);
+            if is_new {
+                *was = Some(ask);
+            }
+            is_new
+        });
     }
 
     /// `r` in one of its overviews: read again now, full, for all.
     pub fn refresh(&self) {
         let _ = self.refresh.send(());
-    }
-
-    /// Nobody followed it for GRACE.
-    pub fn is_left(&self) -> bool {
-        self.followers.load(Ordering::SeqCst) == 0
-            && self.left_at.lock().unwrap_or_else(|e| e.into_inner()).elapsed() >= super::GRACE
     }
 }

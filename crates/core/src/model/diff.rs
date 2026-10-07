@@ -269,19 +269,36 @@ pub fn bar_of(added: u64, removed: u64, max: u64, width: u64) -> (usize, usize) 
     (cells(added), cells(removed))
 }
 
-/// Diffs computed once per state of what they depend on (HEAD, origin/develop, the status).
+/// Diffs computed once per state of what they depend on: HEAD,
+/// origin/develop, the status, and the size and change time of each file in
+/// it, so a second edit of a file already ` M` is read too (the status alone
+/// stays the same).
 #[derive(Debug, Default)]
 pub struct DiffCache {
     entries: HashMap<PathBuf, (String, Option<Diff>)>,
 }
 
+/// A file's size and when it last changed, as part of a cache key; empty when it is gone.
+pub fn stamp_of(path: &Path) -> String {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return String::new();
+    };
+    let changed = meta
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |at| at.as_nanos());
+    format!("{} {changed}", meta.len())
+}
+
 impl DiffCache {
     pub fn own_diff_of(&mut self, dir: &Path) -> Option<Diff> {
-        let key = format!(
-            "{}{}",
-            git(dir, &["rev-parse", "HEAD", "origin/develop"]).stdout,
-            git(dir, &["status", "--porcelain"]).stdout
-        );
+        let status = git(dir, &["status", "--porcelain", "-uall"]).stdout;
+        let mut key = git(dir, &["rev-parse", "HEAD", "origin/develop"]).stdout;
+        for line in lines(&status) {
+            let file = path_of_status(line);
+            key.push_str(&format!("{line}\t{}\n", stamp_of(&dir.join(&file))));
+        }
         if let Some((known, diff)) = self.entries.get(dir)
             && *known == key
         {
@@ -341,5 +358,8 @@ mod tests {
         assert_eq!(renamed("old.md => new.md"), "new.md");
         let mut cache = DiffCache::default();
         assert_eq!(cache.own_diff_of(&one).unwrap().files, 2);
+        // A second edit of a file the status already lists is read too.
+        std::fs::write(one.join("new.md"), "a\nb\nc\nd\n").unwrap();
+        assert_eq!(cache.own_diff_of(&one).unwrap().added, 5);
     }
 }

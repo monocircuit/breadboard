@@ -293,22 +293,50 @@ pub fn first_line(text: &str) -> String {
         .to_string()
 }
 
-/// The question an answer ends on: its last line with a `?` in its last
-/// paragraph (auto-actions.mjs `questionOf`).
+/// The question an answer ends on: the last line of its last paragraph
+/// with a `?` that ends a sentence, its markdown marks off. A `?` inside
+/// inline code, a fenced code block or a URL asks nothing (#301; Node's
+/// `questionOf` took any `?` and kept `**` and backticks in the row).
 pub fn question_of(answer: &str) -> Option<String> {
-    let trimmed = answer.trim();
-    let last = split_paragraphs(trimmed).pop().unwrap_or_default();
-    last.split('\n')
+    let lines: Vec<&str> = answer.trim().split('\n').collect();
+    let mut is_code = Vec::with_capacity(lines.len());
+    let mut is_fenced = false;
+    for line in &lines {
+        let is_fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
+        is_code.push(is_fenced || is_fence);
+        if is_fence {
+            is_fenced = !is_fenced;
+        }
+    }
+    let start = lines
+        .iter()
+        .rposition(|line| line.trim().is_empty())
+        .map_or(0, |at| at + 1);
+    (start..lines.len())
         .rev()
-        .find(|line| line.contains('?'))
-        .map(first_line)
+        .find(|&at| !is_code[at] && asks(lines[at]))
+        .map(|at| plain(lines[at]))
         .filter(|line| !line.is_empty())
 }
 
-/// `text.split(/\n\s*\n/)`.
-fn split_paragraphs(text: &str) -> Vec<String> {
-    static BLANK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n\s*\n").unwrap());
-    BLANK.split(text).map(String::from).collect()
+/// Whether `line` has a `?` that ends a sentence once its inline code,
+/// URLs and link targets are out: `?` then only closing marks before a
+/// space or the end (`**Which one?** A`, not `/?timeline=skia`).
+fn asks(line: &str) -> bool {
+    static NOT_PROSE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"``[^`]*``|`[^`]*`|<[a-zA-Z][a-zA-Z0-9+.-]*:[^>]*>|\b[a-zA-Z][a-zA-Z0-9+.-]*://\S+|\]\([^)]*\)")
+            .unwrap()
+    });
+    static ENDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\?[*_)\]"'”’»]*(\s|$)"#).unwrap());
+    ENDS.is_match(&NOT_PROSE.replace_all(line, " "))
+}
+
+/// `line` without markdown marks: its leading `#`, `>`, `*`, `-`, its `**`,
+/// `__` and backticks, a link as its text.
+fn plain(line: &str) -> String {
+    static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap());
+    let line = LINK.replace_all(line, "$1");
+    first_line(&line.replace("**", "").replace("__", "").replace('`', ""))
 }
 
 /// The tool call a conversation's last answer ends with, unanswered, as a
@@ -468,11 +496,39 @@ mod tests {
             Some("Shall I merge it?")
         );
         assert_eq!(question_of("Is it?\n\nDone."), None);
-        assert_eq!(
-            question_of("- **Which one?** A or B"),
-            Some("Which one?** A or B".into())
-        );
+        assert_eq!(question_of("- **Which one?** A or B"), Some("Which one? A or B".into()));
         assert_eq!(question_of(""), None);
+    }
+
+    /// #301: a `?` in inline code, a code block or a URL asks nothing, and
+    /// the row has no `**` or backticks.
+    #[test]
+    fn takes_only_a_real_question() {
+        let checks =
+            "**Your checks:** pixi at `/` (#3) and Skia at `/?timeline=skia` (#4) both came back \"looks good\".";
+        assert_eq!(question_of(checks), None);
+        assert_eq!(
+            question_of("Done.\n\n**Shall I merge it?**").as_deref(),
+            Some("Shall I merge it?")
+        );
+        assert_eq!(question_of("See https://gitlab.example/x?tab=1 for it."), None);
+        assert_eq!(question_of("See <https://gitlab.example/x?tab=1>."), None);
+        assert_eq!(question_of("See [the MR](https://gitlab.example/x?tab=1)."), None);
+        assert_eq!(question_of("Ran it:\n```\nls?\n```"), None);
+        assert_eq!(question_of("Ran it:\n```\nis it?\n\nyes?\n```"), None);
+        assert_eq!(
+            question_of("Shall `pnpm wt:check` run again?").as_deref(),
+            Some("Shall pnpm wt:check run again?")
+        );
+        assert_eq!(
+            question_of("Merge [!12](https://x/12?a=b) now?").as_deref(),
+            Some("Merge !12 now?")
+        );
+        assert_eq!(question_of("Which: `a?` or `b?`"), None);
+        assert_eq!(
+            question_of("Is `a` (the first?) right"),
+            Some("Is a (the first?) right".into())
+        );
     }
 
     #[test]

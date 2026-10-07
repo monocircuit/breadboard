@@ -7,13 +7,16 @@
 //! come before the one that wraps: a worktree's MR and pipeline stand on its
 //! line, its work after them, its check first; a column too narrow for a
 //! fact holds the check in a word and the whole work goes on the row's next
-//! line, under the name. An MR is its title, then its branch and owner;
+//! line, under the name. Where the app and stack columns leave the work too
+//! little room (80 columns), one column holds a row's MR, or its app and
+//! stack when it has none; the usual env (no .env.local, the shared stack)
+//! is counted once in the title. An MR is its title, then its branch and owner;
 //! where its cells leave the title too little room they start the line under
 //! the title, in columns, whichever takes fewer rows. An orchestration's
 //! worktrees stand under its `⇶ <name>`, a row of its own that brings its
-//! space to the front. Live, the issues get what the pane has left
-//! (render.mjs), at least 3, then `… N more: glab issue list`; `--once`
-//! prints them all. Every row is a block (#296); a click goes where it names.
+//! space to the front. Live, the MRs (those of no worktree here first) and
+//! the issues share what the pane has left, at least one each, then `… N
+//! more · click to show them`; `--once` prints them all. Every row is a block (#296); a click goes where it names.
 
 use super::{Act, Ctx, Fold, look};
 use crate::tui::band;
@@ -25,9 +28,10 @@ use breadboard_core::check::CheckState;
 use breadboard_core::git::orchestrations_dir;
 use breadboard_core::gitlab::read::{ListedIssue, ListedMr};
 use breadboard_core::herdr;
+use breadboard_core::model::Tree;
 use breadboard_core::model::everything::{EverythingModel, TreeRow, stack_cell};
 use breadboard_core::model::order::Go;
-use breadboard_core::model::tree::{check_fact, pipeline_mark};
+use breadboard_core::model::tree::{check_fact, pipeline_mark, stack_of};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use std::path::PathBuf;
@@ -84,23 +88,31 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
                 let band = band::shown(&Header::default(), "", width + 2, height).len() as u16;
                 height.saturating_sub(band + page.rows() + LIST_FRAMES)
             });
+            let ordered = others_first(&remote.mrs, rows);
             // Laid out before either is drawn, guarded as a section is (#306).
             let planned = guarded(|| {
-                let mrs = MrTable::new(&remote.mrs, rows, width);
+                let mrs = MrTable::new(&ordered, rows, width);
                 let list = IssueTable::new(&remote.issues, width);
-                let shown = match room {
+                let (heights_mrs, heights_issues) = (mrs.heights(width), list.heights(width));
+                let share = |folds| match room {
                     None => (remote.mrs.len(), remote.issues.len()),
-                    Some(room) => shares(&mrs.heights(width), &list.heights(width), room, folds),
+                    Some(room) => shares(&heights_mrs, &heights_issues, room, folds),
                 };
-                (mrs, list, shown)
+                let shown = share(folds);
+                // An opened list's fold stays where its line about more was:
+                // the rows it opened come under it, where the click was.
+                let folded = (share((false, folds.1)).0, share((folds.0, false)).1);
+                (mrs, list, shown, folded)
             });
             match planned {
-                Ok((mrs, list, (shown_mrs, shown_issues))) => {
+                Ok((mrs, list, (shown_mrs, shown_issues), (folded_mrs, folded_issues))) => {
                     page.section("MERGE REQUESTS", |scene| {
-                        merge_requests(scene, &mrs, shown_mrs, rows, main.as_ref(), folds.0)
+                        let fold = Shown::new(shown_mrs, folds.0, folded_mrs);
+                        merge_requests(scene, &mrs, fold, rows, main.as_ref())
                     });
                     page.section("ISSUES", |scene| {
-                        issues(scene, &list, shown_issues, rows, main.as_ref(), folds.1)
+                        let fold = Shown::new(shown_issues, folds.1, folded_issues);
+                        issues(scene, &list, fold, rows, main.as_ref())
                     });
                 }
                 Err(why) => {
@@ -174,8 +186,7 @@ fn padded(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
 }
 
 /// The app of a checkout: `● :3002` up, `○ :3002` down, `⇒ :3000` shared, `—` without env.
-fn app_cell(row: &TreeRow) -> Vec<Span<'static>> {
-    let tree = &row.tree;
+fn app_cell(tree: &Tree) -> Vec<Span<'static>> {
     vec![if !tree.has_env {
         look::dim("—")
     } else if !tree.has_own_port {
@@ -185,6 +196,45 @@ fn app_cell(row: &TreeRow) -> Vec<Span<'static>> {
     } else {
         look::dim(format!("○ :{}", 3000 + tree.offset))
     }]
+}
+
+/// What a checkout's .env.local gives it, as its app and stack cells say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Env {
+    Missing,
+    Shared,
+    Own,
+}
+
+fn env_of(tree: &Tree) -> Env {
+    if !tree.has_env {
+        Env::Missing
+    } else if !tree.has_own_port {
+        Env::Shared
+    } else {
+        Env::Own
+    }
+}
+
+/// The env a narrow table says once in its title instead of on each row:
+/// the commoner of no .env.local and the shared stack (an own stack has
+/// its own port, said on its row).
+fn usual_env(rows: &[&TreeRow]) -> Option<Env> {
+    let count = |env| rows.iter().filter(|row| env_of(&row.tree) == env).count();
+    match (count(Env::Missing), count(Env::Shared)) {
+        (0, 0) => None,
+        (missing, shared) if missing >= shared => Some(Env::Missing),
+        _ => Some(Env::Shared),
+    }
+}
+
+/// The title's word for the rows of `env` that say nothing about it.
+fn env_note(env: Env, count: usize, of: usize) -> String {
+    match env {
+        Env::Missing if count == of => "no .env.local in any".into(),
+        Env::Missing => format!("no .env.local in {count} of {of}"),
+        _ => format!("{count} of {of} on the shared stack"),
+    }
 }
 
 /// A worktree's name in herdr's pink, its branch when that says more.
@@ -236,7 +286,9 @@ fn facts(scene: &mut Scene<Act>, parts: &[Vec<Span<'static>>], indent: u16) {
 }
 
 /// The open MR of each row, `!303 draft ✓ passed`, its parts aligned over the rows.
-fn mr_cells(rows: &[&TreeRow]) -> Vec<Vec<Span<'static>>> {
+/// `is_short`: the pipeline as its glyph alone (`✓`, `◐`), where the
+/// column would leave the work too little room; the MR list says it in words.
+fn mr_cells(rows: &[&TreeRow], is_short: bool) -> Vec<Vec<Span<'static>>> {
     let iid = rows
         .iter()
         .filter_map(|row| row.mr.as_ref())
@@ -252,7 +304,14 @@ fn mr_cells(rows: &[&TreeRow]) -> Vec<Vec<Span<'static>>> {
                 spans.push(look::dim(if mr.is_draft { " draft" } else { "      " }));
             }
             spans.push(Span::raw(" "));
-            spans.extend(look::spans(&[pipeline_mark(mr.pipeline.as_ref())]));
+            let mut mark = pipeline_mark(mr.pipeline.as_ref());
+            if let Some((glyph, _)) = mark.text.split_once(' ')
+                && is_short
+                && glyph.chars().count() == 1
+            {
+                mark.text = glyph.into();
+            }
+            spans.extend(look::spans(&[mark]));
             spans
         })
         .collect()
@@ -351,6 +410,23 @@ fn work_in(row: &TreeRow, room: u16) -> (Vec<Vec<Span<'static>>>, Option<Vec<Vec
     (word.into_iter().collect(), Some(all))
 }
 
+/// Whether a column `room` wide holds a row's work on the row's line, in
+/// short at least.
+fn is_one_line(row: &TreeRow, room: u16) -> bool {
+    line_width(&work_of(row)) <= room || line_width(&short_work(row)) <= room
+}
+
+/// A row's app and stack where its MR holds their column: on a line of
+/// their own in that column, under the MR.
+fn env_line(scene: &mut Scene<Act>, column: u16, env: Option<Vec<Span<'static>>>) {
+    let Some(env) = env else { return };
+    scene.end_line();
+    scene.pad_to(column);
+    scene.indent(column);
+    scene.atom(env);
+    scene.indent(0);
+}
+
 /// A worktree's work that its column could not hold, on the row's next line
 /// under its name: the column above keeps the check, this says the rest.
 fn work_line(scene: &mut Scene<Act>, detail: Option<Vec<Vec<Span<'static>>>>) {
@@ -377,42 +453,131 @@ fn tree_click(row: &TreeRow, is_in_herdr: bool) -> Act {
     }
 }
 
+/// The width of each column of `cells`, one row each.
+fn widths_of(cells: &[Vec<Vec<Span<'static>>>]) -> Vec<u16> {
+    let count = cells.first().map_or(0, Vec::len);
+    (0..count).map(|i| widest(cells.iter().map(|row| &row[i]))).collect()
+}
+
+/// How the rows of WORKTREES stand.
+struct Layout {
+    /// Each row's cells between its name and its work.
+    cells: Vec<Vec<Vec<Span<'static>>>>,
+    /// Each row's app and stack where its MR holds their column: under it.
+    envs: Vec<Option<Vec<Span<'static>>>>,
+    /// The env the title says once, its rows saying nothing of it.
+    usual: Option<Env>,
+    /// Where the columns start; None: cards.
+    at: Option<Vec<u16>>,
+}
+
+/// A checkout's app and stack in one cell, the stack as WORKTREES of an
+/// orchestration says it: `○ :3000 stack down`, `⇒ :3000 shared`, `— no
+/// .env.local` (the port says the offset).
+fn env_cell(tree: &Tree) -> Vec<Span<'static>> {
+    let stack = match env_of(tree) {
+        Env::Missing => vec![look::dim("no .env.local")],
+        _ => look::spans(&[stack_of(tree)]),
+    };
+    [app_cell(tree), vec![Span::raw(" ")], stack].concat()
+}
+
+/// The layout of WORKTREES in `width`: of these, the first with the most
+/// rows whose work stands on their line (in short at least): wide, the
+/// app, the stack and the MR in columns of their own; narrow (80 columns,
+/// long names), one column that holds the MR, or the app and stack of a
+/// row without one, the env of a row with an MR under it unless it is
+/// the usual one (no .env.local, the shared stack), which the title
+/// counts once; narrow with each pipeline as its glyph. None with room for
+/// the work column: cards.
+fn layout(rows: &[&TreeRow], names: &[Vec<Span<'static>>], width: u16) -> Layout {
+    let is_bare = rows.iter().all(|row| !row.tree.has_env);
+    let wide = Layout {
+        cells: rows
+            .iter()
+            .zip(mr_cells(rows, false))
+            .map(|(row, mr)| match is_bare {
+                true => vec![vec![], vec![], mr],
+                false => vec![app_cell(&row.tree), look::spans(&[stack_cell(&row.tree)]), mr],
+            })
+            .collect(),
+        envs: vec![None; rows.len()],
+        usual: is_bare.then_some(Env::Missing),
+        at: None,
+    };
+    let usual = usual_env(rows);
+    let is_usual = |row: &TreeRow| Some(env_of(&row.tree)) == usual;
+    let narrow = |is_short| {
+        let mut cells = vec![];
+        let mut envs = vec![];
+        for (row, mr) in rows.iter().zip(mr_cells(rows, is_short)) {
+            let has_mr = !mr.is_empty();
+            envs.push((has_mr && !is_usual(row)).then(|| env_cell(&row.tree)));
+            cells.push(vec![match (has_mr, is_usual(row)) {
+                (true, _) => mr,
+                (false, true) => vec![],
+                (false, false) => env_cell(&row.tree),
+            }]);
+        }
+        Layout {
+            cells,
+            envs,
+            usual,
+            at: None,
+        }
+    };
+    let mut layouts = [wide, narrow(false), narrow(true)];
+    for layout in &mut layouts {
+        let widths = [vec![widest(names.iter())], widths_of(&layout.cells)].concat();
+        layout.at = columns(NAME_AT, &widths, width, WORK_AT_LEAST);
+    }
+    // How many rows stand on one line; the first with the most wins.
+    let one_line = |layout: &Layout| {
+        let column = layout.at.as_ref().and_then(|at| at.last().copied())?;
+        let room = width.saturating_sub(column);
+        let rows = rows.iter().zip(&layout.envs);
+        Some(
+            rows.filter(|(row, env)| env.is_none() && is_one_line(row, room))
+                .count(),
+        )
+    };
+    let counts: Vec<_> = layouts.iter().map(one_line).collect();
+    let most = counts.iter().flatten().max().copied();
+    let pick = counts
+        .iter()
+        .position(|count| count.is_some() && *count == most)
+        .unwrap_or(1);
+    let [wide, narrow, short] = layouts;
+    match pick {
+        0 => wide,
+        1 => narrow,
+        _ => short,
+    }
+}
+
 fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, ctx: &Ctx) {
-    // Without an .env.local anywhere the app and stack cells of every row
-    // would say the same: the title says it once.
-    let has_env = rows.iter().any(|row| row.tree.has_env);
-    scene.note(if has_env {
-        "click one to go to its space"
-    } else {
-        "click one to go to its space · no .env.local in any"
-    });
     let main = rows
         .iter()
         .find(|row| row.tree.is_main)
         .map(|row| row.tree.dir.as_path());
     let rows = grouped(rows);
     let names: Vec<_> = rows.iter().map(|row| name_cell(row)).collect();
-    let cell = |row: &TreeRow, of: fn(&TreeRow) -> Vec<Span<'static>>| if has_env { of(row) } else { vec![] };
-    let apps: Vec<_> = rows.iter().map(|row| cell(row, app_cell)).collect();
-    let stacks: Vec<_> = rows
-        .iter()
-        .map(|row| cell(row, |row| look::spans(&[stack_cell(&row.tree)])))
-        .collect();
-    let mrs = mr_cells(&rows);
-    let widths = [
-        widest(names.iter()),
-        widest(apps.iter()),
-        widest(stacks.iter()),
-        widest(mrs.iter()),
-    ];
-    // The work column holds its check in short at least, then a row stays one line.
-    let at = columns(NAME_AT, &widths, scene.width(), WORK_AT_LEAST);
+    let Layout { cells, envs, usual, at } = layout(&rows, &names, scene.width());
+    match usual {
+        Some(env) => {
+            let count = rows.iter().filter(|row| env_of(&row.tree) == env).count();
+            scene.note(format!(
+                "click one to go to its space · {}",
+                env_note(env, count, rows.len())
+            ));
+        }
+        None => scene.note("click one to go to its space"),
+    }
     // A card's second line lines up as a table of its own when it can.
-    let under = columns(NAME_AT, &widths[1..], scene.width(), WORK_AT_LEAST);
+    let under = columns(NAME_AT, &widths_of(&cells), scene.width(), WORK_AT_LEAST);
     let is_in_herdr = herdr::is_in_herdr();
-    let cells = names.into_iter().zip(apps).zip(stacks).zip(mrs);
     let mut group: Option<&str> = None;
-    for (row, (((name, app), stack), mr)) in rows.iter().zip(cells) {
+    for (row, ((name, cells), env)) in rows.iter().zip(names.into_iter().zip(cells).zip(envs)) {
         // An orchestration's name heads its worktrees (`⇶ breadboard`) in
         // cyan: a line once, where Node said it after every name.
         if let Some(origin) = &row.tree.origin
@@ -438,61 +603,60 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
             if row.tree.is_here {
                 scene.atom(vec![look::span("→", theme::tone(Tone::Cyan))]);
             }
+            if let Some(at) = &at {
+                let column = at.last().copied().unwrap_or(0);
+                let (work, detail) = work_in(row, scene.width().saturating_sub(column));
+                let cells = [vec![name], cells].concat();
+                table_row(scene, at, cells, |scene| facts(scene, &work, column));
+                env_line(scene, at.get(1).copied().unwrap_or(column), env);
+                work_line(scene, detail);
+                return;
+            }
+            // A card: the name on its line, the rest under it, unless the
+            // row has only its work and that fits after the name
+            // (`→ platform develop  clean`): the aligned cells stay aligned.
             let work = work_of(row);
-            match &at {
-                Some(at) => {
-                    let column = at.last().copied().unwrap_or(0);
+            let is_one_line = cells.iter().all(Vec::is_empty)
+                && env.is_none()
+                && NAME_AT + width_of(&name) + work.iter().map(|part| width_of(part) + GAP).sum::<u16>()
+                    <= scene.width();
+            scene.pad_to(NAME_AT);
+            scene.indent(NAME_AT);
+            look::flow(scene, &name);
+            if is_one_line {
+                gap(scene, NAME_AT);
+                facts(scene, &work, NAME_AT);
+                scene.indent(0);
+                return;
+            }
+            scene.end_line();
+            match &under {
+                Some(under) => {
+                    let column = under.last().copied().unwrap_or(0);
                     let (work, detail) = work_in(row, scene.width().saturating_sub(column));
-                    table_row(scene, at, vec![name, app, stack, mr], |scene| {
-                        facts(scene, &work, column);
-                    });
+                    table_row(scene, under, cells, |scene| facts(scene, &work, column));
+                    env_line(scene, under.first().copied().unwrap_or(column), env);
                     work_line(scene, detail);
                 }
                 None => {
-                    // A card: the name on its line, the rest under it, unless
-                    // the row has only its work and that fits after the name
-                    // (`→ platform develop  clean`): the aligned cells stay aligned.
-                    let is_one_line = [&app, &stack, &mr].iter().all(|cell| cell.is_empty())
-                        && NAME_AT + width_of(&name) + work.iter().map(|part| width_of(part) + GAP).sum::<u16>()
-                            <= scene.width();
-                    scene.pad_to(NAME_AT);
-                    scene.indent(NAME_AT);
-                    look::flow(scene, &name);
-                    if is_one_line {
-                        gap(scene, NAME_AT);
-                        facts(scene, &work, NAME_AT);
-                        scene.indent(0);
-                        return;
-                    }
-                    scene.end_line();
-                    match &under {
-                        Some(under) => {
-                            let column = under.last().copied().unwrap_or(0);
-                            let (work, detail) = work_in(row, scene.width().saturating_sub(column));
-                            table_row(scene, under, vec![app, stack, mr], |scene| {
-                                facts(scene, &work, column);
-                            });
-                            work_line(scene, detail);
-                        }
-                        None => {
-                            for cell in [app, stack, mr] {
-                                if !cell.is_empty() {
-                                    scene.atom_gap(cell, GAP);
-                                }
-                            }
-                            gap(scene, NAME_AT);
-                            facts(scene, &work, NAME_AT);
+                    for cell in cells {
+                        if !cell.is_empty() {
+                            scene.atom_gap(cell, GAP);
                         }
                     }
-                    scene.indent(0);
+                    gap(scene, NAME_AT);
+                    facts(scene, &work, NAME_AT);
+                    env_line(scene, NAME_AT, env);
                 }
             }
+            scene.indent(0);
         });
     }
     if model.can_start_main
         && let Some(main) = rows.iter().find(|row| row.tree.is_main)
     {
-        scene.blank();
+        // Right under the rows: a blank there cost the issues their row at 80x24.
+        scene.end_line();
         let start = Act::StartStack(main.tree.dir.clone());
         scene.block(start.clone(), |scene| {
             scene.button("▶ start the default stack", Tone::Cyan, start);
@@ -543,6 +707,16 @@ fn orphans(scene: &mut Scene<Act>, orphans: &[(String, String)]) {
         }
         scene.end_line();
     }
+}
+
+/// The open MRs, those of no worktree here first (GitLab's order in each):
+/// a worktree's MR stands in its row above with its pipeline, so where the
+/// pane shows a few, they are the ones said nowhere else.
+fn others_first(mrs: &[ListedMr], rows: &[TreeRow]) -> Vec<ListedMr> {
+    let is_here = |mr: &ListedMr| rows.iter().any(|row| row.tree.branch == mr.branch);
+    let (mut others, here): (Vec<_>, Vec<_>) = mrs.iter().cloned().partition(|mr| !is_here(mr));
+    others.extend(here);
+    others
 }
 
 /// The worktree with `branch`, else the main checkout: where a page of it opens.
@@ -634,16 +808,61 @@ fn shares(mrs: &[u16], issues: &[u16], room: u16, folds: (bool, bool)) -> (usize
     (shown, fitting(issues, rest(u32::from(rows_of(mrs, shown)))))
 }
 
-/// The line under a list the pane cut: how many more, and that a click shows
-/// them; under one the user opened, that a click folds it again.
-fn more_line(scene: &mut Scene<Act>, more: usize, is_open: bool, fold: Fold, glab: &str) {
-    let text = match (more, is_open) {
-        (0, true) => "click to show fewer".to_string(),
-        (0, false) => return,
-        (more, _) => format!("… {more} more · click to show them · {glab}"),
-    };
-    scene.end_line();
-    scene.block(Act::Fold(fold), |scene| look::say(scene, &text, theme::dim()));
+/// How much of a list stands: its rows shown, whether the user opened it,
+/// and how many the pane showed before that (where its fold stays).
+#[derive(Clone, Copy, Debug)]
+struct Shown {
+    rows: usize,
+    is_open: bool,
+    folded: usize,
+}
+
+impl Shown {
+    fn new(rows: usize, is_open: bool, folded: usize) -> Self {
+        Self { rows, is_open, folded }
+    }
+
+    /// Whether the line about the fold goes before row `i` of `len`: under
+    /// the rows the pane showed by itself, where `… N more` was clicked, so
+    /// what it opened shows under the pointer (lazygit's fold stays put);
+    /// at the end when there is nothing to open.
+    fn is_fold_before(&self, i: usize, len: usize) -> bool {
+        if self.is_open && self.folded < len {
+            i == self.folded
+        } else {
+            i == self.rows
+        }
+    }
+}
+
+/// The rows of a list with the line about its fold: under a list the pane
+/// cut, how many more and that a click shows them; in one the user opened,
+/// where its line was, how many came and that a click folds them again.
+fn rows_with_fold(
+    scene: &mut Scene<Act>,
+    len: usize,
+    shown: Shown,
+    fold: Fold,
+    glab: &str,
+    mut row: impl FnMut(&mut Scene<Act>, usize),
+) {
+    for i in 0..=shown.rows.min(len) {
+        if shown.is_fold_before(i, len) {
+            let text = match (len - shown.rows, shown.is_open) {
+                (0, true) if shown.folded < len => format!("{} more below · click to show fewer", len - shown.folded),
+                (0, true) => "click to show fewer".to_string(),
+                (0, false) => String::new(),
+                (more, _) => format!("… {more} more · click to show them · {glab}"),
+            };
+            if !text.is_empty() {
+                scene.end_line();
+                scene.block(Act::Fold(fold), |scene| look::say(scene, &text, theme::dim()));
+            }
+        }
+        if i < shown.rows.min(len) {
+            row(scene, i);
+        }
+    }
 }
 
 /// The open MRs as a table: `!iid`, draft or ready, the pipeline, the
@@ -759,23 +978,16 @@ impl<'a> MrTable<'a> {
     }
 }
 
-fn merge_requests(
-    scene: &mut Scene<Act>,
-    table: &MrTable,
-    shown: usize,
-    rows: &[TreeRow],
-    main: Option<&PathBuf>,
-    is_open: bool,
-) {
+fn merge_requests(scene: &mut Scene<Act>, table: &MrTable, shown: Shown, rows: &[TreeRow], main: Option<&PathBuf>) {
     scene.note(format!("{} open", table.mrs.len()));
-    for (i, mr) in table.mrs.iter().enumerate().take(shown) {
+    rows_with_fold(scene, table.mrs.len(), shown, Fold::Mrs, "glab mr list", |scene, i| {
+        let mr = &table.mrs[i];
         let click = Act::Go(Go::Show {
             url: mr.url.clone(),
             dir: group_of(rows, Some(&mr.branch), main),
         });
         scene.block(click, |scene| table.draw(scene, i));
-    }
-    more_line(scene, table.mrs.len() - shown, is_open, Fold::Mrs, "glab mr list");
+    });
 }
 
 /// An issue's claim, short so the titles of all issues line up: cyan
@@ -876,35 +1088,29 @@ impl<'a> IssueTable<'a> {
 }
 
 /// The first `shown` issues, claimed first, then how many more there are.
-fn issues(
-    scene: &mut Scene<Act>,
-    table: &IssueTable,
-    shown: usize,
-    rows: &[TreeRow],
-    main: Option<&PathBuf>,
-    is_open: bool,
-) {
+fn issues(scene: &mut Scene<Act>, table: &IssueTable, shown: Shown, rows: &[TreeRow], main: Option<&PathBuf>) {
     scene.note(format!("{} open, claimed first", table.issues.len()));
-    for (i, issue) in table.issues.iter().enumerate().take(shown) {
-        let tree = issue
-            .branch
-            .as_ref()
-            .and_then(|branch| rows.iter().find(|row| &row.tree.branch == branch));
-        let click = match tree {
-            Some(row) => Act::Go(Go::FocusSpace(row.tree.dir.clone())),
-            None => Act::Go(Go::Show {
-                url: issue.url.clone(),
-                dir: main.cloned(),
-            }),
-        };
-        scene.block(click, |scene| table.draw(scene, i));
-    }
-    more_line(
+    rows_with_fold(
         scene,
-        table.issues.len() - shown,
-        is_open,
+        table.issues.len(),
+        shown,
         Fold::Issues,
         "glab issue list",
+        |scene, i| {
+            let issue = &table.issues[i];
+            let tree = issue
+                .branch
+                .as_ref()
+                .and_then(|branch| rows.iter().find(|row| &row.tree.branch == branch));
+            let click = match tree {
+                Some(row) => Act::Go(Go::FocusSpace(row.tree.dir.clone())),
+                None => Act::Go(Go::Show {
+                    url: issue.url.clone(),
+                    dir: main.cloned(),
+                }),
+            };
+            scene.block(click, |scene| table.draw(scene, i));
+        },
     );
 }
 
@@ -916,7 +1122,7 @@ mod tests {
     use breadboard_core::check::CheckState;
     use breadboard_core::gitlab::Pipeline;
     use breadboard_core::gitlab::read::EverythingRemote;
-    use breadboard_core::model::Tree;
+    use breadboard_core::model::{Docker, Tree};
     use breadboard_core::record::Origin;
 
     fn tree(name: &str, is_main: bool) -> Tree {
@@ -1391,6 +1597,150 @@ mod tests {
             .unwrap()
     }
 
+    /// The model with the main checkout's .env.local, and `each` done to every worktree.
+    fn with_env(mut model: EverythingModel, each: impl Fn(&mut Tree)) -> EverythingModel {
+        if let Ok(rows) = &mut model.trees {
+            for row in rows {
+                if row.tree.is_main {
+                    row.tree.has_env = true;
+                    row.tree.has_own_port = true;
+                } else {
+                    each(&mut row.tree);
+                }
+            }
+        }
+        model
+    }
+
+    /// The rows of each worktree's block, by its name.
+    fn tree_rows(sheet: &Sheet<Act>) -> Vec<(String, u16)> {
+        ["292-", "296-", "303-"]
+            .iter()
+            .map(|name| (name.to_string(), block_rows(sheet, name)))
+            .collect()
+    }
+
+    #[test]
+    fn at_80_a_worktree_is_one_line_whatever_its_env() {
+        // Only the main checkout has a .env.local (the critic's world): the
+        // rows without one say nothing, the title counts them.
+        let model = with_env(model(0), |_| {});
+        let view = sheet(&model, 80);
+        let text = view.text();
+        assert!(tree_rows(&view).iter().all(|(_, rows)| *rows == 1), "{text:#?}");
+        let all = text.join("\n");
+        assert!(all.contains("no .env.local in 3 of 4"), "{all}");
+        assert_eq!(all.matches("no .env.local").count(), 1, "{all}");
+        // The main checkout has no MR: its app and stack stand in that column.
+        let main = &text[row_of(&text, "→ platform")];
+        let first = &text[row_of(&text, "292-")];
+        assert!(main.contains("○ :3000 stack down"), "{text:#?}");
+        let column = |line: &str, word: &str| line.find(word).map(|at| line[..at].chars().count());
+        assert_eq!(column(main, "○ :3000"), column(first, "!303"), "{text:#?}");
+        assert!(first.ends_with("untested ↑1"), "{text:#?}");
+        // Every worktree on the shared stack, the live setup: the same, said once.
+        let model = with_env(model, |tree| tree.has_env = true);
+        let view = sheet(&model, 80);
+        let all = view.text().join("\n");
+        assert!(tree_rows(&view).iter().all(|(_, rows)| *rows == 1), "{all}");
+        assert!(
+            all.contains("3 of 4 on the shared stack") && !all.contains("⇒"),
+            "{all}"
+        );
+        // A worktree without an MR names its env, the usual one too.
+        let mut model = model;
+        if let Ok(rows) = &mut model.trees {
+            rows[3].tree.has_env = false;
+        }
+        let text = sheet(&model, 80).text();
+        assert!(text[row_of(&text, "303-")].contains("— no .env.local"), "{text:#?}");
+        assert!(text.join("\n").contains("2 of 4 on the shared stack"), "{text:#?}");
+        // At 120 every row has its columns, nothing said once.
+        let text = sheet(&model, 120).text();
+        let line = &text[row_of(&text, "292-")];
+        assert!(line.contains("⇒ :3000  shared") && line.contains("!303"), "{text:#?}");
+        assert!(!text.join("\n").contains("on the shared stack"), "{text:#?}");
+    }
+
+    #[test]
+    fn an_own_stack_beside_an_mr_goes_under_it() {
+        let mut model = with_env(model(0), |_| {});
+        if let Ok(rows) = &mut model.trees {
+            let tree = &mut rows[2].tree;
+            (tree.has_env, tree.has_own_port, tree.offset) = (true, true, 2);
+            tree.stack = Some("running(5)".into());
+        }
+        let text = sheet_of(&model, 80);
+        let all = text.join("\n");
+        assert!(all.contains("no .env.local in 2 of 4"), "{all}");
+        let at = row_of(&text, "296-");
+        assert!(text[at].contains("!308"), "{text:#?}");
+        assert!(text[at].ends_with("untested ↑1"), "{text:#?}");
+        // Under its MR, in the column of the main checkout's.
+        let column = |line: &str, word: &str| line.find(word).map(|at| line[..at].chars().count());
+        assert_eq!(
+            column(&text[at + 1], "○ :3002 stack running"),
+            column(&text[at], "!308"),
+            "{text:#?}"
+        );
+        let main = &text[row_of(&text, "→ platform")];
+        assert_eq!(column(main, "○ :3000"), column(&text[at], "!308"), "{text:#?}");
+        // Wide enough: in its column.
+        let text = sheet_of(&model, 200);
+        assert!(
+            text[row_of(&text, "296-")].contains("○ :3002  +2 running(5)  !308"),
+            "{text:#?}"
+        );
+    }
+
+    #[test]
+    fn the_mrs_of_no_worktree_here_come_first() {
+        let model = with_others(model(0));
+        let text = sheet_of(&model, 120);
+        let order: Vec<usize> = ["!318", "!187", "!102", "!308"]
+            .iter()
+            .map(|iid| row_of(&text, iid))
+            .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text:#?}");
+    }
+
+    #[test]
+    fn with_docker_silent_an_own_stack_is_unknown() {
+        let mut model = with_env(model(0), |_| {});
+        model.has_docker = false;
+        if let Ok(rows) = &mut model.trees {
+            rows[0].tree.docker = Docker::Silent;
+        }
+        let all = sheet_of(&model, 120).join("\n");
+        assert!(all.contains("default ?") && !all.contains("default down"), "{all}");
+        let all = sheet_of(&model, 80).join("\n");
+        assert!(all.contains("○ :3000 stack ?") && !all.contains("stack down"), "{all}");
+    }
+
+    #[test]
+    fn at_80x24_with_a_main_env_both_lists_start_on_the_first_screen() {
+        let mut model = with_env(model(64), |_| {});
+        if let (Some(remote), Ok(rows)) = (&mut model.remote, &mut model.trees) {
+            remote.mrs = (0..14)
+                .map(|i| mr(100 + i, &format!("feature/{i}-x"), "success"))
+                .collect();
+            // The gauntlet's world: 8 worktrees, no stack without one.
+            let template = rows[1].clone();
+            for i in 0..4 {
+                let mut row = template.clone();
+                row.tree.name = format!("31{i}-a-worktree-with-a-long-name-for-80");
+                rows.push(row);
+            }
+        }
+        model.orphans.clear();
+        let height = 24;
+        let band = band::shown(&Header::default(), "", 80, height).len();
+        let text = sheet_in(&model, 80, Some(height)).text();
+        let screen = usize::from(height) - band;
+        assert!(row_of(&text, "!100") < screen, "{text:#?}");
+        assert!(row_of(&text, "#300") < screen, "{text:#?}");
+    }
+
     #[test]
     fn live_the_mrs_and_issues_share_what_the_pane_has_left() {
         let mut model = model(64);
@@ -1432,12 +1782,26 @@ mod tests {
             is_every_issue_shown: true,
             ..Default::default()
         };
-        let text = sheet_with(&model, 80, Some(height), folds).text();
+        let opened = sheet_with(&model, 80, Some(height), folds);
+        let text = opened.text();
         assert_eq!(issues_in(&text), 64);
-        assert!(
-            text.iter().any(|line| line.trim() == "click to show fewer"),
-            "{text:#?}"
+        // Its fold stays on the row clicked: the issues it opened come under it.
+        let fewer = row_of(&text, "63 more below · click to show fewer");
+        assert_eq!(fewer, usize::from(more), "{text:#?}");
+        assert!(text[fewer + 1].trim_start().starts_with("#299"), "{text:#?}");
+        assert_eq!(
+            opened.hit(4, fewer as u16).map(|(_, region)| region.action().clone()),
+            Some(Act::Fold(Fold::Issues))
         );
+        // The MRs opened: theirs stays put too, the rest of them under it.
+        let folds = super::super::Folds {
+            is_every_mr_shown: true,
+            ..Default::default()
+        };
+        let text = sheet_with(&model, 80, Some(height), folds).text();
+        let fewer = row_of(&text, "13 more below · click to show fewer");
+        assert_eq!(fewer, mrs_more, "{text:#?}");
+        assert!(text[fewer + 1].trim_start().starts_with("!101"), "{text:#?}");
         // A tall pane: all of both, no line about more.
         let text = sheet_in(&model, 120, Some(500)).text();
         assert_eq!(issues_in(&text), 64);

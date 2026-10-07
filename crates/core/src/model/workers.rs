@@ -5,6 +5,7 @@
 //! it and keeps what runs (`StartRun`).
 
 use super::Entry;
+use super::display_names::names_of;
 use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, worker_of};
 use super::memory::{THRESHOLD, gb};
 use super::order::{Go, Item, Target};
@@ -430,6 +431,8 @@ pub fn worker_actions_of(
         orders.extend(starts.iter().map(|number| Go::StartFresh(*number)));
     }
     let entry_of = |number: i64| issues.iter().find(|issue| issue.number == Some(number));
+    // Rows name an agent as the overview shows it (#292); keys and orders keep the name it goes by.
+    let names = names_of(issues, known);
     let item = |key: String, who: &str, number: i64, text: String, is_running: bool, at: String, go: Go| Item {
         key,
         kind: if matches!(go, Go::StartFresh(_)) {
@@ -463,27 +466,27 @@ pub fn worker_actions_of(
             });
         }
         let is_running = run.is_some_and(|run| run.is_running);
+        let shown = names.shown(&handover.to);
         let text = if is_running {
-            format!("#{} → {}: handing over …", handover.number, handover.to)
+            format!("#{} → {shown}: handing over …", handover.number)
         } else if !handover.open.is_empty() {
             format!(
-                "#{} → {} after {} (announced)",
+                "#{} → {shown} after {} (announced)",
                 handover.number,
-                handover.to,
                 mrs_text(&handover.open)
             )
         } else {
             let state = match (run.and_then(|run| run.error.as_deref()), &handover.why) {
-                (Some(error), _) => format!("failed: {error}; tries again once {} is idle", handover.to),
+                (Some(error), _) => format!("failed: {error}; tries again once {shown} is idle"),
                 (None, Some(why)) => format!("waits: {why}"),
                 (None, None) if handover.is_due => "now".into(),
                 (None, None) => "once it is idle".into(),
             };
-            format!("#{} → {} {state} (announced)", handover.number, handover.to)
+            format!("#{} → {shown} {state} (announced)", handover.number)
         };
         actions.push(item(
             format!("hand over:#{}:{}", handover.number, handover.to),
-            &handover.to,
+            &shown,
             handover.number,
             text,
             is_running,
@@ -515,7 +518,7 @@ pub fn worker_actions_of(
                 if *is_fresh {
                     "its fresh agent".to_string()
                 } else {
-                    format!("its handover to {}", to.as_deref().unwrap_or("?"))
+                    format!("its handover to {}", names.shown(to.as_deref().unwrap_or("?")))
                 }
             ),
             _ if starts.contains(&number) => "starts a fresh agent".into(),
@@ -545,11 +548,12 @@ pub fn worker_actions_of(
         if let Some(run) = run.filter(|run| run.is_running)
             && let Some(to) = &run.to
         {
+            let shown = names.shown(to);
             actions.push(item(
                 format!("hand over:#{number}:{to}"),
-                to,
+                &shown,
                 number,
-                format!("#{number} → {to}: handing over …"),
+                format!("#{number} → {shown}: handing over …"),
                 true,
                 String::new(),
                 Go::Nothing,
@@ -572,18 +576,19 @@ pub fn worker_actions_of(
             continue;
         };
         let name = &found.worker.name;
+        let shown = names.shown(name);
         let text = if run.is_some_and(|run| run.is_running) {
-            format!("#{number} → {name}: handing over …")
+            format!("#{number} → {shown}: handing over …")
         } else {
             let error = run
                 .and_then(|run| run.error.as_deref())
                 .map(|error| format!("  {error}"))
                 .unwrap_or_default();
-            format!("#{number} → {name} ({}){error}", worker_text(found))
+            format!("#{number} → {shown} ({}){error}", worker_text(found))
         };
         actions.push(item(
             format!("hand over:#{number}:{name}"),
-            name,
+            &shown,
             number,
             text,
             run.is_some_and(|run| run.is_running),
@@ -858,15 +863,75 @@ mod tests {
             .iter()
             .map(|item| (item.kind.clone(), item.who.clone()))
             .collect();
+        // The agent by the name it is shown by (#292), its order by the one it goes by.
+        let shown = crate::model::display_names::display_names_of(&known, &[])["c1"].clone();
         assert_eq!(
             kinds,
             [
-                ("hand over".to_string(), "3-done".to_string()),
+                ("hand over".to_string(), shown.clone()),
                 ("start".to_string(), "9-new".to_string())
             ]
         );
+        assert!(found.actions[0].text.starts_with(&format!("#8 → {shown} (free, ")));
+        assert_eq!(found.actions[0].key, "hand over:#8:3-done");
         assert!(found.holds.is_empty());
         assert_eq!(found.suggested[&8].worker.name, "3-done");
+    }
+
+    #[test]
+    fn names_the_agent_of_an_announced_handover_as_it_is_shown() {
+        let issues = [
+            merged_tree(306, "306-crash-row", "c306", 20_000),
+            queued(301, "301-next"),
+        ];
+        let known = [Worker {
+            id: "c306".into(),
+            name: Some("306-crash-row".into()),
+            display_name: Some("Emil Keller".into()),
+            ..Default::default()
+        }];
+        let handover = |open: Vec<i64>| Announced {
+            number: 301,
+            to: "306-crash-row".into(),
+            after: vec![318],
+            at: None,
+            agent: None,
+            open,
+            is_due: false,
+            why: None,
+        };
+        let announced = [handover(vec![318])];
+        let facts = WorkerFacts {
+            announced: &announced,
+            ..Default::default()
+        };
+        let found = worker_actions_of(&issues, None, &HashMap::new(), &known, &facts);
+        assert_eq!(found.actions[0].text, "#301 → Emil Keller after !318 (announced)");
+        assert_eq!(found.actions[0].who, "Emil Keller");
+        assert_eq!(found.actions[0].key, "hand over:#301:306-crash-row");
+        assert!(matches!(&found.actions[0].go, Go::HandOver { to, .. } if to == "306-crash-row"));
+        let runs: HashMap<i64, StartRun> = [(
+            301,
+            StartRun {
+                error: Some("busy".into()),
+                // After it was queued: a failure of this queueing.
+                ended: 4_000_000_000_000,
+                to: Some("306-crash-row".into()),
+                ..Default::default()
+            },
+        )]
+        .into();
+        let announced = [handover(vec![])];
+        let facts = WorkerFacts {
+            announced: &announced,
+            runs: Some(&runs),
+            ..Default::default()
+        };
+        let found = worker_actions_of(&issues, None, &HashMap::new(), &known, &facts);
+        assert_eq!(
+            found.actions[0].text,
+            "#301 → Emil Keller failed: busy; tries again once Emil Keller is idle (announced)"
+        );
     }
 
     #[test]
@@ -887,7 +952,8 @@ mod tests {
                 dir: Some("/nonexistent/platform-30-done".into())
             }]
         );
-        assert_eq!(found.actions[0].text, "#31 → 30-done (free, 18 %)");
+        let shown = crate::model::display_names::display_names_of(&[], &["c1"])["c1"].clone();
+        assert_eq!(found.actions[0].text, format!("#31 → {shown} (free, 18 %)"));
         assert!(found.holds.is_empty());
     }
 

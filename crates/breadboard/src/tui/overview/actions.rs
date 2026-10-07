@@ -19,6 +19,7 @@ use crate::tui::{Flow, KeyEvent, Page, Scene};
 use breadboard_core::actions::{self as stored, Action};
 use breadboard_core::herdr::Pane;
 use breadboard_core::model::Paint;
+use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
 use breadboard_core::reader::{Model, RemoteOf};
@@ -38,7 +39,8 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         Err(why) => return page.failed("ACTIONS", why),
     };
     let in_next = in_next(model).map(|item| item.key.as_str());
-    page.section("ACTIONS", |scene| actions(scene, section, in_next, ctx));
+    let pick = pick_of(model, page.picked());
+    page.section("ACTIONS", |scene| actions(scene, section, in_next, &pick, ctx));
     if !section.up_next.is_empty() {
         page.section("UP NEXT", |scene| {
             scene.note(format!(
@@ -52,6 +54,69 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     }
 }
 
+/// What Tab picked, as the digit keys see it (lazygit: keys act on the
+/// focused menu and its highlighted row, never on another).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Pick {
+    /// Nothing: the digits answer what NEXT shows.
+    #[default]
+    Nothing,
+    /// An action's block, or one of a decide's options (`option`, its answer):
+    /// the digits answer that action, Enter does the block or picks the option.
+    Action { key: String, option: Option<String> },
+    /// Anything else (a worktree, an UP NEXT row, a merge request): the digits do nothing.
+    Other,
+}
+
+impl Pick {
+    /// Whether the digits answer `item`: it is picked, or it is NEXT's and nothing is.
+    pub fn keys(&self, item: &Item, is_in_next: bool) -> bool {
+        match self {
+            Pick::Nothing => is_in_next,
+            Pick::Action { key, .. } => *key == item.key,
+            Pick::Other => false,
+        }
+    }
+
+    /// The option of `item` picked, if one of its options is.
+    fn option_of(&self, item: &Item) -> Option<&str> {
+        match self {
+            Pick::Action { key, option } if *key == item.key => option.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// What the block `picked` with Tab is, among the actions of `model`.
+pub fn pick_of(model: &OrchestrationModel, picked: Option<&Act>) -> Pick {
+    let items = model
+        .actions
+        .as_ref()
+        .map(|section| section.actions.as_slice())
+        .unwrap_or_default();
+    pick_in(items, picked)
+}
+
+/// What the block `picked` with Tab is, among `items`.
+fn pick_in(items: &[Item], picked: Option<&Act>) -> Pick {
+    let Some(picked) = picked else { return Pick::Nothing };
+    let found = match picked {
+        Act::Action { key, .. } => items.iter().find(|item| item.key == *key).map(|item| (item, None)),
+        Act::Answer { file, id, answer } => items
+            .iter()
+            .find(|item| item.file.as_ref() == Some(file) && item.action.as_ref().is_some_and(|a| a.id == *id))
+            .map(|item| (item, Some(answer.clone()))),
+        _ => None,
+    };
+    match found {
+        Some((item, option)) => Pick::Action {
+            key: item.key.clone(),
+            option,
+        },
+        None => Pick::Other,
+    }
+}
+
 /// The action NEXT shows as its block, if it shows one.
 fn in_next(model: &OrchestrationModel) -> Option<&Item> {
     match &model.next.as_ref().ok()?.band {
@@ -61,8 +126,9 @@ fn in_next(model: &OrchestrationModel) -> Option<&Item> {
 }
 
 /// ACTIONS: each action a block between rules; the one NEXT shows (always on
-/// screen, above) only by its head and where it is, not twice in full.
-fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&str>, ctx: &Ctx) {
+/// screen, above) only by its head and where it is, not twice in full. The
+/// block picked with Tab carries its keys, and under it what each does.
+fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&str>, pick: &Pick, ctx: &Ctx) {
     let items = &section.actions;
     if items.is_empty() {
         scene.note("nothing waits for you");
@@ -77,6 +143,13 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&st
         }
         if in_next == Some(item.key.as_str()) {
             shown_in_next(scene, item, ctx);
+        } else if pick.keys(item, false) {
+            action_block(scene, item, ctx, true);
+            let hint = picked_hint(item, pick.option_of(item));
+            if !hint.is_empty() {
+                let room = scene.width();
+                look::whole(scene, &hint, room);
+            }
         } else {
             action_block(scene, item, ctx, false);
         }
@@ -87,7 +160,7 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&st
 fn shown_in_next(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
     let draw = |scene: &mut Scene<Act>| {
         head(scene, item, ctx, true);
-        look::say(scene, "↑ in NEXT: answer it there", theme::dim());
+        look::say(scene, &pointer_of(item), theme::dim());
         scene.end_line();
     };
     match click_of(item) {
@@ -96,11 +169,43 @@ fn shown_in_next(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
     }
 }
 
-/// ACTIONS' note: what waits for the user, the answers on their way apart
-/// (they wait for their agent, not for the user), what a click does.
+/// The pointer up of the action NEXT shows: where its answers are, or, for a
+/// kind without answers (a merge, a question without options), what a click
+/// here does; it never names an answer there is none of.
+fn pointer_of(item: &Item) -> String {
+    if !keyed(item).is_empty() {
+        return "↑ in NEXT: answer it there".into();
+    }
+    match does_of(item) {
+        Some(does) if !item.is_inert() => format!("↑ in NEXT · a click here {does}{}", there_of(item)),
+        _ => "↑ in NEXT".into(),
+    }
+}
+
+/// Where a question without options is answered: in its agent's tab. A
+/// `waits` is one too: its agent asked it in its own words.
+fn there_of(item: &Item) -> &'static str {
+    if matches!(item.kind.as_str(), "decide" | "waits") {
+        ": answer it there"
+    } else {
+        ""
+    }
+}
+
+/// ACTIONS' note: what waits for the user, the answers on their way and the
+/// tries that can't be tried yet apart (they wait for their agent or a merge,
+/// not for the user), what a click does.
 fn note_of(items: &[Item]) -> String {
-    let answered = items.iter().filter(|item| shown_answer(item).is_some()).count();
-    let open = items.len() - answered;
+    let shown: Vec<_> = items.iter().map(shown_answer).collect();
+    // A ✓ goes to no one: ticked off, not on its way.
+    let ticked = shown.iter().flatten().filter(|(_, waits)| waits == TICKED).count();
+    let answered = shown.iter().flatten().count() - ticked;
+    let waiting = items
+        .iter()
+        .zip(&shown)
+        .filter(|(item, shown)| item.is_waiting() && shown.is_none())
+        .count();
+    let open = items.len() - answered - ticked - waiting;
     let mut parts = vec![match open {
         0 => "nothing waits for you".to_string(),
         n => format!("{n} for you"),
@@ -110,7 +215,14 @@ fn note_of(items: &[Item]) -> String {
         1 => parts.push("1 answered, on its way".into()),
         n => parts.push(format!("{n} answered, on their way")),
     }
-    if open > 0 {
+    if ticked > 0 {
+        parts.push(format!("{ticked} ticked off"));
+    }
+    if waiting > 0 {
+        parts.push(format!("{waiting} waiting"));
+    }
+    // A ✓ alone tells no one: the words only where an answer goes to an agent.
+    if items.iter().any(|item| !keyed(item).is_empty()) {
         parts.push("buttons and options answer its agent".into());
     }
     let rest = rest_does(items);
@@ -123,16 +235,71 @@ fn note_of(items: &[Item]) -> String {
     parts.join(" · ")
 }
 
-/// What a click on the body of an item going to `go` does, in words.
-fn does_of(go: &Go) -> Option<&'static str> {
-    Some(match go {
+/// What a click on the body of `item` does, in words. A merge (merge.rs
+/// `click`) opens its MR while anything blocks it, else arms it for a second
+/// click; without its offer in the view it does nothing.
+fn does_of(item: &Item) -> Option<&'static str> {
+    Some(match &item.go {
         Go::FocusSpace(_) => "opens its space",
         Go::FocusAgent(_) => "opens its agent's tab",
         Go::Try { .. } => "runs its try",
-        Go::Merge { .. } => "merges",
+        Go::Merge { .. } => match &item.merge {
+            Some(offer) if offer.blockers.is_empty() => "merges on a second click",
+            Some(offer) if !offer.url.is_empty() => "opens its MR in GitLab",
+            _ => return None,
+        },
         Go::Show { .. } => "opens its page",
         _ => return None,
     })
+}
+
+/// NEXT's hint under a merge that can't merge yet: what a click on it does
+/// instead (opens the MR) and when two clicks merge it. None once two clicks
+/// merge (its text says so) or when nothing is left to wait for.
+fn merge_hint(offer: &MergeOffer) -> Option<String> {
+    if offer.blockers.is_empty() || offer.url.is_empty() {
+        return None;
+    }
+    let opens = format!("a click on the rest opens !{} in GitLab", offer.iid);
+    // Merged or closed: nothing clears.
+    if offer.blockers.iter().any(|blocker| blocker.starts_with("it is ")) {
+        return Some(opens);
+    }
+    Some(format!(
+        "{opens}: two clicks merge it once {}",
+        cleared(&offer.blockers)
+    ))
+}
+
+/// What `blockers` turn into once they clear (next.rs' `once_text`, each):
+/// `its pipeline passes and GitLab has checked it`; one it has no words for
+/// is named by where it stands, the line above.
+fn cleared(blockers: &[String]) -> String {
+    let mut once: Vec<String> = Vec::new();
+    let mut is_unnamed = false;
+    for blocker in blockers {
+        let text = match blocker.as_str() {
+            "GitLab is checking" => "GitLab has checked it".to_string(),
+            _ => once_text(std::slice::from_ref(blocker)),
+        };
+        if text == *blocker {
+            is_unnamed = true;
+        } else if !once.contains(&text) {
+            once.push(text);
+        }
+    }
+    if is_unnamed {
+        once.push(if once.is_empty() {
+            "what the line above names clears".into()
+        } else {
+            "the rest above clears".into()
+        });
+    }
+    match once.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 /// What a click on the rest of the blocks of `items` does, in words, by
@@ -140,7 +307,7 @@ fn does_of(go: &Go) -> Option<&'static str> {
 fn rest_does(items: &[Item]) -> String {
     let mut does: Vec<&str> = Vec::new();
     for item in items.iter().filter(|item| !item.is_inert()) {
-        let Some(what) = does_of(&item.go) else { continue };
+        let Some(what) = does_of(item) else { continue };
         if !does.contains(&what) {
             does.push(what);
         }
@@ -153,8 +320,12 @@ fn rest_does(items: &[Item]) -> String {
 }
 
 /// What a click on the body of an item does: nothing for an inert one (#290).
+/// Named by its key: two actions of one agent are two picks.
 fn click_of(item: &Item) -> Option<Act> {
-    (!item.is_inert()).then(|| Act::Go(item.go.clone()))
+    (!item.is_inert()).then(|| Act::Action {
+        key: item.key.clone(),
+        go: item.go.clone(),
+    })
 }
 
 /// `kind` chip, who in bold, how long ago, a try's state: the head of a block
@@ -186,7 +357,8 @@ fn head(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_chip_auto: bool) {
 }
 
 /// An action as its block (action-block.mjs): the head, its text, its
-/// answers. `is_keyed`: NEXT's, whose answers the digit keys give too (`key`).
+/// answers. `is_keyed`: the one whose answers the digit keys give too
+/// (`key`): the block picked with Tab, else NEXT's.
 pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_keyed: bool) {
     let draw = |scene: &mut Scene<Act>| {
         head(scene, item, ctx, true);
@@ -372,6 +544,8 @@ fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool) {
 
 /// The ✓ of a kind without answers, and what it does not do.
 const TICK: &str = "✓ tick off";
+/// What a ✓ clicked here shows until a read has it gone: no agent hears of it.
+const TICKED: &str = "ticked off";
 const NOT_TOLD: &str = "takes it off the list · its agent is not told";
 
 /// The answers the digit keys give for `item` in NEXT, key 1 first: its
@@ -399,23 +573,36 @@ fn has_tick(item: &Item) -> bool {
 /// What NEXT says under its block, in parts, as lazygit's options bar names
 /// each key and what it does: each digit (cyan, as on its button) and where
 /// its answer goes; for a ✓ (no key: it tells no one) what a click on the
-/// rest does, the way to its agent. Enter is not one: it runs only the row
-/// picked with Tab, which is lit. None for the rest.
+/// rest does, the way to its agent; for an automatic item (a `waits`, which
+/// has no buttons) what a click on it does. Enter is not one: it runs only
+/// the row picked with Tab, which is lit. None for the rest.
 pub fn hint(item: &Item) -> Vec<Vec<Span<'static>>> {
+    let key = key_span;
+    let answers = keyed(item);
+    if answers.is_empty() {
+        if item.is_inert() || shown_answer(item).is_some() {
+            return vec![];
+        }
+        // A merge's own text says what two clicks do; a blocked one's click opens its MR instead.
+        if let Some(offer) = &item.merge {
+            return merge_hint(offer)
+                .map(|hint| vec![vec![look::dim(hint)]])
+                .unwrap_or_default();
+        }
+        let on = if has_tick(item) {
+            "the rest"
+        } else if item.is_auto || item.action.is_none() {
+            "it"
+        } else {
+            return vec![];
+        };
+        return does_of(item)
+            .map(|does| vec![vec![look::dim(format!("a click on {on} {does}{}", there_of(item)))]])
+            .unwrap_or_default();
+    }
     let Some(action) = item.action.as_ref() else {
         return vec![];
     };
-    let key = |text: String| look::span(text, theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD));
-    let answers = keyed(item);
-    if answers.is_empty() {
-        // A merge's own text says what its two clicks do.
-        if !has_tick(item) || item.merge.is_some() || item.is_inert() {
-            return vec![];
-        }
-        return does_of(&item.go)
-            .map(|does| vec![vec![look::dim(format!("a click on the rest {does}"))]])
-            .unwrap_or_default();
-    }
     if action.kind == "decide" {
         let keys = match answers.len() {
             1 => "1".to_string(),
@@ -440,21 +627,63 @@ pub fn hint(item: &Item) -> Vec<Vec<Span<'static>>> {
         .collect()
 }
 
-/// A digit (`act::key`): the answer it gives the action NEXT shows,
-/// through the click's path; any other key, or one NEXT has no answer for,
-/// is left to the others (Enter runs the frame's pick).
-pub fn key(app: &mut Overview, key: KeyEvent) -> Option<Flow> {
+/// A digit (`act::key`): the answer it gives the action picked with Tab, or
+/// the one NEXT shows while nothing is picked, through the click's path. A
+/// pick that is no action, or a digit its action has no answer for, does
+/// nothing: a digit never answers another block than the lit one. Any other
+/// key is left to the others (Enter runs the frame's pick).
+pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Option<Flow> {
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         return None;
     }
     let KeyCode::Char(digit @ '1'..='9') = key.code else {
         return None;
     };
-    let item = app.orchestration().and_then(in_next)?.clone();
+    let model = app.orchestration()?;
+    let item = match pick_of(model, picked) {
+        Pick::Nothing => in_next(model)?.clone(),
+        Pick::Action { key, .. } => item_of_key(model, &key)?.clone(),
+        Pick::Other => return Some(Flow::Same),
+    };
     let answers = keyed(&item);
-    let answer_of = answers.get(digit as usize - '1' as usize)?;
+    let Some(answer_of) = answers.get(digit as usize - '1' as usize) else {
+        return Some(Flow::Same);
+    };
     let (file, id) = (item.file.clone()?, item.action.as_ref()?.id);
     Some(answer(app, &file, id, answer_of))
+}
+
+/// The action of `model` named `key`.
+fn item_of_key<'a>(model: &'a OrchestrationModel, key: &str) -> Option<&'a Item> {
+    model.actions.as_ref().ok()?.actions.iter().find(|item| item.key == key)
+}
+
+/// What the keys do on a block picked with Tab, as lazygit names a menu's
+/// keys: its digits (as `hint`), then what Enter does there: the option
+/// picked is given, else the block's click. A ✓'s or an automatic item's own
+/// words (a click) when there are no keys at all.
+pub fn picked_hint(item: &Item, option: Option<&str>) -> Vec<Vec<Span<'static>>> {
+    let is_keyed = !keyed(item).is_empty();
+    let mut parts = if is_keyed { hint(item) } else { vec![] };
+    let enter = match option {
+        Some(label) if is_keyed => Some(format!(" picks \u{201c}{label}\u{201d}: typed to its agent")),
+        Some(_) => None,
+        None if item.is_inert() => None,
+        // Where a question without options is answered: only where no key answers it.
+        None if is_keyed => does_of(item).map(|does| format!(" {does}")),
+        None => does_of(item).map(|does| format!(" {does}{}", there_of(item))),
+    };
+    match enter {
+        Some(does) => parts.push(vec![key_span("enter"), look::dim(does)]),
+        None if parts.is_empty() => return hint(item),
+        None => {}
+    }
+    parts
+}
+
+/// A key as the hints name it: cyan and bold, as on its button.
+fn key_span(text: impl Into<String>) -> Span<'static> {
+    look::span(text.into(), theme::tone(Tone::Cyan).add_modifier(Modifier::BOLD))
 }
 
 /// A row of UP NEXT in NEXT (next.mjs): kind and who, its text right after
@@ -607,7 +836,7 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
     let what = what_of(&item, id);
     if stored::answers_of(&action).is_empty() {
         if stored::done_action(file, id).unwrap_or(false) {
-            remember(file, id, "✓", "ticked off");
+            remember(file, id, "✓", TICKED);
             app.actor
                 .log(Paint::Green, format!("{what} ticked off · its agent is not told"));
         }
@@ -1079,10 +1308,32 @@ mod tests {
         // Its way to the agent instead: what a click on the rest does.
         let mut in_space = open_question.clone();
         in_space.go = Go::FocusSpace(PathBuf::from("/w"));
-        assert_eq!(hint_text(&in_space), ["a click on the rest opens its space"]);
+        assert_eq!(
+            hint_text(&in_space),
+            ["a click on the rest opens its space: answer it there"]
+        );
         let mut auto = item_with(decide());
         auto.is_auto = true;
         assert!(keyed(&auto).is_empty() && hint(&auto).is_empty());
+        // An automatic `waits` has no buttons: the hint says what a click on it does.
+        let waits = Item {
+            key: "waits:307-x".into(),
+            kind: "waits".into(),
+            text: "Shall I merge it?".into(),
+            who: "307-x".into(),
+            is_auto: true,
+            go: Go::FocusAgent(PathBuf::from("/w")),
+            ..Default::default()
+        };
+        assert!(keyed(&waits).is_empty());
+        assert_eq!(
+            hint_text(&waits),
+            ["a click on it opens its agent's tab: answer it there"]
+        );
+        assert_eq!(
+            pointer_of(&waits),
+            "↑ in NEXT · a click here opens its agent's tab: answer it there"
+        );
     }
 
     fn hint_text(item: &Item) -> Vec<String> {
@@ -1090,6 +1341,114 @@ mod tests {
             .iter()
             .map(|part| part.iter().map(|span| span.content.as_ref()).collect())
             .collect()
+    }
+
+    fn texts_of(parts: &[Vec<Span<'static>>]) -> Vec<String> {
+        parts
+            .iter()
+            .map(|part| part.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
+    fn try_ready() -> Item {
+        let mut item = item_with(Action {
+            id: 1,
+            kind: "try".into(),
+            text: "the spike".into(),
+            ..Default::default()
+        });
+        item.go = Go::Try {
+            dir: Some(PathBuf::from("/w")),
+            id: 1,
+        };
+        item.try_state = Some(TryState {
+            is_ready: true,
+            label: "ready".into(),
+            tone: TryTone::Ready,
+            url: None,
+        });
+        item
+    }
+
+    #[test]
+    fn a_digit_answers_only_the_block_picked_with_tab() {
+        let (decide, try_item) = (item_with(decide()), try_ready());
+        let items = [decide.clone(), try_item.clone()];
+        // Nothing picked: NEXT's (the decide) is keyed, the try in ACTIONS not.
+        let pick = pick_in(&items, None);
+        assert!(pick.keys(&decide, true) && !pick.keys(&try_item, false));
+        // The try's block picked: its digits, never NEXT's decide.
+        let picked = Act::Action {
+            key: try_item.key.clone(),
+            go: try_item.go.clone(),
+        };
+        let pick = pick_in(&items, Some(&picked));
+        assert!(pick.keys(&try_item, false) && !pick.keys(&decide, true));
+        // One of the decide's options: the decide's digits, Enter that option.
+        let option = Act::Answer {
+            file: decide.file.clone().unwrap(),
+            id: 2,
+            answer: "Bun: flexbox".into(),
+        };
+        let pick = pick_in(&items, Some(&option));
+        assert!(pick.keys(&decide, true) && !pick.keys(&try_item, false));
+        assert_eq!(pick.option_of(&decide), Some("Bun: flexbox"));
+        // Anything else picked (a worktree): no block's digits.
+        let pick = pick_in(&items, Some(&Act::Go(Go::FocusSpace(PathBuf::from("/w")))));
+        assert_eq!(pick, Pick::Other);
+        assert!(!pick.keys(&decide, true) && !pick.keys(&try_item, false));
+    }
+
+    #[test]
+    fn a_picked_block_names_its_digits_and_what_enter_does() {
+        assert_eq!(
+            texts_of(&picked_hint(&try_ready(), None)),
+            [
+                "1 looks good: typed to its agent",
+                "2 broken: a draft in its agent's input for you to finish",
+                "enter runs its try",
+            ]
+        );
+        let mut decide = item_with(decide());
+        decide.go = Go::FocusSpace(PathBuf::from("/w"));
+        assert_eq!(
+            texts_of(&picked_hint(&decide, Some("Bun: flexbox"))),
+            [
+                "1-2 picks that option: typed to its agent",
+                "enter picks \u{201c}Bun: flexbox\u{201d}: typed to its agent"
+            ]
+        );
+        // Answered by keys: not `answer it there`.
+        assert_eq!(texts_of(&picked_hint(&decide, None))[1], "enter opens its space");
+        let mut open = item_with(Action {
+            id: 5,
+            kind: "decide".into(),
+            text: "Which one?".into(),
+            ..Default::default()
+        });
+        open.go = Go::FocusAgent(PathBuf::from("/w"));
+        assert_eq!(
+            texts_of(&picked_hint(&open, None)),
+            ["enter opens its agent's tab: answer it there"]
+        );
+    }
+
+    #[test]
+    fn a_tick_off_is_not_counted_on_its_way() {
+        let mut item = item_with(Action {
+            id: 41,
+            kind: "decide".into(),
+            text: "Which one?".into(),
+            ..Default::default()
+        });
+        item.go = Go::FocusAgent(PathBuf::from("/w"));
+        let file = item.file.clone().unwrap();
+        remember(&file, 41, "✓", TICKED);
+        assert_eq!(
+            note_of(std::slice::from_ref(&item)),
+            "nothing waits for you · 1 ticked off · a click on the rest opens its agent's tab"
+        );
+        locked(&CLICKED).remove(&(file, 41));
     }
 
     #[test]
@@ -1135,6 +1494,101 @@ mod tests {
         assert_eq!(rest_does(&[space.clone()]), "opens its space");
         assert_eq!(rest_does(&[space, tried, other]), "opens its space or runs its try");
         assert_eq!(rest_does(&[]), "");
+    }
+
+    fn merge_item(blockers: &[&str]) -> Item {
+        let mut item = item_with(Action {
+            id: 2,
+            kind: "merge".into(),
+            text: "ready from 305".into(),
+            ..Default::default()
+        });
+        item.go = Go::Merge {
+            branch: "feature/305-x".into(),
+            action: None,
+        };
+        item.merge = Some(MergeOffer {
+            iid: 318,
+            url: "https://gitlab.invalid/mr/318".into(),
+            is_draft: true,
+            can_mark_ready: true,
+            blockers: blockers.iter().map(|blocker| blocker.to_string()).collect(),
+            ..Default::default()
+        });
+        item
+    }
+
+    #[test]
+    fn a_blocked_merge_says_its_click_opens_the_mr_not_that_it_merges() {
+        let blocked = merge_item(&["pipeline pending", "GitLab is checking"]);
+        let mut waiting = item_with(Action {
+            id: 6,
+            kind: "try".into(),
+            text: "the deploy on test".into(),
+            ..Default::default()
+        });
+        waiting.try_state = Some(TryState {
+            label: "waits for merge !316".into(),
+            tone: TryTone::Waits,
+            is_ready: false,
+            url: None,
+        });
+        assert_eq!(
+            note_of(&[blocked.clone(), waiting]),
+            "1 for you · 1 waiting · a click on the rest opens its MR in GitLab"
+        );
+        assert_eq!(does_of(&blocked), Some("opens its MR in GitLab"));
+        assert_eq!(
+            note_of(std::slice::from_ref(&blocked)),
+            "1 for you · a click on the rest opens its MR in GitLab"
+        );
+        assert_eq!(
+            hint_text(&blocked),
+            [
+                "a click on the rest opens !318 in GitLab: two clicks merge it once its pipeline passes \
+              and GitLab has checked it"
+            ]
+        );
+        assert_eq!(pointer_of(&blocked), "↑ in NEXT · a click here opens its MR in GitLab");
+        let ready = merge_item(&[]);
+        assert_eq!(does_of(&ready), Some("merges on a second click"));
+        assert!(hint(&ready).is_empty(), "its text says two clicks merge");
+        assert_eq!(pointer_of(&ready), "↑ in NEXT · a click here merges on a second click");
+        let other = merge_item(&["needs an approval"]);
+        assert_eq!(
+            hint_text(&other),
+            ["a click on the rest opens !318 in GitLab: two clicks merge it once what the line above names clears"]
+        );
+        let merged = merge_item(&["it is merged"]);
+        assert_eq!(hint_text(&merged), ["a click on the rest opens !318 in GitLab"]);
+        let mut gone = merge_item(&[]);
+        gone.merge = None;
+        assert_eq!(does_of(&gone), None, "a merge gone from the view does nothing");
+        assert_eq!(
+            cleared(&[
+                "1 work box open: x".into(),
+                "pipeline failed".into(),
+                "open discussions".into()
+            ]),
+            "its work boxes are ticked, its pipeline is fixed and the rest above clears"
+        );
+    }
+
+    #[test]
+    fn the_pointer_up_names_the_answers_only_where_there_are_some() {
+        assert_eq!(pointer_of(&item_with(decide())), "↑ in NEXT: answer it there");
+        let mut open_question = item_with(Action {
+            id: 10,
+            kind: "decide".into(),
+            text: "Keep Node running?".into(),
+            ..Default::default()
+        });
+        assert_eq!(pointer_of(&open_question), "↑ in NEXT");
+        open_question.go = Go::FocusAgent(PathBuf::from("/w"));
+        assert_eq!(
+            pointer_of(&open_question),
+            "↑ in NEXT · a click here opens its agent's tab: answer it there"
+        );
     }
 
     #[test]

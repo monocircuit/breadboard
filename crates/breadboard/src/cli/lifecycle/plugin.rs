@@ -12,7 +12,7 @@
 //! ask-before-global-config; rewrite-log 2026-10-02).
 
 use super::herdr;
-use super::proc::{output, step, text};
+use super::proc::{step, text};
 use breadboard_core::git::Out;
 use serde_json::Value;
 use std::fs;
@@ -23,10 +23,12 @@ use std::sync::Once;
 pub const PLUGIN: &str = "monocircuit.platform";
 const MANIFEST: &str = "herdr-plugin.toml";
 
-/// Checks the plugin and the configs once per process, inside herdr only.
+/// Checks the plugin and the configs once per process, inside herdr only,
+/// and not in a child of this binary whose parent checked them (#230: said
+/// once, one `plugin list` per command).
 pub fn heal(main: &Path) {
     static ONCE: Once = Once::new();
-    if herdr::is_in() {
+    if herdr::is_in() && std::env::var_os(crate::cli::setup::PLUGIN_CHECKED).is_none() {
         ONCE.call_once(|| {
             for line in check(main) {
                 step(&line);
@@ -121,11 +123,14 @@ fn relink(old: &Path, current: &Path) -> String {
     }
 }
 
-/// `herdr <args>` with its whole answer; None when herdr didn't start.
+/// `herdr <args>` with its whole answer; None when herdr didn't start or answer.
 fn run(args: &[&str]) -> Option<Out> {
-    herdr::forget();
-    let out = output("herdr", args, Path::new("/"), None);
-    (out.status != -1).then_some(out)
+    herdr::raw(args).map(|out| Out {
+        is_ok: out.status.success(),
+        status: out.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
 }
 
 fn answer(out: &Out) -> String {
@@ -134,17 +139,24 @@ fn answer(out: &Out) -> String {
 
 /// The plugin of the main checkout, else the one next to this binary
 /// (session.mjs `pluginDir`: the main checkout's once merged, else the
-/// checkout this runs from).
+/// checkout this runs from), that one only in a checkout of the same repo:
+/// a binary of another repo would link herdr to that repo's plugin, whose
+/// actions then act there.
 fn current_dir(main: &Path) -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok().and_then(|exe| {
-        exe.ancestors()
-            .map(|dir| dir.join("herdr"))
-            .find(|dir| dir.join(MANIFEST).is_file())
-    });
-    [Some(main.join("packages/breadboard/herdr")), beside]
-        .into_iter()
-        .flatten()
-        .find(|dir| dir.join(MANIFEST).is_file())
+    let beside = || {
+        std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors()
+                .map(|dir| dir.join("herdr"))
+                .find(|dir| dir.join(MANIFEST).is_file())
+                .filter(|dir| breadboard_core::git::main_dir(dir).as_deref() == Some(main))
+        })
+    };
+    let own = main.join("packages/breadboard/herdr");
+    if own.join(MANIFEST).is_file() {
+        Some(own)
+    } else {
+        beside()
+    }
 }
 
 /// The directory of a linked path: itself, or the one of its manifest.

@@ -39,13 +39,14 @@ pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>, nam
             );
             let mut parts = vec![format!("{} %", (share * 100.0).round() as i64)];
             if let Some(from) = worker.free.as_ref().and_then(|free| free.from.as_deref()) {
-                let mr = worker
-                    .free
-                    .as_ref()
-                    .and_then(|free| free.mr)
-                    .map(|mr| format!(" (!{mr})"))
-                    .unwrap_or_default();
-                parts.push(format!("from {from}{mr}"));
+                let mr = worker.free.as_ref().and_then(|free| free.mr);
+                // The worktree it is named after says itself on the row's first line: its MR alone.
+                match (worker.name.as_deref() == Some(from), mr) {
+                    (true, Some(mr)) => parts.push(format!("from !{mr}")),
+                    (true, None) => {}
+                    (false, Some(mr)) => parts.push(format!("from {from} (!{mr})")),
+                    (false, None) => parts.push(format!("from {from}")),
+                }
             }
             if !worker.issues.is_empty() {
                 parts.push(counted(worker.issues.len() as u64, "issue"));
@@ -111,7 +112,14 @@ mod tests {
         let rows = free_rows_of(&free, &idle("f1", "idle"), &names);
         assert_eq!(rows[0].state.text, "free");
         assert_eq!(rows[0].display, "Priya Virtanen");
-        assert_eq!(rows[0].text, "18 % · from 272-orchestration (!289) · 1 issue");
+        // Its name is the worktree it came from: not twice on the row.
+        assert_eq!(rows[0].text, "18 % · from !289 · 1 issue");
+        let mut moved = free.clone();
+        moved[0].0.name = Some("270-before".into());
+        assert_eq!(
+            free_rows_of(&moved, &idle("f1", "idle"), &names)[0].text,
+            "18 % · from 272-orchestration (!289) · 1 issue"
+        );
         assert_eq!(
             free_rows_of(&free, &idle("f1", "working"), &names)[0].state.text,
             "at work"

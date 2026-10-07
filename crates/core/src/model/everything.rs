@@ -1,7 +1,7 @@
 //! The view of everything (no flag, render.mjs) as data: every worktree with
 //! its stack and MR, the stacks without a worktree, the open MRs and issues.
 
-use super::{Paint, Section, Span, Tree, section};
+use super::{Docker, Paint, Section, Span, Tree, section};
 use crate::gitlab::read::{EverythingRemote, ListedMr};
 use std::collections::BTreeMap;
 
@@ -47,9 +47,12 @@ pub fn stack_cell(tree: &Tree) -> Span {
     } else {
         "default".into()
     };
-    match &tree.stack {
-        None => Span::dim(format!("{label} down")),
-        Some(state) => Span::new(
+    match (tree.docker, &tree.stack) {
+        // docker hasn't answered: unknown, never `down` (#331).
+        (Docker::NotYet, _) => Span::dim(format!("{label} …")),
+        (Docker::Silent, _) => Span::new(format!("{label} ?"), Paint::Yellow),
+        (Docker::Answered, None) => Span::dim(format!("{label} down")),
+        (Docker::Answered, Some(state)) => Span::new(
             format!("{label} {state}"),
             if state.starts_with("running") {
                 Paint::Green
@@ -88,7 +91,15 @@ pub fn everything_of(local: &EverythingLocal, remote: Option<EverythingRemote>) 
                     .as_ref()
                     .and_then(|remote| remote.mrs.iter().find(|mr| mr.branch == tree.branch).cloned()),
                 branch: (tree.branch.rsplit('/').next() != Some(tree.name.as_str())).then(|| tree.branch.clone()),
-                tree: tree.clone(),
+                // docker didn't answer: every stack is unknown, never `down` (#331).
+                tree: Tree {
+                    docker: if local.projects.is_some() {
+                        tree.docker
+                    } else {
+                        Docker::Silent
+                    },
+                    ..tree.clone()
+                },
             })
             .collect()
     });
@@ -116,6 +127,29 @@ pub fn everything_of(local: &EverythingLocal, remote: Option<EverythingRemote>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stack_docker_has_not_answered_for_is_unknown_never_down() {
+        let own = |docker: Docker, stack: Option<&str>| Tree {
+            has_env: true,
+            has_own_port: true,
+            offset: 2,
+            docker,
+            stack: stack.map(str::to_string),
+            ..Default::default()
+        };
+        let cell = |tree: &Tree| {
+            let span = stack_cell(tree);
+            (span.text, span.paint)
+        };
+        assert_eq!(cell(&own(Docker::NotYet, None)), ("+2 …".into(), Paint::Dim));
+        assert_eq!(cell(&own(Docker::Silent, None)), ("+2 ?".into(), Paint::Yellow));
+        assert_eq!(cell(&own(Docker::Answered, None)), ("+2 down".into(), Paint::Dim));
+        assert_eq!(
+            cell(&own(Docker::Answered, Some("running(2)"))),
+            ("+2 running(2)".into(), Paint::Green)
+        );
+    }
 
     #[test]
     fn rows_every_worktree_with_its_mr_and_finds_stacks_without_one() {
@@ -161,6 +195,14 @@ mod tests {
         assert_eq!(model.orphans, [("vita-7".to_string(), "exited(3)".to_string())]);
         assert!(model.has_docker && !model.can_start_main);
         assert_eq!(stack_cell(&rows[0].tree).text, "default running(5)");
+        let silent = everything_of(
+            &EverythingLocal {
+                projects: None,
+                ..local.clone()
+            },
+            None,
+        );
+        assert_eq!(stack_cell(&silent.trees.unwrap()[0].tree).text, "default ?");
         assert_eq!(stack_cell(&rows[1].tree).text, "no .env.local");
         let own = Tree {
             has_env: true,

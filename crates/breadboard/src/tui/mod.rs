@@ -55,7 +55,8 @@ pub enum Input<A> {
     Click(A),
     /// `r`.
     Refresh,
-    Key(KeyEvent),
+    /// A key, and the block picked with Tab if one is: keys act on the pick, as lazygit's on its selected row.
+    Key(KeyEvent, Option<A>),
 }
 
 /// What comes of an `act`.

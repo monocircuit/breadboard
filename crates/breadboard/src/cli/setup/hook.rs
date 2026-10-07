@@ -137,7 +137,7 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
             "its last check failed: {}.
   Fix it, commit, run pnpm wt:check again. Red on develop too: it is fixed once, in its own fix MR,
   and you wait for that with pnpm wt:wait !<mr>.",
-            check::failures_text(&failures, 2)
+            breadboard_core::check::failures_text(&failures)
         )
     } else if let Some(Err(error)) = plan {
         format!(

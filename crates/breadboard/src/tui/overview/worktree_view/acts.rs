@@ -4,7 +4,7 @@
 //! Storybook's tab, a file in nvim. Never in a print (`--once`): it has no clicks.
 
 use super::editor::{self, Checkout};
-use super::hunks::Shown;
+use super::hunks::{self, Shown};
 use super::started::{self, Started};
 use crate::tui::Flow;
 use breadboard_core::model::worktree::{STORYBOOK_PORT, WorktreeModel};
@@ -89,6 +89,15 @@ pub fn open_file(state: &mut State, model: &WorktreeModel, main: &Path, file: &s
 /// one on another file's row shows that one's instead (lazygit shows one).
 /// `is_whole` (the `… N more lines` row): the shown ones, all their lines.
 pub fn toggle_hunks(state: &mut State, file: String, at: String, is_whole: bool) -> Flow {
+    // A line of several names, off its names or Enter: the next name, none after the last.
+    if let Some(line) = at.strip_prefix(hunks::NEXT) {
+        let next = match state.hunks.as_ref().filter(|shown| shown.at == line) {
+            Some(shown) => shown.next_on_line().unwrap_or(Some(file)),
+            None => Some(file),
+        };
+        state.hunks = next.map(|file| Shown::new(file, line.to_string()));
+        return Flow::Redraw;
+    }
     let open = state.hunks.as_mut().filter(|shown| shown.is_under(&at, &file));
     match open {
         Some(shown) if is_whole => shown.is_whole = true,
@@ -133,7 +142,7 @@ pub fn delete(state: &mut State, model: &WorktreeModel, main: &Path) -> Flow {
         .current_dir(main)
         .env_remove("HERDR_PANE_ID")
         .env_remove("HERDR_TAB_ID");
-    state.removal = Some(Started::spawn(command, log.clone()).unwrap_or_else(|_| Started::failed(log)));
+    state.removal = Some(Started::start(command, log));
     Flow::Redraw
 }
 
@@ -145,7 +154,7 @@ pub fn start_stack(state: &mut State, dir: &Path) -> Flow {
     let log = started::log_of("stack", dir);
     let mut command = Command::new(own_binary());
     command.arg("stack:up").current_dir(dir).env("INIT_CWD", dir);
-    state.stack = Some(Started::spawn(command, log.clone()).unwrap_or_else(|_| Started::failed(log)));
+    state.stack = Some(Started::start(command, log));
     Flow::Redraw
 }
 
@@ -157,7 +166,7 @@ pub fn migrate(state: &mut State, dir: &Path) -> Flow {
     let log = started::log_of("migrate", dir);
     let mut command = Command::new("pnpm");
     command.arg("pg:migrate").current_dir(dir.join(VITA));
-    state.migration = Some(Started::spawn(command, log.clone()).unwrap_or_else(|_| Started::failed(log)));
+    state.migration = Some(Started::start(command, log));
     Flow::Redraw
 }
 
@@ -206,6 +215,37 @@ mod tests {
         assert_eq!(shown(&state), Some(("b".into(), false)));
         toggle_hunks(&mut state, "b".into(), "file".into(), false);
         assert_eq!(shown(&state), None);
+    }
+
+    #[test]
+    fn a_step_on_a_line_of_names_goes_name_by_name_then_closes() {
+        let mut state = State::default();
+        let shown = |state: &State| state.hunks.as_ref().map(|shown| (shown.file.clone(), shown.at.clone()));
+        let step = |state: &mut State| toggle_hunks(state, "a".into(), format!("{}line", hunks::NEXT), false);
+        step(&mut state);
+        assert_eq!(shown(&state), Some(("a".into(), "line".into())));
+        // The line was drawn with its names.
+        let names = |state: &State| {
+            state
+                .hunks
+                .as_ref()
+                .unwrap()
+                .on_line(vec!["a".into(), "b".into(), "c".into()])
+        };
+        names(&state);
+        step(&mut state);
+        assert_eq!(shown(&state), Some(("b".into(), "line".into())));
+        names(&state);
+        step(&mut state);
+        names(&state);
+        assert_eq!(shown(&state), Some(("c".into(), "line".into())));
+        step(&mut state);
+        assert_eq!(shown(&state), None);
+        // A name's own click still toggles it.
+        toggle_hunks(&mut state, "b".into(), "line".into(), false);
+        names(&state);
+        step(&mut state);
+        assert_eq!(shown(&state), Some(("c".into(), "line".into())));
     }
 
     #[test]

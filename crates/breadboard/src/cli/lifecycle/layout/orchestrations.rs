@@ -352,7 +352,7 @@ pub fn prune_orchestrators(repo: &Repo) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// The orchestrator's conversation: `(session id, where it works)`.
-type Chat = (String, PathBuf);
+pub type Chat = (String, PathBuf);
 
 fn chat_of(repo: &Repo, record: Option<&Record>) -> Option<Chat> {
     let chat = record?.chat.as_ref()?;
@@ -365,7 +365,7 @@ fn chat_of(repo: &Repo, record: Option<&Record>) -> Option<Chat> {
 }
 
 /// The conversation of a pane, where its claude stands now.
-fn chat_of_pane(repo: &Repo, pane: &Value) -> Option<Chat> {
+pub fn chat_of_pane(repo: &Repo, pane: &Value) -> Option<Chat> {
     if s(pane, "agent") != "claude" {
         return None;
     }
@@ -393,7 +393,7 @@ fn chat_of_pane(repo: &Repo, pane: &Value) -> Option<Chat> {
 }
 
 /// `chat` into the record of `name`, only on a change.
-fn record_chat(repo: &Repo, name: &str, chat: Option<Chat>) {
+pub fn record_chat(repo: &Repo, name: &str, chat: Option<Chat>) {
     let Some((id, cwd)) = chat else { return };
     let known = chat_of(repo, record::record_of(&repo.main, name).as_ref());
     if known

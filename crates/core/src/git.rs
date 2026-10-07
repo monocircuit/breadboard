@@ -162,9 +162,12 @@ pub fn issue_of_branch(branch: &str) -> Option<u64> {
     })
 }
 
-/// How many files `git status --porcelain` lists: changed, new, deleted.
+/// How many files are changed, new or deleted in the working tree.
 pub fn changed_count(dir: &Path) -> usize {
-    git(dir, &["status", "--porcelain"]).lines().count()
+    // Files, not lines: a new folder is each of its files (DIFF's `N uncommitted`, actions' `N uncommitted files`).
+    git(dir, &["status", "--porcelain", "--untracked-files=all"])
+        .lines()
+        .count()
 }
 
 /// Commits of HEAD develop doesn't have.
@@ -486,6 +489,12 @@ mod tests {
 
         std::fs::write(local.join("new.md"), "new\n").unwrap();
         assert_eq!(changed_count(&local), 1);
+        // A new folder counts its files, not one line of `git status`.
+        std::fs::create_dir(local.join("new")).unwrap();
+        std::fs::write(local.join("new/a.md"), "a\n").unwrap();
+        std::fs::write(local.join("new/b.md"), "b\n").unwrap();
+        assert_eq!(changed_count(&local), 3);
+        std::fs::remove_dir_all(local.join("new")).unwrap();
         assert_eq!(
             work_files(&local).into_iter().collect::<Vec<_>>(),
             vec!["new.md".to_string(), "work/2-local.md".to_string()]

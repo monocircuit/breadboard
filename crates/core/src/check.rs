@@ -141,6 +141,8 @@ pub fn failures_of(output: &str) -> Vec<Failure> {
         let Some((package, task)) = id.split_once('#') else {
             return;
         };
+        // `id.split("#")` there: the task is what stands between the first two `#`.
+        let task = task.split('#').next().unwrap_or(task);
         if package.is_empty() || task.is_empty() {
             return;
         }
@@ -200,7 +202,12 @@ pub fn failures_of(output: &str) -> Vec<Failure> {
 
 /// `@monocircuit/vita (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
 pub fn failures_text(failures: &[Failure]) -> String {
-    let count = 2;
+    failures_line(failures, 2)
+}
+
+/// [`failures_text`] with up to `count` tests of a package named (check.mjs
+/// `failuresText(failures, count)`: wt:check names 5, its last line 1).
+pub fn failures_line(failures: &[Failure], count: usize) -> String {
     failures
         .iter()
         .map(|failure| {

@@ -189,7 +189,7 @@ impl App for Demo {
                 self.last = Some(action);
                 Flow::Redraw
             }
-            Input::Key(_) => Flow::Same,
+            Input::Key(..) => Flow::Same,
         }
     }
 }

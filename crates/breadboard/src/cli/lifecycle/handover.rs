@@ -26,11 +26,13 @@ use breadboard_core::record::{self, is_name, origin_of};
 use breadboard_core::setups::{Claim, claim_setup, setup_text};
 use breadboard_core::time::{now_ms, to_iso};
 pub use brief::brief_of;
+use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
@@ -94,10 +96,14 @@ pub fn parse_after(values: &[String]) -> Result<Vec<i64>, Fail> {
 }
 
 /// An issue of `wt:orchestrate` as GitLab has it, with the worktree it gets.
+/// The one reading of an issue for a fresh start (the setup group's) and a
+/// handover: both name its branch and worktree the same.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Issue {
     pub number: i64,
     pub title: String,
+    /// Its description: what the start's memory estimate reads.
+    pub description: String,
     pub feature: String,
     pub is_fix: bool,
     pub dir: PathBuf,
@@ -110,42 +116,59 @@ const STOPWORDS: [&str; 15] = [
     "a", "an", "the", "of", "in", "on", "for", "to", "and", "or", "with", "by", "at", "from", "is",
 ];
 
-/// A letter with its accent dropped (NFKD without the marks) for the Latin
-/// letters titles use; None for a combining mark itself.
-fn base_of(c: char) -> Option<char> {
+/// A combining mark (`\p{M}`), as NFKD leaves it after the letter it was part of.
+static MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{M}").expect("a valid pattern"));
+
+/// What NFKD leaves of a lowercase letter once the marks go, for the
+/// letters titles use (Latin-1, Latin Extended-A, the compatibility forms
+/// of ASCII); any other character stays and splits the word, as there.
+/// `æ`, `ø`, `ß`, `ł` have no decomposition: they split it too.
+fn base_of(c: char, plain: &mut String) {
     let folded = match c {
-        'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+        'à'..='å' | 'ā' | 'ă' | 'ą' | 'ǎ' | 'ª' => 'a',
         'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
         'ď' => 'd',
         'è'..='ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
         'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
         'ĥ' => 'h',
-        'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' => 'i',
+        'ì'..='ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ǐ' => 'i',
         'ĵ' => 'j',
         'ķ' => 'k',
-        'ĺ' | 'ļ' | 'ľ' => 'l',
+        'ĺ' | 'ļ' | 'ľ' | 'ŀ' => 'l',
         'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
-        'ò'..='ö' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'ò'..='ö' | 'ō' | 'ŏ' | 'ő' | 'ǒ' | 'º' => 'o',
         'ŕ' | 'ŗ' | 'ř' => 'r',
-        'ś' | 'ŝ' | 'ş' | 'š' => 's',
-        'ţ' | 'ť' => 't',
-        'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'ś' | 'ŝ' | 'ş' | 'š' | 'ș' | 'ſ' => 's',
+        'ţ' | 'ť' | 'ț' => 't',
+        'ù'..='ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' | 'ǔ' => 'u',
         'ŵ' => 'w',
         'ý' | 'ÿ' | 'ŷ' => 'y',
         'ź' | 'ż' | 'ž' => 'z',
-        '\u{300}'..='\u{36f}' => return None,
+        '¹' => '1',
+        '²' => '2',
+        '³' => '3',
+        'ĳ' => return plain.push_str("ij"),
+        'ﬁ' => return plain.push_str("fi"),
+        'ﬂ' => return plain.push_str("fl"),
+        // Fullwidth ASCII (`ｆｉｘ`, `１２`).
+        '\u{ff01}'..='\u{ff5e}' => char::from_u32(c as u32 - 0xfee0).unwrap_or(c),
         other => other,
     };
-    Some(folded)
+    plain.push(folded);
 }
 
 /// `Crème brûlée: the fix!` → `creme-brulee-fix`: up to five words without
-/// the small ones, at most 40 characters (orchestrator.mjs `slugOf`).
+/// the small ones, at most 40 characters (orchestrator.mjs `slugOf`: lower
+/// case, NFKD, the marks dropped, anything but `a-z0-9` a space).
 pub fn slug_of(title: &str) -> String {
-    let plain: String = title
+    let lower = title.to_lowercase();
+    let mut folded = String::new();
+    for c in MARKS.replace_all(&lower, "").chars() {
+        base_of(c, &mut folded);
+    }
+    let plain: String = folded
         .to_lowercase()
         .chars()
-        .filter_map(base_of)
         .map(|c| {
             if c.is_ascii_lowercase() || c.is_ascii_digit() {
                 c
@@ -171,31 +194,54 @@ pub fn slug_of(title: &str) -> String {
     slug
 }
 
-/// Why the issue of `feature` is not free: a branch on origin claims it
-/// already, or origin did not say (nothing is set up on a claim not known).
-fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
+/// The branch on origin that claims the issue of `feature` already
+/// (`feature/34-…`, `fix/34-…`, never `…/134-…` or `chore/34-…`): Ok(None)
+/// when none does or `feature` names no issue, Err(why) when origin did not
+/// answer. wt:new's claim check and the issues of wt:orchestrate, one.
+pub fn claim_on_origin(main: &Path, feature: &str) -> Result<Option<String>, String> {
     let number: String = feature.chars().take_while(char::is_ascii_digit).collect();
     if number.is_empty() || !feature[number.len()..].starts_with('-') {
-        return None;
+        return Ok(None);
     }
     let heads = output_within(
         "git",
-        &["ls-remote", "--heads", "origin", &format!("*{number}-*")],
-        &repo.main,
+        &[
+            "ls-remote",
+            "--heads",
+            "origin",
+            &format!("feature/{number}-*"),
+            &format!("fix/{number}-*"),
+        ],
+        main,
         &Wait::new(
             "origin (git ls-remote, the branches of the issue)",
             Duration::from_secs(30),
         ),
     );
     if heads.stderr.starts_with("timeout") {
-        return Some("origin did not answer whether a branch claims it (git ls-remote)".into());
+        return Err("origin did not answer whether a branch claims it (git ls-remote)".into());
     }
-    heads.lines().find_map(|line| {
-        line.split("refs/heads/")
-            .nth(1)
-            .filter(|branch| !branch.is_empty())
-            .map(|branch| format!("claimed by {branch}"))
+    Ok(first_claim(&heads.stdout, &number))
+}
+
+/// The first branch of `ls-remote` output that claims the issue `number`.
+fn first_claim(ls_remote: &str, number: &str) -> Option<String> {
+    ls_remote.lines().find_map(|line| {
+        let (_, branch) = line.split_once("refs/heads/")?;
+        let (kind, rest) = branch.split_once('/')?;
+        let is_claim =
+            matches!(kind, "feature" | "fix") && rest.strip_prefix(number).is_some_and(|after| after.starts_with('-'));
+        is_claim.then(|| branch.trim().to_string())
     })
+}
+
+/// Why the issue of `feature` is not free: a branch on origin claims it
+/// already, or origin did not say (nothing is set up on a claim not known).
+fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
+    match claim_on_origin(&repo.main, feature) {
+        Ok(claim) => claim.map(|branch| format!("claimed by {branch}")),
+        Err(why) => Some(why),
+    }
 }
 
 /// Why the issue `number` could not be read, and what to do.
@@ -243,6 +289,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
             .parse()
             .map_err(|_| unread_issue(&number, gitlab::Unread::Missing))?,
         title,
+        description: str_of(&found, "description").unwrap_or_default().to_string(),
         branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
         feature,
         is_fix,
@@ -341,14 +388,23 @@ pub fn find_worker<'a>(workers: &'a [Worker], who: &str) -> Option<&'a Worker> {
         .or_else(|| workers.iter().find(|worker| worker.was.as_deref() == Some(who)))
 }
 
-/// The pane herdr runs the conversation `id` in.
-fn pane_of_conversation(id: &str) -> Option<Value> {
-    herdr::all_panes().into_iter().find(|pane| {
+/// The pane herdr runs the conversation `id` in, None for none, or why
+/// herdr could not tell (it hung or failed: not the agent's refusal).
+pub fn pane_of_conversation(id: &str) -> Result<Option<Value>, String> {
+    Ok(herdr::all_panes_answered()?.into_iter().find(|pane| {
         pane.get("agent_session")
             .and_then(|session| session.get("value"))
             .and_then(Value::as_str)
             == Some(id)
-    })
+    }))
+}
+
+/// A handover herdr could not judge: nothing of the agent is refused or
+/// recorded, the same command again does it once herdr answers.
+fn herdr_unanswered(why: &str, worker: &str) -> Fail {
+    Fail(format!(
+        "{why}: can't tell whether {worker} is idle; nothing changed, run the same command again once herdr answers"
+    ))
 }
 
 /// Why an agent can't take a next issue, or None: no pane runs it, it works
@@ -564,15 +620,25 @@ fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue, has_
     );
 }
 
-/// What wt:new left: whether the worktree is there and the reason it failed with.
-struct Made {
-    is_there: bool,
-    failed: Option<String>,
+/// What wt:new left (orchestrator.mjs `makeWorktree`): whether the worktree
+/// is there, the reason it failed with (`✗ …`), its exit code.
+pub struct Made {
+    pub is_there: bool,
+    pub failed: Option<String>,
+    pub status: Option<i32>,
+}
+
+impl Made {
+    /// Made, but wt:new failed after the setup (#130): the worktree counts, said with a note.
+    pub fn failed_after_setup(&self) -> bool {
+        self.is_there && (self.failed.is_some() || self.status != Some(0))
+    }
 }
 
 /// `wt:new <feature> --origin <name>` for the issue, its output shown; it
 /// may fail after the setup (#130), so the worktree counts when it is there.
-fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Made {
+/// The one for a fresh start (the setup group's) and a handover.
+pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Made {
     let mut args = vec!["wt:new", issue.feature.as_str(), "--origin", name];
     if issue.is_fix {
         args.push("--fix");
@@ -581,18 +647,20 @@ fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Mad
         args.push("--shared");
     }
     let _ = std::io::stdout().flush();
-    let made = Command::new(exe())
+    let made = herdr::pass_silence(&mut Command::new(exe()))
         .args(&args)
         .current_dir(&repo.main)
+        // This process checked the herdr plugin already (#230): the child asks herdr nothing about it.
+        .env(super::super::setup::PLUGIN_CHECKED, "1")
         .stdin(Stdio::null())
         // Its steps show as they run; its failure is read from stderr.
         .stdout(Stdio::inherit())
         .stderr(Stdio::piped())
         .output();
-    let is_ok = made.as_ref().is_ok_and(|made| made.status.success());
-    let errors = made
-        .map(|made| String::from_utf8_lossy(&made.stderr).into_owned())
-        .unwrap_or_default();
+    let (errors, status) = match made {
+        Ok(made) => (String::from_utf8_lossy(&made.stderr).into_owned(), made.status.code()),
+        Err(error) => (format!("\n✗ wt:new did not start: {error}\n"), None),
+    };
     if !errors.trim().is_empty() {
         let _ = std::io::stderr().write_all(errors.as_bytes());
     }
@@ -602,25 +670,54 @@ fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Mad
         failed: errors
             .lines()
             .find_map(|line| line.strip_prefix("✗ "))
-            .map(String::from)
-            .or_else(|| (!is_ok).then(|| "wt:new failed".to_string())),
+            .map(String::from),
+        status,
     }
 }
 
-/// A start that failed once its worktree was made (#272): no worktree stays
-/// without its agent, `wt:remove` takes it and its empty claim; a queued
-/// issue goes back to the queue. The claim goes first, or wt:remove refuses.
-fn undo_start(repo: &Repo, name: &str, issue: &Issue, known: Option<&Value>, why: &str, claim: &mut Claim) {
-    claim.release();
+/// A start that failed once its worktree was made (#272, orchestrator.mjs
+/// `undoStart`): no worktree stays without its agent, `wt:remove` takes it
+/// and its empty claim; a queued issue goes back to the queue. `release`
+/// lets the claim go first, or wt:remove refuses. The record's entry of the
+/// issue is replaced by the undone one with its why: today's `writeRecord`
+/// kept the entry the start wrote before (no why) over it, so the record
+/// said the worktree was gone but not why. Fresh starts and handovers, one.
+pub fn undo_start(repo: &Repo, name: &str, issue: &Issue, known: Option<&Value>, why: &str, release: impl FnOnce()) {
+    release();
     if repo.worktrees().iter().any(|tree| tree.dir == issue.dir) {
         let _ = std::io::stdout().flush();
-        let _ = Command::new(exe())
+        let _ = herdr::pass_silence(&mut Command::new(exe()))
             .args(["wt:remove", &issue.feature])
             .current_dir(&repo.main)
+            .env(super::super::setup::PLUGIN_CHECKED, "1")
             .stdin(Stdio::null())
             .status();
     }
-    let _ = record::write_record(&repo.main, name, &[start_entry(issue, known, Some(why))]);
+    let entry = start_entry(issue, known, Some(why));
+    let raw = json::read(&record::record_file(&repo.main, name));
+    let issues = with_entry(
+        raw.as_ref()
+            .and_then(|raw| raw.get("issues"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        entry,
+    );
+    let mut fields = Map::new();
+    fields.insert("issues".into(), Value::Array(issues));
+    let _ = record::update_record(&repo.main, name, fields);
+}
+
+/// `issues` with `entry` in place of the one of its number (or added at the end).
+fn with_entry(mut issues: Vec<Value>, entry: Value) -> Vec<Value> {
+    match issues
+        .iter()
+        .position(|known| known.get("number") == entry.get("number"))
+    {
+        Some(at) => issues[at] = entry,
+        None => issues.push(entry),
+    }
+    issues
 }
 
 /// How long a `/rename` gets to show in the agent's session before it is
@@ -744,7 +841,10 @@ fn move_worker(repo: &Repo, worker: &Worker, pane: &Value, issue: &Issue) -> (bo
     let mut told = tell(&target, worker, issue);
     if told == Told::No {
         // Without the new id in herdr's answer: the pane that runs the conversation now.
-        let now = pane_of_conversation(&worker.id).map(|pane| s(&pane, "pane_id").to_string());
+        let now = pane_of_conversation(&worker.id)
+            .ok()
+            .flatten()
+            .map(|pane| s(&pane, "pane_id").to_string());
         if let Some(now) = now.filter(|now| *now != target) {
             told = tell(&now, worker, issue);
         }
@@ -958,8 +1058,10 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let Some(worker) = find_worker(&workers, request.to).cloned() else {
         return Err(no_agent(&label, request.to, &workers));
     };
+    // herdr hung or failed: no refusal of the agent, nothing read or written further.
+    let pane = pane_of_conversation(&worker.id).map_err(|why| herdr_unanswered(&why, &worker.name))?;
     let share = context_share_of(&worker.id);
-    let refusal = refusal_of(pane_of_conversation(&worker.id).as_ref(), share, limit);
+    let refusal = refusal_of(pane.as_ref(), share, limit);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
     // The handover fails: in the agent's history (not on a dry run), then said.
@@ -977,7 +1079,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         plugin::heal(&repo.main);
     }
     // One start of an issue at a time (#272).
-    let mut claim = if request.is_dry {
+    let claim = if request.is_dry {
         Claim::none()
     } else {
         let dir = text(&issue.dir);
@@ -1036,33 +1138,43 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         let _ = record::write_record(&repo.main, name, &[start_entry(&issue, known.as_ref(), None)]);
         step(&format!("pnpm wt:new {} --origin {name}", issue.feature));
         let made = make_worktree(repo, &issue, name, request.is_shared);
-        if made.is_there && made.failed.is_some() {
+        if made.failed_after_setup() {
             setup_note = " (wt:new failed after the setup, see above)";
         }
         if !made.is_there {
             let reason = made.failed.unwrap_or_else(|| "no worktree".into());
             let why = format!("its worktree failed: {reason}");
-            undo_start(repo, name, &issue, known.as_ref(), &why, &mut claim);
+            undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
             record_failure(repo, name, &worker.id, number, &why);
             return fail(format!("#{number} {}: {reason}", issue.feature));
         }
     }
     // Again: the setup took minutes, the agent may have started on something
     // meanwhile, or gone. Its worktree goes again then (#272).
-    let pane = pane_of_conversation(&worker.id);
+    let queued = if known.as_ref().is_some_and(|known| json::is_truthy(known.get("queued"))) {
+        ", the issue is back in the queue"
+    } else {
+        ""
+    };
+    let pane = match pane_of_conversation(&worker.id) {
+        Ok(pane) => pane,
+        Err(why) => {
+            // Not the agent's failure: its history stays as it was.
+            undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
+            return fail(format!(
+                "{why}: can't tell whether {} is still idle after the setup; the worktree of #{number} is removed again{queued}; run the same command again once herdr answers",
+                worker.name
+            ));
+        }
+    };
     if let Some(now) = refusal_of(pane.as_ref(), None, limit) {
         let why = format!(
             "after the setup, {} {}",
             worker.name,
             now.strip_prefix("it ").unwrap_or(&now)
         );
-        undo_start(repo, name, &issue, known.as_ref(), &why, &mut claim);
+        undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
         record_failure(repo, name, &worker.id, number, &format!("after the setup, {now}"));
-        let queued = if known.as_ref().is_some_and(|known| json::is_truthy(known.get("queued"))) {
-            ", the issue is back in the queue"
-        } else {
-            ""
-        };
         return fail(format!(
             "{why}: the worktree of #{number} is removed again{queued}; run the same command again once it is idle"
         ));
@@ -1126,8 +1238,13 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             Ok(())
         }
         Told::No => {
+            let why = if herdr::is_silent() {
+                format!("herdr did not answer in {} s", herdr::LIMIT.as_secs())
+            } else {
+                "herdr took no line".into()
+            };
             done(&format!(
-                "#{number} {feature} is ready for {}{setup_note}, but herdr took no line: type these into its tab",
+                "#{number} {feature} is ready for {}{setup_note}, but {why}: type these into its tab",
                 worker.name
             ));
             println!("{typed}");
@@ -1228,6 +1345,42 @@ mod tests {
     }
 
     #[test]
+    fn slugs_as_nfkd_without_the_marks() {
+        // Node: `æ` has no decomposition (a space), a mark written apart goes,
+        // a typographic apostrophe splits: the fresh start and a handover agree.
+        assert_eq!(
+            format!("230-{}", slug_of("Cæsar\u{2019}s re\u{301}sume\u{301} of the plugin")),
+            "230-c-sar-s-resume-plugin"
+        );
+        assert_eq!(slug_of("Café für Über-Größen"), "cafe-fur-uber-gro-en");
+        assert_eq!(slug_of("ＦＩＸ ﬁle ĳs șir"), "fix-file-ijs-sir");
+    }
+
+    #[test]
+    fn a_claim_is_of_that_issue_only() {
+        let out = "a\trefs/heads/fix/305-overview-gitlab-refresh-makes-312\nb\trefs/heads/feature/123-x\nc\trefs/heads/chore/5-x\n";
+        assert_eq!(first_claim(out, "5"), None);
+        assert_eq!(first_claim(out, "23"), None);
+        assert_eq!(first_claim(out, "12"), None);
+        assert_eq!(first_claim(out, "123").as_deref(), Some("feature/123-x"));
+        assert_eq!(
+            first_claim(out, "305").as_deref(),
+            Some("fix/305-overview-gitlab-refresh-makes-312")
+        );
+    }
+
+    #[test]
+    fn an_undone_start_replaces_its_entry() {
+        let issues = vec![
+            json!({ "number": 5, "why": null, "removedAt": "x" }),
+            json!({ "number": 6 }),
+        ];
+        let entry = json!({ "number": 5, "why": "failed: its claude did not start" });
+        assert_eq!(with_entry(issues, entry.clone()), vec![entry, json!({ "number": 6 })]);
+        assert_eq!(with_entry(vec![], json!({ "number": 7 })), vec![json!({ "number": 7 })]);
+    }
+
+    #[test]
     fn after_takes_the_mrs_behind_it() {
         let words: Vec<String> = ["o", "12", "--to", "a", "--after", "!3", "!4,!3"]
             .iter()
@@ -1286,6 +1439,7 @@ mod tests {
         let issue = Issue {
             number: 5,
             title: "t".into(),
+            description: String::new(),
             feature: "5-t".into(),
             is_fix: false,
             dir: PathBuf::from("/r/p-5-t"),

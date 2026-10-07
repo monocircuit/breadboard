@@ -129,10 +129,13 @@ impl Session {
     }
 
     /// The breadboard binary of the plugin's checkout, what the plugin's
-    /// manifest and the tab bar's status run (`../target/release/breadboard`
-    /// from the plugin's directory).
+    /// manifest (`../target/release/breadboard` from the plugin's directory)
+    /// and the tab bar's status run.
     pub fn breadboard(&self) -> PathBuf {
-        self.plugin_dir.join("../target/release/breadboard")
+        self.plugin_dir
+            .parent()
+            .unwrap_or(&self.plugin_dir)
+            .join("target/release/breadboard")
     }
 
     /// The tab bar's status command, as the configs carry it.
@@ -322,7 +325,7 @@ mod tests {
         assert_eq!(session.bin, PathBuf::from("/r/platform/.herdr/bin/herdr"));
         assert_eq!(
             session.status_command(),
-            "/r/platform/packages/breadboard/herdr/../target/release/breadboard herdr status"
+            "/r/platform/packages/breadboard/target/release/breadboard herdr status"
         );
         let env = session.session_env();
         assert!(

@@ -61,6 +61,13 @@ pub fn write_origin(dir: &Path, origin: &Origin) -> io::Result<()> {
     json::write_compact(&origin_file(dir), &json!({ "name": origin.name, "slot": origin.slot }))
 }
 
+/// Whether the worktree `dir` belongs to an orchestration that still has its
+/// record in `main`: its space gets no overview tab, the orchestration's
+/// overview shows it (#332).
+pub fn is_orchestrated(main: &Path, dir: &Path) -> bool {
+    origin_of(dir).is_some_and(|origin| record_file(main, &origin.name).is_file())
+}
+
 /// The brief of an orchestrated agent, `.claude/brief.md` of its worktree.
 pub fn brief_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("brief.md")
@@ -851,5 +858,21 @@ mod tests {
             Some("other")
         );
         assert_eq!(orchestration_of_label("Monocircuit/Platform", &titles), None);
+    }
+
+    #[test]
+    fn a_worktree_is_orchestrated_while_its_record_is_there() {
+        let scratch = Scratch::new();
+        let main = scratch.path().join("main");
+        let tree = scratch.path().join("tree");
+        assert!(!is_orchestrated(&main, &tree), "no origin");
+        let origin = Origin {
+            name: "breadboard".into(),
+            slot: 1,
+        };
+        write_origin(&tree, &origin).unwrap();
+        assert!(!is_orchestrated(&main, &tree), "its orchestration ended");
+        write_record(&main, "breadboard", &[]).unwrap();
+        assert!(is_orchestrated(&main, &tree));
     }
 }

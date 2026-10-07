@@ -29,7 +29,7 @@ use crate::model::memory::free_memory;
 use crate::model::orchestration::{OrchestrationLocal, OrchestrationModel, ViewState, orchestration_of};
 use crate::model::waiting::waiting_for;
 use crate::model::worktree::{STORYBOOK_PORT, STUDIO_PORT, WorktreeLocal, WorktreeModel, worktree_of};
-use crate::model::{Tree, develop, diff};
+use crate::model::{Docker, Tree, develop, diff};
 use crate::record::{self, record_of};
 use crate::setups::live_setups_of;
 use crate::time::now_ms;
@@ -37,6 +37,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// How long a worktree's facts hold without a change of its files: edits in the working tree touch none.
 pub const STALE_MS: i64 = 15_000;
@@ -129,8 +130,43 @@ pub struct LocalReader {
     /// Where each conversation's transcript is: it stays where claude put it.
     transcripts: HashMap<String, PathBuf>,
     diffs: diff::DiffCache,
-    /// docker's stacks as last read for WORKTREES, and when.
-    docker: Option<(i64, Option<BTreeMap<String, String>>)>,
+    /// docker's stacks for WORKTREES, read on a thread of their own.
+    docker: Arc<Mutex<Stacks>>,
+    /// Whether a read waits for docker's answer (a print, `--once`); a live view draws without it.
+    pub should_wait_for_docker: bool,
+}
+
+/// docker's stacks as WORKTREES knows them (#331, #332): asked on a thread
+/// of their own, so git's facts never wait for a slow docker; the stack
+/// cells fill in once it answered, here or in another process (the shared
+/// file).
+#[derive(Debug, Default)]
+struct Stacks {
+    /// When the answer held was read (the shared file's `at`), and the
+    /// stacks by name → status (None: docker didn't answer). None: no answer yet.
+    held: Option<(i64, Option<BTreeMap<String, String>>)>,
+    is_reading: bool,
+    /// Counts the answers taken: the local read's stamp moves with it.
+    taken: u64,
+}
+
+impl Stacks {
+    /// The shared file's answer, when it is newer than the one held.
+    fn take_shared(&mut self, file: &Path) {
+        let Some(shared) = local::read_containers(file) else {
+            return;
+        };
+        if self.held.as_ref().is_none_or(|(at, _)| *at < shared.at) {
+            let projects = shared.containers.as_deref().map(local::projects_in);
+            self.held = Some((shared.at, projects));
+            self.taken += 1;
+        }
+    }
+}
+
+/// `stacks` locked; a reader that panicked left nothing half written in it.
+fn locked(stacks: &Mutex<Stacks>) -> std::sync::MutexGuard<'_, Stacks> {
+    stacks.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl LocalReader {
@@ -146,7 +182,8 @@ impl LocalReader {
             git_dirs: HashMap::new(),
             transcripts: HashMap::new(),
             diffs: diff::DiffCache::default(),
-            docker: None,
+            docker: Arc::default(),
+            should_wait_for_docker: false,
         })
     }
 
@@ -291,7 +328,12 @@ impl LocalReader {
         for (dir, branch) in known {
             files.extend(self.files_of(&dir, &branch));
         }
-        stamp_of(&files)
+        // docker's answer, in this process or another's (the shared file): its stack cells fill in.
+        let taken = locked(&self.docker).taken;
+        if taken > 0 || locked(&self.docker).is_reading {
+            files.extend(local::shared_file());
+        }
+        stamp_of(&files) ^ taken
     }
 
     /// The local read of the view.
@@ -332,11 +374,13 @@ impl LocalReader {
         let mut trees = self.trees(&list, None, true, &running, now);
         // The stacks of their own (#332): docker only for those, once in DOCKER_EVERY_MS (#331).
         if trees.iter().any(|tree| tree.has_env && tree.has_own_port) {
-            let projects = self.projects(now);
+            let stacks = self.stacks(now);
             for tree in &mut trees {
-                tree.stack = projects
-                    .as_ref()
-                    .and_then(|projects| projects.get(&tree.project).cloned());
+                (tree.docker, tree.stack) = match &stacks {
+                    None => (Docker::NotYet, None),
+                    Some(None) => (Docker::Silent, None),
+                    Some(Some(projects)) => (Docker::Answered, projects.get(&tree.project).cloned()),
+                };
             }
         }
         let (panes, chat) = herdr_read.join().unwrap_or_default();
@@ -358,16 +402,39 @@ impl LocalReader {
         }
     }
 
-    /// docker's stacks, read again once DOCKER_EVERY_MS passed.
-    fn projects(&mut self, now: i64) -> Option<BTreeMap<String, String>> {
-        match &self.docker {
-            Some((at, projects)) if now - at < DOCKER_EVERY_MS => projects.clone(),
-            _ => {
-                let projects = compose_projects();
-                self.docker = Some((now, projects.clone()));
-                projects
-            }
+    /// docker's stacks as known now (None: no answer yet), never waiting for
+    /// docker: an answer older than DOCKER_EVERY_MS is asked for again on a
+    /// thread, one another process wrote to the shared file is taken at once.
+    fn stacks(&mut self, now: i64) -> Option<Option<BTreeMap<String, String>>> {
+        let shared = local::shared_file();
+        let mut stacks = locked(&self.docker);
+        if let Some(file) = &shared {
+            stacks.take_shared(file);
         }
+        let is_old = stacks.held.as_ref().is_none_or(|(at, _)| now - at >= DOCKER_EVERY_MS);
+        if is_old && !stacks.is_reading {
+            stacks.is_reading = true;
+            drop(stacks);
+            let slot = Arc::clone(&self.docker);
+            let reading = std::thread::spawn(move || {
+                let found = local::containers();
+                let mut stacks = locked(&slot);
+                stacks.is_reading = false;
+                match &shared {
+                    // Its answer, or the one of the process that read docker meanwhile; none yet while it still reads.
+                    Some(file) => stacks.take_shared(file),
+                    None => {
+                        stacks.held = Some((now, found.as_deref().map(local::projects_in)));
+                        stacks.taken += 1;
+                    }
+                }
+            });
+            if self.should_wait_for_docker {
+                let _ = reading.join();
+            }
+            stacks = locked(&self.docker);
+        }
+        stacks.held.as_ref().map(|(_, projects)| projects.clone())
     }
 
     pub fn read_worktree(&mut self, dir: &Path, now: i64) -> WorktreeLocal {
@@ -437,7 +504,10 @@ impl LocalReader {
             },
             diff,
             develop: (!is_main).then(|| develop::develop_of(dir)),
-            migrations: if tree.has_env {
+            // Only where the view shows them: a shared stack, or an own one that runs (no psql against a stack that is down).
+            migrations: if tree.has_env
+                && (!tree.has_own_port || tree.stack.as_deref().is_some_and(|stack| stack.starts_with("running")))
+            {
                 develop::migrations_of(dir)
             } else {
                 None
@@ -616,6 +686,40 @@ mod tests {
     use crate::git::fixture::{repo, run, worktree};
     use crate::lock::scratch::Scratch;
     use crate::record::{Origin, write_origin};
+
+    #[test]
+    fn takes_docker_s_shared_answer_only_when_it_is_newer_than_the_one_held() {
+        let scratch = Scratch::new();
+        let file = scratch.join("containers.json");
+        let write = |at: i64, containers: Option<Vec<local::StackContainer>>| {
+            let text = serde_json::to_string(&local::Containers { at, containers }).unwrap();
+            std::fs::write(&file, text).unwrap();
+        };
+        let mut stacks = Stacks::default();
+        // No file yet (another process still asks docker): no answer, not `down`.
+        stacks.take_shared(&file);
+        assert_eq!((stacks.held.is_none(), stacks.taken), (true, 0));
+        let db = local::StackContainer {
+            project: "vita-1".into(),
+            service: "db".into(),
+            state: "running".into(),
+            health: String::new(),
+        };
+        write(1_000, Some(vec![db]));
+        stacks.take_shared(&file);
+        let running = BTreeMap::from([("vita-1".to_string(), "running(1)".to_string())]);
+        assert_eq!(stacks.held, Some((1_000, Some(running.clone()))));
+        // The same answer again counts once: the stamp doesn't move.
+        stacks.take_shared(&file);
+        assert_eq!(stacks.taken, 1);
+        // An older one never replaces it; a newer one that says docker is silent does.
+        write(500, None);
+        stacks.take_shared(&file);
+        assert_eq!(stacks.held, Some((1_000, Some(running))));
+        write(13_000, None);
+        stacks.take_shared(&file);
+        assert_eq!((stacks.held, stacks.taken), (Some((13_000, None)), 2));
+    }
 
     #[test]
     fn reads_a_worktree_again_only_when_its_files_changed() {

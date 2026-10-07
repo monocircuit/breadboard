@@ -11,13 +11,15 @@
 --                                 MR (combined: before the orchestration); a new file is
 --                                 shown in full; <BS> back to the list
 --
--- The list comes from `wt:orchestrate <name> --changes` (changeset.mjs): merged MRs as their
+-- The list comes from `wt:orchestrate <name> --changes` (breadboard's, see changesCommand): merged MRs as their
 -- merge commit against its first parent, open ones as their branch against where it left
 -- develop, so not what develop got meanwhile. In the combined list a file spans the first
 -- MR's base to the last one's head; with several open MRs on it, that is the last one's branch.
 
 local here = debug.getinfo(1, "S").source:sub(2)
-local ENTRY = vim.fn.fnamemodify(here, ":p:h:h") .. "/src/worktree.mjs"
+local PACKAGE = vim.fn.fnamemodify(here, ":p:h:h")
+local BINARY = PACKAGE .. "/target/release/breadboard"
+local ENTRY = PACKAGE .. "/src/worktree.mjs"
 local REFRESH_MS = 60000
 
 local state = { name = nil, set = nil, isCombined = false, error = nil, isReading = false, at = nil, lines = {} }
@@ -146,13 +148,31 @@ local function draw()
   state.lines = targets
 end
 
+-- The change set from breadboard: the binary of this package (pnpm build:rs), the Node
+-- code only while it is still here and the binary isn't built (#314). Nil: neither is.
+local function changesCommand(name)
+  if vim.fn.executable(BINARY) == 1 then
+    return { BINARY, "wt:orchestrate", name, "--changes" }
+  end
+  if vim.fn.filereadable(ENTRY) == 1 then
+    return { "node", ENTRY, "orchestrate", name, "--changes" }
+  end
+  return nil
+end
+
 local function read()
   if not state.name or state.isReading then
     return
   end
+  local command = changesCommand(state.name)
+  if not command then
+    state.error = BINARY .. " isn't built: pnpm build:rs in " .. PACKAGE
+    draw()
+    return
+  end
   state.isReading = true
   draw()
-  vim.system({ "node", ENTRY, "orchestrate", state.name, "--changes" }, { text = true }, function(done)
+  vim.system(command, { text = true }, function(done)
     vim.schedule(function()
       state.isReading = false
       if done.code == 0 then

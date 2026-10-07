@@ -125,6 +125,18 @@ pub fn section<T>(name: &str, derive: impl FnOnce() -> T) -> Section<T> {
     })
 }
 
+/// What docker said of the stacks when a worktree's was read (#331, #332).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Docker {
+    /// It answered: no `stack` is a stack that is down.
+    #[default]
+    Answered,
+    /// Not yet (a slow docker, another process reading it): the stack is unknown, not down.
+    NotYet,
+    /// It didn't answer in time: unknown too.
+    Silent,
+}
+
 /// A worktree as the views read it (read.mjs `readLocal`, view.mjs).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tree {
@@ -149,6 +161,8 @@ pub struct Tree {
     pub project: String,
     /// docker's status of its project, None while it is down or unknown.
     pub stack: Option<String>,
+    /// Whether docker answered when `stack` was set (#331: it may be slow to).
+    pub docker: Docker,
     /// Files changed, new or deleted.
     pub changed: usize,
     /// Commits develop doesn't have.

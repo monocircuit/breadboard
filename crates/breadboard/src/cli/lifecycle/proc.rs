@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Child, Command, ExitCode, Output, Stdio};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Why a command stops: printed as `✗ <reason>` (proc.mjs `fail`).
@@ -184,50 +185,42 @@ impl Wait {
 
 /// `child` waited for, its output read beside it: `waiting for …` said once
 /// it takes longer than `wait.notice`, killed after `wait.limit` (None then).
-/// Today's waited without a word and without end for a GitLab or an origin
-/// that accepts and never answers.
+/// Today's waited without a word and without end for a GitLab, an origin or
+/// a herdr that accepts and never answers. Its end is the end of its output
+/// (no polling: a layout makes ~80 herdr calls of a few milliseconds).
 pub fn wait_within(mut child: Child, wait: &Wait) -> std::io::Result<Option<Output>> {
-    let reader = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_end(&mut bytes);
-            }
-            bytes
-        })
-    };
-    let stdout = reader(child.stdout.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
-    let stderr = reader(child.stderr.take().map(|pipe| Box::new(pipe) as Box<dyn Read + Send>));
+    fn read_all(pipe: Option<impl Read>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        bytes
+    }
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let stderr = std::thread::spawn(move || read_all(stderr));
+        let stdout = read_all(stdout);
+        let _ = sender.send((stdout, stderr.join().unwrap_or_default()));
+    });
     let started = Instant::now();
-    let mut is_said = false;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
+    let mut piped = receiver.recv_timeout(wait.notice.min(wait.limit)).ok();
+    if piped.is_none() && wait.notice < wait.limit {
+        say_wait(&wait.line());
+        piped = receiver.recv_timeout(wait.limit.saturating_sub(started.elapsed())).ok();
+    }
+    if let Some((stdout, stderr)) = piped {
+        // Its output ended: its exit follows at once (or it closed them and runs on, to the limit).
+        while started.elapsed() < wait.limit {
+            if let Some(status) = child.try_wait()? {
+                return Ok(Some(Output { status, stdout, stderr }));
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        let waited = started.elapsed();
-        if waited >= wait.limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        if !is_said && waited >= wait.notice {
-            say_wait(&wait.line());
-            is_said = true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    // A grandchild may hold a pipe open past the kill: read what is there, never block on it.
-    let stdout = if status.is_some() {
-        stdout.join().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let stderr = if status.is_some() {
-        stderr.join().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    Ok(status.map(|status| Output { status, stdout, stderr }))
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(None)
 }
 
 /// [`output`] of a call to another machine, given at most `wait.limit`:

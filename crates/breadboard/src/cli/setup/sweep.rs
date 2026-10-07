@@ -96,9 +96,7 @@ pub fn prunable_count() -> usize {
         let Some(branch) = &tree.branch else { return false };
         let dir = &tree.dir;
         let bound = conversations::bound_session(dir);
-        let is_left = claudes.iter().any(|(_, id, _, cwd)| {
-            Some(id) != bound.as_ref() && (Path::new(cwd) == dir || Path::new(cwd).starts_with(dir))
-        });
+        let is_left = !conversations::left_in(dir, &claudes, bound.as_deref()).is_empty();
         !git(&["rev-parse", "--verify", "--quiet", &format!("origin/{branch}")], dir).is_ok
             && !repo::has_own_commits(branch, dir)
             && git(&["status", "--porcelain"], dir).text().is_empty()
@@ -231,54 +229,6 @@ pub fn stale_issue_count() -> Result<usize, String> {
     Ok(count)
 }
 
-const MARKER: &str = "monocircuit push guard (#184)";
-/// The hook every worktree runs: its own branch's guard. Kept byte for byte
-/// while the Node hook is the one that reads the stamp (rule 5).
-pub const SHIM: &str = "#!/bin/sh
-# monocircuit push guard (#184), installed by pnpm wt:new and wt:mr.
-top=\"$(git rev-parse --show-toplevel)\"
-for package in breadboard workflow; do
-  hook=\"$top/packages/$package/src/git-hooks/pre-push.mjs\"
-  [ -f \"$hook\" ] && exec node \"$hook\" \"$@\"
-done
-exit 0
-";
-
-/// The hook in the hooks folder all worktrees share; one that isn't ours stays.
-pub fn install_push_guard(cwd: &Path) -> String {
-    let hooks = git(&["rev-parse", "--path-format=absolute", "--git-path", "hooks"], cwd)
-        .text()
-        .to_string();
-    if hooks.is_empty() {
-        return "no git repository".into();
-    }
-    let file = Path::new(&hooks).join("pre-push");
-    let current = fs::read_to_string(&file).ok();
-    if current.as_deref() == Some(SHIM) {
-        return "installed".into();
-    }
-    if current.as_ref().is_some_and(|text| !text.contains(MARKER)) {
-        return format!(
-            "{} is someone else's hook, the push guard is not installed",
-            file.display()
-        );
-    }
-    let _ = fs::create_dir_all(&hooks);
-    if fs::write(&file, SHIM).is_err() {
-        return format!(
-            "{} could not be written, the push guard is not installed",
-            file.display()
-        );
-    }
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o755));
-    if current.is_none() {
-        "installed".into()
-    } else {
-        "updated".into()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,11 +238,5 @@ mod tests {
         assert!(has_open_box("## Work\n- [ ] a\n"));
         assert!(!has_open_box("- [x] a\n```\n- [ ] example\n```\n"));
         assert!(REFERENCE.is_match("Closes #12"));
-    }
-
-    #[test]
-    fn keeps_the_shim_as_node_writes_it() {
-        assert!(SHIM.starts_with("#!/bin/sh\n# monocircuit push guard (#184), installed by pnpm wt:new and wt:mr.\n"));
-        assert!(SHIM.ends_with("done\nexit 0\n"));
     }
 }

@@ -121,12 +121,14 @@ pub fn main(args: &[String]) -> ExitCode {
     act::start(&mut app, sender.clone());
     daemon::client::share_herdr();
     read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
-    runtime.spawn(read_gitlab(main, asked, refreshes, sender));
+    runtime.spawn(read_gitlab(main, view_key(&args.view), asked, refreshes, sender));
     super::serve(runtime, &mut app, models)
 }
 
 /// `--once`: the local read, then GitLab's, the frame printed (a print never acts).
 fn once(mut app: Overview, mut reader: LocalReader) -> ExitCode {
+    // One frame: with docker's answer in it.
+    reader.should_wait_for_docker = true;
     let local = reader.read();
     let ask = reader.ask(&local);
     app.update(Msg::Local(Box::new(local)));
@@ -196,6 +198,7 @@ fn read_locally(
 /// be had, or it got lost) read here on the same cadence (`daemon::read_gitlab`).
 async fn read_gitlab(
     main: PathBuf,
+    view: String,
     mut asks: watch::Receiver<Option<RemoteAsk>>,
     mut refreshes: mpsc::UnboundedReceiver<()>,
     sender: mpsc::UnboundedSender<Msg>,
@@ -208,8 +211,26 @@ async fn read_gitlab(
             }
         }
     });
-    if daemon::client::follow(&main, &mut asks, &mut refreshes, &out).await == daemon::client::Followed::Lost {
-        daemon::read_gitlab(main, asks, refreshes, out).await;
+    match daemon::client::follow(&main, &view, &mut asks, &mut refreshes, &out).await {
+        daemon::client::Followed::Done => {}
+        daemon::client::Followed::Lost => daemon::read_gitlab(main, asks, refreshes, out).await,
+        daemon::client::Followed::Silent => {
+            let _ = out.send(Feed::Remote {
+                result: Err(daemon::SILENT_TEXT.into()),
+                at: now_ms(),
+                rate: None,
+            });
+            daemon::read_gitlab(main, asks, refreshes, out).await;
+        }
+    }
+}
+
+/// Which view the daemon's GitLab feed is of: every overview of it shares one.
+fn view_key(view: &View) -> String {
+    match view {
+        View::Orchestration(name) => format!("orchestration {name}"),
+        View::Worktree(dir) => format!("worktree {}", dir.display()),
+        View::Everything => "everything".into(),
     }
 }
 
@@ -456,7 +477,7 @@ impl App for Overview {
                 Flow::Same
             }
             Input::Click(action) => act::act(self, action),
-            Input::Key(key) => act::key(self, key),
+            Input::Key(key, picked) => act::key(self, key, picked.as_ref()),
         }
     }
 }

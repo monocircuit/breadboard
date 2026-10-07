@@ -4,14 +4,10 @@
 
 use super::proc::fail;
 use breadboard_core::git::{self as core_git, Worktree};
-use std::collections::BTreeMap;
-use std::fs;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The vita app inside a checkout.
-pub const VITA: &str = "products/vita/web";
+pub use crate::cli::lifecycle::repo::{VITA, env_file_of};
 
 /// Default port → the variable it is moved with in the `.env.local` of a
 /// worktree, in the order they are written (constants.mjs `PORTS`).
@@ -24,8 +20,6 @@ pub const PORTS: [(u16, Option<&str>); 7] = [
     (8333, Some("S3_PORT")),
     (64738, Some("VISUALIZER_PORT")),
 ];
-/// drizzle studio's default port; a worktree's moves by its offset.
-pub const STUDIO_PORT: u16 = 4983;
 
 /// Where the commands stand: `INIT_CWD` (pnpm keeps the place it was typed
 /// in) when it lies in the repo of the working directory, else the working
@@ -68,6 +62,13 @@ pub fn find_main() -> Option<PathBuf> {
     Some(MAIN.get_or_init(|| main).clone())
 }
 
+/// The repo of the working directory as the lifecycle group takes it: what
+/// the setup commands share with it (the layout of herdr, the issues of an
+/// orchestration) is its code, called with this.
+pub fn lifecycle() -> crate::cli::lifecycle::repo::Repo {
+    crate::cli::lifecycle::repo::Repo { main: main_dir() }
+}
+
 /// The worktrees, the main checkout first, without the orchestrations' checkouts.
 pub fn worktrees() -> Vec<Worktree> {
     core_git::worktrees(&main_dir())
@@ -100,55 +101,14 @@ pub fn has_own_commits(branch: &str, cwd: &Path) -> bool {
     core_git::own_commits(cwd, branch) > 0
 }
 
-/// The `KEY=value` lines of an env file (`#` lines skipped), None without the file.
-pub fn read_env(file: &Path) -> Option<BTreeMap<String, String>> {
-    let text = fs::read_to_string(file).ok()?;
-    Some(
-        text.split('\n')
-            .filter(|line| line.contains('=') && !line.trim_start().starts_with('#'))
-            .filter_map(|line| line.split_once('='))
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect(),
-    )
-}
-
-/// The `.env.local` of a checkout from before #191 moves from products/vita
-/// to products/vita/web once the checkout has that folder.
-pub fn adopt_env(dir: &Path) -> bool {
-    let old = dir.join("products/vita/.env.local");
-    let target = dir.join(VITA).join(".env.local");
-    if !old.exists() || target.exists() || !dir.join(VITA).join("package.json").exists() {
-        return false;
-    }
-    fs::rename(old, target).is_ok()
-}
-
-/// The `.env.local` of a checkout, moved over first if it is still in the old place.
-pub fn env_file_of(dir: &Path) -> PathBuf {
-    adopt_env(dir);
-    dir.join(VITA).join(".env.local")
-}
-
-/// The offset of a worktree's own stack, 0 for the shared one.
+/// The offset of a worktree's own stack, 0 for the shared one (the lifecycle group's reading).
 pub fn offset_of(dir: &Path) -> u16 {
-    let Some(env) = read_env(&env_file_of(dir)) else {
-        return 0;
-    };
-    match (env.get("COMPOSE_PROJECT_NAME"), env.get("POSTGRES_PORT")) {
-        (Some(project), Some(port)) if !project.is_empty() && !port.is_empty() => port
-            .trim()
-            .parse::<i64>()
-            .map(|port| port - 5432)
-            .ok()
-            .filter(|o| (0..=u16::MAX as i64).contains(o))
-            .unwrap_or(0) as u16,
-        _ => 0,
-    }
+    u16::try_from(crate::cli::lifecycle::repo::offset_of(dir)).unwrap_or(0)
 }
 
 /// Whether nothing listens on `port` of 127.0.0.1.
 pub fn is_port_free(port: u32) -> bool {
-    u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_ok())
+    !breadboard_core::local::is_port_taken(i64::from(port))
 }
 
 /// The worktree whose stack answers on `port`: the app port or one of its
@@ -163,21 +123,4 @@ pub fn worktree_on_port(port: u32) -> Option<Worktree> {
         return all.into_iter().next();
     }
     all.into_iter().find(|tree| i64::from(offset_of(&tree.dir)) == offset)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_an_env_file() {
-        let dir = std::env::temp_dir().join(format!("bb-env-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("e");
-        fs::write(&file, "# c\nA=1=2\nB=\n").unwrap();
-        let env = read_env(&file).unwrap();
-        assert_eq!(env.get("A").map(String::as_str), Some("1=2"));
-        assert_eq!(env.get("B").map(String::as_str), Some(""));
-        fs::remove_dir_all(dir).unwrap();
-    }
 }

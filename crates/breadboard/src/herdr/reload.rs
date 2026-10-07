@@ -2,9 +2,9 @@
 //! into the running herdrs, the session `platform` and your own, without
 //! ending a conversation.
 
-use super::own::{own_herdr, write_own_block};
+use super::own::{own_herdr, write_own_block, write_own_status};
 use super::session::{self, SESSION, Session, Target};
-use super::setup::{link_plugin, linked_file_of, manifest_hash, write_config, write_linked};
+use super::setup::{build, ensure_breadboard, link_plugin, linked_file_of, manifest_hash, write_config, write_linked};
 use super::{Done, Fail, PLUGIN, SPACE, step};
 use breadboard_core::git::git;
 use serde_json::Value;
@@ -24,12 +24,18 @@ pub fn command(session: &Session, is_pulled: bool) -> Done {
     }
     // The pull can bring new workflow code, but this process runs the binary
     // built before it: the rest goes on in the main checkout's binary, built
-    // again from the pulled code.
+    // again from the pulled code. Without a build it goes on here, and says
+    // the old code runs on.
+    let mut is_stale = false;
     if !is_pulled && pull_develop(&session.main) {
-        return Ok(rerun_pulled(&session.main));
+        match rerun_pulled(&session.main) {
+            Some(code) => return Ok(code),
+            None => is_stale = true,
+        }
     }
+    ensure_breadboard(session);
     for target in &targets {
-        reload(session, target)?;
+        reload(session, target, is_stale)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -82,27 +88,25 @@ fn pull_develop(main: &Path) -> bool {
 
 /// The rest of the reload in the main checkout's binary, built from what
 /// the pull brought (cargo is incremental: seconds when the crates didn't
-/// change). Without cargo or a build, this binary goes on: said, not hidden.
-fn rerun_pulled(main: &Path) -> ExitCode {
+/// change); its exit code. None without cargo or a build: this process
+/// goes on with the code from before the pull, said, not hidden.
+fn rerun_pulled(main: &Path) -> Option<ExitCode> {
     let package = main.join("packages/breadboard");
     let binary = package.join("target/release/breadboard");
     step("the pulled breadboard is built (cargo build --release)");
-    let is_built = Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .current_dir(&package)
-        .status()
-        .is_ok_and(|status| status.success());
-    let program = if is_built && binary.is_file() {
-        binary
-    } else {
-        step("it didn't build: this binary goes on, pnpm build:rs in the main checkout builds the new one");
-        std::env::current_exe().unwrap_or(binary)
-    };
-    let status = Command::new(program)
+    if !build(&package) || !binary.is_file() {
+        step(
+            "it didn't build: the code from before the pull goes on, pnpm build:rs in the main checkout builds the new one",
+        );
+        return None;
+    }
+    let status = Command::new(binary)
         .args(["herdr", "--reload", "--pulled"])
         .current_dir(main)
         .status();
-    ExitCode::from(status.ok().and_then(|status| status.code()).unwrap_or(1).clamp(0, 255) as u8)
+    Some(ExitCode::from(
+        status.ok().and_then(|status| status.code()).unwrap_or(1).clamp(0, 255) as u8,
+    ))
 }
 
 /// Whether a process's command line is an overview: Node's (`overview.mjs`)
@@ -122,8 +126,9 @@ pub fn is_overview(cmdline: &Value) -> bool {
 /// New workflow code into one herdr. The overviews quit (`q`) and the layout
 /// starts them again from the current binary; claude, nvim, `pnpm dev` and
 /// the logs keep running. The plugin is linked again last, and only when its
-/// manifest changed: that could end the popup this runs in.
-fn reload(session: &Session, target: &Target) -> Result<(), Fail> {
+/// manifest changed: that could end the popup this runs in. `is_stale`: the
+/// pull brought code that didn't build, so the overviews run the old binary.
+fn reload(session: &Session, target: &Target, is_stale: bool) -> Result<(), Fail> {
     let is_pinned = *target == Target::Pinned;
     let name = match target {
         Target::Pinned => format!("the session {SESSION}"),
@@ -134,7 +139,8 @@ fn reload(session: &Session, target: &Target) -> Result<(), Fail> {
     let is_changed = if is_pinned {
         write_config(session)?.is_changed
     } else {
-        write_own_block(session, &session::own_config(), true)?
+        let is_block_changed = write_own_block(session, &session::own_config(), true)?;
+        write_own_status(session, &session::own_config())? || is_block_changed
     };
     if is_changed && session.herdr(target, &["server", "reload-config"]).is_ok {
         step("config written again and reloaded");
@@ -206,7 +212,11 @@ fn reload(session: &Session, target: &Target) -> Result<(), Fail> {
         )
         .into());
     }
-    step("layout built again, the overviews run the new code");
+    step(if is_stale {
+        "layout built again, the overviews run the binary from before the pull"
+    } else {
+        "layout built again, the overviews run the new code"
+    });
 
     let linked = fs::read_to_string(linked_file_of(session, target)).ok();
     if linked.as_deref().map(str::trim) != Some(manifest_hash(session).as_str()) {
@@ -215,14 +225,33 @@ fn reload(session: &Session, target: &Target) -> Result<(), Fail> {
         write_linked(session, target);
         step(&format!("plugin {PLUGIN} linked again, its manifest changed"));
     }
-    println!("\n✓ {name} runs the current workflow code; conversations, nvim and servers kept running\n");
+    println!("\n{}\n", closing(&name, is_stale));
     Ok(())
+}
+
+/// The last line of a reload: ✓ only when the overviews run the current code.
+fn closing(name: &str, is_stale: bool) -> String {
+    if is_stale {
+        format!(
+            "! {name} runs the code from before the pull until pnpm build:rs in the main checkout and a reload (prefix+shift+l); conversations, nvim and servers kept running"
+        )
+    } else {
+        format!("✓ {name} runs the current workflow code; conversations, nvim and servers kept running")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_reload_without_the_pulled_build_says_the_old_code_runs() {
+        assert!(closing("the session platform", false).starts_with("✓ the session platform runs the current"));
+        let stale = closing("the session platform", true);
+        assert!(stale.starts_with("! the session platform runs the code from before the pull until pnpm build:rs"));
+        assert!(!stale.contains('✓'));
+    }
 
     #[test]
     fn finds_the_overviews_of_node_and_of_the_binary() {

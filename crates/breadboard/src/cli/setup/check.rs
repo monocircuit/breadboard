@@ -7,15 +7,16 @@
 
 use super::proc::{Stream, fail, git, outln, step, write_bytes};
 use super::repo;
+use breadboard_core::check::{self, failures_line, failures_of};
+pub use breadboard_core::check::{Failure, read_check};
 use breadboard_core::time::{now_ms, to_iso};
-use regex::Regex;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// What wt:check runs, through turbo.
@@ -26,26 +27,11 @@ fn ci_only(package: &str) -> Option<&'static str> {
         .then_some("vita's integration tests (test:int) need the stack: they run in CI only (check:vita:int)")
 }
 
-pub fn check_file(dir: &Path) -> PathBuf {
-    dir.join(".claude").join("checked.json")
-}
-
-pub fn read_check(dir: &Path) -> Map<String, Value> {
-    breadboard_core::json::read(&check_file(dir))
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default()
-}
-
-/// Sets the given parts (a null clears one), keeps the others; 2-space JSON as Node writes it.
+/// core's `write_check` (`.claude/checked.json`, one reader and writer for
+/// wt:check, the pre-push hook and the overview) with the parts as JSON:
+/// a null clears one, the others stay.
 pub fn write_check(dir: &Path, parts: Value) {
-    let mut record = read_check(dir);
-    if let Value::Object(parts) = parts {
-        for (key, value) in parts {
-            record.insert(key, value);
-        }
-    }
-    record.retain(|_, value| !value.is_null());
-    let _ = breadboard_core::json::write_pretty(&check_file(dir), &Value::Object(record));
+    let _ = check::write_check(dir, parts.as_object().cloned().unwrap_or_default());
 }
 
 /// The tree of the working copy as a commit of everything would have it, built in a copy of the index.
@@ -138,104 +124,6 @@ pub fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Ve
             ))
         }
     }
-}
-
-/// A task that failed, with its failing tests.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Failure {
-    pub package: String,
-    pub task: String,
-    pub tests: Vec<String>,
-}
-
-static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*m").unwrap());
-static SUMMARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*Failed:\s+(.+)$").unwrap());
-static EXITED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)(\S+#\S+): command .* exited \(\d+\)").unwrap());
-static PREFIXED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\S+?):(\w[\w:-]*): (.*)$").unwrap());
-static VITEST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*FAIL\s+(\S+\.\w+ > .+?)\s*$").unwrap());
-static NODE_TEST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*✖ (.+?)(?: \([\d.]+m?s\))?\s*$").unwrap());
-
-/// What failed in turbo's output (check.mjs `failuresOf`).
-pub fn failures_of(output: &str) -> Vec<Failure> {
-    let text = ANSI.replace_all(output, "");
-    let mut failed: Vec<Failure> = Vec::new();
-    let add = |id: &str, test: Option<&str>, failed: &mut Vec<Failure>| {
-        let Some((package, task)) = id.split_once('#') else {
-            return;
-        };
-        let task = task.split('#').next().unwrap_or(task);
-        if package.is_empty() || task.is_empty() {
-            return;
-        }
-        let at = match failed
-            .iter()
-            .position(|known| known.package == package && known.task == task)
-        {
-            Some(at) => at,
-            None => {
-                failed.push(Failure {
-                    package: package.into(),
-                    task: task.into(),
-                    tests: Vec::new(),
-                });
-                failed.len() - 1
-            }
-        };
-        if let Some(test) = test
-            && !failed[at].tests.iter().any(|known| known == test)
-        {
-            failed[at].tests.push(test.to_string());
-        }
-    };
-    for line in text.split('\n') {
-        if let Some(summary) = SUMMARY.captures(line) {
-            for id in summary[1].split(',') {
-                add(id.trim(), None, &mut failed);
-            }
-        }
-        if let Some(exited) = EXITED.captures(line) {
-            add(&exited[1], None, &mut failed);
-        }
-    }
-    for line in text.split('\n') {
-        let Some(prefixed) = PREFIXED.captures(line) else {
-            continue;
-        };
-        let id = format!("{}#{}", &prefixed[1], &prefixed[2]);
-        let is_test = failed
-            .iter()
-            .any(|known| format!("{}#{}", known.package, known.task) == id && known.task == "test");
-        if !is_test {
-            continue;
-        }
-        let body = &prefixed[3];
-        if let Some(vitest) = VITEST.captures(body) {
-            add(&id, Some(&vitest[1]), &mut failed);
-        } else if let Some(node) = NODE_TEST.captures(body).filter(|node| &node[1] != "failing tests:") {
-            add(&id, Some(&node[1]), &mut failed);
-        }
-    }
-    failed
-}
-
-/// `@monocircuit/vita (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
-pub fn failures_text(failures: &[Failure], count: usize) -> String {
-    failures
-        .iter()
-        .map(|failure| {
-            if failure.task != "test" || failure.tests.is_empty() {
-                return format!("{} {}", failure.package, failure.task);
-            }
-            let shown = failure.tests.iter().take(count).cloned().collect::<Vec<_>>().join(", ");
-            let rest = if failure.tests.len() > count {
-                format!(", +{} more", failure.tests.len() - count)
-            } else {
-                String::new()
-            };
-            format!("{} ({shown}{rest})", failure.package)
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// turbo, its output shown as it comes and kept: `(code, output)`.
@@ -392,7 +280,7 @@ pub fn command() -> ExitCode {
         let what = if failures.is_empty() {
             "see turbo's output above".into()
         } else {
-            failures_text(&failures, 5)
+            failures_line(&failures, 5)
         };
         fail(&format!(
             "wt:check failed after {duration} s: {what}\n  Fix it, commit, run pnpm wt:check again: the push waits for it.\n  Red on develop too: it is fixed once, in its own fix MR; wait for that with pnpm wt:wait !<mr>."
@@ -444,7 +332,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            failures_text(&failures, 1),
+            failures_line(&failures, 1),
             "@m/vita (src/a.test.ts > keeps it, +1 more) · @m/ui lint"
         );
     }

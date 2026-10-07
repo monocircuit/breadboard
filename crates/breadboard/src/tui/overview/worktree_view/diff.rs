@@ -47,6 +47,23 @@ pub fn show(file: &str, at: &str) -> Act {
     }
 }
 
+/// What a click off the names of a line of several, or Enter on it, runs:
+/// the next name's hunks (the first while none of the line's shows, none
+/// after the last), so the keyboard reaches every name, not only the first.
+pub fn step(first: &str, at: &str) -> Act {
+    Act::Hunks {
+        file: first.to_string(),
+        at: format!("{}{at}", hunks::NEXT),
+        is_whole: false,
+    }
+}
+
+/// The name of the file whose hunks show, on its row: on the pick's ground
+/// and bold, as lazygit marks the file it shows the diff of.
+fn opened(style: Style) -> Style {
+    style.bg(theme::PICKED).add_modifier(Modifier::BOLD)
+}
+
 /// Where the files of DIFF and DEVELOP are: the worktree, its diff (the
 /// counts of each file), the file whose hunks show.
 #[derive(Clone, Copy)]
@@ -57,6 +74,11 @@ pub struct Files<'a> {
 }
 
 impl Files<'_> {
+    /// Whether `file`'s hunks show under the row `at`.
+    fn is_open(&self, at: &str, file: &str) -> bool {
+        self.shown.is_some_and(|shown| shown.is_under(at, file))
+    }
+
     /// The hunks of `file` after the row `at`, when they are the ones shown.
     fn under(&self, scene: &mut Scene<Act>, at: &str, file: &str) {
         let Some(shown) = self.shown.filter(|shown| shown.is_under(at, file)) else {
@@ -97,14 +119,21 @@ pub fn file_line(
     let Some((_, first)) = files.first() else {
         return;
     };
-    scene.block(show(first, at), |scene| {
+    let line = if files.len() > 1 {
+        step(first, at)
+    } else {
+        show(first, at)
+    };
+    scene.block(line, |scene| {
         prefix(scene);
         scene.indent(indent);
         let shown = files.len().min(count);
         // Each name where it was drawn and what it opens.
         let mut placed: Vec<(Vec<Rect>, String, String)> = vec![];
         for (i, (name, file)) in files.iter().take(shown).enumerate() {
-            let mut spans = vec![look::span(name, Style::new().add_modifier(Modifier::UNDERLINED))];
+            let style = Style::new().add_modifier(Modifier::UNDERLINED);
+            let style = if place.is_open(at, file) { opened(style) } else { style };
+            let mut spans = vec![look::span(name, style)];
             if i + 1 < shown {
                 spans.push(Span::raw(","));
             }
@@ -112,7 +141,9 @@ pub fn file_line(
         }
         if let Some((_, hidden)) = files.get(shown) {
             let more = format!("+{} more", files.len() - shown);
-            placed.push((scene.atom(vec![look::dim(&more)]), more, hidden.clone()));
+            let is_open = files[shown..].iter().any(|(_, file)| place.is_open(at, file));
+            let style = if is_open { opened(theme::dim()) } else { theme::dim() };
+            placed.push((scene.atom(vec![look::span(&more, style)]), more, hidden.clone()));
         }
         if let Some(suffix) = suffix {
             scene.atom_gap(vec![look::dim(suffix)], 2);
@@ -142,6 +173,7 @@ pub fn file_line(
         .shown
         .filter(|shown| files.iter().any(|(_, file)| shown.is_under(at, file)))
     {
+        shown.on_line(files.iter().map(|(_, file)| file.clone()).collect());
         place.under(scene, at, &shown.file);
     }
 }
@@ -321,8 +353,13 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
         } else {
             counted(area.files as u64, "file")
         };
+        let name = if place.is_open("area", &area.top) {
+            opened(theme::bold())
+        } else {
+            theme::bold()
+        };
         scene.block(show(&area.top, "area"), |scene| {
-            scene.atom_gap(vec![look::bold(&area.name)], 0);
+            scene.atom_gap(vec![look::span(&area.name, name)], 0);
             counts(scene, &columns, area.added, area.removed, after);
             scene.atom_gap(bar(area.added, area.removed, biggest, cells), 0);
             columns.to(scene, columns.last, width(&last).min(MIN_WRAP));
@@ -336,7 +373,7 @@ fn table(scene: &mut Scene<Act>, diff: &Diff, place: &Files) {
             place.under(scene, "area", &area.top);
         }
         for (path, change) in &files {
-            file_row(scene, path, change, &columns);
+            file_row(scene, path, change, &columns, place.is_open("file", &change.file));
             place.under(scene, "file", &change.file);
             // The area's row shows its top file's changes under that file's row.
             if change.file == area.top {
@@ -521,7 +558,7 @@ fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, a
 /// A file of an area, as lazygit's files panel has it: its letter, its path
 /// below the area's folder (wrapping at a `/` when it is wider than the
 /// line), its lines, whether it is committed; a click shows its hunks under it.
-fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns) {
+fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Columns, is_open: bool) {
     scene.block(show(&change.file, "file"), |scene| {
         scene.pad_to(2);
         scene.atom_gap(vec![status_mark(change.status)], 0);
@@ -534,7 +571,8 @@ fn file_row(scene: &mut Scene<Act>, path: &str, change: &Change, columns: &Colum
         for piece in folder.split_inclusive('/') {
             scene.atom_gap(vec![look::dim(piece)], 0);
         }
-        scene.atom_gap(vec![look::span(name, Style::new())], 0);
+        let style = if is_open { opened(Style::new()) } else { Style::new() };
+        scene.atom_gap(vec![look::span(name, style)], 0);
         let after = if change.is_uncommitted {
             2 + width(UNCOMMITTED)
         } else {
@@ -649,9 +687,9 @@ mod tests {
         // `+2 more` stands for the first hidden one, with a column of slack.
         assert_eq!(act_at(&scene, column("+2 more"), 0), opens("src/e.ts").as_ref());
         assert_eq!(act_at(&scene, column("+2 more") + 7, 0), opens("src/e.ts").as_ref());
-        // Off the names: the first.
-        assert_eq!(act_at(&scene, 0, 0), opens("src/a.ts").as_ref());
-        assert_eq!(act_at(&scene, 78, 0), opens("src/a.ts").as_ref());
+        // Off the names: the line's step, the first while none of its names shows.
+        assert_eq!(act_at(&scene, 0, 0), Some(&step("src/a.ts", "conflicts")));
+        assert_eq!(act_at(&scene, 78, 0), Some(&step("src/a.ts", "conflicts")));
     }
 
     #[test]
@@ -760,7 +798,7 @@ mod tests {
             act_at(&scene, column_of(last, "f1.ts"), y),
             shows("area1/f1.ts", "rest").as_ref()
         );
-        assert_eq!(act_at(&scene, 2, y), shows("area2/f2.ts", "rest").as_ref());
+        assert_eq!(act_at(&scene, 2, y), Some(&step("area2/f2.ts", "rest")));
     }
 
     /// The rich world's table (the critic's, round 3): one long path, areas of one file.

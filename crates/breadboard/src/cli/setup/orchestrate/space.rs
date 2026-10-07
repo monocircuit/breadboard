@@ -3,18 +3,12 @@
 //! under the main space; `root`, `overview`, `orchestrator`, `changelog`,
 //! `changes`; the tab running wt:orchestrate moves in as `orchestrator`.
 
-use super::workers::checkout_of;
-use crate::cli::setup::conversations;
-use crate::cli::setup::herdr::{
-    self, CHANGELOG, CHANGES, ORCHESTRATOR_TAB, OVERVIEW, ROOT, can_edit, ensure_space, ensure_tab,
-    ensure_worktree_space, field, has_agent, herdr, is_idle, keep_order, space_of, spaces, tabs_of,
-};
-use crate::cli::setup::nvim;
-use crate::cli::setup::proc::git;
+use crate::cli::lifecycle::layout::orchestrations::{self, ChatState, ORDER, chat_state_of};
+use crate::cli::lifecycle::layout::tabs::{ORCHESTRATOR_TAB, drop_duplicates, keep_order};
+use crate::cli::setup::herdr::{self, field, herdr, spaces, tabs_of};
 use crate::cli::setup::repo;
-use breadboard_core::record::{self, ORCHESTRATOR, Origin, is_session_id};
-use serde_json::{Value, json};
-use std::fs;
+use breadboard_core::record::{self, Origin};
+use serde_json::Value;
 use std::path::PathBuf;
 
 /// The checkouts of every orchestration.
@@ -22,146 +16,24 @@ pub fn orchestrator_checkouts() -> Vec<PathBuf> {
     breadboard_core::git::orchestrator_checkouts(&repo::main_dir())
 }
 
-/// The checkout of `name`, made on first use; None when git refuses.
-fn orchestrator_checkout(name: &str) -> Option<PathBuf> {
-    let dir = checkout_of(name);
-    if orchestrator_checkouts().contains(&dir) {
-        return Some(dir);
-    }
-    fs::create_dir_all(dir.parent()?).ok()?;
-    let text = dir.to_string_lossy().into_owned();
-    git(
-        &["worktree", "add", "--quiet", "--detach", &text, "origin/develop"],
-        &repo::main_dir(),
-    )
-    .is_ok
-    .then_some(dir)
-}
-
-/// The checkout goes with its space; one with changes stays, and says so.
+/// The checkout goes with its space; one with changes stays, and says so (the lifecycle group's).
 pub fn remove_orchestrator_checkout(name: &str) -> Option<String> {
-    let dir = checkout_of(name);
-    if !orchestrator_checkouts().contains(&dir) {
-        return None;
-    }
-    let text = dir.to_string_lossy().into_owned();
-    if git(&["worktree", "remove", &text], &repo::main_dir()).is_ok {
-        return None;
-    }
-    let label = record::orchestrator_label(&repo::main_dir(), name);
-    Some(format!("kept the checkout of {label}, it has changes: {text}"))
+    orchestrations::remove_orchestrator_checkout(&repo::lifecycle(), name)
 }
 
-const ORDER: [&str; 5] = [ROOT, OVERVIEW, ORCHESTRATOR_TAB, CHANGELOG, CHANGES];
-
-/// The space `⇶ <title>` with its tabs; renamed after a new title, an older one handing its tabs over.
+/// The space `⇶ <title>` with its tabs; renamed after a new title, an older
+/// one handing its tabs over (the lifecycle group's, one with `wt:herdr`).
 pub fn orchestrator_space(name: &str) -> Option<String> {
-    let main = repo::main_dir();
-    let label = record::orchestrator_label(&main, name);
-    let all = spaces();
-    if !all.iter().any(|space| field(space, "label") == label)
-        && let Some(retitled) = all.iter().find(|space| {
-            field(space, "label").starts_with(&format!("{ORCHESTRATOR} "))
-                && herdr::orchestration_of(field(space, "label")).as_deref() == Some(name)
-        })
-    {
-        herdr(&["workspace", "rename", field(retitled, "workspace_id"), &label]);
-    }
-    let workspace = match orchestrator_checkout(name) {
-        Some(checkout) => ensure_worktree_space(&label, &checkout, space_of(&main).as_deref(), ROOT),
-        None => ensure_space(&label, &main, ROOT, None),
-    }?;
-    for old in spaces() {
-        if field(&old, "workspace_id") == workspace
-            || herdr::orchestration_of(field(&old, "label")).as_deref() != Some(name)
-        {
-            continue;
-        }
-        if let Some(overview) = tabs_of(field(&old, "workspace_id"))
-            .into_iter()
-            .find(|tab| field(tab, "label") == OVERVIEW)
-        {
-            herdr(&["tab", "close", field(&overview, "tab_id")]);
-        }
-        herdr::move_into(field(&old, "workspace_id"), &workspace);
-        herdr::drop_duplicates(&workspace, ROOT);
-    }
-    let tabs = tabs_of(&workspace);
-    ensure_tab(
-        &workspace,
-        OVERVIEW,
-        &main,
-        Some(&herdr::overview_command(None, Some(name))),
-        &tabs,
-    );
-    ensure_tab(&workspace, ROOT, &main, None, &tabs);
-    ensure_tab(
-        &workspace,
-        CHANGELOG,
-        &main,
-        Some(&herdr::changelog_tab_command(name)),
-        &tabs,
-    );
-    if can_edit() {
-        let command = nvim::editor_command(&main, Some(name), &nvim::changes_commands(&main, name), None);
-        ensure_tab(&workspace, CHANGES, &main, Some(&command), &tabs);
-    }
-    keep_order(&workspace, &ORDER);
-    Some(workspace)
+    orchestrations::orchestrator_space(&repo::lifecycle(), name, false)
 }
 
-/// The conversation a pane runs, `(sessionId, cwd)`.
-fn chat_of_pane(pane: &Value) -> Option<(String, String)> {
-    if pane.get("agent").and_then(Value::as_str) != Some("claude") {
-        return None;
-    }
-    let id = herdr::session_of(pane).filter(|id| is_session_id(id))?.to_string();
-    let cwd = conversations::running_claudes()
-        .into_iter()
-        .find(|(_, running, _, _)| *running == id)
-        .map(|(_, _, _, cwd)| cwd)
-        .filter(|cwd| !cwd.is_empty())
-        .or_else(|| Some(field(pane, "foreground_cwd").to_string()).filter(|cwd| !cwd.is_empty()))
-        .or_else(|| Some(field(pane, "cwd").to_string()).filter(|cwd| !cwd.is_empty()))
-        .unwrap_or_else(|| repo::main_dir().to_string_lossy().into_owned());
-    Some((id, cwd))
-}
-
-/// The chat into the record, only on a change.
-fn record_chat(name: &str, chat: Option<(String, String)>) {
-    let Some((id, cwd)) = chat else { return };
-    let main = repo::main_dir();
-    let known = record::record_of(&main, name).and_then(|found| found.chat);
-    if known.as_ref().is_some_and(|known| {
-        known.session_id == id && known.cwd.clone().unwrap_or_else(|| main.to_string_lossy().into_owned()) == cwd
-    }) {
-        return;
-    }
-    let fields = json!({ "orchestrator": { "sessionId": id, "cwd": cwd } });
-    let _ = record::update_record(&main, name, super::issue::object(fields));
-}
-
-/// Whether `⇶ <name>` has an orchestrator already: a tab `orchestrator` with more than a spare shell, or its one claude.
+/// Whether `⇶ <name>` has an orchestrator already: a tab `orchestrator` with
+/// more than a spare shell, or its one claude (orchestrator-chat.mjs `chatStateOf`).
 fn has_chat(tabs: &[Value], panes: &[Value]) -> bool {
-    let Some(tab) = tabs.iter().find(|tab| field(tab, "label") == ORCHESTRATOR_TAB) else {
-        let free: Vec<&str> = tabs
-            .iter()
-            .filter(|tab| field(tab, "label").starts_with("free "))
-            .map(|tab| field(tab, "tab_id"))
-            .collect();
-        let claudes = panes.iter().filter(|pane| {
-            pane.get("agent").and_then(Value::as_str) == Some("claude")
-                && herdr::session_of(pane).is_some()
-                && !free.contains(&field(pane, "tab_id"))
-        });
-        return claudes.count() == 1;
-    };
-    let own: Vec<&Value> = panes
-        .iter()
-        .filter(|pane| field(pane, "tab_id") == field(tab, "tab_id"))
-        .collect();
-    let is_spare = own.len() == 1 && !has_agent(own[0]) && is_idle(field(own[0], "pane_id"));
-    !is_spare
+    matches!(
+        chat_state_of(tabs, panes, &[], None, herdr::is_idle),
+        ChatState::Alive { .. } | ChatState::Busy
+    )
 }
 
 /// Why the tab running wt:orchestrate stays where it is, or None when it moves in (#287).
@@ -188,15 +60,11 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
         if !herdr::is_in_herdr() {
             return None;
         }
-        herdr::main_space()?;
-        let main = repo::main_dir();
-        let label = record::orchestrator_label(&main, name);
+        let lifecycle = repo::lifecycle();
+        crate::cli::lifecycle::layout::spaces::main_space(&lifecycle)?;
+        let label = lifecycle.orchestrator_label(name);
         let workspace = orchestrator_space(name)?;
-        let pane = if std::env::var_os("HERDR_PANE_ID").is_some() {
-            herdr::current_pane()
-        } else {
-            None
-        };
+        let pane = herdr::current_pane();
         let from = pane.as_ref().and_then(|pane| {
             spaces()
                 .into_iter()
@@ -225,10 +93,12 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
                 &workspace,
                 "--new-tab",
             ]);
-            if let Some(created) = herdr::created_tab(&moved) {
+            if let Some(created) =
+                moved.and_then(|moved| herdr::id_at(&moved, &["move_result", "created_tab", "tab_id"]))
+            {
                 herdr(&["tab", "rename", &created, ORCHESTRATOR_TAB]);
                 is_moved = true;
-                herdr::drop_duplicates(&workspace, ORCHESTRATOR_TAB);
+                drop_duplicates(&workspace, ORCHESTRATOR_TAB);
             }
         }
         let is_own = is_moved
@@ -240,10 +110,10 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
                         .is_some_and(|tab| field(tab, "label") == ORCHESTRATOR_TAB)
             });
         if is_own && let Some(pane) = &pane {
-            record_chat(name, chat_of_pane(pane));
+            orchestrations::record_chat(&lifecycle, name, orchestrations::chat_of_pane(&lifecycle, pane));
         }
         keep_order(&workspace, &ORDER);
-        herdr::main_space();
+        crate::cli::lifecycle::layout::spaces::main_space(&lifecycle);
         if let Some(found) = spaces()
             .into_iter()
             .find(|space| field(space, "workspace_id") == workspace)

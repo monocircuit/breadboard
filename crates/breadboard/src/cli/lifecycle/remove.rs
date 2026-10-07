@@ -5,6 +5,7 @@
 //! anything of anyone's is still in it.
 
 use super::args::{Args, Takes};
+use super::changelog;
 use super::claude::{are_handed_over, bound_session, left_in, left_text, running_claudes, session_file};
 use super::gitlab;
 use super::herdr;
@@ -218,12 +219,14 @@ fn listed_mrs(text: &str) -> Vec<i64> {
 }
 
 /// What a removal does about its orchestration's changelog (#305, #306).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Merge {
     /// It lists the merge already (the overview or an earlier removal wrote it): left as it is.
     Listed,
-    /// It misses the merge (`!iid`; None: no merged MR to name): rewritten.
-    Missing(Option<i64>),
+    /// No merged MR: nothing to list (an issue closed without one the overview lists).
+    Unlisted,
+    /// It misses the merge of this MR: added from it (changelog.rs).
+    Missing(Value),
     /// GitLab did not answer: a rewrite would get nothing either and blank it, so it stays.
     Unanswered,
 }
@@ -234,12 +237,47 @@ fn merge_of(main: &Path, name: &str, mrs: Option<&[Value]>) -> Merge {
     let Some(mrs) = mrs else {
         return Merge::Unanswered;
     };
-    let iid = last_merged(mrs).and_then(|mr| mr.get("iid")).and_then(Value::as_i64);
+    let Some(mr) = last_merged(mrs) else {
+        return Merge::Unlisted;
+    };
+    let iid = mr.get("iid").and_then(Value::as_i64).unwrap_or_default();
     let text = fs::read_to_string(record::changelog_file(main, name)).unwrap_or_default();
-    match iid {
-        Some(iid) if lists_mr(&text, iid) => Merge::Listed,
-        iid => Merge::Missing(iid),
+    if lists_mr(&text, iid) {
+        Merge::Listed
+    } else {
+        Merge::Missing(mr.clone())
     }
+}
+
+/// Adds the merge `mr` of `branch` to the changelog of `name` (#305): the
+/// entry a rewrite would write, from the MR read the removal holds, no
+/// GitLab call. False: there is no changelog to add it to, a rewrite writes one.
+fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
+    let file = record::changelog_file(main, name);
+    let Ok(text) = fs::read_to_string(&file) else {
+        return false;
+    };
+    // A rewrite lists the issues of the record only.
+    let Some(issue) = record::record_of(main, name).and_then(|found| {
+        found
+            .issues
+            .into_iter()
+            .find(|issue| issue.branch.as_deref() == Some(branch))
+    }) else {
+        return true;
+    };
+    let entry = changelog::entry_of(mr, issue.number, &text);
+    let Some(added) = changelog::insert(&text, &entry) else {
+        return false;
+    };
+    let iid = mr.get("iid").and_then(Value::as_i64).unwrap_or_default();
+    step(&format!("add !{iid} to the changelog of {name}"));
+    if let Err(error) = write_atomic(&file, &added) {
+        step(&format!(
+            "the changelog of {name} could not be written: {error}; pnpm wt:orchestrate {name} --changelog tries again"
+        ));
+    }
+    true
 }
 
 /// The step that says an orchestration's changelog stays as it is.
@@ -296,7 +334,7 @@ impl Rewrite {
     pub fn start(repo: &Repo, name: &str) -> Rewrite {
         let file = record::changelog_file(&repo.main, name);
         let before = fs::read_to_string(&file).ok();
-        let child = Command::new(exe())
+        let child = herdr::pass_silence(&mut Command::new(exe()))
             .args(["wt:orchestrate", name, "--changelog"])
             .current_dir(&repo.main)
             .stdin(Stdio::null())
@@ -342,6 +380,8 @@ impl Rewrite {
             Ok(Some(done)) => String::from_utf8_lossy(&done.stderr)
                 .lines()
                 .find_map(|line| line.strip_prefix("✗ "))
+                // It left the changelog as it was and named the issues (#306).
+                .map(|line| if line.starts_with(UNANSWERED) { UNANSWERED } else { line })
                 .unwrap_or("it failed")
                 .to_string(),
             Err(error) => error.to_string(),
@@ -353,6 +393,12 @@ impl Rewrite {
 /// Removes the worktree of `feature` (remove.mjs), its steps said as they
 /// run. The orchestration whose changelog misses the merge: rewritten here,
 /// or by wt:prune (is_fetched, it gets the name) once after all removals.
+/// How long the read of a branch's MRs may take once its worktree is gone:
+/// only the claim on origin and the record's mergedAt wait for it, both
+/// said and left for later when it is late; GitLab answers it in under a
+/// second (a silent one cost 15 s of a removal that was done).
+const AFTER_LIMIT: Duration = Duration::from_secs(8);
+
 pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pending>, Fail> {
     let dir = repo.dir_of(feature);
     let dir_text = text(&dir);
@@ -471,7 +517,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;
         if is_on_origin && !has_own_commits(&remote, &repo.main) {
             let open_mrs = mrs
-                .get_or_init(|| mrs_of(repo, branch, gitlab::LIMIT))
+                .get_or_init(|| mrs_of(repo, branch, AFTER_LIMIT))
                 .as_deref()
                 .map(open_count);
             if let Some(claim) = empty_claim(true, false, open_mrs) {
@@ -506,7 +552,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     // The overview of the orchestration lists it under "done and removed", with the times.
     if let (Some(origin), Some(branch)) = (&origin, &branch) {
         let merged_at = if is_merged {
-            mrs.get_or_init(|| mrs_of(repo, branch, gitlab::LIMIT))
+            mrs.get_or_init(|| mrs_of(repo, branch, AFTER_LIMIT))
                 .as_deref()
                 .and_then(merged_at)
         } else {
@@ -521,29 +567,36 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             merged_at.as_deref(),
         );
     }
-    // Its changelog lists the merge, unless it does already (#305): started
-    // now, beside herdr's calls, waited for after the ✓ (remove.mjs).
+    // Its changelog lists the merge, unless it does already (#305): added
+    // from the MR read above; rewritten (beside herdr's calls, waited for
+    // after the ✓) only when there is no changelog to add it to.
     // GitLab silent: a rewrite would get nothing either and blank it (#306).
-    let changelog = origin
-        .as_ref()
-        .filter(|_| is_merged)
-        .map(|origin| {
-            let mrs = mrs.get().and_then(Option::as_deref);
-            (origin.name.clone(), merge_of(&repo.main, &origin.name, mrs))
-        })
-        .filter(|(_, merge)| *merge != Merge::Listed);
-    let rewrite = match &changelog {
-        Some((name, Merge::Missing(iid))) if !options.is_fetched => {
-            let merge = iid.map(|iid| format!(" (!{iid} is not in it yet)")).unwrap_or_default();
-            step(&format!("rewrite the changelog of {name}{merge}"));
-            Some(Rewrite::start(repo, name))
+    let mut pending = None;
+    let mut rewrite = None;
+    if let (Some(origin), Some(branch)) = (origin.as_ref().filter(|_| is_merged), &branch) {
+        let name = &origin.name;
+        let is_answered = match merge_of(&repo.main, name, mrs.get().and_then(Option::as_deref)) {
+            Merge::Listed | Merge::Unlisted => None,
+            Merge::Missing(mr) if add_merge(&repo.main, name, branch, &mr) => None,
+            Merge::Missing(_) => Some(true),
+            Merge::Unanswered => Some(false),
+        };
+        match is_answered {
+            // wt:prune rewrites each orchestration's once, after all its removals.
+            Some(is_answered) if options.is_fetched => {
+                pending = Some(Pending {
+                    name: name.clone(),
+                    is_answered,
+                })
+            }
+            Some(true) => {
+                step(&format!("rewrite the changelog of {name} (there is none yet)"));
+                rewrite = Some(Rewrite::start(repo, name));
+            }
+            Some(false) => step(&not_rewritten(name, UNANSWERED)),
+            None => {}
         }
-        Some((name, Merge::Unanswered)) if !options.is_fetched => {
-            step(&not_rewritten(name, UNANSWERED));
-            None
-        }
-        _ => None,
-    };
+    }
     // One stretch of herdr calls, no child process in between: its reads are remembered.
     herdr::remembering(|| {
         if let Some(line) = release_space(feature, options.is_closing_space) {
@@ -556,6 +609,12 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             }
         }
     });
+    if herdr::is_silent() {
+        step(&format!(
+            "herdr did not answer in {} s: the tabs of {feature} stay; pnpm wt:herdr tidies up once it answers",
+            herdr::LIMIT.as_secs()
+        ));
+    }
     // The plugin may have been linked from the tree that just went (#230);
     // wt:prune (is_fetched) checks once after all its removals.
     if !options.is_fetched {
@@ -569,11 +628,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     if let Some(rewrite) = rewrite {
         rewrite.wait();
     }
-    // wt:prune rewrites each orchestration's once, after all its removals.
-    Ok(changelog.filter(|_| options.is_fetched).map(|(name, merge)| Pending {
-        name,
-        is_answered: merge != Merge::Unanswered,
-    }))
+    Ok(pending)
 }
 
 #[cfg(test)]
@@ -605,10 +660,10 @@ mod tests {
         assert!(!lists_mr(text, 7));
         assert!(!lists_mr("[!90](u)", 9));
         let main = Path::new("/nowhere/platform");
-        // No changelog yet, no merged MR: rewritten; GitLab silent: left as it is (#306).
-        assert_eq!(merge_of(main, "o", Some(&mrs)), Merge::Missing(Some(9)));
+        // No changelog yet: the merge is missing; no merged MR: nothing to list; GitLab silent: left as it is (#306).
+        assert_eq!(merge_of(main, "o", Some(&mrs)), Merge::Missing(mrs[1].clone()));
         assert_eq!(merge_of(main, "o", None), Merge::Unanswered);
-        assert_eq!(merge_of(main, "o", Some(&mrs[2..])), Merge::Missing(None));
+        assert_eq!(merge_of(main, "o", Some(&mrs[2..])), Merge::Unlisted);
     }
 
     #[test]

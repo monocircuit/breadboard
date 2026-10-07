@@ -19,6 +19,7 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         Ok(next) => next,
         Err(why) => return page.failed(Section::new("NEXT").sticky(), why),
     };
+    let pick = actions::pick_of(model, page.picked());
     page.section(Section::new("NEXT").sticky().plain(), |scene| {
         let label = vec![look::bold("NEXT"), Span::raw("  ")];
         let under = || vec![Span::raw(" ".repeat(LABEL.len()))];
@@ -31,11 +32,17 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             ),
             NextBand::Nothing(text) => look::say(scene, text, theme::dim()),
             NextBand::Action(item) => {
+                // Its digits are keys while nothing is picked with Tab or it is: never two blocks' at once.
+                let is_keyed = pick.keys(item, true);
                 look::gutter(scene, label, under(), |scene| {
-                    actions::action_block(scene, item, ctx, true)
+                    actions::action_block(scene, item, ctx, is_keyed)
                 });
                 // Off the block: a click on the hint does nothing.
-                let hint = actions::hint(item);
+                let hint = match &pick {
+                    actions::Pick::Action { option, .. } if is_keyed => actions::picked_hint(item, option.as_deref()),
+                    _ if is_keyed => actions::hint(item),
+                    _ => vec![],
+                };
                 if !hint.is_empty() {
                     look::gutter(scene, under(), under(), |scene| {
                         let room = scene.width();

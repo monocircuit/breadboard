@@ -6,7 +6,7 @@
 
 mod acts;
 mod diff;
-mod editor;
+pub(super) mod editor;
 mod hunks;
 mod started;
 
@@ -23,7 +23,7 @@ use breadboard_core::herdr;
 use breadboard_core::model::Tree;
 use breadboard_core::model::counted;
 use breadboard_core::model::develop::{Develop, Migrations};
-use breadboard_core::model::files::turbo_prefix;
+use breadboard_core::model::files::{LogTarget, turbo_prefix};
 use breadboard_core::model::tree::{check_fact, mr_state, pipeline_mark, tokens};
 use breadboard_core::model::worktree::{IssueBoxes, PipelineSection, WhereRow, WorktreeModel};
 use breadboard_core::reader::Model;
@@ -35,6 +35,10 @@ use std::path::Path;
 
 /// The labels' column of the tables (WORK, AGENT, migrations).
 const LABEL: u16 = 8;
+/// AGENT's cells: 2 after its widest label, `context` (Node's `table`).
+const AGENT_LABEL: u16 = 9;
+/// Where the lines of a failed job's log start.
+const LOG_AT: u16 = 6;
 /// How many merges DEVELOP names.
 const MERGES: usize = 6;
 
@@ -182,11 +186,18 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
 
 /// A row of a table: its label dim, the cell after it wrapping under itself.
 fn row(scene: &mut Scene<Act>, label: &str, act: Option<Act>, cell: impl FnOnce(&mut Scene<Act>)) {
+    row_at(scene, LABEL, label, act, cell);
+}
+
+/// `row` with its cell at `column`, or 2 after a label wider than that
+/// leaves room for (Node's `table`: `migrations  ⚠ …`).
+fn row_at(scene: &mut Scene<Act>, column: u16, label: &str, act: Option<Act>, cell: impl FnOnce(&mut Scene<Act>)) {
     let draw = |scene: &mut Scene<Act>| {
         scene.indent(0);
         scene.atom(vec![look::dim(label)]);
-        scene.pad_to(LABEL);
-        scene.indent(LABEL);
+        let column = column.max(scene.x() + 2);
+        scene.pad_to(column);
+        scene.indent(column);
         cell(scene);
         scene.indent(0);
         scene.end_line();
@@ -403,7 +414,7 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
         scene.note(state);
     }
     let id8: String = claude.id.chars().take(8).collect();
-    row(scene, "context", None, |scene| {
+    row_at(scene, AGENT_LABEL, "context", None, |scene| {
         let Some(at) = claude.at else {
             scene.text(&format!("{id8} · no answer yet"), theme::dim());
             return;
@@ -434,7 +445,7 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
         look::say(scene, &format!("{model} · {} · {id8}", ago(at, ctx.now)), theme::dim());
         look::ticks(scene);
     });
-    row(scene, "resume", None, |scene| {
+    row_at(scene, AGENT_LABEL, "resume", None, |scene| {
         let cwd = home(&claude.cwd);
         look::say(
             scene,
@@ -442,7 +453,7 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
             theme::dim(),
         );
     });
-    row(scene, "stored", None, |scene| {
+    row_at(scene, AGENT_LABEL, "stored", None, |scene| {
         let stored = claude
             .transcript
             .canonicalize()
@@ -454,7 +465,9 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
             .as_deref()
             .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
         {
-            row(scene, label, None, |scene| look::say(scene, line, Style::new()));
+            row_at(scene, AGENT_LABEL, label, None, |scene| {
+                look::say(scene, line, Style::new())
+            });
         }
     }
 }
@@ -536,50 +549,68 @@ fn jobs(scene: &mut Scene<Act>, pipeline: &PipelineSection, dir: &Path) {
             None => head(scene),
         }
         scene.end_line();
-        for (line, target) in &log.lines {
-            // Turbo's `<package>:<task>: ` dim, the line as the task wrote it after it.
-            let prefix = turbo_prefix(line);
-            let rest = &line[prefix.len()..];
-            // A wrapped line goes on under its text, past its own leading spaces.
-            let lead = (rest.len() - rest.trim_start_matches(' ').len()) as u16;
-            let style = if target.is_some() { Style::new() } else { theme::dim() };
-            let draw = |scene: &mut Scene<Act>| {
-                scene.indent(6);
-                if !prefix.is_empty() {
-                    scene.atom_gap(vec![look::dim(prefix.trim_end())], 0);
-                }
-                // Under the task's text while each of its words fits there whole, else under the prefix.
-                let widest = rest
-                    .split(' ')
-                    .map(|word| Span::raw(word).width() as u16)
-                    .max()
-                    .unwrap_or(0);
-                let at = if prefix.is_empty() { 6 } else { scene.x() + 1 };
-                let at = if at + lead + widest.max(30) <= scene.width() {
-                    at
-                } else {
-                    6
-                };
-                scene.indent(at + lead);
-                if prefix.is_empty() {
-                    spaced(scene, rest, style);
-                } else if !rest.is_empty() {
-                    spaced_gap(scene, rest, style, 1 + lead);
-                }
-                scene.indent(0);
-            };
-            match target {
-                Some(target) => scene.block(
-                    Act::OpenFile {
-                        dir: dir.to_path_buf(),
-                        file: target.file.clone(),
-                        line: target.line,
-                    },
-                    draw,
-                ),
-                None => draw(scene),
+        // The log is one stop of Tab (Enter: nvim at its first problem), each
+        // line that names a file a button to it, as a hunk and its lines.
+        let open = |target: &LogTarget| Act::OpenFile {
+            dir: dir.to_path_buf(),
+            file: target.file.clone(),
+            line: target.line,
+        };
+        let first = log.lines.iter().find_map(|(_, target)| target.as_ref()).map(open);
+        let lines = |scene: &mut Scene<Act>| log_lines(scene, &log.lines, &open);
+        match first {
+            Some(first) => scene.block(first, lines),
+            None => lines(scene),
+        }
+    }
+}
+
+/// The lines of a failed job's log: turbo's prefix dim, a line that names a file a button to it.
+fn log_lines(scene: &mut Scene<Act>, lines: &[(String, Option<LogTarget>)], open: &dyn Fn(&LogTarget) -> Act) {
+    for (line, target) in lines {
+        // Turbo's `<package>:<task>: ` dim, the line as the task wrote it after it.
+        let prefix = turbo_prefix(line);
+        let rest = &line[prefix.len()..];
+        // A wrapped line goes on under its text, past its own leading spaces.
+        let lead = (rest.len() - rest.trim_start_matches(' ').len()) as u16;
+        let style = if target.is_some() { Style::new() } else { theme::dim() };
+        let draw = |scene: &mut Scene<Act>| {
+            scene.indent(LOG_AT);
+            if !prefix.is_empty() {
+                scene.atom_gap(vec![look::dim(prefix.trim_end())], 0);
             }
-            scene.end_line();
+            // Under the task's text while each of its words fits there whole, else under the prefix.
+            let widest = rest
+                .split(' ')
+                .map(|word| Span::raw(word).width() as u16)
+                .max()
+                .unwrap_or(0);
+            let at = if prefix.is_empty() { LOG_AT } else { scene.x() + 1 };
+            let at = if at + lead + widest.max(30) <= scene.width() {
+                at
+            } else {
+                LOG_AT
+            };
+            scene.indent(at + lead);
+            if prefix.is_empty() {
+                spaced(scene, rest, style);
+            } else if !rest.is_empty() {
+                spaced_gap(scene, rest, style, 1 + lead);
+            }
+            scene.indent(0);
+        };
+        match target {
+            Some(target) => {
+                let label = match target.line {
+                    Some(at) => format!("{}:{at}", target.file),
+                    None => target.file.clone(),
+                };
+                hunks::line_button(scene, LOG_AT, label, open(target), draw);
+            }
+            None => {
+                draw(scene);
+                scene.end_line();
+            }
         }
     }
 }
@@ -765,8 +796,9 @@ fn start_button(scene: &mut Scene<Act>, dir: &Path, ctx: &Ctx, state: &State) {
             scene.button("▶ start the stack", Tone::Cyan, start.clone());
             let hint = if ctx.is_once { "pnpm stack:up" } else { "click or u" };
             look::say(scene, hint, theme::dim());
+            // Set apart from the hint, as Node's two spaces.
             if let Some(error) = started.and_then(|started| started.error("stack:up")) {
-                look::say(scene, &error, theme::tone(Tone::Red));
+                say_gap(scene, &error, theme::tone(Tone::Red), 2);
             }
         }
     });
@@ -887,7 +919,7 @@ fn migrations_of(scene: &mut Scene<Act>, migrations: &Migrations, dir: &Path, st
             started => {
                 scene.button("▶ pnpm pg:migrate", Tone::Cyan, migrate.clone());
                 if let Some(error) = started.and_then(|started| started.error("pg:migrate")) {
-                    look::say(scene, &error, theme::tone(Tone::Red));
+                    say_gap(scene, &error, theme::tone(Tone::Red), 2);
                 }
             }
         }
@@ -900,7 +932,6 @@ mod tests {
     use super::*;
     use crate::tui::scene::Target;
     use breadboard_core::model::develop::Merged;
-    use breadboard_core::model::files::LogTarget;
     use breadboard_core::model::worktree::FailedLog;
 
     fn text(scene: &Scene<Act>) -> Vec<String> {
@@ -973,15 +1004,21 @@ mod tests {
             ]
         );
         assert_eq!(act_at(&scene, 3), Some(&Act::Open("https://gitlab/jobs/3".into())));
-        assert_eq!(act_at(&scene, 4), None);
-        assert_eq!(
-            act_at(&scene, 5),
-            Some(&Act::OpenFile {
-                dir: "/w".into(),
-                file: "src/a.test.mjs".into(),
-                line: Some(12),
-            })
-        );
+        let first = Act::OpenFile {
+            dir: "/w".into(),
+            file: "src/a.test.mjs".into(),
+            line: Some(12),
+        };
+        // The log is one stop, its Enter at the first problem; a line naming a file is a button to it.
+        let stops: Vec<&Act> = scene
+            .regions
+            .iter()
+            .filter(|region| !region.is_button())
+            .map(|region| region.action())
+            .collect();
+        assert_eq!(stops, [&Act::Open("https://gitlab/jobs/3".into()), &first]);
+        let button = scene.regions.iter().find(|region| region.is_button()).unwrap();
+        assert_eq!((button.area.x, button.area.y, button.action()), (LOG_AT, 5, &first));
     }
 
     #[test]
@@ -1022,8 +1059,13 @@ mod tests {
             theme::dim()
         );
         // The problem line opens the file named above it.
+        let button = scene
+            .regions
+            .iter()
+            .find(|region| region.is_button() && region.contains(LOG_AT, 3))
+            .map(|region| region.action());
         assert_eq!(
-            act_at(&scene, 3),
+            button,
             Some(&Act::OpenFile {
                 dir: "/w".into(),
                 file: "work/304-overview-pipeline-cuts-its-jobs.md".into(),

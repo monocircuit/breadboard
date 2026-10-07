@@ -8,7 +8,7 @@ mod boxes;
 mod change;
 mod common;
 mod glab;
-mod mr;
+pub(super) mod mr;
 mod note;
 mod tick;
 mod wait;
