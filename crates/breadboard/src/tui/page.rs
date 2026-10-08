@@ -95,6 +95,23 @@ pub enum Ground {
 pub struct Row {
     pub line: Line<'static>,
     pub ground: Ground,
+    /// Goes on with the row before it (a wrapped line): not where something starts.
+    pub is_continued: bool,
+}
+
+impl Row {
+    pub fn new(line: Line<'static>, ground: Ground) -> Self {
+        Self {
+            line,
+            ground,
+            is_continued: false,
+        }
+    }
+
+    /// Nothing on it but spaces.
+    pub fn is_blank(&self) -> bool {
+        self.line.spans.iter().all(|span| span.content.trim().is_empty())
+    }
 }
 
 /// Where a section sits on the page: its title line(s) from `from`, its
@@ -238,7 +255,10 @@ impl<A: Clone> Page<A> {
         let top = part.rows.len() as u16;
         let ground = if is_plain { Ground::Plain } else { Ground::Island };
         part.rows
-            .extend(scene.lines.into_iter().map(|line| margin(line, ground)));
+            .extend(scene.lines.into_iter().enumerate().map(|(i, line)| Row {
+                is_continued: scene.continued.contains(&(i as u16)),
+                ..margin(line, ground)
+            }));
         part.regions.extend(scene.regions.into_iter().map(|mut region| {
             region.area.y += top;
             match region.target {
@@ -254,10 +274,7 @@ impl<A: Clone> Page<A> {
             head: top - from,
             to: part.rows.len() as u16,
         });
-        part.rows.push(Row {
-            line: Line::default(),
-            ground: Ground::Plain,
-        });
+        part.rows.push(Row::new(Line::default(), Ground::Plain));
     }
 
     pub fn finish(self) -> Sheet<A> {
@@ -297,9 +314,9 @@ impl<A> Sheet<A> {
             .map(|placed| placed.to)
             .filter(|&to| to < self.sticky)
             .filter(|&to| {
-                self.rows.get(usize::from(to)).is_some_and(|row| {
-                    row.ground == Ground::Plain && row.line.spans.iter().all(|span| span.content.trim().is_empty())
-                })
+                self.rows
+                    .get(usize::from(to))
+                    .is_some_and(|row| row.ground == Ground::Plain && row.is_blank())
             })
             .collect();
         for &blank in blanks.iter().rev() {
@@ -355,10 +372,7 @@ impl<A> Sheet<A> {
 fn margin(line: Line<'static>, ground: Ground) -> Row {
     let mut spans = vec![Span::raw(" ")];
     spans.extend(line.spans);
-    Row {
-        line: Line::from(spans).style(Style::new()),
-        ground,
-    }
+    Row::new(Line::from(spans).style(Style::new()), ground)
 }
 
 /// Where a failed draw writes its trace, one file per user, as Node's

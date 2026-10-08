@@ -192,7 +192,11 @@ async fn follow_at<C: Future<Output = Option<UnixStream>>>(
                     let Ok(Some(said)) = said else { break };
                     silence.as_mut().reset(tokio::time::Instant::now() + silent);
                     // An empty line: it is there (ALIVE_EVERY).
-                    let Ok(feed) = serde_json::from_str::<Feed>(&said) else { continue };
+                    if said.is_empty() {
+                        continue;
+                    }
+                    // A line it can't read: a daemon of another protocol, never taken for no news.
+                    let Ok(feed) = serde_json::from_str::<Feed>(&said) else { return Followed::Lost };
                     losses = 0;
                     if out.send(feed).is_err() {
                         return Followed::Done;
@@ -365,6 +369,14 @@ mod tests {
             })
         };
         assert_eq!(followed("alive", silent, alive), None);
+        // It says what this overview can't read (another build's feed): read here, not waited on.
+        let other = |mut stream: tokio::net::UnixStream| {
+            tokio::spawn(async move {
+                let _ = stream.write_all(b"{\"Remote\":{\"other\":1}}\n").await;
+                std::future::pending::<()>().await;
+            })
+        };
+        assert_eq!(followed("other", silent, other), Some(Followed::Lost));
     }
 
     #[test]

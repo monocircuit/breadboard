@@ -4,6 +4,397 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-08 23:01 · overview / NEXT and ACTIONS, round 5 · no digit acts on a block the user didn't pick
+Chose: with nothing picked a digit does nothing, NEXT's action included;
+the digits answer only the block picked with Tab (NEXT's own is the first
+Tab stop). NEXT's hint says so before its keys: `tab to it, then 1-2 picks
+that option: typed to its agent`, `tab to it, then 1 looks good: …`; the
+block's options and buttons carry no digits until then. Against: round 4's
+"nothing picked: they answer NEXT's action" (the critic, `src/na5-stray.tmp.mjs`:
+`2 more tests please⏎` typed into the overview by mistake ran `herdr agent
+prompt … #2 decide … → OpenTUI on Bun`, moved #2 to answered[], and left
+the try's `1 looks good 2 broken` keyed for the next stray digit), and a
+digit that lights an option and waits for Enter (two ways to pick a row,
+rule 4). Why: rule 6 (a write into an agent only on a deliberate input),
+the bar (lazygit's single keys act only on the focused item of the panel
+you are in). Rule 3 has nothing to keep: Node has no keys here. New key
+binding: none; the digits keep their meaning on a picked block. Suite:
+`buttons.check.mjs` +1 (`2 more tests please⏎` into the overview: no
+answer in actions.json, no `prompt`/`send-text` to herdr; Node passes).
+Chose: a decide's options are no longer inside the block's click: hover
+on its head or question lights head and text only, each option lights on
+its own (it answers that option; the block opens its space). Why: rule 1
+(a lit area must claim what a click does), the critic.
+Chose: the try's spot after a click keeps Node's two spaces before it in
+every state (`the page opened  :3000/x`, NEXT's UP NEXT row too); it wraps
+whole to the next line where both don't fit. Why: rule 3 (`trySpot`
+after two spaces), the critic: one space read as one sentence.
+Chose: an UP NEXT row whose click did all it does (the stale-plan `order`
+row: the plan written) goes from UP NEXT and NEXT at once, NEXT shows the
+next row still to do, until a read without it (at most 60 s, as a clicked
+answer). Against: drawn until the next read (0.6 s and more). Why: rule
+3 (Node drops it on the click).
+Decided against: keeping a delivered answer's block with `→ <answer> ·
+typed into its agent's pane` once the read has it gone. Why: rule 3
+(Node's `shownAction` draws an answer only while its action is read, so
+Node removes the block at once too), rule 4 (a phantom block outside the
+read); the band's log line confirms it at once, quoted.
+Left to the frame (not this piece's files; no write at stake): at 80x24
+after `j`×5 ACTIONS' pinned title still sits over a try's tail (`a
+terminal: cargo run --release`, `looks good  broken`). A click there no
+longer answers: the frame shows the whole block first and runs nothing
+(view.rs `show_clicked`; probed: actions.json unchanged, the try's head
+back on screen). A block's head kept under the pin is the frame's to
+build. Also the frame's: the scrollbar `┃` in the island's right padding
+and in the blank row after the box.
+Against the release binary: buttons 27/27, content 24/24, hover 3/4 (the
+MR row's, MERGE REQUESTS' piece, in progress). cargo test of actions 19/19
+(new: no digit unpicked, the tab hint, the decide's body without its
+options, the spot's two spaces, the UP NEXT row gone at once), also with
+`env -i`; clippy -D warnings and rustfmt clean in these files.
+
+## 2026-10-08 23:05 · CLI / setup group, round 3 · Ctrl-C stamps no failure, one pane lookup a run, the binary's push guard, a refused claim says so
+Chose: (1) wt:check judges turbo's end only when it wasn't stopped: Ctrl-C
+reaches turbo and wt:check together, turbo dies of the SIGINT and the
+50 ms watcher lost the race, so a stop was stamped `failed` (no failure
+named) and said `✗ wt:check failed`. Now a stop (the flag, or turbo ended
+by SIGINT/SIGTERM) is seen after turbo's end under one lock with the
+watcher: `running` cleared, nothing else written, exit 130, as spec §4
+and Node. Why: rule 3 and the rules' "a wrong fact": the overview showed
+every interrupted check as failed and the hook named a failure with no
+test. Suite: setup `Ctrl-C during wt:check is no failure` (SIGINT to the
+process group mid-turbo; passes against Node); unit `a_stopped_run_is_no_failure`.
+(2) wt:new looks up the pane it runs in once a run (`setup::herdr::
+pane_here`): it asked three times (the orchestration here, the worktree an
+agent leaves, the tab it moves), and when herdr told no shell the
+lifecycle's own memo can't hold "none", so each was a scan of every pane.
+With the lifecycle's 16-at-a-time scan (its round 3): agent wt:new in the
+world's herdr, first line at 0.56 s (was 7.0 s), 96 `pane process-info`
+(was 190; the critic counted 215), done in 1.4 s. Why: rule 7.
+(3) wt:new and wt:mr install the binary's push guard now
+(`cli::write::mr::SHIM` = `herdr::hook::PRE_PUSH_SHIM`, hooks/pre-push):
+the pushing worktree's own binary, the Node hook of a branch from before
+the rewrite, else the main checkout's launcher, else `✗ push refused: no
+push guard`. Node's shim installed by our wt:new needed node at every push
+and switched the #184/#298 guard off in silence (`exit 0`) once src/ goes.
+Same marker, so Node's installer and ours each replace the other's: no
+effect on the live workflow until the cut-over. Against: the 22:23 entry's
+"in the cut-over commit" (one more thing that commit can miss). Why: rule
+8, rule 2 (#298). (4) A claim origin refused is no longer `✓ <branch>
+pushed`: `✓ <branch> not pushed (git push -u origin <branch>), worktree
+ready`; a human's summary says `(from origin/develop, not pushed: git push
+-u origin <branch>)`. Node says `pushed` under its own `! origin refused
+the branch` (a wrong fact, found in this round's probe; not kept).
+(5) `changelog`: a merged MR whose diffs GitLab answered without a file is
+listed under `repo`, not left out: the critic's `Nothing merged in this
+window.` over 42 merges came from the fake GitLab's empty `/diffs`, not
+from the window (ours filters by `merged_at` before reading any diff, the
+42 were inside it). An MR whose diffs failed stays out and is read next
+time, as before. Why: a wrong fact (Node the same). (6) `changelog
+--watch`: a title mark that doesn't fit beside the title is left out whole
+(`] [ 1–9 jump · z Z fold` goes first at 60 columns), never cut into the
+last cell (#304; parity, but a cut line). (7) `changelog:release` counts in
+the singular: `with 1 entry, 1 fragment deleted`.
+Decided, kept: (8) the `.env.local` stack comment says `written by
+breadboard (pnpm wt:new, wt:stack)`, not Node's `written by
+packages/breadboard/src/worktree.mjs`: that file goes with the cut-over,
+and the line is read by people only (no reader in src/, crates/, hooks;
+the variables under it are unchanged, rule 5). Rule 3 deviation, nothing
+lost. (9) The #230 heal writes the tab bar's status as `herdr:install`
+does (the launcher, `sh <plugin>/breadboard.sh --no-wait herdr status`)
+when the package has the launcher, else only the gone path is replaced
+(lifecycle's `plugin::with_status`, its round 3); the user's
+`~/.config/herdr/config.toml` stays read-only and is named with the
+command that writes it (memory ask-before-global-config). (10) wt:check
+still refuses before the plugin check when there is no turbo: `turbo_of`
+takes the worktree's or the main checkout's, so this refusal only comes in
+a repo with no `pnpm install` at all, where wt:new (which installs),
+stack:* and wt:remove heal; a refusal costs no herdr call (01:40, rule 7).
+Suite: setup +2 (Ctrl-C above; `wt:new by an agent in herdr: its own tab
+moves into the new worktree's space`, spec §5.4: herdr told the pane's
+shell and hands back the space, `pane move … --new-tab`, `tab rename`,
+`this tab moved into the space …`; passes against Node, 4 s, and ours,
+2.4 s). Release: setup 31/31, cli 19/19 (+1 todo), lifecycle 12/12;
+Node: setup 22 pass, 6 skipped (rewrite only), 3 todo. cargo test of
+cli::setup, write::mr, herdr::hook 64/64, in a clean env too (the crate
+472/475 there: three tests of tui/overview/worktrees.rs, another piece's
+work in progress). Smallest changes elsewhere: `cli/write/mr.rs` (`SHIM`),
+`herdr/hook.rs` (its `dead_code` allow and doc).
+
+## 2026-10-08 22:58 · overview / worktree view, round 4 · what a click opens scrolls into view; open hunks follow Tab file by file
+Chose: a click or Enter that opens a file's hunks (DIFF, `⚠ also changed
+…`, DEVELOP's `✗ a merge conflicts in …`) answers `Flow::Show`: the frame
+places it as Enter's, the clicked row kept and what opened scrolled into
+view, the row going up no further than the top (`Held::showing`, the
+frame's held block, `place_held`). A click that closes them, or runs
+anything else, still keeps its row under the pointer. Before: every click
+held its row, so a file in the bottom third opened 3 lines on screen and
+the rest under `↓ 33 more` (the critic: README.md in DEVELOP at 120x40;
+now `here` and `on develop` whole, gx-render's 15-line hunk and its develop
+side whole, long.md's three hunks whole under its row). Against: the
+pointer's row kept (a second click at the same cell closes, as Node's
+toggles). Now a second click there hits what moved under it, at worst a
+hunk line, which opens nvim and writes nothing. Why: rule 1 (the critic:
+the click looked as if it did almost nothing), the bar (lazygit shows the
+picked file's diff whole). No scroll code in the view: one `Flow` variant
+(rule 4).
+Chose: a click is the pointer's position: the run loop takes it as a move
+before the click (`hover(Some(x, y))`), and the frame keeps the block the
+click ran on (`View::clicked`) until the pointer moves, so Tab without a
+pick goes on from it even when what the click opened scrolled another
+block under the pointer. Before: only a motion report set it (the critic:
+PgDn, a click on `M long.md`, Tab picked `monolithium/components`, `9 of
+42`; now `18 of 42`, long.md's first hunk, and Enter runs `drop +10`).
+Why: lazygit's click selects the row j/k move from; round 3's entry said
+so and missed terminals that send no move first.
+Chose: hunks that show follow the Tab pick: Tab (or Shift-Tab) onto
+another file's row shows that file's hunks instead, without Tab stops, so
+the next Tab goes to the next file (lazygit's files panel shows the diff
+of whatever row j/k land on). Enter on that row makes them stops (`Tab:
+hunk by hunk`); Enter again closes them, Esc closes them and drops the
+pick. Nothing follows while no hunks show, so Tab through the whole view
+opens nothing on its way. Before: Tab plus Enter per file and a stop per
+open hunk (long.md: 3 Tabs before the next file). Against: a key that
+jumps to the next file row (one more key to learn, Tab still stops on
+every hunk). Why: the bar, rule 4 (Tab stays the one way to move).
+Smallest change in the frame: `App::picked` (default: nothing),
+`View::hold_pick`, run.rs gives a follow's rebuild the pick's held row.
+Chose: the hunks' header names the keys where they act: `Tab: hunk by
+hunk`, followed hunks `Tab: next file · Enter: Tab into its hunks`. Why:
+at 80 columns the band drops `g G scroll · Tab Enter pick a row` (the
+band's piece; its round now drops the pick whole, never `Tab` alone), so
+the header is where a reader of this view learns the keyboard path once a
+click opened a file. Not done here: DIFF's title hint (`click a file: its
+changes …`) still drops at 80 columns, as Node's `fitParts` cuts it (00:30
+entry): the count is the fact, the hint is not.
+Chose: a DIFF file row whose name runs past the counts' column has its
+`+a −r` on the next line, in the columns of every other row, never after
+the name. Supersedes the 00:30 entry's "they follow it while they fit
+beside it". Why: the critic: `A  292-overview-every-agent-has-name.md  +1
+−0` at 80 columns read as broken next to the aligned rows; rule 1 (#304,
+a count reads where its column says).
+Tests: the frame `a_click_that_shows_what_it_opened_scrolls_it_into_view`,
+`tab_after_a_click_goes_on_from_the_clicked_block_wherever_the_pointer_is_now`;
+acts `open_hunks_follow_the_pick_file_by_file_and_enter_makes_them_stops`;
+hunks `hunks_that_follow_the_pick_are_lines_to_click_not_stops_of_tab`; diff
+`a_listed_file_longer_than_the_column_has_its_counts_under_it_in_their_columns`.
+Probed in the critic's rich world (`.claude/gauntlet/tmp/wtv4/`, shots a2–a7):
+120x40 PgDn, a click on README.md in DEVELOP shows both sides whole; a
+click on `M long.md` then Tab picks `18 of 42`; Tab ×4 shows notes.md's
+hunks under the pick, Tab tanstack's reader.ts, Enter makes them stops,
+Tab picks its hunk, Esc closes; 80 columns: every count in its column.
+Suite (release): views, buttons, hover 46/46.
+
+## 2026-10-08 22:50 · cli-lifecycle, round 3 · a wait hangs under its own step; a refusal says how to go on
+Chose: (1) a call that may wait runs as a step that is said only when it
+waits (`proc::as_step`): past 1.5 s its `▸` comes first, then `waiting for
+…, at most N s`, so a wait never hangs under the line before it (the
+critic: `waiting for herdr (workspace list)` under `▸ delete … on origin`
+read as the push hanging). wt:remove: `▸ herdr: close the tabs of
+<feature>` (`close the space` with `--close-space`), `▸ GitLab: is an MR
+open on <branch>? (its claim on origin, when it was merged)`, `▸ GitLab:
+which MR <branch> has`, `▸ git fetch --prune`, the changelog's rewrite;
+the handover: `▸ herdr: is <agent> idle?`, `▸ GitLab: issue #N`, `▸ herdr:
+<agent> into the space <feature>`; the plugin check. A run that doesn't
+wait prints what it printed before. The `/rename` wait says `at most 20 s`
+(2 × 10 s, typed twice). Against: a `▸` before every call (noise on the
+fast path, lazygit says nothing while nothing waits). Why: rule 1 (the
+critic), the bar. Measured (herdr hangs): the step at 1.5 s, the ✓ at
+10.2 s as before.
+(2) The refusal while a claude stands in the worktree names its pid and
+how it ends: `some-agent (claude 4242) still stands in <feature>, handed
+over nowhere: end it (/exit in its tab, or kill 4242) or let it leave the
+folder, then again`; a handed-over one keeps `it enters its next worktree
+…`. Why: rule 3 (Node said `claude <pid>`), the critic.
+(3) A `handover --dry-run` says which brief applies under the next-issue
+line (#247): `with the brief below, no brief of its own`, or `…, the brief
+of <file> | the brief kept for it under ## From the orchestrator`. Why:
+rule 2 (#247).
+(4) The layout lock is a guard (`layout::Held`): a panic inside a layout
+lets go of `$TMPDIR/platform-herdr-layout-<uid>.lock`, else every wt:new,
+overview and wt:herdr waited up to 60 s. Why: the critic, rule 7.
+(5) `wt:action change ""` (or blanks) says one line, `✗ what is the change?
+pnpm wt:action change <what>`, not the 12-line usage (the smallest change
+in `write/action.rs`, `change_text`). Against: Node's usage (rule 3
+deviation, nothing lost: `pnpm wt:action --help` has it). Why: the bar.
+(6) wt:herdr's `#332` pass leaves the tabs it just closed out of its
+order (`keep_order_except`): no `pane move <ws>:p2 --new-tab` of a closed
+tab's pane, whatever a slow herdr (or the static fake) still lists. The
+fake stays as it is (it never was ours to fix there). Measured: wt:herdr
+96 herdr calls (was 117), no `pane move` in calls.jsonl.
+Decided, not changed: a handover whose `/rename` never takes (#313) still
+writes the record's `workers[id].name` as the new feature, with `was` the
+old name, `failed[]` the reason, no `recordStart`. Against: keeping the old
+name until the rename took (the critic's first option): nothing reads the
+session's name back into the record, so once the user types the two lines
+the ✗ names, the record would say the old name for good and `--to <new>`
+would find no agent. The ✗ and `failed[]` say the rename is pending; the
+overview showing `was` for an agent whose last failure is its `/rename` is
+the overview's to decide. Why: rule 5 (the record other sessions read
+stays right once the given lines are typed), rule 4.
+Also in the round: wt:remove refuses a folder its parent doesn't let this
+user delete before anything goes (`failed to delete <dir>: Permission
+denied`; git deleted the files and unregistered it, then failed, the
+branch left behind); `herdr::current_pane` asks the panes' shells 16 at a
+time and remembers the answer for the run; the plugin heal writes the tab
+bar's status as `herdr:install` does.
+Suite: `lifecycle.check.mjs` +1 (critic's item 3: `wt:action change` with
+GitLab refusing the connection in a worktree with an open MR: `✗ … GitLab`,
+not `no MR yet`, the actions untouched; knownBug "to file", Node says `✓
+change requested … (no MR yet)` and exits 0). Not filed from the loop (no
+GitLab writes): the lead files it and puts the number in.
+
+## 2026-10-08 22:34 · herdr-plugin, round 5 · everything that starts the binary on its own goes through herdr/breadboard.sh, which builds it from HEAD first
+Chose: (1) `herdr/breadboard.sh`, a launcher next to the manifest: every
+`[[startup]]`, `[[actions]]` and `[[panes]]` entry of `herdr-plugin.rs.toml`
+runs `["sh", "breadboard.sh", …, "herdr", <action>]` (a program on PATH and
+a file of the plugin's directory, the shape `node run.mjs` had: no reliance
+on how herdr resolves a relative program), the tab bar's status in the
+configs `sh <plugin>/breadboard.sh --no-wait herdr status`, the Stop and
+pre-push shims the main checkout's launcher. It runs
+`target/release/breadboard` of its package, built first (`cargo build
+--release`, progress on stderr: in the popup of a pane) when it is missing
+or older than HEAD: `target/release/breadboard.source` holds `git ls-tree
+HEAD -- crates hooks Cargo.toml Cargo.lock` of the build, so a pull by hand,
+a fast-forward by any command or an upgrade from the Node plugin is seen at
+the next key, never only after `--reload`. `--no-wait` (the tab bar's 3 s,
+an `open` action, the Stop hook's 10 s) never waits: the binary from before
+answers and one build runs behind it (a lock dir, one at a time; sources
+that failed once are not built again behind, a key builds them in front and
+shows why). Missing with no build possible: one line (`breadboard isn't
+built: pnpm build:rs`) in the tab bar instead of a command error every
+10 s, `✗ breadboard can't run until it is built …` for a key. A package
+without Cargo.toml (a world, a shipped binary) runs the binary it has.
+`pnpm herdr` / `--reload` build through the same launcher (`--built`), the
+reload after a pull that moved develop then runs the pulled binary with
+`--pulled`. Against: the manifest running `../target/release/breadboard`
+directly (the critic: every action ENOENT after an upgrade, keys dead with
+no word, the tab bar an error every 10 s; a stale binary after any pull not
+made by `--reload`), and a build in the action/status itself (herdr's
+timeouts; an action's output only reaches `plugin log`). Why: #230's
+acceptance "moving the package again needs no hand work" (rule 2), rule 3
+(Node always ran the pulled source), rule 5 (the manifest and the configs'
+status are read by herdr: the old status forms, `node …/run.mjs status` and
+`…/breadboard herdr status`, are still recognised and rewritten in place).
+What stays outside Rust: this sh file (rule 8: no runtime besides sh, which
+herdr and git already need).
+(2) The cut-over (the lead's commit) must also: move `herdr/cutover/run.mjs`
+to `herdr/run.mjs` and `herdr/cutover/herdr.mjs` to `src/herdr.mjs` when
+src/ goes (thin Node shims that run the launcher: the one Node reload that
+pulls the cut-over re-execs the pulled `src/herdr.mjs --reload --pulled`,
+the old manifest and old tab bar lines call `node run.mjs …` until the
+reload relinks and rewrites them); make the root scripts `"herdr": "sh
+packages/breadboard/herdr/breadboard.sh herdr"` and `"herdr:install": "sh
+packages/breadboard/herdr/breadboard.sh herdr --install"` (a fresh clone
+builds before it runs); rename `herdr-plugin.rs.toml` to
+`herdr-plugin.toml`. The shims go once every checkout has reloaded. Why:
+rule 5 (a reader for the old form), the critic's deadlock (a) and (b).
+(3) Bare `breadboard herdr` started by herdr as a plugin command (any of
+`HERDR_PLUGIN_ID`, `_STATE_DIR`, `_CONTEXT_JSON` set) is refused with the
+usage instead of setting a session up. Why: rule 6 (no window, no attach
+without a deliberate input).
+(4) `--reload`'s `is_overview` no longer splits a one-string command line
+on spaces: `<path with a space>/breadboard overview` is an overview and
+gets its `q`. Why: an overview left on old code with no word is a wrong
+fact (rule 1 of the triage).
+Tests added (unit, next to the code): the launcher (missing/older/fresh,
+no cargo, a failed build, the build behind the tab bar, no sources), the
+cut-over's Node shims (run when node is on PATH; a clean env has none and
+says so), the hooks' shims through a launcher, `pull_develop` (up to date,
+dirty, another branch, fast-forward, diverged), the reload's rerun of the
+pulled build (its exit code, a failed build goes on here), ensureBinary's
+sha256 check (nothing written on a mismatch), the Omarchy edge package of
+a pacman db, `is_overview` with spaces, the plugin command without an
+action. Suite: `plugin.check.mjs`'s manifest check reads the launcher's
+shape (`sh breadboard.sh [--no-wait] herdr …`, every `open` `--no-wait`);
+the world's plugin directory gets `breadboard.sh` with the manifests.
+Not done here: `--here` attaching and the new window's spawn need a real
+terminal and herdr (a unit test covers `terminal_window` only); restore's extra `pane move`s and `no id back` line belong to
+the layout piece (open there); the commands pane's `platform (root)` to the
+commands piece.
+
+## 2026-10-08 23:00 · overview / WORKTREES, round 4 · #332's app and stack act, the merge result and the migrations stand on the node
+Chose: a node's app and stack cells are clicks of their own (#332 takes the
+worktree tab and with it WHERE's and STACK's rows): the app (`● :3007`,
+`○ :3007`, `⇒ :3000`) opens `http://localhost:<port>` in the tab group of
+the worktree's space (WHERE's `openInGroup`, else xdg-open) when it answers
+at the click, else the band says `pnpm dev in products/vita/web starts the
+app of <it>` (`Act::OpenApp`, asked at the click: the dot may be 2 s old);
+an own stack docker told isn't all running reads `▶ stack down` / `▶ stack
+exited` and a click runs `stack:up` detached in that worktree (INIT_CWD,
+`$TMPDIR/overview-stack-<basename>.log`, the actor's `tries::start_stack`,
+the same run the view of everything and a try use), the cell says `◐
+starting …` while it runs, `stack …` once it ended until a docker answer
+read after its end tells (`Run::done_at` against the node's `docker_at`:
+never `▶ stack down` again for the 12 s docker is held), and a failure
+turns the cell red with `✗ the stack didn't start: <why>` under the facts.
+A running, shared, unknown (`…`, `?`) stack is no button: the node's click
+(its space). Each a button region on its words, so hover lights it alone
+inside the lit node. No `u` key here: with many nodes it would have to pick
+one (rule 4, one way: the click on the node's own cell). Against: the cells
+as text only (the critic: the tab #332 removes took the only way to act on
+them), an armed second click (Node started on one click; a start is no
+loss). Why: rule 3 (WHERE's and STACK's clicks), rule 2 (#332).
+Chose: two lines the worktree view alone had stand under a node's facts,
+only where there is something to do: DEVELOP's merge result `✗ a merge of
+develop conflicts in a, b +N more` (red, `git merge-tree`, each name a click
+into that worktree's nvim like the collision line's; read only where a file
+collides with develop: a conflict needs both sides to change it), and
+STACK's migrations `⚠ 2 migrations not applied: 0041_a, 0042_b +N more  ▶
+pnpm pg:migrate` (the button runs it detached in its vita, `◐ migrating …`
+with its log's last line, its error red after it; its end forgets what core
+holds, and the line stays away until a read after it) or `⚠ the database
+doesn't answer: <why>`, asked only where the database runs (its own stack
+all running, or the shared one). A clean merge says it on develop's part of
+the collision line: `⚠ collides with develop, merges cleanly: tree.mjs`; a
+conflicting file is named once, on the red line, not on the yellow one.
+All applied, or no psql or journal: nothing. Against: `✓ merges cleanly`
+and `✓ all N applied` on every node (a row each on every node, the critic's
+80x24 already short), the collision line alone (both sides changed a file
+is not a conflict). Why: rule 3 (DEVELOP's and STACK's lines, now without a
+view of their own), the bar (lazygit marks the exception, not the norm).
+Chose: the migrations are asked apart from git's held facts: core's
+`develop::migrations_held`, at most once in 15 s per worktree or when its
+journal changed (develop.mjs's cache), on every local read of the
+orchestration (`reader::read_orchestration`, beside docker's answer), psql
+with a 3 s connect limit. Against: in `with_orchestration_facts` (held by
+the worktree's git key: a database migrated by hand would never show).
+Why: rule 3 (Node's 15 s), rule 7.
+Chose: a worktree's app counts as up only where a process running in that
+worktree listens on its port (core's `local::is_app_of`, Linux's /proc;
+where /proc can't tell, the port alone as before). Against: anything on
+localhost:<port> (the critic: `●` next to `stack down` in a world whose
+ports the host's own dev servers held). Why: a wrong fact (rule 3's intent:
+WHERE's dot is this checkout's app).
+Chose: why there is no app and no stack (`no .env.local in any worktree: no
+stack, the app can't run there`, the old STACK's words) or why stacks are
+`?` stands on a line of its own under the record, not in the title's note.
+Against: the note (a title wider than its line drops it whole: at 120 with
+`9.9 GB free (shared stack below 1.5 GB)` it was gone). An env-less node
+beside others with one keeps `—  no .env.local`, a shared one `⇒ :3000
+shared`: told apart on the node.
+Not here: (1) Node's #332 design is still not on develop
+(`origin/feature/332-…` has no commit past it, `git log origin/develop
+--grep '#332'` is empty): built from the requirement and the worktree
+view's rows; re-check once it lands. (2) At 80x24 a colliding node is 6
+rows (was 7): its title wraps, and #304 (rule 1) says a title is never cut.
+(3) A click on a colliding file without nvim on the PATH puts `✗ nvim: no
+nvim on the PATH` in the band (21:55's decision): a deliberate click's
+answer goes where every act's goes; DONE keeps what it pushed aside.
+Suite: new `worktrees.check.mjs` (8 checks, `knownBug("#332: …")`, todo
+against Node: 8/8 todo): distance, app and stack as docker tells, the
+collision both ways, the conflict, the app's and the stack's click (not the
+node's), a shared and a running stack keep the node's click, the env-less
+line once. Release: worktrees 8/8, content, hover, isolation 33/33. cargo
+test: worktrees 18/18 (new: the cells' clicks, the stack's start, its wait
+for docker and its failure, the migrations line, the merge result), core's
+held migrations, /proc's listeners.
+Smallest changes outside the piece: `act.rs` (`Act::OpenApp`, `Act::Migrate`
+routed outside the worktree view), `actor/tries.rs` (`migrate`; a stack
+started well is kept with `done_at`), `actor/spawn.rs` (`Run::done_at`),
+`actor/mod.rs` (`migrations`), core's `reader.rs` (the migrations beside
+docker), `local.rs`, `model/develop.rs`, `model/tree.rs`, `model/mod.rs`.
+
 ## 2026-10-07 22:30 · loop · a win is the critic's blind pick and a green suite
 Chose: a piece wins when its critic picks ours blind and the suite's checks
 touching it pass, as the loop's prompt says. Parity and requirement gaps no
@@ -68,8 +459,9 @@ lands); at 80x24 a colliding node is 7 rows.
 
 ## 2026-10-07 22:30 · overview / NEXT and ACTIONS, round 4 · a digit answers the lit block, never another
 Chose: the digit keys follow the Tab pick, as lazygit's keys act only on
-the focused menu and its highlighted row. Nothing picked: they answer NEXT's
-action, as before. An action's block picked (in ACTIONS, or NEXT's own, or
+the focused menu and its highlighted row. Nothing picked: they do nothing
+(since round 5, 2026-10-08 23:01 above; this round still had them answer NEXT's
+action). An action's block picked (in ACTIONS, or NEXT's own, or
 one of a decide's options): they answer that action's own answers (try
 1/2, plan 1/2, decide 1..n, look 1). Anything else picked (the chat, a
 worktree, an UP NEXT row, an MR): a digit does nothing. Against: digits
@@ -1515,7 +1907,9 @@ wt:remove ×2, wt:herdr green, the other wt:* are the CLI piece's.
 
 ## 2026-10-02 09:10 · overview / NEXT, ACTIONS · keys only for answers its agent gets, ✓ says what it does
 Chose: in NEXT the digit keys give only answers that go to the agent (a
-decide's options, a try's or plan's buttons, `done`); the ✓ of a kind
+decide's options, a try's or plan's buttons, `done`), and since
+2026-10-08 only once its block is picked with Tab (a stray digit does
+nothing; see the round-5 entry); the ✓ of a kind
 without answers (merge, change, a decide without options) has no key and
 reads `✓ tick off  takes it off the list · its agent is not told`. Against:
 round 1's `1 ✓` with `press 1 to answer`. Why: rule 3: Node has no keys

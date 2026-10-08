@@ -217,12 +217,14 @@ fn tell(app: &mut Overview, tells: &[Tell], agents: &HashMap<String, Agent>) {
     }
 }
 
-/// A click that sends one line once (`sendOnce`), else its fallback.
+/// A click that sends one line once (`sendOnce`), else its fallback. It goes
+/// to herdr's agent of the worktree's tab whether or not its conversation is
+/// written down (`.claude/herdr-session`): WORKTREES names that agent too, and
+/// the row says a click tells it.
 pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback: Go) {
     if app.actor.auto.in_flight.contains(key) {
         return;
     }
-    let has_agent = app.tree_of(dir).is_some_and(|tree| tree.claude.is_some());
     app.actor.auto.in_flight.insert(key.to_string());
     let (main, dir, key, line) = (
         app.actor.main.clone(),
@@ -231,7 +233,7 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
         line.to_string(),
     );
     app.actor.queue(move || {
-        let is_in = has_agent && herdr::deliver_to(&main, &dir, &line);
+        let is_in = herdr::deliver_to(&main, &dir, &line);
         if is_in {
             mark_sent(&dir, &key);
         }

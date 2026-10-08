@@ -52,6 +52,9 @@ pub struct Scene<A> {
     current: Vec<Span<'static>>,
     x: u16,
     indent: u16,
+    /// The lines that go on with the line before them (a wrap, an atom
+    /// moved down): a page never lands on one, its start would be above.
+    pub(super) continued: Vec<u16>,
     pub(super) note: Option<String>,
     pub(super) redraw_in: Option<Duration>,
 }
@@ -65,6 +68,7 @@ impl<A: Clone> Scene<A> {
             current: vec![],
             x: 0,
             indent: 0,
+            continued: vec![],
             note: None,
             redraw_in: None,
         }
@@ -127,6 +131,7 @@ impl<A: Clone> Scene<A> {
 
     fn wrap(&mut self) {
         self.newline();
+        self.continued.push(self.y());
         self.pad_to(self.start());
     }
 
@@ -183,6 +188,7 @@ impl<A: Clone> Scene<A> {
         }
         if self.x > 0 && self.x + 2 + width > self.width {
             self.newline();
+            self.continued.push(self.y());
         }
         self.pad_to(self.width - width);
         vec![self.put(spans, width)]

@@ -469,6 +469,15 @@ pub fn groups_of(paths: &[String], changesets: &[Changeset]) -> Vec<String> {
     groups
 }
 
+/// The groups a merged MR is listed in: those of what it changed, `repo`
+/// when GitLab named no file of it (an empty diff). Never none: a merged
+/// MR left out of every group made the changelog say `Nothing merged in
+/// this window.` over 42 merges (the critic, round 7).
+fn listed_groups(paths: &[String], changesets: &[Changeset]) -> Vec<String> {
+    let groups = groups_of(paths, changesets);
+    if groups.is_empty() { vec![REPO.into()] } else { groups }
+}
+
 /// The issue of an MR: its branch's number, else one it closes.
 pub fn issue_of(branch: &str, description: &str) -> Option<i64> {
     static BRANCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:feature|fix)/(\d+)-").unwrap());
@@ -890,6 +899,7 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
         .iter()
         .zip(&read)
         .map(|(mr, (iid, change))| {
+            let is_read = change.is_ok();
             let change = change.as_ref().unwrap_or(&nothing);
             let url = str_of(mr, "web_url").unwrap_or_default().to_string();
             let title = str_of(mr, "title").unwrap_or_default();
@@ -912,7 +922,11 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
                 summary: summary_of(str_of(mr, "description").unwrap_or_default(), title),
                 title: untitled(title),
                 merged_at: str_of(mr, "merged_at").unwrap_or_default().to_string(),
-                groups: groups_of(&paths, &changesets),
+                groups: if is_read {
+                    listed_groups(&paths, &changesets)
+                } else {
+                    Vec::new()
+                },
                 changesets,
                 orchestration: orchestrations
                     .iter()
@@ -1048,6 +1062,13 @@ mod tests {
         assert_eq!(since_of("1970-01-02", now), Some(86_400_000));
         assert_eq!(since_of("soon", now), None);
         assert_eq!(since_of("3m", now), None);
+    }
+
+    #[test]
+    fn lists_an_mr_without_files_under_repo() {
+        assert_eq!(listed_groups(&[], &[]), vec![REPO]);
+        assert_eq!(listed_groups(&[".changeset/a.md".into()], &[]), vec![REPO]);
+        assert_eq!(listed_groups(&["packages/x/a.ts".into()], &[]), vec!["packages/x"]);
     }
 
     #[test]

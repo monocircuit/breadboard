@@ -123,6 +123,11 @@ pub fn after_read(app: &mut Overview) {
             .collect(),
         _ => Vec::new(),
     };
+    // GitLab answered: the sidebar's lines say what it said. Before that (or
+    // while it fails) a line would guess, an awaited MR open and no pipeline
+    // (#262: `waits for !309` of a merged !309): none is written, the
+    // lines herdr holds stay.
+    let is_gitlab_in = is_gitlab_in(mrs.as_deref());
     let trees = local.trees.clone();
     let main = app.actor.main.clone();
     let memory = app.actor.sync.memory.clone();
@@ -131,10 +136,12 @@ pub fn after_read(app: &mut Overview) {
     app.actor.queue(move || {
         // Free again however the job ends: a panic costs this tick, not every next one.
         let _free = Free(is_busy);
-        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), &memory);
+        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), is_gitlab_in, is_layout, &memory);
         if is_layout || !stacks.is_empty() {
             // One change of the layout at a time, with wt:herdr and the other overviews.
             let repo = Repo { main: main.clone() };
+            // What the layout's prune removes has no line of its own either.
+            let before = is_layout.then(|| (Leftovers::of(&main), titles(&main)));
             let (lines, journal) = journaled(|| {
                 layout::exclusive(|| {
                     let mut lines = Vec::new();
@@ -150,11 +157,18 @@ pub fn after_read(app: &mut Overview) {
                     lines
                 })
             });
-            // The spaces it opened, by their ids, for its commands.
+            // The spaces it opened, by their ids, for its commands: asked now, never the shared answer from before them.
             if !journal.writes.is_empty() {
-                known.extend(spaces().into_iter().map(|space| (space.id, space.label)));
+                known.extend(
+                    breadboard_core::herdr::spaces_now()
+                        .into_iter()
+                        .map(|space| (space.id, space.label)),
+                );
             }
             logged.extend(said(&lines, &journal, &known));
+            if let Some((before, names)) = before {
+                logged.extend(before.gone(&Leftovers::of(&main), &main, &names));
+            }
         }
         Some(Box::new(move |app: &mut Overview| {
             let keys: HashSet<String> = logged.iter().map(Logged::key).collect();
@@ -180,6 +194,11 @@ pub fn after_read(app: &mut Overview) {
     });
 }
 
+/// Whether the sidebar's lines can be written: GitLab's open MRs are in.
+fn is_gitlab_in(mrs: Option<&[OpenMr]>) -> bool {
+    mrs.is_some()
+}
+
 /// Marks the sync free when dropped, at the end of its job.
 struct Free(Arc<AtomicBool>);
 
@@ -189,13 +208,18 @@ impl Drop for Free {
     }
 }
 
-/// One tick: sessions, chats, the spaces pruned and sorted, the sidebar's
-/// lines, the notifications. What it did, for the log, and the spaces it
-/// read (id → label) for the layout's commands.
+/// One tick: sessions, chats, the spaces pruned and sorted (not when the
+/// whole layout follows, `is_layout`: it prunes and sorts itself, and a
+/// second pass in one tick would close what the first just closed), the
+/// sidebar's lines once GitLab is in (`is_gitlab_in`), the notifications.
+/// What it did, for the log, and the spaces it read (id → label) for the
+/// layout's commands.
 fn tick(
     main: &Path,
     trees: &[Tree],
     mrs: Option<&[OpenMr]>,
+    is_gitlab_in: bool,
+    is_layout: bool,
     memory: &Mutex<Memory>,
 ) -> (Vec<Logged>, HashMap<String, String>) {
     let mut logged = Vec::new();
@@ -211,19 +235,23 @@ fn tick(
     let repo = Repo {
         main: main.to_path_buf(),
     };
-    let before = Leftovers::of(main);
-    let (lines, journal) = journaled(|| {
-        layout::exclusive(|| {
-            let mut lines = layout::prune_spaces(&repo);
-            // Cheap when the order stands: a plan or a handover may have changed it (#255).
-            lines.extend(layout::orchestrations::sort_spaces(&repo));
-            lines
-        })
-    });
-    logged.extend(said(&lines, &journal, &known));
-    logged.extend(before.gone(&Leftovers::of(main), main, &names));
+    if !is_layout {
+        let before = Leftovers::of(main);
+        let (lines, journal) = journaled(|| {
+            layout::exclusive(|| {
+                let mut lines = layout::prune_spaces(&repo);
+                // Cheap when the order stands: a plan or a handover may have changed it (#255).
+                lines.extend(layout::orchestrations::sort_spaces(&repo));
+                lines
+            })
+        });
+        logged.extend(said(&lines, &journal, &known));
+        logged.extend(before.gone(&Leftovers::of(main), main, &names));
+    }
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
-    report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
+    if is_gitlab_in {
+        report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
+    }
     notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut logged);
     (logged, known)
 }
@@ -428,7 +456,8 @@ fn report_states(
         if own.is_empty() {
             continue;
         }
-        let tree = breadboard_core::local::with_orchestration_facts(listed.clone(), &claudes);
+        // git answered from the reader's memo of the worktree while its key holds (daemon round 4).
+        let tree = breadboard_core::reader::with_orchestration_facts_remembered(listed.clone(), &claudes);
         let mr = mrs
             .and_then(|mrs| mrs.iter().find(|(branch, _, _)| *branch == tree.branch))
             .map(|(_, iid, pipeline)| Mr {
@@ -696,6 +725,12 @@ mod tests {
         });
         assert_eq!(gone, [("!5 is merged".to_string(), "done")]);
         assert!(events_of(Some(&seen(false, Some((5, "success")))), &seen(false, None), |_| false).is_empty());
+    }
+
+    #[test]
+    fn writes_no_sidebar_line_before_gitlab_answers() {
+        assert!(!is_gitlab_in(None));
+        assert!(is_gitlab_in(Some(&[])));
     }
 
     #[test]

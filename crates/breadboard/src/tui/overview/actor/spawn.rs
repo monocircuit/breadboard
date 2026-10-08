@@ -18,6 +18,8 @@ pub struct Run {
     pub is_running: bool,
     pub log: Option<PathBuf>,
     pub error: Option<String>,
+    /// When it ended well (ms): what it changed shows once a read after it tells.
+    pub done_at: Option<i64>,
 }
 
 impl Run {

@@ -12,10 +12,16 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// The keys of the views, as the Node overview lists them, and the pick.
-/// Tab and Enter last: a narrow band drops them first, Node's keys stay.
-pub const KEYS: &str =
-    "q quit · r refresh GitLab · click a row · wheel j k ↑↓ PgUp PgDn space g G scroll · Tab Enter pick a row";
+/// The keys of the views as the Node overview lists them: a narrow band
+/// cuts them at a word, as Node does.
+const NODE_KEYS: &str = "q quit · r refresh GitLab · click a row · wheel j k ↑↓ PgUp PgDn space g G scroll";
+
+/// Node's keys and the pick. The parts after Node's are shown whole or not
+/// at all: a narrow band drops them first, never leaving `Tab` or `pick a`.
+pub const KEYS: &str = concat!(
+    "q quit · r refresh GitLab · click a row · wheel j k ↑↓ PgUp PgDn space g G scroll",
+    " · Tab Enter pick a row"
+);
 
 /// What the band says.
 #[derive(Clone, Debug, Default)]
@@ -192,22 +198,40 @@ fn wrapped(spans: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     }
 }
 
-/// The keys' words that fit, from the first, as Node cuts the right side
-/// from its end: a narrow pane drops the last words, never a dangling `·`.
+/// The keys that fit: Node's words from the first, as Node cuts the right
+/// side from its end (never a dangling `·`); the parts added after them
+/// (`Tab Enter pick a row`) only whole, cut at the last ` · ` that fits, as
+/// `fitParts` cuts a heading.
 fn keys_line(keys: &str, width: u16, style: Style) -> Line<'static> {
-    let mut shown = String::new();
-    for word in keys.split(' ') {
-        let next = if shown.is_empty() {
-            word.to_string()
-        } else {
-            format!("{shown} {word}")
-        };
-        if Span::raw(next.as_str()).width() > width as usize {
-            break;
+    let fits = |text: &str| Span::raw(text).width() <= width as usize;
+    let (node, added) = keys
+        .strip_prefix(NODE_KEYS)
+        .map_or((keys, ""), |added| (NODE_KEYS, added));
+    let shown = if fits(node) {
+        let mut shown = node.to_string();
+        for part in added.split(" · ").filter(|part| !part.is_empty()) {
+            let next = format!("{shown} · {part}");
+            if !fits(&next) {
+                break;
+            }
+            shown = next;
         }
-        shown = next;
-    }
-    let shown = shown.trim_end_matches(" ·").to_string();
+        shown
+    } else {
+        let mut shown = String::new();
+        for word in node.split(' ') {
+            let next = if shown.is_empty() {
+                word.to_string()
+            } else {
+                format!("{shown} {word}")
+            };
+            if !fits(&next) {
+                break;
+            }
+            shown = next;
+        }
+        shown.trim_end_matches(" ·").to_string()
+    };
     Line::from(Span::styled(shown, style))
 }
 
@@ -334,6 +358,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_pick_is_shown_whole_or_not_at_all() {
+        let header = Header::new("⇶ breadboard");
+        for width in 30..=140 {
+            let text = text(&lines(&header, "", width));
+            let keys = text[3].trim().trim_end_matches(['▀', '🭭', ' ', '▄', '█']).to_string();
+            let added = keys.split_once(" scroll").map_or("", |(_, added)| added);
+            assert!(
+                added.is_empty() || added == " · Tab Enter pick a row",
+                "{width}: {keys}"
+            );
+            assert!(!keys.ends_with('·') && !keys.ends_with("Tab"), "{width}: {keys}");
+        }
+        let at = |width| text(&lines(&header, "", width))[3].clone();
+        assert!(at(100).contains("space g G scroll  "), "{}", at(100));
+        assert!(at(110).contains("space g G scroll  "), "{}", at(110));
+        assert!(at(86).contains("PgDn space g G  "), "{}", at(86));
     }
 
     #[test]

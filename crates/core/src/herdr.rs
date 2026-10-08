@@ -152,6 +152,16 @@ pub fn spaces() -> Vec<Space> {
     spaces_in(herdr(&["workspace", "list"]))
 }
 
+/// `spaces` asked of herdr by this process, never a shared answer: the read
+/// after a write of the layout (another overview's answer of up to a second
+/// ago lacks the spaces it just opened).
+pub fn spaces_now() -> Vec<Space> {
+    if !is_in_herdr() {
+        return Vec::new();
+    }
+    spaces_in(herdr_here(&["workspace", "list"]))
+}
+
 /// The tabs of a space.
 pub fn tabs_of(workspace: &str) -> Vec<Tab> {
     tabs_in(herdr(&["tab", "list", "--workspace", workspace]))

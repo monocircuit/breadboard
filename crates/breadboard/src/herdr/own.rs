@@ -181,8 +181,8 @@ fn write_own_block_with(
     Ok(true)
 }
 
-/// The tab bar's status in your config: a `node …/run.mjs status` or the
-/// binary of a checkout elsewhere becomes this checkout's binary, in place,
+/// The tab bar's status in your config: a `node …/run.mjs status`, a binary
+/// or a launcher of a checkout elsewhere becomes this checkout's launcher, in place,
 /// the rest of the file byte for byte (#230: a move, or the switch to the
 /// binary, needs no hand work). A block can't add it to your `[ui]`: a
 /// config without one is left alone. Whether it changed.
@@ -198,7 +198,7 @@ pub fn write_own_status(session: &Session, file: &Path) -> Result<bool, Fail> {
     fs::write(file, next).map_err(|error| format!("{shown}: {error}"))?;
     step(&format!(
         "the tab bar's status in {shown} runs {}",
-        session::shown(&session.breadboard())
+        session::shown(&session.launcher())
     ));
     Ok(true)
 }
@@ -367,7 +367,7 @@ mod tests {
 
     // #230: the user's own tab bar line follows the binary, the rest stays.
     #[test]
-    fn moves_your_tab_bars_status_to_the_binary_in_place() {
+    fn moves_your_tab_bars_status_to_the_launcher_in_place() {
         let (dir, session) = scratch("status");
         let status = session.status_command();
         let mine = |command: &str| {
@@ -396,6 +396,18 @@ mod tests {
         assert!(!has_status(&fs::read_to_string(&file).unwrap()));
         assert!(!write_own_status(&session, &dir.0.join("none.toml")).unwrap());
         assert!(!dir.0.join("none.toml").exists());
+    }
+
+    // The Omarchy hint names the edge channel's package only when it loads the plugin.
+    #[test]
+    fn the_edge_package_of_omarchys_database() {
+        let db =
+            |file: &str| format!("%FILENAME%\nomarchy-3.1-1-any.pkg.tar.zst\n\n%FILENAME%\n{file}\n\n%NAME%\nherdr\n");
+        let new = format!("herdr-0.{MIN_MINOR}.2-1-x86_64.pkg.tar.zst");
+        assert_eq!(edge_file_in(&db(&new)), Some(new));
+        let old = format!("herdr-0.{}.9-1-x86_64.pkg.tar.zst", MIN_MINOR - 1);
+        assert_eq!(edge_file_in(&db(&old)), None);
+        assert_eq!(edge_file_in("%FILENAME%\nomarchy-3.1-1-any.pkg.tar.zst\n"), None);
     }
 
     #[test]

@@ -183,12 +183,33 @@ pub fn are_handed_over(left: &[Running], dir: &Path, dirs: &[&Path]) -> bool {
     !left.is_empty() && left.iter().all(|claude| bound.contains(&claude.id))
 }
 
-/// `244-x`, `244-x, claude 1234`: the claudes left_in found.
+/// `244-x (claude 1234)`, `claude 1234`: the claudes left_in found, each
+/// with the process that ends it (today's named an unnamed one only by it).
 pub fn left_text(left: &[Running]) -> String {
     left.iter()
-        .map(|claude| claude.name.clone().unwrap_or_else(|| format!("claude {}", claude.pid)))
+        .map(|claude| match &claude.name {
+            Some(name) => format!("{name} (claude {})", claude.pid),
+            None => format!("claude {}", claude.pid),
+        })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Why wt:remove refuses `feature` while the claudes `left` stand in it, and
+/// how it goes on: a handed-over one leaves by itself, any other is ended or
+/// leaves by hand.
+pub fn left_refusal(left: &[Running], feature: &str, is_handed_over: bool) -> String {
+    let who = left_text(left);
+    if is_handed_over {
+        return format!(
+            "{who} still stands in {feature}: it enters its next worktree, or as a free agent the orchestration's checkout; again once it left"
+        );
+    }
+    let pids: Vec<String> = left.iter().map(|claude| claude.pid.to_string()).collect();
+    format!(
+        "{who} still stands in {feature}, handed over nowhere: end it (/exit in its tab, or kill {}) or let it leave the folder, then again",
+        pids.join(" ")
+    )
 }
 
 /// The directory `claude --resume` finds a conversation from: the last one
@@ -364,6 +385,19 @@ mod tests {
         let left = left_in(Path::new("/r/p-4"), &claudes, Some("a"));
         assert_eq!(left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
         assert_eq!(left_text(&left), "claude 1");
+        let named = [Running {
+            pid: 4242,
+            id: "s".into(),
+            name: Some("some-agent".into()),
+            cwd: "/r/p-4".into(),
+        }];
+        assert_eq!(
+            left_refusal(&named, "4-x", false),
+            "some-agent (claude 4242) still stands in 4-x, handed over nowhere: end it (/exit in its tab, or kill 4242) or let it leave the folder, then again"
+        );
+        assert!(
+            left_refusal(&left, "4-x", true).starts_with("claude 1 still stands in 4-x: it enters its next worktree")
+        );
         // Bound nowhere else: not on its way anywhere.
         assert!(!are_handed_over(
             &left,

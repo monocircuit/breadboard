@@ -239,6 +239,16 @@ fn written(result: std::io::Result<impl Sized>, file: &std::path::Path) -> Resul
         .map_err(|error| format!("{} could not be written: {error}", file.display()))
 }
 
+/// The text of `wt:action change`; without one a line that says only what
+/// is missing, not the whole usage (the critic, by lazygit's bar).
+fn change_text(argv: &Argv) -> Result<String, String> {
+    let text = text_of(argv);
+    if text.trim().is_empty() {
+        return Err("what is the change? pnpm wt:action change <what>".into());
+    }
+    Ok(text)
+}
+
 pub fn run(argv: &Argv) -> Outcome {
     // Refused before anything is written: Node dropped a flag it didn't know and posted.
     if argv.check(&TAKES)? {
@@ -251,11 +261,7 @@ pub fn run(argv: &Argv) -> Outcome {
     };
     let here = Here::find();
     if kind == Some("change") {
-        let text = text_of(argv);
-        if text.is_empty() {
-            return Err(USAGE.into());
-        }
-        return change::run(argv, &here, &text);
+        return change::run(argv, &here, &change_text(argv)?);
     }
     let (file, name) = where_of(argv, &here)?;
     intact(&file, &here)?;
@@ -471,6 +477,17 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn a_change_without_text_says_only_that() {
+        let empty = change_text(&Argv(&args(&["change", " ", "--mr", "!3"])));
+        assert_eq!(
+            empty,
+            Err("what is the change? pnpm wt:action change <what>".to_string())
+        );
+        let given = change_text(&Argv(&args(&["change", "rename", "it"])));
+        assert_eq!(given.as_deref(), Ok("rename it"));
     }
 
     #[test]

@@ -274,6 +274,8 @@ pub struct Folds {
     /// The view of everything: every open MR, every issue, past what fits the pane.
     pub is_every_mr_shown: bool,
     pub is_every_issue_shown: bool,
+    /// DONE: every entry's command under it, not only a failed one's.
+    pub is_every_command_shown: bool,
 }
 
 /// What every section knows besides its model.
@@ -479,6 +481,10 @@ impl App for Overview {
             Input::Click(action) => act::act(self, action),
             Input::Key(key, picked) => act::key(self, key, picked.as_ref()),
         }
+    }
+
+    fn picked(&mut self, picked: Option<&Act>) -> Flow {
+        worktree_view::picked(self, picked)
     }
 }
 

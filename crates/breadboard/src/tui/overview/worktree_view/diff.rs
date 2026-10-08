@@ -260,8 +260,8 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&S
 /// The total, then the biggest areas as a table, an area's files under it
 /// when it has more than one (lazygit's files panel), the rest summed up.
 /// The name column fits the area names and the files' paths while the bars
-/// keep `MIN_BAR`; the counts follow a path longer than it while they fit
-/// beside it, else they go on the next line, in their columns. An area of
+/// keep `MIN_BAR`; a path longer than it has its counts on the next line,
+/// in their columns. An area of
 /// one file names it after its bar when the name fits there whole, else
 /// under it as a file row with its counts, as any listed file: nothing
 /// breaks a name.
@@ -535,21 +535,17 @@ impl Columns {
 
 /// `+a  −r` in their columns, the line ready for what follows them, of
 /// which `after` columns stay on the counts' line. A name that ran past the
-/// counts' column has them after it while they and `after` fit there, else
-/// on the next line, in their column: no line holds a name alone.
+/// counts' column has them on the next line, in their columns, so every
+/// row's counts line up (not after the name, where they read as broken).
 fn counts(scene: &mut Scene<Act>, columns: &Columns, added: u64, removed: u64, after: u16) {
     let (plus, minus) = (added_span(added), removed_span(removed));
     let minus_width = minus.width() as u16;
-    // A name past the counts' column: they follow it while they fit beside it, else the next line.
-    let need = 2 + plus.width() as u16 + 2 + minus_width + after;
-    let is_past = scene.x() + 2 > columns.plus;
-    let is_beside = is_past && scene.x() + need <= scene.width();
-    if is_past && !is_beside && columns.plus < scene.width() {
+    if scene.x() + 2 > columns.plus && columns.plus < scene.width() {
         scene.newline();
     }
     scene.pad_to(columns.plus);
     scene.indent(columns.plus);
-    scene.atom_gap(vec![plus], if is_beside { 2 } else { 0 });
+    scene.atom_gap(vec![plus], 0);
     columns.to(scene, columns.minus, minus_width + after);
     scene.atom_gap(vec![minus], 0);
     columns.to(scene, columns.bar, after.saturating_sub(2));
@@ -876,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn a_listed_file_always_has_its_counts_beside_it_when_they_fit() {
+    fn a_listed_file_longer_than_the_column_has_its_counts_under_it_in_their_columns() {
         let long = "packages/breadboard/crates/tui/a-very-long-file-name-that-wraps.rs";
         let areas = vec![
             area_of(
@@ -911,9 +907,11 @@ mod tests {
                 "  ?  render.mjs      +40  −0  uncommitted",
                 "  ?  files.mjs       +12  −0  uncommitted",
                 "breadboard/crates    +9   −0  ████                      1 file",
-                "  ?  a-very-long-file-name-that-wraps.rs  +9  −0  uncommitted",
+                "  ?  a-very-long-file-name-that-wraps.rs",
+                "                     +9   −0  uncommitted",
                 "work                 +2   −0  █                         2 files",
-                "  A  304-overview-pipeline-cuts-its-jobs.md  +1  −0",
+                "  A  304-overview-pipeline-cuts-its-jobs.md",
+                "                     +1   −0",
                 "  ?  315-a.md        +1   −0  uncommitted",
             ]
         );

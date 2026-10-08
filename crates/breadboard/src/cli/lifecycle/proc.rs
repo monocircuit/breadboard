@@ -3,6 +3,7 @@
 //! whose output streams through.
 
 use breadboard_core::git::Out;
+use std::cell::RefCell;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitCode, Output, Stdio};
@@ -71,8 +72,10 @@ pub fn finish(done: Done) -> ExitCode {
     }
 }
 
-/// `▸ <message>` after a blank line: what the command does next.
+/// `▸ <message>` after a blank line: what the command does next. A wait
+/// after it hangs under it: the pending step of `as_step` is said no more.
 pub fn step(message: &str) {
+    PENDING_STEP.take();
     println!("\n{} {message}", paint(tone::STEP, "▸"));
 }
 
@@ -157,12 +160,42 @@ pub fn say_waits() {
     IS_SAYING_WAITS.store(true, Ordering::Relaxed);
 }
 
-/// `line` on stdout at once, when this process says its waits.
+thread_local! {
+    /// The step of the calls running now that is said only when one of them
+    /// waits (`as_step`): a wait hangs under the step it belongs to, never
+    /// under the line before it (the critic: `waiting for herdr (workspace
+    /// list)` under `▸ delete … on origin` read as the push hanging). Per
+    /// thread: a wait is said on the thread that waits.
+    static PENDING_STEP: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// `line` on stdout at once, when this process says its waits: the pending
+/// step first, once.
 pub fn say_wait(line: &str) {
     if IS_SAYING_WAITS.load(Ordering::Relaxed) {
-        println!("{line}");
+        let pending = PENDING_STEP.take();
+        print!("{}", wait_text(pending.as_deref(), line));
         let _ = std::io::stdout().flush();
     }
+}
+
+/// What a wait prints: its pending step (`▸ …` after a blank line, as
+/// [`step`]), then its line.
+fn wait_text(pending: Option<&str>, line: &str) -> String {
+    match pending {
+        Some(message) => format!("\n{} {message}\n{line}\n", paint(tone::STEP, "▸")),
+        None => format!("{line}\n"),
+    }
+}
+
+/// `run` as the step `message`, which is said only when a call in it waits
+/// longer than [`NOTICE`] (before its `waiting for …`): a run that doesn't
+/// wait prints what today's printed, one that waits says what for.
+pub fn as_step<T>(message: &str, run: impl FnOnce() -> T) -> T {
+    let outer = PENDING_STEP.replace(Some(message.to_string()));
+    let result = run();
+    PENDING_STEP.set(outer);
+    result
 }
 
 /// How long a command may be silent before it says what it waits for.
@@ -336,6 +369,27 @@ mod tests {
             Wait::new("GitLab (the MRs of fix/3-x)", Duration::from_secs(15)).line(),
             "  waiting for GitLab (the MRs of fix/3-x), at most 15 s"
         );
+    }
+
+    #[test]
+    fn a_wait_says_its_step_first_once() {
+        let line = "  waiting for herdr (workspace list), at most 10 s";
+        assert_eq!(wait_text(None, line), format!("{line}\n"));
+        let said = wait_text(Some("herdr: close the tabs of 303-x"), line);
+        assert!(said.starts_with('\n') && said.ends_with(&format!(" herdr: close the tabs of 303-x\n{line}\n")));
+        // Pending only inside its run, the outer one back after an inner one.
+        let pending = || PENDING_STEP.with_borrow(Clone::clone);
+        as_step("outer", || {
+            assert_eq!(pending().as_deref(), Some("outer"));
+            as_step("inner", || assert_eq!(pending().as_deref(), Some("inner")));
+            assert_eq!(pending().as_deref(), Some("outer"));
+        });
+        assert_eq!(pending(), None);
+        // A step said in it is where a later wait hangs: the pending one goes.
+        as_step("outer", || {
+            step("said");
+            assert_eq!(pending(), None);
+        });
     }
 
     #[test]

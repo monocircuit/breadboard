@@ -2,13 +2,13 @@
 //! where a checkout's space is; and what may close in them.
 
 use super::super::claude::{bound_session, is_conversation_running, session_cwd};
-use super::super::herdr::{self, call, did, has_agent, s};
+use super::super::herdr::{self, did, has_agent, s};
 use super::super::proc::{quote, text};
 use super::super::repo::Repo;
 use super::nvim::{can_edit, editor_command, ide_flag, ide_for};
 use super::tabs::{
     CHANGELOG, EDITOR, OVERVIEW, ROOT, View, Want, drop_duplicates, ensure_space, ensure_tab, ensure_worktree_space,
-    idle_pane_of, keep_order, mark_branch, overall_changelog_command, overview_command,
+    idle_pane_of, keep_order, keep_order_except, mark_branch, overall_changelog_command, overview_command,
 };
 use breadboard_core::record::{self, SPACE};
 use serde_json::Value;
@@ -111,8 +111,9 @@ pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume
     let tabs = herdr::tabs_of(&workspace);
     // An orchestration's worktree shows in its orchestration's overview: no tab of its own (#332).
     let is_orchestrated = record::is_orchestrated(&repo.main, dir);
+    let mut closed = Vec::new();
     if is_orchestrated {
-        close_overview(&workspace, &tabs);
+        closed = close_overview(&workspace, &tabs);
     } else {
         ensure_tab(
             &workspace,
@@ -152,7 +153,8 @@ pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume
     if should_resume {
         resume_session(repo, dir, &workspace);
     }
-    keep_order(&workspace, &tab_order(is_orchestrated, &feature));
+    // A tab closed here is out of the order, whatever a slow herdr still lists.
+    keep_order_except(&workspace, &tab_order(is_orchestrated, &feature), &closed);
     Some(workspace)
 }
 
@@ -167,16 +169,19 @@ pub fn tab_order(is_orchestrated: bool, feature: &str) -> Vec<&str> {
 
 /// The `overview` tab an orchestrated worktree's space had before #332 closes,
 /// unless something else runs there (a second pane, an agent, this command).
-fn close_overview(workspace: &str, tabs: &[Value]) {
+/// The ids of the tabs herdr closed.
+fn close_overview(workspace: &str, tabs: &[Value]) -> Vec<String> {
     let olds: Vec<&Value> = tabs.iter().filter(|tab| s(tab, "label") == OVERVIEW).collect();
     if olds.is_empty() {
-        return;
+        return Vec::new();
     }
     let panes = herdr::panes_of(workspace);
     let current = herdr::current_pane();
-    for tab in olds.into_iter().filter(|tab| !is_busy(tab, &panes, current.as_ref())) {
-        call(&["tab", "close", s(tab, "tab_id")]);
-    }
+    olds.into_iter()
+        .filter(|tab| !is_busy(tab, &panes, current.as_ref()))
+        .filter(|tab| did(&["tab", "close", s(tab, "tab_id")]))
+        .map(|tab| s(tab, "tab_id").to_string())
+        .collect()
 }
 
 /// After a restart: the conversation bound to the space runs again in its

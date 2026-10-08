@@ -17,7 +17,7 @@ use super::herdr::{self, call, did, id_at, s};
 use super::layout::spaces::space_of;
 use super::layout::tabs::{EDITOR, OVERVIEW, ROOT, drop_duplicates, keep_order};
 use super::plugin;
-use super::proc::{Done, Fail, Wait, done, exe, fail, output_within, step, text};
+use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
@@ -258,8 +258,10 @@ fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
 /// why it can't be read (orchestrator.mjs `readIssue`).
 pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     let number: String = arg.chars().take_while(char::is_ascii_digit).collect();
-    let found = gitlab::view(&repo.main, &["issue", "view", &number], &format!("issue #{number}"))
-        .map_err(|unread| unread_issue(&number, unread))?;
+    let found = as_step(&format!("GitLab: issue #{number}"), || {
+        gitlab::view(&repo.main, &["issue", "view", &number], &format!("issue #{number}"))
+    })
+    .map_err(|unread| unread_issue(&number, unread))?;
     let title = str_of(&found, "title").unwrap_or_default().to_string();
     let feature = if number == arg {
         format!("{number}-{}", slug_of(&title))
@@ -762,6 +764,15 @@ pub fn wait_renamed(feature: &str, wait: Duration, name_now: impl Fn() -> Option
     }
 }
 
+/// The step said while a `/rename` is waited for: the longest it can take,
+/// as every other wait says it.
+fn rename_wait_line(rename: &str) -> String {
+    format!(
+        "{rename} typed, waiting for its session to show the name, at most {} s",
+        2 * RENAME_WAIT.as_secs()
+    )
+}
+
 /// Whether and how the agent was told.
 #[derive(Debug, PartialEq)]
 enum Told {
@@ -781,9 +792,9 @@ fn tell(pane: &str, worker: &Worker, issue: &Issue) -> Told {
         return Told::No;
     }
     let name_now = || session_name(&worker.id);
-    // Said at once: the wait may take its whole 2 × RENAME_WAIT.
+    // Said at once, with how long: the wait may take its whole 2 × RENAME_WAIT.
     if name_now().is_some_and(|now| now != issue.feature) {
-        step(&format!("{rename} typed, waiting for its session to show the name"));
+        step(&rename_wait_line(&rename));
     }
     let mut renamed = wait_renamed(&issue.feature, RENAME_WAIT, name_now);
     if let Renamed::No(now) = &renamed {
@@ -862,6 +873,8 @@ pub struct Request<'a> {
     pub peer: Option<String>,
     /// The text of this run's `--brief`; without one the issue's kept brief.
     pub extra: Option<String>,
+    /// The file of this run's `--brief`, for what a dry run says.
+    pub brief_file: Option<&'a str>,
     pub is_shared: bool,
     pub is_dry: bool,
 }
@@ -957,6 +970,7 @@ pub fn command(args: &Args) -> Done {
             limit: args.value("--limit"),
             peer: peer.map(String::from),
             extra,
+            brief_file,
             is_shared: args.has("--shared"),
             is_dry,
         },
@@ -1012,15 +1026,31 @@ pub struct Given<'a> {
 /// What an announced handover will start with, for its dry run and its ✓:
 /// the brief and the peer, given now or kept from before.
 fn announced_with(given: &Given, raw: &Value, number: i64) -> String {
-    let brief = match given.brief {
-        Some((file, _)) => format!("the brief of {file}"),
-        None if !kept_brief(raw, number).is_empty() => "the brief kept for it".into(),
-        None => "no brief of its own".into(),
-    };
+    let brief = brief_source(given.brief.map(|(file, _)| file), raw, number);
     let peer = peer_of(given.peer, raw, number)
         .map(|peer| format!(", peer {peer}"))
         .unwrap_or_default();
     format!("{brief}{peer}")
+}
+
+/// Which brief of its own the issue `number` starts with (#247): this run's
+/// `--brief` file, the one kept for it, or none.
+fn brief_source(file: Option<&str>, raw: &Value, number: i64) -> String {
+    match file {
+        Some(file) => format!("the brief of {file}"),
+        None if !kept_brief(raw, number).trim().is_empty() => "the brief kept for it".into(),
+        None => "no brief of its own".into(),
+    }
+}
+
+/// What a dry run says under the next-issue line: the brief below, and which
+/// brief of its own is in it (#247; without one the section is left out).
+fn dry_brief_line(source: &str) -> String {
+    if source.starts_with("no ") {
+        format!("  with the brief below, {source}")
+    } else {
+        format!("  with the brief below, {source} under ## From the orchestrator")
+    }
 }
 
 /// `<label> has no agent <who>; its agents: …`.
@@ -1059,7 +1089,9 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         return Err(no_agent(&label, request.to, &workers));
     };
     // herdr hung or failed: no refusal of the agent, nothing read or written further.
-    let pane = pane_of_conversation(&worker.id).map_err(|why| herdr_unanswered(&why, &worker.name))?;
+    let idle = format!("herdr: is {} idle?", worker.name);
+    let pane =
+        as_step(&idle, || pane_of_conversation(&worker.id)).map_err(|why| herdr_unanswered(&why, &worker.name))?;
     let share = context_share_of(&worker.id);
     let refusal = refusal_of(pane.as_ref(), share, limit);
     let issue = read_issue(repo, request.issue)?;
@@ -1124,9 +1156,16 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     );
     if request.is_dry {
         step(&format!("nothing was done (--dry-run). {} would get", worker.name));
+        // An empty one adds no section either.
+        let source = if extra.trim().is_empty() {
+            "no brief of its own".to_string()
+        } else {
+            brief_source(request.brief_file, &raw, number)
+        };
         println!(
-            "  {}\n  with the brief\n",
-            next_issue_line(number, &issue.feature, &issue.dir)
+            "  {}\n{}\n",
+            next_issue_line(number, &issue.feature, &issue.dir),
+            dry_brief_line(&source)
         );
         println!("{brief}");
         return Ok(());
@@ -1156,7 +1195,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     } else {
         ""
     };
-    let pane = match pane_of_conversation(&worker.id) {
+    let pane = match as_step(&idle, || pane_of_conversation(&worker.id)) {
         Ok(pane) => pane,
         Err(why) => {
             // Not the agent's failure: its history stays as it was.
@@ -1185,7 +1224,10 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
-    let (is_moved, told) = move_worker(repo, &worker, &pane, &issue);
+    let (is_moved, told) = as_step(
+        &format!("herdr: {} into the space {}", worker.name, issue.feature),
+        || move_worker(repo, &worker, &pane, &issue),
+    );
     record_handover(repo, name, &worker, &issue, !matches!(told, Told::NotRenamed(_)));
     let _ = record::write_record(&repo.main, name, &[record_entry(&issue, None)]);
     claim.release();
@@ -1477,6 +1519,22 @@ mod tests {
     }
 
     #[test]
+    fn a_dry_run_says_which_brief_applies() {
+        let raw = json!({ "briefs": { "5": "mind the cache" } });
+        assert_eq!(brief_source(Some("b.md"), &raw, 9), "the brief of b.md");
+        assert_eq!(brief_source(None, &raw, 5), "the brief kept for it");
+        assert_eq!(brief_source(None, &raw, 9), "no brief of its own");
+        assert_eq!(
+            dry_brief_line("no brief of its own"),
+            "  with the brief below, no brief of its own"
+        );
+        assert_eq!(
+            dry_brief_line("the brief kept for it"),
+            "  with the brief below, the brief kept for it under ## From the orchestrator"
+        );
+    }
+
+    #[test]
     fn a_brief_is_kept_per_issue() {
         let raw = json!({ "brief": "old for all", "briefs": { "12": "for #12" } });
         assert_eq!(kept_brief(&raw, 12), "for #12");
@@ -1502,6 +1560,11 @@ mod tests {
             Renamed::No("old".into())
         );
         assert_eq!(wait_renamed("7-x", Duration::ZERO, || None), Renamed::Unknown);
+        // The step says how long it can take: typed twice, each waited for.
+        assert_eq!(
+            rename_wait_line("/rename 7-x"),
+            "/rename 7-x typed, waiting for its session to show the name, at most 20 s"
+        );
     }
 
     #[test]

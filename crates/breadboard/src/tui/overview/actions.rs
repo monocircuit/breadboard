@@ -41,24 +41,49 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     let in_next = in_next(model).map(|item| item.key.as_str());
     let pick = pick_of(model, page.picked());
     page.section("ACTIONS", |scene| actions(scene, section, in_next, &pick, ctx));
-    if !section.up_next.is_empty() {
+    forget_done(&section.up_next);
+    let up_next: Vec<&Item> = section.up_next.iter().filter(|item| !is_done(item)).collect();
+    if !up_next.is_empty() {
         page.section("UP NEXT", |scene| {
             scene.note(format!(
                 "{} automatic · a click does it, each goes by itself",
-                section.up_next.len()
+                up_next.len()
             ));
-            for item in &section.up_next {
+            for item in up_next {
                 up_next_row(scene, item, ctx);
             }
         });
     }
 }
 
+/// The rows of UP NEXT whose click did all they do (the plan written):
+/// gone from the click on, as an answer shows at once, until a read has
+/// them gone, at most CLICKED_FOR.
+static DONE: LazyLock<Mutex<Vec<(Go, Instant)>>> = LazyLock::new(Mutex::default);
+
+/// The row that does `go` did it: it goes at once (`act`, the plan written).
+pub fn did(go: &Go) {
+    locked(&DONE).push((go.clone(), Instant::now()));
+}
+
+/// Whether `item`'s click did it and a read hasn't caught up.
+pub fn is_done(item: &Item) -> bool {
+    locked(&DONE)
+        .iter()
+        .any(|(go, at)| *go == item.go && at.elapsed() <= CLICKED_FOR)
+}
+
+/// A read without the rows: their record goes, so the same row read again later shows.
+fn forget_done(up_next: &[Item]) {
+    locked(&DONE).retain(|(go, at)| at.elapsed() <= CLICKED_FOR && up_next.iter().any(|item| item.go == *go));
+}
+
 /// What Tab picked, as the digit keys see it (lazygit: keys act on the
 /// focused menu and its highlighted row, never on another).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Pick {
-    /// Nothing: the digits answer what NEXT shows.
+    /// Nothing: the digits do nothing. A stray keystroke (`2 more tests
+    /// please⏎` typed into the wrong pane) never answers NEXT's action.
     #[default]
     Nothing,
     /// An action's block, or one of a decide's options (`option`, its answer):
@@ -69,12 +94,11 @@ pub enum Pick {
 }
 
 impl Pick {
-    /// Whether the digits answer `item`: it is picked, or it is NEXT's and nothing is.
-    pub fn keys(&self, item: &Item, is_in_next: bool) -> bool {
+    /// Whether the digits answer `item`: only when it is picked with Tab.
+    pub fn keys(&self, item: &Item) -> bool {
         match self {
-            Pick::Nothing => is_in_next,
             Pick::Action { key, .. } => *key == item.key,
-            Pick::Other => false,
+            Pick::Nothing | Pick::Other => false,
         }
     }
 
@@ -143,7 +167,7 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&st
         }
         if in_next == Some(item.key.as_str()) {
             shown_in_next(scene, item, ctx);
-        } else if pick.keys(item, false) {
+        } else if pick.keys(item) {
             action_block(scene, item, ctx, true);
             let hint = picked_hint(item, pick.option_of(item));
             if !hint.is_empty() {
@@ -229,8 +253,10 @@ fn note_of(items: &[Item]) -> String {
     if !rest.is_empty() {
         parts.push(format!("a click on the rest {rest}"));
     }
+    // Node's `auto ones go by themselves` read as "they run by themselves",
+    // wrong next to a merge that takes two clicks: an auto row leaves once its cause is gone.
     if items.iter().any(|item| item.is_auto) {
-        parts.push("auto ones go by themselves".into());
+        parts.push("auto ones leave once done".into());
     }
     parts.join(" · ")
 }
@@ -280,6 +306,9 @@ fn cleared(blockers: &[String]) -> String {
     for blocker in blockers {
         let text = match blocker.as_str() {
             "GitLab is checking" => "GitLab has checked it".to_string(),
+            // GitLab's own `draft_status` on an MR no longer marked draft (after
+            // its agent posted the merge and it was marked ready): not the agent's to do.
+            "draft" => "GitLab no longer calls it a draft".to_string(),
             _ => once_text(std::slice::from_ref(blocker)),
         };
         if text == *blocker {
@@ -358,16 +387,38 @@ fn head(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_chip_auto: bool) {
 
 /// An action as its block (action-block.mjs): the head, its text, its
 /// answers. `is_keyed`: the one whose answers the digit keys give too
-/// (`key`): the block picked with Tab, else NEXT's.
+/// (`key`): the block picked with Tab. A decide's options sit under the
+/// block, not in it: each is a block of its own that answers, so hover on
+/// the question never lights them as if they did the block's click.
 pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_keyed: bool) {
+    let is_menu = !menu_of(item).is_empty();
     let draw = |scene: &mut Scene<Act>| {
         head(scene, item, ctx, true);
         text(scene, item, ctx);
-        answers(scene, item, is_keyed);
+        if !is_menu {
+            answers(scene, item, is_keyed);
+        }
     };
     match click_of(item) {
         Some(act) => scene.block(act, draw),
         None => draw(scene),
+    }
+    if is_menu {
+        answers(scene, item, is_keyed);
+    }
+}
+
+/// The options a decide is drawn with as a menu: none once answered, for an
+/// automatic item, or without a file to store the answer in.
+fn menu_of(item: &Item) -> Vec<stored::DecideOption> {
+    match (&item.action, &item.file) {
+        (Some(action), Some(_)) if action.kind == "decide" && !item.is_auto && !item.is_waiting() => {
+            if shown_answer(item).is_some() {
+                return vec![];
+            }
+            stored::options_of(action)
+        }
+        _ => vec![],
     }
 }
 
@@ -409,7 +460,7 @@ fn text(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
             lines(scene, rest.trim(), theme::dim());
         }
     } else if let Some(word) = actor::view::word(ctx, &item.key) {
-        look::flow(scene, &look::spans(word));
+        flow_spaced(scene, &look::spans(word), 1);
     } else if let Some(offer) = &item.merge {
         scene.atom(vec![look::span(format!("!{}", offer.iid), Style::new())]);
         merge_text(scene, &item.text, offer);
@@ -422,6 +473,26 @@ fn text(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
         }
     }
     scene.end_line();
+}
+
+/// Words that wrap whole, where two spaces part them kept two apart (a
+/// try's text and its spot, `trySpot` after `  `): flowed, they'd read as one
+/// sentence. The first word `gap` columns after the last atom.
+fn flow_spaced(scene: &mut Scene<Act>, spans: &[Span<'static>], gap: u16) {
+    let mut parts: Vec<Vec<Span<'static>>> = vec![vec![]];
+    for span in spans {
+        for (i, piece) in span.content.split("  ").enumerate() {
+            if i > 0 && parts.last().is_some_and(|part| !part.is_empty()) {
+                parts.push(vec![]);
+            }
+            if let Some(part) = parts.last_mut().filter(|_| !piece.is_empty()) {
+                part.push(Span::styled(piece.to_string(), span.style));
+            }
+        }
+    }
+    for (i, part) in parts.iter().filter(|part| !part.is_empty()).enumerate() {
+        flow_after(scene, part, if i == 0 { gap } else { 2 });
+    }
 }
 
 /// Text whose lines stay lines and whose empty lines stay empty (a plan's paragraphs).
@@ -627,11 +698,25 @@ pub fn hint(item: &Item) -> Vec<Vec<Span<'static>>> {
         .collect()
 }
 
-/// A digit (`act::key`): the answer it gives the action picked with Tab, or
-/// the one NEXT shows while nothing is picked, through the click's path. A
-/// pick that is no action, or a digit its action has no answer for, does
-/// nothing: a digit never answers another block than the lit one. Any other
-/// key is left to the others (Enter runs the frame's pick).
+/// NEXT's hint while its block is not picked: how its digits come to act
+/// (`tab to it, then 1-2 picks that option: …`), so none acts on a stray
+/// keystroke; a ✓'s or an automatic item's own words as `hint`.
+pub fn unpicked_hint(item: &Item) -> Vec<Vec<Span<'static>>> {
+    let mut parts = hint(item);
+    if !keyed(item).is_empty()
+        && let Some(first) = parts.first_mut()
+    {
+        first.splice(0..0, [key_span("tab"), look::dim(" to it, then ")]);
+    }
+    parts
+}
+
+/// A digit (`act::key`): the answer it gives the action picked with Tab,
+/// through the click's path. Nothing picked, a pick that is no action, or a
+/// digit its action has no answer for: nothing. A digit never answers a
+/// block the user didn't light first, so a keystroke meant for an agent's
+/// pane never writes into one (rule 6). Any other key is left to the others
+/// (Enter runs the frame's pick).
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Option<Flow> {
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         return None;
@@ -641,9 +726,8 @@ pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Option<Fl
     };
     let model = app.orchestration()?;
     let item = match pick_of(model, picked) {
-        Pick::Nothing => in_next(model)?.clone(),
         Pick::Action { key, .. } => item_of_key(model, &key)?.clone(),
-        Pick::Other => return Some(Flow::Same),
+        Pick::Nothing | Pick::Other => return Some(Flow::Same),
     };
     let answers = keyed(&item);
     let Some(answer_of) = answers.get(digit as usize - '1' as usize) else {
@@ -693,7 +777,7 @@ pub fn next_row(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx) {
         scene.chip(look::kind_label(&item.kind), look::kind_tone(&item.kind));
         scene.atom(vec![look::bold(&item.who)]);
         match actor::view::word(ctx, &item.key) {
-            Some(word) => flow_after(scene, &look::spans(word), 2),
+            Some(word) => flow_spaced(scene, &look::spans(word), 2),
             None => flow_after(scene, &[look::span(&item.text, Style::new())], 2),
         }
         scene.end_line();
@@ -816,9 +900,19 @@ fn item_of(app: &Overview, file: &Path, id: i64) -> Option<Item> {
         .cloned()
 }
 
-/// What an answer is about, for the log: `decide #2 of 307-x`.
-fn what_of(item: &Item, id: i64) -> String {
-    format!("{} #{id} of {}", look::kind_label(&item.kind), item.who)
+/// What an answer is about, for the log: `decide #2 of Lucía Nkemelu`, the
+/// agent by the name the overview shows it by (#292), as `told …` does.
+fn what_of(actor: &Actor, item: &Item, id: i64) -> String {
+    format!("{} #{id} of {}", look::kind_label(&item.kind), actor.shown(&item.who))
+}
+
+/// The line an answer is typed or written as, word for word, for the log.
+fn line_of(action: &Action) -> String {
+    if stored::is_draft(action) {
+        stored::draft_line(action)
+    } else {
+        stored::answer_line(action)
+    }
 }
 
 /// A click on an answer (answers.mjs `answerWith`): ✓ ticks a kind without
@@ -833,7 +927,7 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
     let Some(action) = item.action.clone() else {
         return Flow::Same;
     };
-    let what = what_of(&item, id);
+    let what = what_of(&app.actor, &item, id);
     if stored::answers_of(&action).is_empty() {
         if stored::done_action(file, id).unwrap_or(false) {
             remember(file, id, "✓", TICKED);
@@ -851,6 +945,10 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
         ..action.clone()
     });
     let redraft = redraft_of(app, &item, &action, answer);
+    let line = line_of(&Action {
+        answer: Some(answer.to_string()),
+        ..action.clone()
+    });
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
     app.actor.queue(move || {
@@ -871,7 +969,7 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
         Some(Box::new(move |app: &mut Overview| {
             remember(&file, id, &answer, &waits);
             let paint = if is_in { Paint::Green } else { Paint::Yellow };
-            app.actor.log(paint, logged(&what, &answer, &waits));
+            app.actor.log_with(paint, logged(&what, &answer, &waits), Some(line));
             match redrafted {
                 Some(Ok(iid)) => {
                     app.actor
@@ -1040,7 +1138,7 @@ pub fn retry_answers(actor: &Actor, model: &OrchestrationModel) {
             && item.answer().is_some()
         {
             if let Some(action) = &item.action {
-                whats.insert((file.clone(), action.id), what_of(item, action.id));
+                whats.insert((file.clone(), action.id), what_of(actor, item, action.id));
             }
             if !targets.iter().any(|(known, _)| known == file) {
                 targets.push((file.clone(), to.clone()));
@@ -1076,7 +1174,8 @@ pub fn retry_answers(actor: &Actor, model: &OrchestrationModel) {
                 let what = whats
                     .remove(&(file, action.id))
                     .unwrap_or_else(|| format!("#{}", action.id));
-                app.actor.log(Paint::Green, logged(&what, &answer, waits));
+                app.actor
+                    .log_with(Paint::Green, logged(&what, &answer, waits), Some(line_of(&action)));
             }
             app.redraw();
         }) as actor::Effect)
@@ -1165,6 +1264,64 @@ mod tests {
         // The stored option is the answer, not the label shown.
         assert_eq!(answered_at(&scene, 0, 6).as_deref(), Some("Bun: flexbox"));
         assert_eq!(answered_at(&scene, 0, 1), None);
+    }
+
+    #[test]
+    fn hover_on_a_decides_question_lights_no_option() {
+        let mut item = item_with(decide());
+        item.go = Go::FocusSpace(PathBuf::from("/w"));
+        let (_, scene) = drawn(&item, 40);
+        let body: Vec<_> = scene
+            .regions
+            .iter()
+            .filter(|region| matches!(region.action(), Act::Action { .. }))
+            .collect();
+        assert_eq!(body.len(), 1);
+        // Head, question, the rest of the text: the options below are blocks of their own.
+        assert_eq!((body[0].area.y, body[0].area.bottom()), (0, 3));
+        assert_eq!(answered_at(&scene, 30, 3).as_deref(), Some("Rust + ratatui"));
+    }
+
+    #[test]
+    fn a_spot_stays_two_spaces_after_its_text() {
+        // Across spans too: the actor's word may split the text from its spot.
+        let spans = vec![Span::raw("the page opened"), look::dim("  :3000/x")];
+        let mut scene: Scene<Act> = Scene::new(60);
+        flow_spaced(&mut scene, &spans, 1);
+        scene.end_line();
+        scene.finish();
+        let line: String = scene.lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(line.trim_end(), "the page opened  :3000/x");
+        // Too narrow for both: the spot wraps whole to the next line.
+        let mut scene: Scene<Act> = Scene::new(20);
+        flow_spaced(&mut scene, &spans, 1);
+        scene.end_line();
+        scene.finish();
+        let lines: Vec<String> = scene
+            .lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .collect();
+        assert_eq!(lines[0].trim_end(), "the page opened");
+        assert_eq!(lines[1].trim_end(), ":3000/x");
+    }
+
+    #[test]
+    fn an_up_next_row_its_click_did_goes_at_once_until_a_read_drops_it() {
+        let go = Go::FocusSpace(PathBuf::from("/nowhere/done-by-click"));
+        let row = Item {
+            key: "order".into(),
+            go: go.clone(),
+            ..Default::default()
+        };
+        assert!(!is_done(&row));
+        did(&go);
+        assert!(is_done(&row), "gone from the click on");
+        // A read that still has it keeps it gone; one without it forgets the click.
+        forget_done(std::slice::from_ref(&row));
+        assert!(is_done(&row));
+        forget_done(&[]);
+        assert!(!is_done(&row), "the same row read again later shows");
     }
 
     #[test]
@@ -1374,16 +1531,17 @@ mod tests {
     fn a_digit_answers_only_the_block_picked_with_tab() {
         let (decide, try_item) = (item_with(decide()), try_ready());
         let items = [decide.clone(), try_item.clone()];
-        // Nothing picked: NEXT's (the decide) is keyed, the try in ACTIONS not.
+        // Nothing picked: no block is keyed, NEXT's neither (a stray `2` answers nothing).
         let pick = pick_in(&items, None);
-        assert!(pick.keys(&decide, true) && !pick.keys(&try_item, false));
+        assert_eq!(pick, Pick::Nothing);
+        assert!(!pick.keys(&decide) && !pick.keys(&try_item));
         // The try's block picked: its digits, never NEXT's decide.
         let picked = Act::Action {
             key: try_item.key.clone(),
             go: try_item.go.clone(),
         };
         let pick = pick_in(&items, Some(&picked));
-        assert!(pick.keys(&try_item, false) && !pick.keys(&decide, true));
+        assert!(pick.keys(&try_item) && !pick.keys(&decide));
         // One of the decide's options: the decide's digits, Enter that option.
         let option = Act::Answer {
             file: decide.file.clone().unwrap(),
@@ -1391,12 +1549,39 @@ mod tests {
             answer: "Bun: flexbox".into(),
         };
         let pick = pick_in(&items, Some(&option));
-        assert!(pick.keys(&decide, true) && !pick.keys(&try_item, false));
+        assert!(pick.keys(&decide) && !pick.keys(&try_item));
         assert_eq!(pick.option_of(&decide), Some("Bun: flexbox"));
         // Anything else picked (a worktree): no block's digits.
         let pick = pick_in(&items, Some(&Act::Go(Go::FocusSpace(PathBuf::from("/w")))));
         assert_eq!(pick, Pick::Other);
-        assert!(!pick.keys(&decide, true) && !pick.keys(&try_item, false));
+        assert!(!pick.keys(&decide) && !pick.keys(&try_item));
+    }
+
+    #[test]
+    fn unpicked_the_hint_says_tab_first() {
+        assert_eq!(
+            texts_of(&unpicked_hint(&item_with(decide()))),
+            ["tab to it, then 1-2 picks that option: typed to its agent"]
+        );
+        assert_eq!(
+            texts_of(&unpicked_hint(&try_ready())),
+            [
+                "tab to it, then 1 looks good: typed to its agent",
+                "2 broken: a draft in its agent's input for you to finish"
+            ]
+        );
+        // Without keys (a ✓, an automatic item): its own words, no tab.
+        let mut open = item_with(Action {
+            id: 12,
+            kind: "decide".into(),
+            text: "Which one?".into(),
+            ..Default::default()
+        });
+        open.go = Go::FocusAgent(PathBuf::from("/w"));
+        assert_eq!(
+            texts_of(&unpicked_hint(&open)),
+            ["a click on the rest opens its agent's tab: answer it there"]
+        );
     }
 
     #[test]
@@ -1554,6 +1739,12 @@ mod tests {
         assert_eq!(does_of(&ready), Some("merges on a second click"));
         assert!(hint(&ready).is_empty(), "its text says two clicks merge");
         assert_eq!(pointer_of(&ready), "↑ in NEXT · a click here merges on a second click");
+        // Marked ready after its agent posted the merge, GitLab still says draft: not the agent's.
+        let drafted = merge_item(&["draft"]);
+        assert_eq!(
+            hint_text(&drafted),
+            ["a click on the rest opens !318 in GitLab: two clicks merge it once GitLab no longer calls it a draft"]
+        );
         let other = merge_item(&["needs an approval"]);
         assert_eq!(
             hint_text(&other),

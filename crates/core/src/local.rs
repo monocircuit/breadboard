@@ -59,6 +59,68 @@ pub fn is_port_taken(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_err())
 }
 
+/// Whether the app on `port` is the one of the checkout `dir` (#332): the
+/// port is taken, and where Linux's /proc tells who listens on it, a process
+/// of this user that runs in `dir` holds it. A dev server of another checkout
+/// on the same port (an offset used twice, a test world beside the real
+/// ones) is not this checkout's app; where /proc can't tell, the port says it.
+pub fn is_app_of(port: i64, dir: &Path) -> bool {
+    is_port_taken(port) && owner_of(Path::new("/proc"), port, dir) != Some(false)
+}
+
+/// Whether one of the listeners on `port` runs in `dir`: None where `proc`
+/// can't tell (no /proc, no listener in it, only other users' processes hold it).
+fn owner_of(proc: &Path, port: i64, dir: &Path) -> Option<bool> {
+    let sockets = listening_sockets(proc, port)?;
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    // The processes this user may look into, those in `dir` first: its own app is found after a few.
+    let (mine, others): (Vec<_>, Vec<_>) = std::fs::read_dir(proc)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        })
+        .filter_map(|entry| Some((std::fs::read_link(entry.path().join("cwd")).ok()?, entry.path())))
+        .partition(|(cwd, _)| cwd.starts_with(&dir));
+    let holds = |pid: &Path| {
+        std::fs::read_dir(pid.join("fd")).is_ok_and(|fds| {
+            fds.flatten().any(|fd| {
+                std::fs::read_link(fd.path())
+                    .is_ok_and(|link| sockets.iter().any(|socket| link.as_os_str() == socket.as_str()))
+            })
+        })
+    };
+    if mine.iter().any(|(_, pid)| holds(pid)) {
+        return Some(true);
+    }
+    others.iter().any(|(_, pid)| holds(pid)).then_some(false)
+}
+
+/// `socket:[inode]` of each socket listening on `port` (/proc/net/tcp, tcp6); None without them.
+fn listening_sockets(proc: &Path, port: i64) -> Option<Vec<String>> {
+    let port = format!(":{port:04X}");
+    let mut sockets = Vec::new();
+    for table in ["net/tcp", "net/tcp6"] {
+        let Ok(text) = std::fs::read_to_string(proc.join(table)) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // local_address is field 1, st 3 (0A: LISTEN), inode 9.
+            if let [_, local, _, "0A", _, _, _, _, _, inode, ..] = fields.as_slice()
+                && local.ends_with(&port)
+            {
+                sockets.push(format!("socket:[{inode}]"));
+            }
+        }
+    }
+    (!sockets.is_empty()).then_some(sockets)
+}
+
 // ---------------------------------------------------------------------------
 // docker (#331): one read of every container of the machine, at most once in
 // CONTAINERS_EVERY_MS for all processes of the user together, shared through
@@ -133,9 +195,14 @@ pub fn containers_file() -> PathBuf {
 
 /// The `docker` executable `path` (a PATH) runs, its symlinks resolved; None without one.
 fn docker_on(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    executable_on(path, "docker")
+}
+
+/// The executable `name` that `path` (a PATH) runs, its symlinks resolved; None without one.
+pub fn executable_on(path: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path)
-        .map(|dir| dir.join("docker"))
+        .map(|dir| dir.join(name))
         .find(|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
         .map(|file| std::fs::canonicalize(&file).unwrap_or(file))
 }
@@ -402,7 +469,7 @@ pub fn tree_of(
         is_here: is_inside(here, dir),
         is_main,
         has_env: env.is_some(),
-        is_up: env.is_some() && has_own_port && is_port_taken(3000 + offset),
+        is_up: env.is_some() && has_own_port && is_app_of(3000 + offset, dir),
         stack: projects.and_then(|projects| projects.get(&project).cloned()),
         project,
         env: env.unwrap_or_default(),
@@ -428,6 +495,10 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
     tree.on_develop = git::on_develop(&dir, &tree.files);
+    // Whether a merge of develop would conflict (#332): only where both changed a file, else it can't.
+    tree.conflicts = (!tree.on_develop.is_empty())
+        .then(|| crate::model::develop::conflicts_of(&dir))
+        .flatten();
     tree.branch_files = branch_files(&dir);
     tree.behind = behind_develop(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
@@ -550,6 +621,58 @@ mod tests {
     use crate::git::fixture::{repo, worktree};
     use crate::lock::scratch::Scratch;
     use crate::record::{Origin, write_origin};
+
+    #[test]
+    fn finds_the_sockets_listening_on_a_port_in_procs_tables() {
+        let scratch = Scratch::new();
+        let proc = scratch.path();
+        std::fs::create_dir_all(proc.join("net")).unwrap();
+        let head = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+        let row = |local: &str, state: &str, inode: u32| {
+            format!(
+                "   0: {local} 00000000:0000 {state} 00000000:00000000 00:00000000 00000000  1000        0 {inode} 1 0 100 0 0 10 0\n"
+            )
+        };
+        // 3007 is 0BBF: one listening on v4, one on v6, a connection to it that is no listener.
+        std::fs::write(
+            proc.join("net/tcp"),
+            format!(
+                "{head}{}{}",
+                row("0100007F:0BBF", "0A", 11),
+                row("0100007F:0BBF", "01", 12)
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            proc.join("net/tcp6"),
+            format!("{head}{}", row("00000000000000000000000000000000:0BBF", "0A", 13)),
+        )
+        .unwrap();
+        assert_eq!(
+            listening_sockets(proc, 3007),
+            Some(vec!["socket:[11]".to_string(), "socket:[13]".to_string()])
+        );
+        assert_eq!(listening_sockets(proc, 3008), None);
+        // No such table (not Linux): nothing can be told.
+        assert_eq!(owner_of(&proc.join("none"), 3007, proc), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_is_the_checkouts_only_where_a_process_in_it_listens() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = i64::from(listener.local_addr().unwrap().port());
+        // This test's process listens, its cwd is the crate.
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(owner_of(Path::new("/proc"), port, &here), Some(true));
+        assert!(is_app_of(port, &here));
+        // Another checkout on the same port: not its app (the gauntlet's world beside the real worktrees).
+        let scratch = Scratch::new();
+        assert_eq!(owner_of(Path::new("/proc"), port, scratch.path()), Some(false));
+        assert!(!is_app_of(port, scratch.path()));
+        drop(listener);
+        assert!(!is_app_of(port, &here));
+    }
 
     #[test]
     fn takes_every_stack_and_its_containers_from_one_docker_read() {

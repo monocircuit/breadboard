@@ -53,6 +53,13 @@ pub enum Act {
     StartStack(PathBuf),
     /// `pnpm pg:migrate` of a worktree.
     Migrate(PathBuf),
+    /// A WORKTREES node's app (#332, WHERE's `app` row): its page in the
+    /// space's tab group when it answers, else how to start it in the band.
+    OpenApp {
+        dir: PathBuf,
+        port: i64,
+        is_shared: bool,
+    },
     /// Storybook in a tab of the worktree's space.
     Storybook(PathBuf),
     /// A file in the worktree's nvim, at a line.
@@ -71,7 +78,7 @@ pub enum Act {
 }
 
 /// What folds: the removed worktrees, the queue, the merged MRs; in the
-/// view of everything the open MRs and issues the pane cut.
+/// view of everything the open MRs and issues the pane cut; DONE's commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
@@ -79,6 +86,7 @@ pub enum Fold {
     Merged,
     Mrs,
     Issues,
+    Done,
 }
 
 /// How long a first click keeps the end armed.
@@ -97,6 +105,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Merged => folds.is_merged_folded = !folds.is_merged_folded,
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
+                Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
             }
             return Flow::Redraw;
         }
@@ -107,6 +116,9 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         }
         // The stack of the main checkout from the view of everything: the worktree view has its own.
         Act::StartStack(dir) if !matches!(app.model, Some(Model::Worktree(_))) => tries::start_stack(app, &dir, None),
+        // A WORKTREES node's migrations and app (#332): the worktree view has its own.
+        Act::Migrate(dir) if !matches!(app.model, Some(Model::Worktree(_))) => tries::migrate(app, &dir),
+        Act::OpenApp { dir, port, is_shared } => open_app(app, &dir, port, is_shared),
         // A colliding file of a WORKTREES node (#332): in that worktree's nvim.
         Act::OpenFile { dir, file, line } if !matches!(app.model, Some(Model::Worktree(_))) => {
             open_file(app, &dir, &file, line)
@@ -129,6 +141,34 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
     }
     app.redraw();
     Flow::Redraw
+}
+
+/// A worktree's app (WHERE's row, #332): its page in the tab group of the
+/// worktree's space when it answers there, else in the band how to start it.
+/// Asked at the click: the dot on screen may be a couple of seconds old.
+fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
+    let main = app.actor.main.clone();
+    let is_up = if is_shared {
+        breadboard_core::local::is_port_taken(port)
+    } else {
+        breadboard_core::local::is_app_of(port, dir)
+    };
+    if is_up {
+        browser::show_or_open(
+            &main,
+            &format!("http://localhost:{port}"),
+            &herdr::space_label(&main, dir),
+        );
+        return;
+    }
+    // What to do first: the band shows the words before the first `: `.
+    let hint = if is_shared {
+        format!("pnpm dev in products/vita/web serves the shared :{port}: nothing answers there")
+    } else {
+        let who = breadboard_core::git::feature_of(&main, dir);
+        format!("pnpm dev in products/vita/web starts the app of {who}: nothing answers on :{port}")
+    };
+    app.actor.log(Paint::Dim, hint);
 }
 
 /// A file of a worktree in its nvim, from a view of more than it; why not in the band.
@@ -181,8 +221,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
         Go::WritePlan(plan) => {
             let Some(name) = app.orchestration_name() else { return };
+            let done = Go::WritePlan(plan.clone());
             match write_plan(&main, &name, Some(plan.work), Some(plan.merge.clone()), plan.why) {
                 Ok(_) => {
+                    // Its row goes at once, not with the next read (Node drops it on the click).
+                    super::actions::did(&done);
                     let order: Vec<String> = plan.merge.iter().map(|number| format!("#{number}")).collect();
                     app.actor.log(
                         Paint::Green,
@@ -375,9 +418,12 @@ fn resolve(app: &mut Overview, iid: i64) {
 }
 
 /// A key the frame has no use for: a digit answers the action picked with
-/// Tab, or NEXT's while none is (actions.rs); `u` the worktree view's.
+/// Tab, nothing while none is (actions.rs); `u` starts the stack whose
+/// button shows, the default one's in the view of everything.
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
-    super::actions::key(app, key, picked).unwrap_or_else(|| super::worktree_view::key(app, key))
+    super::actions::key(app, key, picked)
+        .or_else(|| super::everything::key(app, key))
+        .unwrap_or_else(|| super::worktree_view::key(app, key))
 }
 
 /// What a read sets off, by the view: the orchestration's own acts, the main space's `--herdr` sync.

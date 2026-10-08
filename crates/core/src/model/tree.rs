@@ -9,6 +9,7 @@ use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
+use super::develop::Migrations;
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
@@ -264,6 +265,24 @@ pub struct Node {
     pub near: Vec<String>,
     /// Its worktree, where a click on a colliding file opens it.
     pub dir: Option<PathBuf>,
+    /// Its own stack can be started (#332, STACK's `▶ start the stack`):
+    /// an .env.local and ports of its own, docker told it isn't all running.
+    pub can_start_stack: bool,
+    /// Whether a merge of develop would conflict (#332, DEVELOP's `git
+    /// merge-tree`): the files, empty when it merges cleanly; None where
+    /// nothing collides with develop or git can't tell.
+    pub conflicts: Option<Vec<String>>,
+    /// The migrations its database lacks (#332, STACK's line), where that
+    /// database runs: its own stack all up, or the shared one.
+    pub migrations: Option<Migrations>,
+    /// It runs on the main checkout's stack.
+    pub is_shared: bool,
+    /// The port its app answers on, where it has an .env.local: its own, or the shared 3000.
+    pub app_port: Option<i64>,
+    /// When its migrations and docker's answer were asked (ms): what an
+    /// act changed after them isn't in them yet.
+    pub migrations_at: i64,
+    pub docker_at: i64,
     pub title: String,
     /// A click: its space, else its issue's page.
     pub go: Go,
@@ -303,6 +322,15 @@ pub fn stack_of(tree: &Tree) -> Span {
         ),
     };
     Span::new(text, if is_running { Paint::Green } else { Paint::Yellow })
+}
+
+/// Whether docker told every container of the worktree's own stack runs.
+pub fn is_stack_running(tree: &Tree) -> bool {
+    tree.docker == Docker::Answered
+        && tree
+            .stack
+            .as_deref()
+            .is_some_and(|status| status.split(", ").all(|part| part.starts_with("running")))
 }
 
 /// The agent of a node (#292, tree.mjs `agentLine`): `● Mira Albrecht · 3
@@ -745,6 +773,19 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 near: near_of(index, &collides),
                 collides,
                 dir: tree.map(|tree| tree.dir.clone()),
+                can_start_stack: tree.is_some_and(|tree| {
+                    tree.has_env && tree.has_own_port && tree.docker == Docker::Answered && !is_stack_running(tree)
+                }),
+                conflicts: tree.and_then(|tree| tree.conflicts.clone()),
+                migrations: tree
+                    .filter(|tree| tree.has_env && (!tree.has_own_port || is_stack_running(tree)))
+                    .and_then(|tree| tree.migrations.clone()),
+                is_shared: tree.is_some_and(|tree| tree.has_env && !tree.has_own_port),
+                app_port: tree
+                    .filter(|tree| tree.has_env)
+                    .map(|tree| 3000 + if tree.has_own_port { tree.offset } else { 0 }),
+                migrations_at: tree.map_or(0, |tree| tree.migrations_at),
+                docker_at: tree.map_or(0, |tree| tree.docker_at),
                 state,
                 place: numbers[index],
                 name: issue.feature.clone(),
@@ -1709,6 +1750,13 @@ mod tests {
             collides: vec![],
             near: vec![],
             dir: None,
+            can_start_stack: false,
+            conflicts: None,
+            migrations: None,
+            is_shared: false,
+            app_port: None,
+            migrations_at: 0,
+            docker_at: 0,
             title: String::new(),
             go: Go::Nothing,
         }

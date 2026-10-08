@@ -7,7 +7,7 @@ use super::clicks;
 use super::input::{Command, Rejoin, command_of};
 use super::links::Links;
 use super::term::{self, Tty};
-use super::view::View;
+use super::view::{Held, View};
 use super::{App, Flow, Input};
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures_util::StreamExt;
@@ -98,7 +98,14 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             continue;
                         }
                         Command::Select(by) => {
+                            let was = view.selected();
                             is_dirty |= view.select_by(by);
+                            let picked = view.selected();
+                            // An app that follows the pick changes with it: the pick stays on screen.
+                            if picked != was && app.picked(picked.as_ref()) != Flow::Same {
+                                view.acted(view.hold_pick());
+                                is_dirty = true;
+                            }
                             continue;
                         }
                         Command::Hover(at) => {
@@ -111,6 +118,11 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             continue;
                         }
                         Command::Refresh => Input::Refresh,
+                        // Esc drops the pick, as lazygit's Esc steps back, and is the app's too.
+                        Command::Key(key) if key.code == KeyCode::Esc => {
+                            is_dirty |= view.unpick();
+                            Input::Key(key, None)
+                        }
                         // Enter runs the block picked with Tab, as its click; else it is the app's.
                         Command::Key(key) => match view.selected() {
                             Some(action) if key.code == KeyCode::Enter && key.modifiers.is_empty() => {
@@ -125,7 +137,19 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                         },
                         Command::Click(x, y) => {
                             is_pressed = true;
-                            clicks::log(&view.entry(x, y));
+                            let mut entry = view.entry(x, y);
+                            // A button whose block's head is off screen: the block is shown, nothing runs.
+                            let is_shown = view.show_clicked(x, y);
+                            if is_shown {
+                                entry.ran = format!("{}, not run: its block shown first", entry.ran);
+                            }
+                            clicks::log(&entry);
+                            // The pointer is where it clicked: a terminal may report no move before it.
+                            is_dirty |= view.hover(Some((x, y)));
+                            if is_shown {
+                                is_dirty = true;
+                                continue;
+                            }
                             match view.click(x, y) {
                                 Some(action) => {
                                     held = view.hold(x, y);
@@ -147,6 +171,10 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                         Flow::Quit => return Ok(()),
                         Flow::Redraw => {
                             view.acted(held);
+                            is_dirty = true;
+                        }
+                        Flow::Show => {
+                            view.acted(held.map(Held::showing));
                             is_dirty = true;
                         }
                         Flow::Same => {}
@@ -173,11 +201,13 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                     view.stale();
                     is_dirty = true;
                 }
-                // A lone Escape nothing followed: the Escape key, the app's.
+                // A lone Escape nothing followed: the Escape key. It drops
+                // the pick, and is the app's too.
                 if let Some(Event::Key(key)) = rejoin.take_escape() {
-                    match app.act(Input::Key(key, view.selected())) {
+                    is_dirty |= view.unpick();
+                    match app.act(Input::Key(key, None)) {
                         Flow::Quit => return Ok(()),
-                        Flow::Redraw => {
+                        Flow::Redraw | Flow::Show => {
                             view.acted(None);
                             is_dirty = true;
                         }

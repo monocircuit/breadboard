@@ -285,49 +285,69 @@ fn words_of(text: &str) -> String {
 }
 
 /// DONE at the end of the page, lazygit's command log: everything this
-/// overview did, newest first, each with its time and in full; at the end,
-/// so it never moves a row above it. Nothing in a print.
+/// overview did, newest first, each with its time; at the end, so it never
+/// moves a row above it. Nothing in a print. An entry is a block: a click
+/// on one shows what each ran or typed, word for word, under it, another
+/// folds that again; a failed entry's stands under it always (what to run
+/// again). Folded, an entry is a line or two, so DONE stays a log and not a
+/// wall of herdr commands and session ids under the view.
 pub fn done(page: &mut Page<Act>, ctx: &Ctx) {
     if ctx.actor.did.is_empty() {
         return;
     }
+    let is_open = ctx.folds.is_every_command_shown;
+    let has_folded = ctx
+        .actor
+        .did
+        .iter()
+        .any(|did| did.detail.is_some() && did.paint != Paint::Red);
     page.section(Section::new("DONE"), |scene| {
+        let hint = match (has_folded, is_open) {
+            (false, _) => "",
+            (true, false) => " · click one to show the commands",
+            (true, true) => " · click one to hide the commands",
+        };
         scene.note(format!(
-            "{} · what this overview did, newest first",
+            "{} · what this overview did, newest first{hint}",
             breadboard_core::model::counted(ctx.actor.did.len() as u64, "thing")
         ));
         for did in &ctx.actor.did {
-            let (mark, tone) = match did.paint {
-                Paint::Green => ("✓", Some(Tone::Green)),
-                Paint::Red => ("✗", Some(Tone::Red)),
-                Paint::Yellow => ("◐", Some(Tone::Yellow)),
-                _ => ("·", None),
-            };
-            let style = tone.map_or_else(theme::dim, theme::tone);
-            let seconds = (did.at / 1000).rem_euclid(60);
-            scene.atom(vec![look::dim(format!("{}:{seconds:02}", hm(did.at)))]);
-            scene.atom(vec![look::span(mark, style)]);
-            scene.indent(11);
-            scene.pad_to(11);
-            let text = if tone.is_some() {
-                ratatui::style::Style::new()
-            } else {
-                theme::dim()
-            };
-            look::flow(scene, &[look::span(&did.text, text)]);
-            if did.times > 1 {
-                look::flow(scene, &[look::dim(format!("· {} times", did.times))]);
-            }
-            // What was run or typed, word for word, under it (lazygit's command log).
-            if let Some(detail) = &did.detail {
-                scene.end_line();
-                scene.pad_to(11);
-                look::flow(scene, &[look::dim(detail)]);
-            }
-            scene.indent(0);
+            scene.block(Act::Fold(super::super::Fold::Done), |scene| entry(scene, did, is_open));
             scene.end_line();
         }
     });
+}
+
+/// One thing done: its time and mark, its words; its command under it when shown.
+fn entry(scene: &mut Scene<Act>, did: &super::Did, is_open: bool) {
+    let (mark, tone) = match did.paint {
+        Paint::Green => ("✓", Some(Tone::Green)),
+        Paint::Red => ("✗", Some(Tone::Red)),
+        Paint::Yellow => ("◐", Some(Tone::Yellow)),
+        _ => ("·", None),
+    };
+    let style = tone.map_or_else(theme::dim, theme::tone);
+    let seconds = (did.at / 1000).rem_euclid(60);
+    scene.atom(vec![look::dim(format!("{}:{seconds:02}", hm(did.at)))]);
+    scene.atom(vec![look::span(mark, style)]);
+    scene.indent(11);
+    scene.pad_to(11);
+    let text = if tone.is_some() {
+        ratatui::style::Style::new()
+    } else {
+        theme::dim()
+    };
+    look::flow(scene, &[look::span(&did.text, text)]);
+    if did.times > 1 {
+        look::flow(scene, &[look::dim(format!("· {} times", did.times))]);
+    }
+    // What was run or typed, word for word, under it (lazygit's command log).
+    if let Some(detail) = did.detail.as_ref().filter(|_| is_open || did.paint == Paint::Red) {
+        scene.end_line();
+        scene.pad_to(11);
+        look::flow(scene, &[look::dim(detail)]);
+    }
+    scene.indent(0);
 }
 
 #[cfg(test)]
@@ -381,6 +401,64 @@ mod tests {
             );
             assert!(band.contains("✓ decide #2 of #307"), "{width}: {band}");
         }
+    }
+
+    #[test]
+    fn done_folds_its_commands_but_a_failures_and_each_entry_is_a_block() {
+        use crate::tui::overview::{Fold, Folds, GitlabState};
+        let mut actor = Actor::new(
+            &breadboard_core::reader::View::Everything,
+            std::path::Path::new("/r"),
+            true,
+            false,
+        );
+        actor.log_as(
+            "tabs",
+            Paint::Green,
+            "put the tabs of 7 spaces back in order",
+            Some("herdr pane move w46:p2 --workspace w46 --new-tab".into()),
+        );
+        actor.log_as(
+            "stack",
+            Paint::Red,
+            "the stack of platform didn't start: pnpm stack:up failed",
+            Some("pnpm stack:up".into()),
+        );
+        let gitlab = GitlabState::default();
+        let draw = |folds: Folds| {
+            let ctx = Ctx {
+                is_once: false,
+                folds,
+                gitlab: &gitlab,
+                now: 0,
+                main_name: "platform",
+                actor: &actor,
+                words: no_words(),
+            };
+            let mut page = Page::new(120);
+            done(&mut page, &ctx);
+            page.finish()
+        };
+        let sheet = draw(Folds::default());
+        let text = sheet.text().join("\n");
+        assert!(text.contains("click one to show the commands"), "{text}");
+        assert!(!text.contains("herdr pane move"), "{text}");
+        // A failure's command stands under it whatever the fold.
+        assert!(text.contains("pnpm stack:up\n") || text.ends_with("pnpm stack:up"), "{text}");
+        let lines = sheet.text();
+        let row = lines.iter().position(|line| line.contains("put the tabs")).unwrap();
+        assert_eq!(
+            sheet.hit(20, row as u16).map(|(_, region)| region.action().clone()),
+            Some(Act::Fold(Fold::Done))
+        );
+        let text = draw(Folds {
+            is_every_command_shown: true,
+            ..Folds::default()
+        })
+        .text()
+        .join("\n");
+        assert!(text.contains("herdr pane move w46:p2 --workspace w46 --new-tab"), "{text}");
+        assert!(text.contains("click one to hide the commands"), "{text}");
     }
 
     #[test]

@@ -452,6 +452,24 @@ pub fn view_lines(text: &str, width: usize, folded: &[String], theme: &Theme) ->
     lines
 }
 
+/// The marks right of the title that fit beside it (two spaces before
+/// each), in order: one that doesn't fit is left out whole, never cut
+/// (#304; at 60 columns the hint ran into the last cell).
+fn marks_that_fit(title: usize, columns: usize, marks: Vec<String>) -> Vec<String> {
+    let mut used = title;
+    marks
+        .into_iter()
+        .filter(|mark| {
+            let width = 2 + mark.chars().count();
+            let fits = used + width <= columns;
+            if fits {
+                used += width;
+            }
+            fits
+        })
+        .collect()
+}
+
 /// The ground of a heading under the pointer.
 const HOVER: Rgb = (54, 54, 54);
 const WHEEL_LINES: i64 = 3;
@@ -518,6 +536,7 @@ impl Watch<'_> {
         let start = self.offset as usize;
         self.shown = all[start.min(all.len())..(start + room).min(all.len())].to_vec();
         self.lit = self.heading_on(self.pointer);
+        let mark = marks_that_fit(title.line.width(), columns, mark);
         let mut head = title.line.ansi(true, None);
         if !mark.is_empty() {
             head.push_str(&format!("  \x1b[2m{}\x1b[0m", mark.join("  ")));
@@ -759,6 +778,22 @@ mod tests {
         let plain: Vec<String> = lines.iter().map(|line| line.line.plain()).collect();
         assert_eq!(plain, vec!["T", "", "▸ a", "", "▾ b", "", "• y"]);
         assert!(lines[2].is_heading);
+    }
+
+    #[test]
+    fn leaves_out_a_mark_that_doesnt_fit() {
+        let marks = || {
+            vec![
+                "↑ 3".to_string(),
+                "↓ 40".to_string(),
+                "] [ 1–9 jump · z Z fold".to_string(),
+            ]
+        };
+        let title = "Monocircuit/Platform: changelog".chars().count();
+        assert_eq!(marks_that_fit(title, 120, marks()).len(), 3);
+        assert_eq!(marks_that_fit(title, 60, marks()), vec!["↑ 3", "↓ 40"]);
+        assert_eq!(marks_that_fit(title, 36, marks()), vec!["↑ 3"]);
+        assert!(marks_that_fit(title, 31, marks()).is_empty());
     }
 
     #[test]

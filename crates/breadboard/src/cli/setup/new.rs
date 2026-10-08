@@ -29,7 +29,7 @@ fn leaving_worktree() -> Option<Worktree> {
         return None;
     }
     let label = if herdr::is_in_herdr() {
-        herdr::current_pane().and_then(|pane| {
+        herdr::pane_here().and_then(|pane| {
             herdr::spaces()
                 .into_iter()
                 .find(|space| field(space, "workspace_id") == field(&pane, "workspace_id"))
@@ -267,6 +267,7 @@ pub fn command(args: &Args) -> ExitCode {
         origin: origin.as_ref().map(|origin| origin.name.as_str()),
         is_stack_only: false,
         is_stackless: !main_env.exists(),
+        is_unpushed: !pushed.is_ok,
     });
     ExitCode::SUCCESS
 }

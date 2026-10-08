@@ -113,8 +113,9 @@ impl Columns {
 
 fn rows(scene: &mut Scene<Act>, mrs: &MergeRequests, ctx: &Ctx) {
     let columns = Columns::of(mrs);
-    for row in &mrs.open {
-        open_row(scene, row, &columns, ctx);
+    for (i, row) in mrs.open.iter().enumerate() {
+        let is_parted = mrs.open.get(i + 1).is_some_and(|next| next.mr.is_some());
+        open_row(scene, row, &columns, ctx, is_parted);
     }
     if mrs.merged.is_empty() {
         return;
@@ -189,8 +190,15 @@ fn show(mr: &MrFacts) -> Go {
     }
 }
 
-/// An open MR: its lane, head, bar and what it lacks below.
-fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
+/// An open MR: its lane, head, bar and what it lacks below; `is_parted`:
+/// an empty row ends its block, with only the lanes that go on through it
+/// (git log --graph's line between two commits), when the next row is an MR.
+/// What an MR lacks, its block's last line, never stands right above the next
+/// MR's `●` and reads as that one's; the row is the block's (it lights and
+/// clicks with it, #296). A row of the graph alone (`├─┘`) parts two blocks
+/// already. Not a `│` under every `●`: in this graph a lane under an MR says
+/// another needs it.
+fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, is_parted: bool) {
     let width = columns.graph as usize;
     let Some(mr) = &row.mr else {
         // A line of the graph alone: no MR, no click.
@@ -223,6 +231,9 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx) {
                 lacks(scene, mr, ctx);
                 scene.indent(0);
                 scene.end_line();
+            }
+            if is_parted {
+                scene.blank();
             }
         });
     });
@@ -491,9 +502,16 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
         work,
         acceptance,
     } = progress;
+    // The boxes under neither Work nor Acceptance (an issue's `## Scope`): no
+    // reason names them (they hold no merge up), so the bar's label does while
+    // one is open, or `0/9 boxes` would count 7 the row says nothing of.
+    let other = (
+        ticked.saturating_sub(work.0 + acceptance.0),
+        total.saturating_sub(work.1 + acceptance.1),
+    );
     let mut full = vec![format!("{ticked}/{total} boxes")];
-    for (name, (done, all)) in [("work", work), ("acceptance", acceptance)] {
-        if all > 0 {
+    for (name, (done, all)) in [("work", work), ("acceptance", acceptance), ("other", other)] {
+        if all > 0 && (name != "other" || done < all) {
             full.push(format!("{name} {done}/{all}"));
         }
     }
@@ -544,7 +562,9 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     match &mr.conflict {
         None => {}
         Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts …")]),
-        Some(Conflict::None) => parts.push(vec![look::dim("no merge conflicts")]),
+        // No conflicts goes unsaid, as lazygit leaves a clean file unmarked:
+        // an open MR always has a conflict state, so the row without one is clean.
+        Some(Conflict::None) => {}
         Some(Conflict::Resolved) => parts.push(vec![look::span("✓ conflicts resolved", theme::tone(Tone::Green))]),
         Some(Conflict::Button { behind, is_refused }) => {
             scene.button(button, Tone::Yellow, Act::Resolve(mr.iid));
@@ -579,7 +599,9 @@ fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
 }
 
 /// The reasons as parts, `text → who`; the MRs it waits for said once,
-/// `waits for !311, !303` (the `→ !311` would only name them again). A part
+/// `waits for !311, !303` (the `→ !311` would only name them again), and a
+/// reason that names the MR acting on it has no arrow either: `after !304
+/// (needs #294)`, not `… → !304`. A part
 /// at most `room` wide is glued into one word, so it wraps whole; the arrow
 /// and its who always are.
 fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
@@ -614,6 +636,10 @@ fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
             Some(head) => format!("{head}\u{a0}…"),
             None => reason.text.clone(),
         };
+        if names_its_who(reason) {
+            parts.push(glue(vec![look::span(&text, theme::tone(Tone::Yellow))]));
+            continue;
+        }
         // What waits for you stands out of what others do (lazygit's status
         // colours): `→ you` bold, every other who dim.
         let who = format!("\u{a0}→\u{a0}{}", reason.who.replace(' ', "\u{a0}"));
@@ -625,6 +651,15 @@ fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
         parts.push(glue(vec![look::span(&text, theme::tone(Tone::Yellow)), who]));
     }
     parts
+}
+
+/// A reason on another MR whose text names that MR (`after !304 (needs #294)`).
+fn names_its_who(reason: &Reason) -> bool {
+    reason.who.starts_with('!')
+        && reason
+            .text
+            .match_indices(reason.who.as_str())
+            .any(|(at, _)| !reason.text[at + reason.who.len()..].starts_with(|ch: char| ch.is_ascii_digit()))
 }
 
 /// `waits for !N → !N`: a wait on another MR, named by its who alone.
@@ -669,6 +704,22 @@ mod tests {
     }
 
     #[test]
+    fn the_bar_names_the_boxes_no_reason_names() {
+        // 9 boxes, 7 under `## Scope`: the reasons name the 2 acceptance boxes only.
+        let progress = Progress {
+            ticked: 0,
+            total: 9,
+            work: (0, 0),
+            acceptance: (0, 2),
+        };
+        let label = text(&bar(progress, 80));
+        assert!(label.ends_with("  0/9 boxes · acceptance 0/2 · other 0/7"), "{label}");
+        // Once they are ticked they go unnamed: the label accounts for the open boxes.
+        let done = Progress { ticked: 7, ..progress };
+        assert!(text(&bar(done, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
+    }
+
+    #[test]
     fn the_bar_is_yellow_once_only_acceptance_boxes_are_open() {
         let only_acceptance = Progress {
             ticked: 2,
@@ -693,16 +744,19 @@ mod tests {
                 reason("waits for !311", "!311"),
                 reason("after !303 (shares a.rs)", "!303"),
                 reason("waits for !304", "!304"),
+                reason("after !3030 (needs #1)", "!303"),
             ],
             80,
         );
         let parts: Vec<String> = parts.iter().map(|part| text(part).replace('\u{a0}', " ")).collect();
+        // `after !303 …` names its MR: no `→ !303` after it, as `waits for`.
         assert_eq!(
             parts,
             [
                 "pipeline pending → GitLab",
                 "waits for !311, !304",
-                "after !303 (shares a.rs) → !303"
+                "after !303 (shares a.rs)",
+                "after !3030 (needs #1) → !303"
             ]
         );
     }
@@ -832,6 +886,105 @@ mod tests {
             lines.iter().any(|line| line.contains("checking for conflicts …")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn no_conflicts_goes_unsaid() {
+        let mr = MrFacts {
+            conflict: Some(Conflict::None),
+            reasons: vec![reason("pipeline pending", "GitLab")],
+            ..facts("fix(x): y", None)
+        };
+        let lines = drawn(mr, 80);
+        let all = lines.join("\n").replace('\u{a0}', " ");
+        assert!(!all.contains("conflicts"), "{lines:?}");
+        assert!(
+            all.lines()
+                .nth(1)
+                .unwrap()
+                .trim_start()
+                .starts_with("pipeline pending → GitLab"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn what_an_mr_lacks_never_stands_on_the_next_mrs_node() {
+        // The breadboard world: every MR in one lane, each a block of title, bar
+        // and reasons. The line right above an `●` is never a reasons line.
+        let row = |iid: i64, who: &str| MrRow {
+            number: Some(iid),
+            graph: "●".into(),
+            below: String::new(),
+            mr: Some(MrFacts {
+                iid,
+                conflict: Some(Conflict::Checking),
+                reasons: vec![reason("draft: mark ready", who)],
+                progress: Some(Progress {
+                    ticked: 8,
+                    total: 8,
+                    work: (6, 6),
+                    acceptance: (2, 2),
+                }),
+                ..facts("feat(breadboard): an open MR shows a progress bar", None)
+            }),
+        };
+        let graph_alone = MrRow {
+            number: None,
+            graph: "├─┘".into(),
+            below: String::new(),
+            mr: None,
+        };
+        let gitlab = super::super::GitlabState::default();
+        let ctx = Ctx {
+            is_once: false,
+            folds: Default::default(),
+            gitlab: &gitlab,
+            now: 60_000,
+            main_name: "platform",
+            actor: super::super::actor::idle(),
+            words: super::super::actor::view::no_words(),
+        };
+        for width in [80, 120] {
+            let mrs = MergeRequests {
+                open: vec![
+                    row(308, "you"),
+                    row(314, "agent"),
+                    graph_alone.clone(),
+                    row(318, "agent"),
+                ],
+                ..Default::default()
+            };
+            let mut scene = Scene::<Act>::new(width);
+            rows(&mut scene, &mrs, &ctx);
+            scene.finish();
+            let lines = lines(&scene);
+            let nodes: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].starts_with('●')).collect();
+            assert_eq!(nodes.len(), 3, "{lines:?}");
+            for &at in &nodes[1..] {
+                let above = lines[at - 1].trim();
+                assert!(
+                    !above.contains('→') && !above.contains("checking"),
+                    "{width}: {lines:?}"
+                );
+            }
+            // Each reasons line belongs to the `●` above it: `→ you` is !308's.
+            let you = lines.iter().position(|line| line.contains("→\u{a0}you")).unwrap();
+            assert!(you > nodes[0] && you < nodes[1], "{lines:?}");
+            // One empty row between two blocks; the graph's own row parts the others.
+            assert_eq!(lines[nodes[1] - 1].trim(), "", "{lines:?}");
+            assert_eq!(lines[nodes[2] - 1].trim(), "├─┘", "{lines:?}");
+            // The empty row is the block's above: it lights and clicks with it (#296).
+            let blocks: Vec<Rect> = scene
+                .regions
+                .iter()
+                .filter(|region| matches!(region.target, Target::Block(_)))
+                .map(|region| region.area)
+                .collect();
+            assert_eq!(blocks[0].y as usize, nodes[0], "{blocks:?}");
+            assert_eq!((blocks[0].y + blocks[0].height) as usize, nodes[1], "{blocks:?}");
+            assert_eq!((blocks[1].y + blocks[1].height) as usize, nodes[2] - 1, "{blocks:?}");
+        }
     }
 
     #[test]

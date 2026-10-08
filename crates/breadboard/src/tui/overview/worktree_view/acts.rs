@@ -3,6 +3,7 @@
 //! button's two clicks, `stack:up` (the button and `u`), `pnpm pg:migrate`,
 //! Storybook's tab, a file in nvim. Never in a print (`--once`): it has no clicks.
 
+use super::super::Act;
 use super::editor::{self, Checkout};
 use super::hunks::{self, Shown};
 use super::started::{self, Started};
@@ -88,19 +89,31 @@ pub fn open_file(state: &mut State, model: &WorktreeModel, main: &Path, file: &s
 /// A file's hunks under the row clicked; a second click on it closes them,
 /// one on another file's row shows that one's instead (lazygit shows one).
 /// `is_whole` (the `… N more lines` row): the shown ones, all their lines.
+/// Hunks that followed the pick (`follow`) become stops of Tab instead of
+/// closing, as lazygit's Enter goes from the files into the diff. What
+/// opens is scrolled into view (`Flow::Show`).
 pub fn toggle_hunks(state: &mut State, file: String, at: String, is_whole: bool) -> Flow {
     // A line of several names, off its names or Enter: the next name, none after the last.
     if let Some(line) = at.strip_prefix(hunks::NEXT) {
-        let next = match state.hunks.as_ref().filter(|shown| shown.at == line) {
+        let shown = state.hunks.as_mut().filter(|shown| shown.at == line);
+        let next = match shown {
+            Some(shown) if shown.is_followed => {
+                shown.is_followed = false;
+                return Flow::Redraw;
+            }
             Some(shown) => shown.next_on_line().unwrap_or(Some(file)),
             None => Some(file),
         };
         state.hunks = next.map(|file| Shown::new(file, line.to_string()));
-        return Flow::Redraw;
+        return shows(state);
     }
     let open = state.hunks.as_mut().filter(|shown| shown.is_under(&at, &file));
     match open {
         Some(shown) if is_whole => shown.is_whole = true,
+        Some(shown) if shown.is_followed => {
+            shown.is_followed = false;
+            return Flow::Redraw;
+        }
         Some(_) => state.hunks = None,
         None => {
             let mut shown = Shown::new(file, at);
@@ -108,7 +121,46 @@ pub fn toggle_hunks(state: &mut State, file: String, at: String, is_whole: bool)
             state.hunks = Some(shown);
         }
     }
-    Flow::Redraw
+    shows(state)
+}
+
+/// `Show` while hunks show (the frame scrolls them into view), `Redraw` once closed.
+fn shows(state: &State) -> Flow {
+    if state.hunks.is_some() {
+        Flow::Show
+    } else {
+        Flow::Redraw
+    }
+}
+
+/// Tab moved the pick onto `picked`: while hunks show, they follow it to the
+/// file its row names (a line of names: its first), as lazygit's diff
+/// follows the selected file, so Tab alone goes file by file. They show as
+/// lines to click, no stops of Tab, until Enter on their row; on any other
+/// row they stay as they are.
+pub fn follow(state: &mut State, picked: Option<&Act>) -> Flow {
+    let Some(shown) = &state.hunks else {
+        return Flow::Same;
+    };
+    let Some(Act::Hunks {
+        file,
+        at,
+        is_whole: false,
+    }) = picked
+    else {
+        return Flow::Same;
+    };
+    let at = match at.strip_prefix(hunks::NEXT) {
+        // The line whose names already show one: it stays.
+        Some(line) if shown.at == line => return Flow::Same,
+        Some(line) => line,
+        None if shown.is_under(at, file) => return Flow::Same,
+        None => at,
+    };
+    let mut next = Shown::new(file.clone(), at.to_string());
+    next.is_followed = true;
+    state.hunks = Some(next);
+    Flow::Show
 }
 
 /// Esc: the hunks closed, if any show.
@@ -246,6 +298,64 @@ mod tests {
         names(&state);
         step(&mut state);
         assert_eq!(shown(&state), Some(("c".into(), "line".into())));
+    }
+
+    #[test]
+    fn open_hunks_follow_the_pick_file_by_file_and_enter_makes_them_stops() {
+        let mut state = State::default();
+        let shown = |state: &State| {
+            state
+                .hunks
+                .as_ref()
+                .map(|shown| (shown.file.clone(), shown.at.clone(), shown.is_followed))
+        };
+        let row = |file: &str, at: &str| Act::Hunks {
+            file: file.into(),
+            at: at.into(),
+            is_whole: false,
+        };
+        // Nothing shows yet: the pick opens nothing by itself.
+        assert_eq!(follow(&mut state, Some(&row("a", "file"))), Flow::Same);
+        assert_eq!(shown(&state), None);
+        // Enter (or a click) opens them, scrolled into view, each hunk a stop.
+        assert_eq!(toggle_hunks(&mut state, "a".into(), "file".into(), false), Flow::Show);
+        assert_eq!(shown(&state), Some(("a".into(), "file".into(), false)));
+        // Tab on to the next file's row: its hunks instead, no stops.
+        assert_eq!(follow(&mut state, Some(&row("b", "file"))), Flow::Show);
+        assert_eq!(shown(&state), Some(("b".into(), "file".into(), true)));
+        // A row of no file (a hunk's line, a job) leaves them; the same row too.
+        let line = Act::OpenFile {
+            dir: PathBuf::from("/w"),
+            file: "b".into(),
+            line: Some(3),
+        };
+        assert_eq!(follow(&mut state, Some(&line)), Flow::Same);
+        assert_eq!(follow(&mut state, None), Flow::Same);
+        assert_eq!(follow(&mut state, Some(&row("b", "file"))), Flow::Same);
+        let all = Act::Hunks {
+            file: "c".into(),
+            at: "file".into(),
+            is_whole: true,
+        };
+        assert_eq!(follow(&mut state, Some(&all)), Flow::Same);
+        assert_eq!(shown(&state), Some(("b".into(), "file".into(), true)));
+        // Enter on the row they follow: they stay, now stops of Tab; Enter again closes them.
+        assert_eq!(toggle_hunks(&mut state, "b".into(), "file".into(), false), Flow::Redraw);
+        assert_eq!(shown(&state), Some(("b".into(), "file".into(), false)));
+        assert_eq!(toggle_hunks(&mut state, "b".into(), "file".into(), false), Flow::Redraw);
+        assert_eq!(shown(&state), None);
+        // A line of names: the pick shows its first name, Enter then steps as before.
+        toggle_hunks(&mut state, "a".into(), "file".into(), false);
+        let names = row("c", &format!("{}line", hunks::NEXT));
+        assert_eq!(follow(&mut state, Some(&names)), Flow::Show);
+        assert_eq!(shown(&state), Some(("c".into(), "line".into(), true)));
+        assert_eq!(follow(&mut state, Some(&names)), Flow::Same);
+        let step = toggle_hunks(&mut state, "c".into(), format!("{}line", hunks::NEXT), false);
+        assert_eq!(step, Flow::Redraw);
+        assert_eq!(shown(&state), Some(("c".into(), "line".into(), false)));
+        // Esc closes them.
+        assert_eq!(close_hunks(&mut state), Flow::Redraw);
+        assert_eq!(close_hunks(&mut state), Flow::Same);
     }
 
     #[test]

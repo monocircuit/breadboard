@@ -138,9 +138,16 @@ impl Session {
             .join("target/release/breadboard")
     }
 
-    /// The tab bar's status command, as the configs carry it.
+    /// herdr/breadboard.sh of the plugin's checkout: runs its binary, built
+    /// first when it is missing or older than the checkout's HEAD.
+    pub fn launcher(&self) -> PathBuf {
+        self.plugin_dir.join("breadboard.sh")
+    }
+
+    /// The tab bar's status command, as the configs carry it: through the
+    /// launcher, which never waits for a build (herdr gives it 3 s).
     pub fn status_command(&self) -> String {
-        format!("{} herdr status", self.breadboard().display())
+        format!("sh {} --no-wait herdr status", self.launcher().display())
     }
 
     /// The environment of the session's server, and so of every pane in it:
@@ -325,7 +332,7 @@ mod tests {
         assert_eq!(session.bin, PathBuf::from("/r/platform/.herdr/bin/herdr"));
         assert_eq!(
             session.status_command(),
-            "/r/platform/packages/breadboard/target/release/breadboard herdr status"
+            "sh /r/platform/packages/breadboard/herdr/breadboard.sh --no-wait herdr status"
         );
         let env = session.session_env();
         assert!(

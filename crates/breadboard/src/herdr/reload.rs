@@ -2,9 +2,10 @@
 //! into the running herdrs, the session `platform` and your own, without
 //! ending a conversation.
 
+use super::launcher::built;
 use super::own::{own_herdr, write_own_block, write_own_status};
 use super::session::{self, SESSION, Session, Target};
-use super::setup::{build, ensure_breadboard, link_plugin, linked_file_of, manifest_hash, write_config, write_linked};
+use super::setup::{ensure_breadboard, link_plugin, linked_file_of, manifest_hash, write_config, write_linked};
 use super::{Done, Fail, PLUGIN, SPACE, step};
 use breadboard_core::git::git;
 use serde_json::Value;
@@ -87,16 +88,16 @@ fn pull_develop(main: &Path) -> bool {
 }
 
 /// The rest of the reload in the main checkout's binary, built from what
-/// the pull brought (cargo is incremental: seconds when the crates didn't
-/// change); its exit code. None without cargo or a build: this process
-/// goes on with the code from before the pull, said, not hidden.
+/// the pull brought by its launcher (herdr/breadboard.sh `--built`; cargo is
+/// incremental: seconds when the crates didn't change); its exit code. None
+/// without a launcher, cargo or a build: this process goes on with the code
+/// from before the pull, said, not hidden.
 fn rerun_pulled(main: &Path) -> Option<ExitCode> {
     let package = main.join("packages/breadboard");
     let binary = package.join("target/release/breadboard");
-    step("the pulled breadboard is built (cargo build --release)");
-    if !build(&package) || !binary.is_file() {
+    if !built(&package.join("herdr/breadboard.sh")) || !binary.is_file() {
         step(
-            "it didn't build: the code from before the pull goes on, pnpm build:rs in the main checkout builds the new one",
+            "the pulled breadboard didn't build: the code from before the pull goes on, pnpm build:rs in the main checkout builds the new one",
         );
         return None;
     }
@@ -110,17 +111,25 @@ fn rerun_pulled(main: &Path) -> Option<ExitCode> {
 }
 
 /// Whether a process's command line is an overview: Node's (`overview.mjs`)
-/// or the binary's (`…/breadboard overview …`).
+/// or the binary's (`…/breadboard overview …`). A line herdr gives as one
+/// string is not split on spaces: a checkout's path may hold one.
 pub fn is_overview(cmdline: &Value) -> bool {
-    let words: Vec<String> = match cmdline {
-        Value::String(line) => line.split_whitespace().map(String::from).collect(),
-        Value::Array(words) => words.iter().filter_map(Value::as_str).map(String::from).collect(),
-        _ => return false,
-    };
-    words.iter().any(|word| word.contains("overview.mjs"))
-        || words
-            .windows(2)
-            .any(|pair| (pair[0] == "breadboard" || pair[0].ends_with("/breadboard")) && pair[1] == "overview")
+    let is_binary = |word: &str| word == "breadboard" || word.ends_with("/breadboard");
+    match cmdline {
+        Value::String(line) => {
+            line.contains("overview.mjs")
+                || line.match_indices(" overview").any(|(at, _)| {
+                    let rest = &line[at + " overview".len()..];
+                    is_binary(&line[..at]) && (rest.is_empty() || rest.starts_with(' '))
+                })
+        }
+        Value::Array(words) => {
+            let words: Vec<&str> = words.iter().filter_map(Value::as_str).collect();
+            words.iter().any(|word| word.contains("overview.mjs"))
+                || words.windows(2).any(|pair| is_binary(pair[0]) && pair[1] == "overview")
+        }
+        _ => false,
+    }
 }
 
 /// New workflow code into one herdr. The overviews quit (`q`) and the layout
@@ -244,6 +253,7 @@ fn closing(name: &str, is_stale: bool) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
 
     #[test]
     fn a_reload_without_the_pulled_build_says_the_old_code_runs() {
@@ -251,6 +261,115 @@ mod tests {
         let stale = closing("the session platform", true);
         assert!(stale.starts_with("! the session platform runs the code from before the pull until pnpm build:rs"));
         assert!(!stale.contains('✓'));
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let done = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=develop",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        String::from_utf8_lossy(&done.stdout).trim().to_string()
+    }
+
+    /// A main checkout on develop with an origin, and a second clone that pushes to it.
+    fn checkouts(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("herdr-reload-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        git_in(&root, &["init", "--quiet", "--bare", "origin.git"]);
+        git_in(&root, &["clone", "--quiet", "origin.git", "main"]);
+        let main = root.join("main");
+        fs::write(main.join("a"), "1\n").unwrap();
+        git_in(&main, &["add", "a"]);
+        git_in(&main, &["commit", "--quiet", "-m", "a"]);
+        git_in(&main, &["push", "--quiet", "origin", "develop"]);
+        git_in(&root, &["clone", "--quiet", "origin.git", "other"]);
+        (root.clone(), main, root.join("other"))
+    }
+
+    fn push_from(other: &Path) {
+        fs::write(
+            other.join("a"),
+            format!("{}1\n", fs::read_to_string(other.join("a")).unwrap()),
+        )
+        .unwrap();
+        git_in(other, &["commit", "--quiet", "-am", "more"]);
+        git_in(other, &["push", "--quiet", "origin", "develop"]);
+    }
+
+    #[test]
+    fn pulls_develop_only_clean_and_fast_forward() {
+        let (root, main, other) = checkouts("pull");
+        assert!(!pull_develop(&main), "up to date");
+        push_from(&other);
+        let head = git_in(&other, &["rev-parse", "HEAD"]);
+        // Changes in the main checkout: it stays.
+        fs::write(main.join("b"), "").unwrap();
+        assert!(!pull_develop(&main));
+        fs::remove_file(main.join("b")).unwrap();
+        // Another branch: it stays.
+        git_in(&main, &["switch", "--quiet", "-c", "feature/1-x"]);
+        assert!(!pull_develop(&main));
+        git_in(&main, &["switch", "--quiet", "develop"]);
+        assert_ne!(git_in(&main, &["rev-parse", "HEAD"]), head);
+        // Clean on develop: fast-forwarded, develop moved.
+        assert!(pull_develop(&main));
+        assert_eq!(git_in(&main, &["rev-parse", "HEAD"]), head);
+        // Diverged: no merge commit, it stays.
+        push_from(&other);
+        fs::write(main.join("c"), "").unwrap();
+        git_in(&main, &["add", "c"]);
+        git_in(&main, &["commit", "--quiet", "-m", "local"]);
+        let local = git_in(&main, &["rev-parse", "HEAD"]);
+        assert!(!pull_develop(&main));
+        assert_eq!(git_in(&main, &["rev-parse", "HEAD"]), local);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // After a pull that moved develop the rest runs in the main checkout's
+    // binary, built by its launcher first; without a build it goes on here.
+    #[test]
+    fn the_rest_of_a_reload_runs_the_pulled_build() {
+        let (root, main, _) = checkouts("rerun");
+        let package = main.join("packages/breadboard");
+        let launcher = package.join("herdr/breadboard.sh");
+        let binary = package.join("target/release/breadboard");
+        assert!(rerun_pulled(&main).is_none(), "no launcher");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        // The launcher "builds" the binary on --built.
+        fs::write(
+            &launcher,
+            format!(
+                "[ \"$1\" = --built ] || exit 9\nmkdir -p {dir}\nprintf '#!/bin/sh\\necho \"$PWD $*\" >ran\\nexit 4\\n' >{bin}\nchmod +x {bin}\n",
+                dir = binary.parent().unwrap().display(),
+                bin = binary.display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(rerun_pulled(&main), Some(ExitCode::from(4)));
+        assert_eq!(
+            fs::read_to_string(main.join("ran")).unwrap().trim(),
+            format!("{} herdr --reload --pulled", main.display())
+        );
+        // A build that fails: this process goes on (None), even with a binary from before.
+        let failing = fs::read_to_string(&launcher).unwrap().replace("|| exit 9", "&& exit 1");
+        fs::write(&launcher, failing).unwrap();
+        fs::remove_file(main.join("ran")).unwrap();
+        assert!(rerun_pulled(&main).is_none());
+        assert!(!main.join("ran").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -262,6 +381,17 @@ mod tests {
             "/r/packages/breadboard/target/release/breadboard overview --herdr"
         )));
         assert!(is_overview(&json!(["breadboard", "overview", "--orchestration", "x"])));
+        // A checkout whose path holds a space: one string, one array.
+        assert!(is_overview(&json!(
+            "/home/me/my repos/platform/packages/breadboard/target/release/breadboard overview"
+        )));
+        assert!(is_overview(&json!([
+            "/a b/target/release/breadboard",
+            "overview",
+            "--herdr"
+        ])));
+        assert!(!is_overview(&json!("/a b/target/release/breadboard overviews")));
+        assert!(!is_overview(&json!("/a b/target/release/breadboard wt:list overview")));
         assert!(!is_overview(&json!("/r/target/release/breadboard wt:list")));
         assert!(!is_overview(&json!("nvim overview.md")));
         assert!(!is_overview(&json!(null)));

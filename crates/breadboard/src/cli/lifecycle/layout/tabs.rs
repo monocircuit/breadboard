@@ -337,7 +337,16 @@ pub fn order_moves(labels: &[&str], order: &[&str]) -> Vec<usize> {
 /// moves its pane into a new tab at the end, what runs there keeps running.
 /// Focus goes back to where it was. It stops at a tab split into panes.
 pub fn keep_order(workspace: &str, order: &[&str]) {
-    let tabs = herdr::tabs_of(workspace);
+    keep_order_except(workspace, order, &[]);
+}
+
+/// `keep_order` without the tabs of `closed`: ones this pass closed, never
+/// moved back into the order (a pane of a closed tab has nothing to move).
+pub fn keep_order_except(workspace: &str, order: &[&str], closed: &[String]) {
+    let tabs: Vec<Value> = herdr::tabs_of(workspace)
+        .into_iter()
+        .filter(|tab| !closed.iter().any(|id| id == s(tab, "tab_id")))
+        .collect();
     let labels: Vec<&str> = tabs.iter().map(|tab| s(tab, "label")).collect();
     let moving = order_moves(&labels, order);
     if moving.is_empty() {

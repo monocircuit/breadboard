@@ -3,8 +3,10 @@
 //! without git's optional locks: a `git status` every few seconds would
 //! otherwise take the index lock under a commit of the same worktree.
 
-use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::process::{Command, Stdio};
 
 /// What a git call answered: `ok` its exit code was 0, `out` its output
@@ -28,9 +30,59 @@ impl Out {
     }
 }
 
+/// What git answered, by its folder and words: `remembered` answers from it.
+pub type Memo = HashMap<(PathBuf, Vec<String>), Out>;
+
+thread_local! {
+    /// The memo `remembered` set for this thread's reads.
+    static MEMO: RefCell<Option<Arc<Mutex<Memo>>>> = const { RefCell::new(None) };
+}
+
+/// The calls whose answer depends only on what a worktree's key holds (its
+/// HEAD, index, refs, the status of its files): never one that asks origin.
+const REMEMBERED: [&str; 10] = [
+    "status",
+    "reflog",
+    "rev-parse",
+    "rev-list",
+    "merge-base",
+    "diff",
+    "cherry",
+    "log",
+    "merge-tree",
+    "symbolic-ref",
+];
+
+/// `read` with this thread's git reads answered from `memo` where it holds
+/// the same call, and kept there otherwise. The caller keeps a memo only
+/// while what the calls depend on holds (reader.rs: a worktree's key), so a
+/// worktree that didn't change is read without a git process.
+pub fn remembered<T>(memo: &Arc<Mutex<Memo>>, read: impl FnOnce() -> T) -> T {
+    let was = MEMO.with(|slot| slot.replace(Some(Arc::clone(memo))));
+    let value = read();
+    MEMO.with(|slot| *slot.borrow_mut() = was);
+    value
+}
+
 /// `git <args>` in `dir`, quiet, never failing: a git that can't run answers
-/// a failed `Out`.
+/// a failed `Out`. Inside `remembered`, a read is answered from its memo.
 pub fn git(dir: &Path, args: &[&str]) -> Out {
+    let memo = MEMO
+        .with(|slot| slot.borrow().clone())
+        .filter(|_| args.first().is_some_and(|first| REMEMBERED.contains(first)));
+    let Some(memo) = memo else {
+        return run_git(dir, args);
+    };
+    let key = (dir.to_path_buf(), args.iter().map(|arg| arg.to_string()).collect());
+    if let Some(out) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return out.clone();
+    }
+    let out = run_git(dir, args);
+    memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key, out.clone());
+    out
+}
+
+fn run_git(dir: &Path, args: &[&str]) -> Out {
     let output = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -421,6 +473,23 @@ mod tests {
     use super::fixture::*;
     use super::*;
     use crate::lock::scratch::Scratch;
+
+    #[test]
+    fn answers_reads_from_its_memo_and_never_a_call_to_origin() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let memo: Arc<Mutex<Memo>> = Arc::default();
+        let head = remembered(&memo, || git(&main, &["rev-parse", "HEAD"]).out().to_string());
+        std::fs::write(main.join("x.md"), "x\n").unwrap();
+        run(&main, &["add", "."]);
+        run(&main, &["commit", "--quiet", "-m", "feat: x"]);
+        // Its memo holds what it answered: the commit isn't seen through it, it is without.
+        assert_eq!(remembered(&memo, || git(&main, &["rev-parse", "HEAD"]).out().to_string()), head);
+        assert_ne!(git(&main, &["rev-parse", "HEAD"]).out(), head);
+        // A call to origin is never kept.
+        remembered(&memo, || remote_heads(&main));
+        assert_eq!(memo.lock().unwrap().len(), 1);
+    }
 
     #[test]
     fn reads_the_porcelain_list() {

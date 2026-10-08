@@ -6,10 +6,9 @@
 //! a stop: whatever fails, it exits 0 (#306).
 //!
 //! Also the git pre-push shim of the binary (`PRE_PUSH_SHIM`,
-//! packages/breadboard/hooks/pre-push): wt:new and wt:mr install it at
-//! the cut-over (rewrite-plan step 5), until then they install Node's. Its
-//! sibling hooks/stop-answers is what settings.json's Stop hook runs then
-//! (`sh "$CLAUDE_PROJECT_DIR/packages/breadboard/hooks/stop-answers"`).
+//! packages/breadboard/hooks/pre-push): wt:new and wt:mr install it
+//! (`cli::write::mr::SHIM`). Its sibling hooks/stop-answers is what
+//! settings.json's Stop hook runs at the cut-over (`sh "$CLAUDE_PROJECT_DIR/packages/breadboard/hooks/stop-answers"`).
 
 use breadboard_core::actions::{Action, actions_file, answer_line, take_answers};
 use serde_json::json;
@@ -21,7 +20,6 @@ use std::process::ExitCode;
 /// is the binary: the pushing branch's own binary, the Node hook of an
 /// older branch, the main checkout's binary, else a refusal that says so.
 /// The marker line stays, so the installers recognise it as theirs.
-#[allow(dead_code, reason = "wt:mr's SHIM becomes it at the cut-over (rewrite-plan step 5)")]
 pub const PRE_PUSH_SHIM: &str = include_str!("../../../../hooks/pre-push");
 
 pub const USAGE: &str = "usage: breadboard hook stop-answers   (Claude Code runs it at a stop, its JSON on stdin)";
@@ -156,6 +154,8 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    const STOP_SHIM: &str = include_str!("../../../../hooks/stop-answers");
+
     /// `sh -c <shim>` run as git runs the hook, in `dir`, with `path` as PATH.
     fn run_shim(dir: &Path, path: &str) -> std::process::Output {
         std::process::Command::new("sh")
@@ -252,9 +252,44 @@ mod tests {
         fs::remove_file(&node_hook).unwrap();
         assert_eq!(said(&tree), (true, "main hook pre-push origin git@x:p.git".to_string()));
         assert_eq!(said(&main), (true, "main hook pre-push origin git@x:p.git".to_string()));
+        // The main checkout's through its launcher where it has one (it builds
+        // when the binary is older than HEAD: a pull), in the main checkout too.
+        let launcher = main.join("packages/breadboard/herdr/breadboard.sh");
+        script(&launcher, "launcher");
+        assert_eq!(
+            said(&tree),
+            (true, "launcher hook pre-push origin git@x:p.git".to_string())
+        );
+        assert_eq!(
+            said(&main),
+            (true, "launcher hook pre-push origin git@x:p.git".to_string())
+        );
+        // The Stop hook's shim the same way, a worktree's own binary as built.
+        let stop = |dir: &Path| {
+            let output = std::process::Command::new("sh")
+                .args(["-c", STOP_SHIM])
+                .current_dir(&root)
+                .env("PATH", &path)
+                .env("CLAUDE_PROJECT_DIR", dir)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        assert_eq!(stop(&tree), "launcher --no-wait hook stop-answers");
+        assert_eq!(stop(&main), "launcher --no-wait hook stop-answers");
+        script(&tree.join(binary), "own");
+        assert_eq!(stop(&tree), "own hook stop-answers");
+        fs::remove_file(tree.join(binary)).unwrap();
+        fs::remove_file(&launcher).unwrap();
+        assert_eq!(stop(&tree), "main hook stop-answers");
         // None at all: refused, never a guard that is off in silence.
         fs::remove_file(main.join(binary)).unwrap();
         let (is_ok, text) = said(&tree);
+        assert_eq!(stop(&tree), "", "no binary: the stop goes on");
         assert!(!is_ok);
         assert!(text.starts_with("✗ push refused: no push guard to run"), "{text}");
         fs::remove_dir_all(&root).unwrap();

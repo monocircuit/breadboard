@@ -293,7 +293,10 @@ pub fn auto_actions_of(
                 let what = job
                     .map(|job| format!("job {} failed", job.name))
                     .unwrap_or_else(|| "failed".into());
-                let why = match tree.and_then(|tree| tree.claude.as_ref()) {
+                // A worktree whose conversation isn't written down may still have its
+                // agent in herdr (WORKTREES names it): a click tries it, the job opens if
+                // none takes the line. Without a worktree there is no one.
+                let why = match tree {
                     None => "no agent to tell".to_string(),
                     Some(_) => facts
                         .pipeline_tries
@@ -304,7 +307,7 @@ pub fn auto_actions_of(
                     url: job.and_then(|job| job.url.clone()).unwrap_or_else(|| mr.url.clone()),
                     dir: tree.map(|tree| tree.dir.clone()),
                 };
-                let go = match tree.filter(|tree| tree.claude.is_some()) {
+                let go = match tree {
                     Some(tree) => Go::Send {
                         dir: tree.dir.clone(),
                         key: failed.clone(),
@@ -326,7 +329,9 @@ pub fn auto_actions_of(
             && let Some(unpushed) = unpushed_action_of(&issue.branch, tree, mr, facts.now)
         {
             let focus = Go::FocusAgent(tree.dir.clone());
-            let go = if unpushed.is_sent || tree.claude.is_none() {
+            // Its row says a click tells its agent: it tries herdr's agent of its tab,
+            // known conversation or not, and brings the tab to the front when none takes it.
+            let go = if unpushed.is_sent {
                 focus
             } else {
                 Go::Send {
@@ -667,6 +672,15 @@ mod tests {
         );
         assert_eq!(
             kinds(&[issue()], &gitlab),
+            [pair("pipeline", "!70 job check:vita failed: click to tell its agent")]
+        );
+        // No conversation written down: herdr may still have its agent, a click tries it.
+        let mut unbound = issue();
+        if let Some(tree) = unbound.tree.as_mut() {
+            tree.claude = None;
+        }
+        assert_eq!(
+            kinds(&[unbound], &gitlab),
             [pair("pipeline", "!70 job check:vita failed: click to tell its agent")]
         );
     }

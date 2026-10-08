@@ -117,13 +117,29 @@ pub fn exclusive<T>(run: impl FnOnce() -> T) -> T {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    DEPTH.set(DEPTH.get() + 1);
+    let _held = Held::new(lock);
     // Under the lock no other layout changes herdr: its reads are remembered
     // until a write, and forgotten when the lock goes.
-    let result = herdr::remembering(run);
-    DEPTH.set(DEPTH.get() - 1);
-    let _ = fs::remove_dir_all(&lock);
-    result
+    herdr::remembering(run)
+}
+
+/// The layout lock this thread holds: let go when it is dropped, a panic in
+/// the layout too (else every wt:new, overview and wt:herdr waited up to
+/// [`STALE`] for a lock nobody holds).
+struct Held(std::path::PathBuf);
+
+impl Held {
+    fn new(lock: std::path::PathBuf) -> Held {
+        DEPTH.set(DEPTH.get() + 1);
+        Held(lock)
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        DEPTH.set(DEPTH.get() - 1);
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 /// The whole layout from `git worktree list`: the main space, a space per
@@ -461,6 +477,21 @@ pub fn prune_spaces(repo: &Repo) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_in_a_layout_lets_the_lock_go() {
+        let lock = std::env::temp_dir().join(format!("lifecycle-layout-lock-{}", std::process::id()));
+        fs::create_dir_all(&lock).unwrap();
+        let held = lock.clone();
+        let panicked = std::panic::catch_unwind(move || {
+            let _held = Held::new(held);
+            assert_eq!(DEPTH.get(), 1);
+            panic!("a layout fails");
+        });
+        assert!(panicked.is_err());
+        assert!(!lock.exists());
+        assert_eq!(DEPTH.get(), 0);
+    }
 
     #[test]
     fn says_what_a_release_closed_and_kept() {

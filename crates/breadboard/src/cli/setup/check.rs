@@ -126,8 +126,18 @@ pub fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Ve
     }
 }
 
-/// turbo, its output shown as it comes and kept: `(code, output)`.
-fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Option<i32>, String) {
+/// How turbo ended: its exit code, or the signal that ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    Code(i32),
+    Signal(i32),
+    /// It didn't start, or its end couldn't be read.
+    Unknown,
+}
+
+/// turbo, its output shown as it comes and kept.
+fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Ended, String) {
+    use std::os::unix::process::ExitStatusExt;
     let child = Command::new(turbo)
         .args(args)
         .current_dir(dir)
@@ -137,7 +147,7 @@ fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Option<i32>, String)
         .stderr(Stdio::piped())
         .spawn();
     let Ok(mut child) = child else {
-        return (None, String::new());
+        return (Ended::Unknown, String::new());
     };
     let kept = Arc::new(Mutex::new(String::new()));
     let pump = |stream: Box<dyn Read + Send>, is_err: bool| {
@@ -156,22 +166,50 @@ fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Option<i32>, String)
     };
     let out = child.stdout.take().map(|stream| pump(Box::new(stream), false));
     let err = child.stderr.take().map(|stream| pump(Box::new(stream), true));
-    let status = child.wait().ok().and_then(|status| status.code());
+    let ended = match child.wait() {
+        Ok(status) => match (status.code(), status.signal()) {
+            (Some(code), _) => Ended::Code(code),
+            (None, Some(signal)) => Ended::Signal(signal),
+            _ => Ended::Unknown,
+        },
+        Err(_) => Ended::Unknown,
+    };
     for handle in [out, err].into_iter().flatten() {
         let _ = handle.join();
     }
     let output = kept.lock().map(|kept| kept.clone()).unwrap_or_default();
-    (status, output)
+    (ended, output)
+}
+
+/// Whether a run was stopped rather than judged: Ctrl-C reaches turbo and
+/// this process together, so turbo's end then says nothing about the code
+/// (it dies of the signal, or exits non-zero on its way out). A stop is no
+/// failure: nothing is stamped (spec §4, `commands/check.mjs` `stop`).
+fn was_stopped(is_stopped: bool, ended: Ended) -> bool {
+    is_stopped || matches!(ended, Ended::Signal(libc::SIGINT | libc::SIGTERM))
 }
 
 static STOPPED: AtomicBool = AtomicBool::new(false);
 static RUNNING_IN: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// Held while the stamp is judged and written: a stop never cuts a write in
+/// half, and one seen after turbo's end is never written as a failure.
+static STAMPING: Mutex<()> = Mutex::new(());
 
 extern "C" fn on_signal(_: libc::c_int) {
     STOPPED.store(true, Ordering::SeqCst);
 }
 
-/// SIGINT/SIGTERM while turbo runs: `running` cleared, exit 130 (turbo gets the signal too).
+/// The stopped run's end: `running` cleared, exit 130.
+fn stop() -> ! {
+    if let Some(dir) = RUNNING_IN.lock().ok().and_then(|dir| dir.clone()) {
+        write_check(&dir, json!({ "running": null }));
+    }
+    std::process::exit(130);
+}
+
+/// SIGINT/SIGTERM while turbo runs: `running` cleared, exit 130, also when
+/// turbo hasn't ended yet (it gets Ctrl-C too, and a SIGTERM sent to this
+/// process alone leaves it to end on its own, as today's).
 fn watch_signals() {
     // SAFETY: the handler only stores into an atomic.
     unsafe {
@@ -181,10 +219,8 @@ fn watch_signals() {
     thread::spawn(|| {
         loop {
             if STOPPED.load(Ordering::SeqCst) {
-                if let Some(dir) = RUNNING_IN.lock().ok().and_then(|dir| dir.clone()) {
-                    write_check(&dir, json!({ "running": null }));
-                }
-                std::process::exit(130);
+                let _stamping = STAMPING.lock();
+                stop();
             }
             thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -261,10 +297,14 @@ pub fn command() -> ExitCode {
         "--output-logs=errors-only".into(),
         "--log-order=grouped".into(),
     ]);
-    let (code, output) = run_turbo(&turbo, &args, &dir);
+    let (ended, output) = run_turbo(&turbo, &args, &dir);
+    let _stamping = STAMPING.lock();
+    if was_stopped(STOPPED.load(Ordering::SeqCst), ended) {
+        stop();
+    }
     let duration = ((now_ms() - started) as f64 / 1000.0).round() as i64;
     let at = to_iso(now_ms());
-    if code != Some(0) {
+    if ended != Ended::Code(0) {
         let failures = failures_of(&output);
         let listed: Vec<Value> = failures
             .iter()
@@ -335,6 +375,19 @@ mod tests {
             failures_line(&failures, 1),
             "@m/vita (src/a.test.ts > keeps it, +1 more) · @m/ui lint"
         );
+    }
+
+    #[test]
+    fn a_stopped_run_is_no_failure() {
+        // Ctrl-C: turbo dies of the same SIGINT, often before this process's watcher looks.
+        assert!(was_stopped(false, Ended::Signal(libc::SIGINT)));
+        assert!(was_stopped(false, Ended::Signal(libc::SIGTERM)));
+        // turbo caught it and exited non-zero: the flag decides.
+        assert!(was_stopped(true, Ended::Code(1)));
+        assert!(was_stopped(true, Ended::Code(0)));
+        assert!(!was_stopped(false, Ended::Code(1)));
+        assert!(!was_stopped(false, Ended::Signal(libc::SIGKILL)));
+        assert!(!was_stopped(false, Ended::Unknown));
     }
 
     #[test]

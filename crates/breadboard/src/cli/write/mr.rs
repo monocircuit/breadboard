@@ -43,17 +43,13 @@ static CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #(\d+)").u
 static HAS_CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #\d").unwrap());
 static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$").unwrap());
 
-/// The push guard (#184, push-guard.mjs `SHIM`), byte for byte: the hook
-/// lives in the repo, so every worktree runs the guard of its own branch.
-pub const SHIM: &str = r#"#!/bin/sh
-# monocircuit push guard (#184), installed by pnpm wt:new and wt:mr.
-top="$(git rev-parse --show-toplevel)"
-for package in breadboard workflow; do
-  hook="$top/packages/$package/src/git-hooks/pre-push.mjs"
-  [ -f "$hook" ] && exec node "$hook" "$@"
-done
-exit 0
-"#;
+/// The push guard (#184, #298) wt:new and wt:mr put into the shared hooks
+/// folder: the binary's shim (`packages/breadboard/hooks/pre-push`), which
+/// runs the guard of the pushing branch: its own binary, the Node hook of a
+/// branch from before the rewrite, else the main checkout's breadboard, and
+/// refuses when there is none. Node's shim (`exec node …pre-push.mjs`,
+/// `exit 0` without one) is replaced where found: same marker (rule 8).
+pub const SHIM: &str = crate::herdr::hook::PRE_PUSH_SHIM;
 const MARKER: &str = "monocircuit push guard (#184)";
 
 /// Puts the hook into the hooks folder all worktrees share; one that isn't

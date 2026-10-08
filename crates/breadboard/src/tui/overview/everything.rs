@@ -16,22 +16,28 @@
 //! worktrees stand under its `⇶ <name>`, a row of its own that brings its
 //! space to the front. Live, the MRs (those of no worktree here first) and
 //! the issues share what the pane has left, at least one each, then `… N
-//! more · click to show them`; `--once` prints them all. Every row is a block (#296); a click goes where it names.
+//! more · click to show them`; `--once` prints them all. The stacks no
+//! worktree has come after them: they get rows only from what the lists'
+//! first items leave. Every row is a block (#296); a click goes where it names.
 
-use super::{Act, Ctx, Fold, look};
+use super::actor::{spawn::Run, tries};
+use super::{Act, Ctx, Fold, Overview, look};
 use crate::tui::band;
 use crate::tui::page::guarded;
 use crate::tui::scene::width_of;
 use crate::tui::theme::{self, Tone};
+use crate::tui::{Flow, KeyEvent};
 use crate::tui::{Header, Page, Scene, Section};
 use breadboard_core::check::CheckState;
 use breadboard_core::git::orchestrations_dir;
 use breadboard_core::gitlab::read::{ListedIssue, ListedMr};
 use breadboard_core::herdr;
 use breadboard_core::model::Tree;
-use breadboard_core::model::everything::{EverythingModel, TreeRow, stack_cell};
+use breadboard_core::model::everything::{EverythingModel, TreeRow};
 use breadboard_core::model::order::Go;
 use breadboard_core::model::tree::{check_fact, pipeline_mark, stack_of};
+use breadboard_core::reader::Model;
+use crossterm::event::KeyCode;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use std::path::PathBuf;
@@ -62,9 +68,6 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
         Ok(rows) => page.section("WORKTREES", |scene| worktrees(scene, rows, model, ctx)),
         Err(why) => page.failed("WORKTREES", why),
     }
-    if !model.orphans.is_empty() {
-        page.section("STACKS WITHOUT A WORKTREE", |scene| orphans(scene, &model.orphans));
-    }
     if let Some(error) = &ctx.gitlab.error {
         page.section(Section::new("GITLAB").plain(), |scene| {
             look::say(scene, error, theme::tone(Tone::Red));
@@ -88,15 +91,23 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
                 let band = band::shown(&Header::default(), "", width + 2, height).len() as u16;
                 height.saturating_sub(band + page.rows() + LIST_FRAMES)
             });
+            // The stacks no worktree has come under the lists and get their
+            // rows only from what the lists' first items leave (stray stacks give way).
+            let stray = orphan_rows(&model.orphans, width);
             let ordered = others_first(&remote.mrs, rows);
             // Laid out before either is drawn, guarded as a section is (#306).
             let planned = guarded(|| {
                 let mrs = MrTable::new(&ordered, rows, width);
                 let list = IssueTable::new(&remote.issues, width);
                 let (heights_mrs, heights_issues) = (mrs.heights(width), list.heights(width));
+                let least = rows_of(&heights_mrs, heights_mrs.len().min(1))
+                    + rows_of(&heights_issues, heights_issues.len().min(1));
                 let share = |folds| match room {
                     None => (remote.mrs.len(), remote.issues.len()),
-                    Some(room) => shares(&heights_mrs, &heights_issues, room, folds),
+                    Some(room) => {
+                        let room = room.saturating_sub(stray).max(least.min(room));
+                        shares(&heights_mrs, &heights_issues, room, folds)
+                    }
                 };
                 let shown = share(folds);
                 // An opened list's fold stays where its line about more was:
@@ -121,6 +132,9 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
                 }
             }
         }
+    }
+    if !model.orphans.is_empty() {
+        page.section("STACKS WITHOUT A WORKTREE", |scene| orphans(scene, &model.orphans));
     }
     page.section(Section::new("FOOTER").plain(), |scene| {
         scene.text(
@@ -471,15 +485,20 @@ struct Layout {
     at: Option<Vec<u16>>,
 }
 
-/// A checkout's app and stack in one cell, the stack as WORKTREES of an
-/// orchestration says it: `○ :3000 stack down`, `⇒ :3000 shared`, `— no
-/// .env.local` (the port says the offset).
+/// A checkout's app and stack in one cell: `○ :3000 stack down`, `⇒ :3000
+/// shared`, `— no .env.local`.
 fn env_cell(tree: &Tree) -> Vec<Span<'static>> {
-    let stack = match env_of(tree) {
+    [app_cell(tree), vec![Span::raw(" ")], stack_word(tree)].concat()
+}
+
+/// A checkout's stack in WORKTREES' words at every width (`stack down`,
+/// `stack running`, `stack 2 running, 1 exited`, `shared`): the app's port
+/// says its offset; `no .env.local` without one.
+fn stack_word(tree: &Tree) -> Vec<Span<'static>> {
+    match env_of(tree) {
         Env::Missing => vec![look::dim("no .env.local")],
         _ => look::spans(&[stack_of(tree)]),
-    };
-    [app_cell(tree), vec![Span::raw(" ")], stack].concat()
+    }
 }
 
 /// The layout of WORKTREES in `width`: of these, the first with the most
@@ -498,7 +517,7 @@ fn layout(rows: &[&TreeRow], names: &[Vec<Span<'static>>], width: u16) -> Layout
             .zip(mr_cells(rows, false))
             .map(|(row, mr)| match is_bare {
                 true => vec![vec![], vec![], mr],
-                false => vec![app_cell(&row.tree), look::spans(&[stack_cell(&row.tree)]), mr],
+                false => vec![app_cell(&row.tree), stack_word(&row.tree), mr],
             })
             .collect(),
         envs: vec![None; rows.len()],
@@ -658,11 +677,8 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
         // Right under the rows: a blank there cost the issues their row at 80x24.
         scene.end_line();
         let start = Act::StartStack(main.tree.dir.clone());
-        scene.block(start.clone(), |scene| {
-            scene.button("▶ start the default stack", Tone::Cyan, start);
-            let hint = if ctx.is_once { "pnpm stack:up" } else { "click or u" };
-            scene.text(hint, theme::dim());
-        });
+        let run = ctx.actor.stacks.get(&main.tree.dir);
+        scene.block(start.clone(), |scene| default_stack(scene, start, run, ctx.is_once));
     }
     if !model.has_docker {
         scene.blank();
@@ -671,6 +687,54 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
             theme::tone(Tone::Yellow),
         );
     }
+}
+
+/// The default stack's button (actions.mjs `pushStackButton`): `▶ start
+/// the default stack  click or u`, a failed run's last line red after it;
+/// while it runs `◐ starting the default stack …` and its log's last line.
+fn default_stack(scene: &mut Scene<Act>, start: Act, run: Option<&Run>, is_once: bool) {
+    if let Some(run) = run.filter(|run| run.is_running) {
+        scene.button("◐ starting the default stack …", Tone::Yellow, start);
+        look::say(scene, &run.last_line(), theme::dim());
+        return;
+    }
+    scene.button("▶ start the default stack", Tone::Cyan, start);
+    scene.text(if is_once { "pnpm stack:up" } else { "click or u" }, theme::dim());
+    if let Some(why) = run.and_then(|run| run.error.as_deref()) {
+        gap(scene, 0);
+        look::say(scene, &format!("✗ {why}"), theme::tone(Tone::Red));
+    }
+}
+
+/// `u` in the view of everything: the default stack whose button shows (overview.mjs `upTarget`).
+pub fn key(app: &mut Overview, key: KeyEvent) -> Option<Flow> {
+    let Some(Model::Everything(model)) = &app.model else {
+        return None;
+    };
+    if key.code != KeyCode::Char('u') || !key.modifiers.is_empty() || !model.can_start_main {
+        return None;
+    }
+    let main = model
+        .trees
+        .as_ref()
+        .ok()?
+        .iter()
+        .find(|row| row.tree.is_main)?
+        .tree
+        .dir
+        .clone();
+    tries::start_stack(app, &main, None);
+    app.redraw();
+    Some(Flow::Redraw)
+}
+
+/// The rows STACKS WITHOUT A WORKTREE takes in a page `width` wide: its
+/// title, its rows and the blank after it; none without one.
+fn orphan_rows(orphans: &[(String, String)], width: u16) -> u16 {
+    if orphans.is_empty() {
+        return 0;
+    }
+    2 + rows_in(width, |scene| self::orphans(scene, orphans))
 }
 
 /// vita's stacks no worktree has, and how to drop one with its data.
@@ -1688,7 +1752,7 @@ mod tests {
         // Wide enough: in its column.
         let text = sheet_of(&model, 200);
         assert!(
-            text[row_of(&text, "296-")].contains("○ :3002  +2 running(5)  !308"),
+            text[row_of(&text, "296-")].contains("○ :3002  stack running  !308"),
             "{text:#?}"
         );
     }
@@ -1712,7 +1776,7 @@ mod tests {
             rows[0].tree.docker = Docker::Silent;
         }
         let all = sheet_of(&model, 120).join("\n");
-        assert!(all.contains("default ?") && !all.contains("default down"), "{all}");
+        assert!(all.contains("○ :3000  stack ?") && !all.contains("stack down"), "{all}");
         let all = sheet_of(&model, 80).join("\n");
         assert!(all.contains("○ :3000 stack ?") && !all.contains("stack down"), "{all}");
     }
@@ -1739,6 +1803,115 @@ mod tests {
         let screen = usize::from(height) - band;
         assert!(row_of(&text, "!100") < screen, "{text:#?}");
         assert!(row_of(&text, "#300") < screen, "{text:#?}");
+    }
+
+    #[test]
+    fn a_stack_reads_the_same_at_every_width() {
+        let mut model = with_env(model(0), |_| {});
+        if let Ok(rows) = &mut model.trees {
+            let tree = &mut rows[3].tree;
+            (tree.has_env, tree.has_own_port, tree.offset) = (true, true, 4);
+            tree.stack = Some("exited(1), running(2)".into());
+        }
+        for width in [80, 120, 200] {
+            let all = sheet_of(&model, width).join("\n");
+            assert!(all.contains(":3000") && all.contains("stack down"), "{width}: {all}");
+            assert!(all.contains("stack 2 running, 1 exited"), "{width}: {all}");
+            assert!(!all.contains("default") && !all.contains("+4"), "{width}: {all}");
+        }
+    }
+
+    #[test]
+    fn at_80x24_stray_stacks_give_way_to_both_lists() {
+        // The critic's world: 9 worktrees, the default stack down, two stacks of no worktree.
+        let mut model = with_env(model(64), |_| {});
+        model.can_start_main = true;
+        if let (Some(remote), Ok(rows)) = (&mut model.remote, &mut model.trees) {
+            remote.mrs = (0..14)
+                .map(|i| ListedMr {
+                    title: "refactor(vita): import @monocircuit/vita/core and /ui (#299)".into(),
+                    ..mr(100 + i, &format!("feature/{i}-import-vita-s-parts-as"), "running")
+                })
+                .collect();
+            let template = rows[1].clone();
+            for i in 0..5 {
+                let mut row = template.clone();
+                row.tree.name = format!("30{i}-overview-pipeline-cuts-its-jobs");
+                rows.push(row);
+            }
+        }
+        model.orphans = vec![
+            ("vita-gone".into(), "exited(1)".into()),
+            ("vita-old-thing".into(), "running(1)".into()),
+        ];
+        let height = 24;
+        let band = band::shown(&Header::default(), "", 80, height).len();
+        let text = sheet_in(&model, 80, Some(height)).text();
+        let screen = usize::from(height) - band;
+        assert!(row_of(&text, "!100") < screen, "{text:#?}");
+        assert!(row_of(&text, "#300") < screen, "{text:#?}");
+        // The stray stacks come after the lists, whole.
+        let stray = row_of(&text, "STACKS WITHOUT A WORKTREE");
+        assert!(stray > row_of(&text, "ISSUES"), "{text:#?}");
+        assert!(
+            text[stray + 1].contains("docker compose -p vita-gone down -v"),
+            "{text:#?}"
+        );
+        // A tall pane: every one of them on the first screen with both lists.
+        let text = sheet_in(&model, 120, Some(60)).text();
+        let band = band::shown(&Header::default(), "", 120, 60).len();
+        assert!(row_of(&text, "vita-old-thing") < 60 - band, "{text:#?}");
+        // `--once` prints them after the lists too.
+        let text = sheet_of(&model, 80);
+        assert!(
+            row_of(&text, "STACKS WITHOUT A WORKTREE") > row_of(&text, "#237"),
+            "{text:#?}"
+        );
+    }
+
+    #[test]
+    fn the_default_stack_says_where_its_run_stands() {
+        let draw = |run: Option<Run>| {
+            let mut scene = Scene::new(120);
+            let start = Act::StartStack("/repo/platform".into());
+            default_stack(&mut scene, start, run.as_ref(), false);
+            let mut page = Page::new(120);
+            page.section(Section::new("X").plain(), |into| {
+                default_stack(into, Act::Go(Go::Nothing), run.as_ref(), false)
+            });
+            page.finish().text().join("\n")
+        };
+        assert_eq!(draw(None).trim(), "▶ start the default stack  click or u");
+        let running = Run {
+            is_running: true,
+            ..Run::default()
+        };
+        assert!(draw(Some(running)).contains("◐ starting the default stack …"));
+        let failed = Run {
+            error: Some("pnpm stack:up failed".into()),
+            ..Run::default()
+        };
+        let text = draw(Some(failed));
+        assert!(
+            text.contains("▶ start the default stack  click or u  ✗ pnpm stack:up failed"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn zz_debug_regions() {
+        let mut model = model(64);
+        if let Some(remote) = &mut model.remote {
+            remote.mrs = (0..14)
+                .map(|i| mr(100 + i, &format!("feature/{i}-x"), "success"))
+                .collect();
+        }
+        let folds = super::super::Folds { is_every_mr_shown: true, ..Default::default() };
+        let sheet = sheet_with(&model, 80, Some(24), folds);
+        for (i, line) in sheet.text().iter().enumerate() { eprintln!("{i:3} {line}"); }
+        for r in &sheet.regions { eprintln!("region y={} h={} button={}", r.area.y, r.area.height, r.is_button()); }
+        for p in &sheet.sections { eprintln!("section {} from={} head={} to={}", p.name, p.from, p.head, p.to); }
+        panic!("debug");
     }
 
     #[test]

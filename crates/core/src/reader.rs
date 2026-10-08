@@ -2,32 +2,37 @@
 //! run every couple of seconds, the GitLab one for a refresh every half
 //! minute, and the model of the view built from both.
 //!
-//! Local: each worktree's facts are read again only when one of the files
-//! they come from changed (its `.claude` files, its git dir's HEAD and index,
-//! the refs of its branch and develop, its agent's transcript) or after
-//! STALE_MS (edits in the working tree touch no file git or we watch). A stat
-//! of a few dozen files is all an idle read costs: idle CPU near zero without
-//! a watcher thread or crate (rewrite rules 4 and 7).
+//! Local: each worktree's git facts are cached by its key (`Key`): the stat
+//! of its git files (HEAD, index, the refs of its branch and develop) and its
+//! `git status` with each listed file's size and time, looked at again after
+//! STALE_MS (edits in the working tree touch no file git or we watch). Under
+//! one key every git read of the worktree is answered from its memo
+//! (`git::remembered`): ahead, behind, merge base, files, cherry, develop's
+//! log, the diff, the overlaps. Its other files (`.claude`, env, its agent's
+//! transcript) move while its agent works: they make its facts read again,
+//! git asked only for its status (what the agent edited shows at once). An idle worktree costs one `git status` in
+//! STALE_MS, idle CPU near zero without a watcher thread or crate (rewrite
+//! rules 4 and 7; spec: "each is cached by its key").
 //!
 //! GitLab: `RemoteReader` holds the client, the disk cache of what is final
 //! and what the fast reads keep; it runs in a task of its own while the view
 //! draws, asked by an `Ask` the local read made.
 
 use crate::conversations::{bound_session, transcript_of};
-use crate::git::{self, git_dirs};
+use crate::git::{self, git_dirs, path_of_status};
 use crate::gitlab::Remote;
 use crate::gitlab::cache::{Cache, cache_file};
 use crate::gitlab::client::{Gitlab, GitlabError};
-use crate::gitlab::read::{self, Ask, EverythingRemote, Memory, WorktreeRemote};
+use crate::gitlab::read::{self, Ask, EverythingRemote, Memory, OpenMr, WorktreeRemote};
 use crate::herdr;
 use crate::local::{
-    self, claudes, compose_projects, containers_of, free_agents, is_port_taken, test_origin, tree_of,
+    self, claudes, compose_projects, containers_of, env_file_of, free_agents, is_port_taken, test_origin, tree_of,
     with_orchestration_facts,
 };
 use crate::model::everything::{EverythingLocal, EverythingModel, everything_of};
 use crate::model::memory::free_memory;
 use crate::model::orchestration::{OrchestrationLocal, OrchestrationModel, ViewState, orchestration_of};
-use crate::model::waiting::waiting_for;
+use crate::model::waiting::{Waiting, waiting_for};
 use crate::model::worktree::{STORYBOOK_PORT, STUDIO_PORT, WorktreeLocal, WorktreeModel, worktree_of};
 use crate::model::{Docker, Tree, develop, diff};
 use crate::record::{self, record_of};
@@ -39,7 +44,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// How long a worktree's facts hold without a change of its files: edits in the working tree touch none.
+/// How long a worktree's `git status` holds without a change of its files: edits in the working tree touch none.
 pub const STALE_MS: i64 = 15_000;
 /// How long docker's stacks hold for WORKTREES (#331: one docker read every 10–15 s, never a poll per read).
 pub const DOCKER_EVERY_MS: i64 = 12_000;
@@ -110,11 +115,102 @@ pub fn stamp_of<'a>(files: impl IntoIterator<Item = &'a PathBuf>) -> u64 {
 /// A worktree's facts as last read.
 #[derive(Debug, Clone)]
 struct Known {
-    stamp: u64,
-    at: i64,
+    /// Its git key when they were read (`Key::of`).
+    key: u64,
+    /// The stamp of its other files then (`Files::other`).
+    other: u64,
     /// Read with what an orchestration adds.
     is_full: bool,
     tree: Tree,
+}
+
+/// What git's facts of a worktree are cached by (spec: "each is cached by its
+/// key": HEAD + develop + status): the stamp of the git files they come from
+/// (HEAD, index, its branch's refs and develop's), and what `git status` said
+/// with the size and time of each file it listed (a second edit of a file
+/// already ` M` counts), looked at again after STALE_MS or when a stamp
+/// moved: its other files too (an agent at work edits what its transcript
+/// says, and `N changed` shows at once).
+#[derive(Debug, Clone, Copy)]
+struct Key {
+    stamp: u64,
+    other: u64,
+    status: u64,
+    looked_at: i64,
+}
+
+impl Key {
+    /// The key as one number: equal, and git's facts of the worktree are as read.
+    fn of(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        (self.stamp, self.status).hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// `git status --porcelain -uall` of `dir` with each listed file's size and time, hashed: one git call.
+fn status_key(dir: &Path) -> u64 {
+    let status = git::git(dir, &["status", "--porcelain", "-uall"]).stdout;
+    let mut hasher = DefaultHasher::new();
+    for line in status.split('\n').filter(|line| !line.is_empty()) {
+        line.hash(&mut hasher);
+        diff::stamp_of(&dir.join(path_of_status(line))).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The files a worktree's facts come from: git's (its key) and the others
+/// (its `.claude` files, env, its agent's transcript), which change while
+/// its agent works and git's facts don't.
+#[derive(Debug, Default)]
+struct Files {
+    git: Vec<PathBuf>,
+    other: Vec<PathBuf>,
+}
+
+/// Git answers by worktree while their key holds (`git::remembered`): read
+/// again, its facts ask git nothing.
+#[derive(Debug, Default)]
+struct Memos(HashMap<PathBuf, (u64, Arc<Mutex<git::Memo>>)>);
+
+impl Memos {
+    /// The memo of `dir` under `key`: a new one when the key moved.
+    fn of(&mut self, dir: &Path, key: u64) -> Arc<Mutex<git::Memo>> {
+        let entry = self.0.entry(dir.to_path_buf()).or_default();
+        if entry.0 != key || entry.1.lock().is_err() {
+            *entry = (key, Arc::default());
+        }
+        Arc::clone(&entry.1)
+    }
+}
+
+/// The memos of the worktrees under the keys this process's reader last
+/// found: what else reads a worktree's facts in it (the actor's sync) takes
+/// git's answers from there too.
+static MEMOS: std::sync::LazyLock<Mutex<Memos>> = std::sync::LazyLock::new(Mutex::default);
+
+/// The memo of `dir` under `key` (`MEMOS`).
+fn memo_of(dir: &Path, key: u64) -> Arc<Mutex<git::Memo>> {
+    MEMOS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .of(dir, key)
+}
+
+/// `with_orchestration_facts` of a tree this process's reader listed, git
+/// answered from its memo under the key the reader last found (as fresh as
+/// the tree itself); a tree it never keyed is read from git.
+pub fn with_orchestration_facts_remembered(tree: Tree, claudes: &[crate::conversations::Running]) -> Tree {
+    let memo = MEMOS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .0
+        .get(&tree.dir)
+        .map(|(_, memo)| Arc::clone(memo));
+    match memo {
+        Some(memo) => git::remembered(&memo, || with_orchestration_facts(tree, claudes)),
+        None => with_orchestration_facts(tree, claudes),
+    }
 }
 
 /// The local side: worktrees, records, herdr; cheap when nothing changed.
@@ -126,10 +222,11 @@ pub struct LocalReader {
     /// Whether herdr is asked (`HERDR_ENV=1`); off, its agents and chat are unknown.
     pub is_in_herdr: bool,
     known: HashMap<PathBuf, Known>,
+    /// Each worktree's git key, by its dir.
+    keys: HashMap<PathBuf, Key>,
     git_dirs: HashMap<PathBuf, Option<(PathBuf, PathBuf)>>,
     /// Where each conversation's transcript is: it stays where claude put it.
     transcripts: HashMap<String, PathBuf>,
-    diffs: diff::DiffCache,
     /// docker's stacks for WORKTREES, read on a thread of their own.
     docker: Arc<Mutex<Stacks>>,
     /// Whether a read waits for docker's answer (a print, `--once`); a live view draws without it.
@@ -179,18 +276,19 @@ impl LocalReader {
             here: here.to_path_buf(),
             view,
             known: HashMap::new(),
+            keys: HashMap::new(),
             git_dirs: HashMap::new(),
             transcripts: HashMap::new(),
-            diffs: diff::DiffCache::default(),
             docker: Arc::default(),
             should_wait_for_docker: false,
         })
     }
 
     /// The files a worktree's facts come from.
-    fn files_of(&mut self, dir: &Path, branch: &str) -> Vec<PathBuf> {
+    fn files_of(&mut self, dir: &Path, branch: &str) -> Files {
         let claude = dir.join(".claude");
-        let mut files: Vec<PathBuf> = [
+        let mut files = Files::default();
+        files.other = [
             "actions.json",
             "wait.json",
             "origin",
@@ -201,24 +299,26 @@ impl LocalReader {
         .iter()
         .map(|name| claude.join(name))
         .collect();
+        // Its stack's ports and project.
+        files.other.push(env_file_of(dir));
         let dirs = self
             .git_dirs
             .entry(dir.to_path_buf())
             .or_insert_with(|| git_dirs(dir))
             .clone();
         if let Some((own, common)) = dirs {
-            files.extend(
+            files.git.extend(
                 ["HEAD", "index", "logs/HEAD", "MERGE_HEAD"]
                     .iter()
                     .map(|name| own.join(name)),
             );
-            files.extend(
+            files.git.extend(
                 ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
                     .iter()
                     .map(|name| common.join(name)),
             );
-            files.push(common.join("refs/remotes/origin").join(branch));
-            files.push(common.join("refs/heads").join(branch));
+            files.git.push(common.join("refs/remotes/origin").join(branch));
+            files.git.push(common.join("refs/heads").join(branch));
         }
         if let Some(id) = bound_session(dir) {
             let found = match self.transcripts.get(&id) {
@@ -227,14 +327,63 @@ impl LocalReader {
             };
             if let Some(transcript) = found {
                 self.transcripts.insert(id, transcript.clone());
-                files.push(transcript);
+                files.other.push(transcript);
             }
         }
         files
     }
 
-    /// The worktrees' facts: from the last read while their files hold, else
-    /// read again, side by side (a dozen git calls each).
+    /// Each worktree's git key (`Key::of`) and the stamp of its other files,
+    /// by `(dir, branch)`: the key from the stat of its git files while they
+    /// hold and STALE_MS hasn't passed, else with one `git status` each, side by side.
+    fn keys_of(&mut self, dirs: &[(PathBuf, String)], now: i64) -> Vec<(u64, u64)> {
+        let stamps: Vec<(u64, u64)> = dirs
+            .iter()
+            .map(|(dir, branch)| {
+                let files = self.files_of(dir, branch);
+                (stamp_of(&files.git), stamp_of(&files.other))
+            })
+            .collect();
+        let keys = &self.keys;
+        let looked: Vec<Option<u64>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = dirs
+                .iter()
+                .zip(&stamps)
+                .map(|((dir, _), (stamp, other))| {
+                    let is_held = keys.get(dir).is_some_and(|key| {
+                        key.stamp == *stamp && key.other == *other && now - key.looked_at < STALE_MS
+                    });
+                    (!is_held).then(|| scope.spawn(move || status_key(dir)))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.and_then(|handle| handle.join().ok()))
+                .collect()
+        });
+        dirs.iter()
+            .zip(stamps)
+            .zip(looked)
+            .map(|(((dir, _), (stamp, other)), status)| {
+                if let Some(status) = status {
+                    let key = Key {
+                        stamp,
+                        other,
+                        status,
+                        looked_at: now,
+                    };
+                    self.keys.insert(dir.clone(), key);
+                }
+                (self.keys[dir].of(), other)
+            })
+            .collect()
+    }
+
+    /// The worktrees' facts: from the last read while their files and git
+    /// key hold (STALE_MS at most: whether its app is up, a check still runs,
+    /// its database's migrations hold no file), else read again, side by
+    /// side, git's answers from its memo while its key holds (a dozen git
+    /// calls each when it moved).
     fn trees(
         &mut self,
         list: &[(&git::Worktree, bool)],
@@ -243,31 +392,40 @@ impl LocalReader {
         claudes: &[crate::conversations::Running],
         now: i64,
     ) -> Vec<Tree> {
-        let stamps: Vec<u64> = list
+        let dirs: Vec<(PathBuf, String)> = list
             .iter()
-            .map(|(worktree, _)| {
-                let files = self.files_of(&worktree.dir, worktree.branch.as_deref().unwrap_or_default());
-                stamp_of(&files)
+            .map(|(worktree, _)| (worktree.dir.clone(), worktree.branch.clone().unwrap_or_default()))
+            .collect();
+        let keys = self.keys_of(&dirs, now);
+        let memos: Vec<Option<Arc<Mutex<git::Memo>>>> = (0..list.len())
+            .map(|at| {
+                let (key, other) = keys[at];
+                let is_held = self.known.get(&dirs[at].0).is_some_and(|known| {
+                    known.key == key
+                        && known.other == other
+                        && now - known.tree.read_at < STALE_MS
+                        && (known.is_full || !is_full)
+                });
+                (!is_held).then(|| memo_of(&dirs[at].0, key))
             })
             .collect();
-        let is_known = |at: usize, known: &HashMap<PathBuf, Known>| {
-            known.get(&list[at].0.dir).is_some_and(|known| {
-                known.stamp == stamps[at] && now - known.at < STALE_MS && (known.is_full || !is_full)
-            })
-        };
         let (main, here) = (&self.main, &self.here);
         let read: Vec<Option<Tree>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..list.len())
-                .map(|at| {
-                    (!is_known(at, &self.known)).then(|| {
+            let handles: Vec<_> = memos
+                .iter()
+                .enumerate()
+                .map(|(at, memo)| {
+                    memo.as_ref().map(|memo| {
                         let (worktree, is_main) = list[at];
                         scope.spawn(move || {
-                            let tree = tree_of(main, here, worktree, is_main, projects);
-                            if is_full {
-                                with_orchestration_facts(tree, claudes)
-                            } else {
-                                tree
-                            }
+                            git::remembered(memo, || {
+                                let tree = tree_of(main, here, worktree, is_main, projects);
+                                if is_full {
+                                    with_orchestration_facts(tree, claudes)
+                                } else {
+                                    tree
+                                }
+                            })
                         })
                     })
                 })
@@ -280,18 +438,20 @@ impl LocalReader {
         read.into_iter()
             .enumerate()
             .map(|(at, fresh)| match fresh {
-                Some(tree) => {
+                Some(mut tree) => {
+                    tree.read_at = now;
+                    let (key, other) = keys[at];
                     let known = Known {
-                        stamp: stamps[at],
-                        at: now,
+                        key,
+                        other,
                         is_full,
                         tree: tree.clone(),
                     };
-                    self.known.insert(list[at].0.dir.clone(), known);
+                    self.known.insert(dirs[at].0.clone(), known);
                     tree
                 }
                 None => {
-                    let mut tree = self.known[&list[at].0.dir].tree.clone();
+                    let mut tree = self.known[&dirs[at].0].tree.clone();
                     // The cheap parts move on their own: its stack, who stands in it.
                     tree.stack = projects.and_then(|projects| projects.get(&tree.project).cloned());
                     if is_full {
@@ -326,7 +486,9 @@ impl LocalReader {
             .map(|known| (known.tree.dir.clone(), known.tree.branch.clone()))
             .collect();
         for (dir, branch) in known {
-            files.extend(self.files_of(&dir, &branch));
+            let Files { git, other } = self.files_of(&dir, &branch);
+            files.extend(git);
+            files.extend(other);
         }
         // docker's answer, in this process or another's (the shared file): its stack cells fill in.
         let taken = locked(&self.docker).taken;
@@ -378,10 +540,18 @@ impl LocalReader {
             for tree in &mut trees {
                 (tree.docker, tree.stack) = match &stacks {
                     None => (Docker::NotYet, None),
-                    Some(None) => (Docker::Silent, None),
-                    Some(Some(projects)) => (Docker::Answered, projects.get(&tree.project).cloned()),
+                    Some((_, None)) => (Docker::Silent, None),
+                    Some((_, Some(projects))) => (Docker::Answered, projects.get(&tree.project).cloned()),
                 };
+                tree.docker_at = stacks.as_ref().map_or(0, |(at, _)| *at);
             }
+        }
+        // The migrations where a database runs (#332, STACK's line): its state is in no file, so
+        // asked beside git's held facts, each worktree's once in MIGRATIONS_HOLD_MS.
+        for tree in &mut trees {
+            let is_db_up = tree.has_env && (!tree.has_own_port || crate::model::tree::is_stack_running(tree));
+            tree.migrations = is_db_up.then(|| develop::migrations_held(&tree.dir, now)).flatten();
+            tree.migrations_at = now;
         }
         let (panes, chat) = herdr_read.join().unwrap_or_default();
         OrchestrationLocal {
@@ -405,7 +575,7 @@ impl LocalReader {
     /// docker's stacks as known now (None: no answer yet), never waiting for
     /// docker: an answer older than DOCKER_EVERY_MS is asked for again on a
     /// thread, one another process wrote to the shared file is taken at once.
-    fn stacks(&mut self, now: i64) -> Option<Option<BTreeMap<String, String>>> {
+    fn stacks(&mut self, now: i64) -> Option<(i64, Option<BTreeMap<String, String>>)> {
         let shared = local::shared_file();
         let mut stacks = locked(&self.docker);
         if let Some(file) = &shared {
@@ -434,7 +604,7 @@ impl LocalReader {
             }
             stacks = locked(&self.docker);
         }
-        stacks.held.as_ref().map(|(_, projects)| projects.clone())
+        stacks.held.clone()
     }
 
     pub fn read_worktree(&mut self, dir: &Path, now: i64) -> WorktreeLocal {
@@ -461,34 +631,57 @@ impl LocalReader {
                 .find(|pane| pane.session.as_deref() == Some(claude.id.as_str()))
                 .and_then(|pane| pane.status)
         });
-        let own_commits = if is_main {
-            0
-        } else {
-            git::own_commits(dir, &tree.branch)
-        };
         let offset = if tree.has_own_port { tree.offset } else { 0 };
-        let diff = if is_main {
-            None
+        // git's facts of the view besides the tree, from the tree's memo while its key holds.
+        let memo = memo_of(dir, self.known[dir].key);
+        let (own_commits, own_diff, develop) = if is_main {
+            (0, None, None)
         } else {
-            let others: Vec<(String, BTreeSet<String>)> = all
+            git::remembered(&memo, || {
+                let own_diff = diff::own_diff_of(dir).map(|found| (found, git::work_files(dir)));
+                (
+                    git::own_commits(dir, &tree.branch),
+                    own_diff,
+                    Some(develop::develop_of(dir)),
+                )
+            })
+        };
+        let diff = own_diff.map(|(mut found, mine)| {
+            // The files the other worktrees' work touches, each from its own memo while its key holds.
+            let others: Vec<(PathBuf, String)> = all
                 .iter()
                 .skip(1)
                 .filter(|other| other.dir != dir)
-                .map(|other| (git::feature_of(&self.main, &other.dir), git::work_files(&other.dir)))
+                .map(|other| (other.dir.clone(), other.branch.clone().unwrap_or_default()))
                 .collect();
-            self.diffs.own_diff_of(dir).map(|mut found| {
-                let mine = git::work_files(dir);
-                found.with_worktrees = others
-                    .into_iter()
-                    .map(|(name, files)| diff::Overlap {
-                        name,
-                        files: files.intersection(&mine).cloned().collect(),
-                    })
-                    .filter(|other| !other.files.is_empty())
+            let keys = self.keys_of(&others, now);
+            let memos: Vec<_> = others
+                .iter()
+                .zip(keys)
+                .map(|((other, _), (key, _))| memo_of(other, key))
+                .collect();
+            let files: Vec<BTreeSet<String>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = others
+                    .iter()
+                    .zip(&memos)
+                    .map(|((other, _), memo)| scope.spawn(move || git::remembered(memo, || git::work_files(other))))
                     .collect();
-                found
-            })
-        };
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap_or_default())
+                    .collect()
+            });
+            found.with_worktrees = others
+                .iter()
+                .zip(files)
+                .map(|((other, _), files)| diff::Overlap {
+                    name: git::feature_of(&self.main, other),
+                    files: files.intersection(&mine).cloned().collect(),
+                })
+                .filter(|other| !other.files.is_empty())
+                .collect();
+            found
+        });
         WorktreeLocal {
             dir: dir.to_path_buf(),
             is_main,
@@ -503,7 +696,7 @@ impl LocalReader {
                 Vec::new()
             },
             diff,
-            develop: (!is_main).then(|| develop::develop_of(dir)),
+            develop,
             // Only where the view shows them: a shared stack, or an own one that runs (no psql against a stack that is down).
             migrations: if tree.has_env
                 && (!tree.has_own_port || tree.stack.as_deref().is_some_and(|stack| stack.starts_with("running")))
@@ -646,6 +839,34 @@ impl RemoteReader {
     }
 }
 
+/// The open MRs `dir` builds on (`waiting_for`), its git answers kept while
+/// the refs they read hold (HEAD, develop's and each MR branch's): the model
+/// is built again on every read and GitLab answer, git asked only when one moved.
+fn waiting_of(dir: &Path, branch: &str, open: &[OpenMr]) -> Vec<Waiting> {
+    /// The git dirs of each worktree and its answers, by dir.
+    type Held = (HashMap<PathBuf, Option<(PathBuf, PathBuf)>>, Memos);
+    static HELD: std::sync::LazyLock<Mutex<Held>> = std::sync::LazyLock::new(Mutex::default);
+    let memo = {
+        let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (dirs, memos) = &mut *held;
+        let Some((own, common)) = dirs.entry(dir.to_path_buf()).or_insert_with(|| git_dirs(dir)).clone() else {
+            return waiting_for(dir, Some(branch), open, "origin/develop");
+        };
+        let mut files: Vec<PathBuf> = ["HEAD", "logs/HEAD"].iter().map(|name| own.join(name)).collect();
+        files.extend(
+            ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
+                .iter()
+                .map(|name| common.join(name)),
+        );
+        files.extend(
+            open.iter()
+                .map(|mr| common.join("refs/remotes/origin").join(&mr.branch)),
+        );
+        memos.of(dir, stamp_of(&files))
+    };
+    git::remembered(&memo, || waiting_for(dir, Some(branch), open, "origin/develop"))
+}
+
 /// The model of a view from what was read; `remote` None until GitLab answers.
 pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState, now: i64) -> Model {
     match local {
@@ -663,9 +884,7 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
             };
             // The open MRs it builds on: git knows, GitLab names them.
             let waiting = match (&local.tree, &remote) {
-                (Some(tree), Some(remote)) => {
-                    waiting_for(&local.dir, Some(&tree.branch), &remote.open, "origin/develop")
-                }
+                (Some(tree), Some(remote)) => waiting_of(&local.dir, &tree.branch, &remote.open),
                 _ => Vec::new(),
             };
             Model::Worktree(Box::new(worktree_of((**local).clone(), remote, waiting)))
@@ -761,6 +980,113 @@ mod tests {
             panic!()
         };
         assert_eq!(ask.branches, ["feature/7-seven"]);
+    }
+
+    /// `dir` with its `.git` moved away: any git call in it fails from now on (`back` returns it).
+    fn without_git(dir: &Path) -> impl FnOnce() + use<> {
+        let (link, hidden) = (dir.join(".git"), dir.join(".git-hidden"));
+        std::fs::rename(&link, &hidden).unwrap();
+        move || std::fs::rename(&hidden, &link).unwrap()
+    }
+
+    #[test]
+    fn asks_git_nothing_while_a_worktrees_key_holds() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let dir = worktree(&main, "9-nine", true);
+        write_origin(
+            &dir,
+            &Origin {
+                name: "o".into(),
+                slot: 0,
+            },
+        )
+        .unwrap();
+        let mut reader = LocalReader::new(&main, View::Orchestration("o".into())).unwrap();
+        reader.is_in_herdr = false;
+        let now = now_ms();
+        let first = reader.read_orchestration("o", now);
+        assert_eq!((first.trees[0].ahead, first.trees[0].own_commits), (1, 1));
+        let back = without_git(&dir);
+        // Its agent's files move (here: its env), git's don't: read again, git answered from memory.
+        std::fs::create_dir_all(env_file_of(&dir).parent().unwrap()).unwrap();
+        std::fs::write(env_file_of(&dir), "COMPOSE_PROJECT_NAME=vita-9\n").unwrap();
+        let again = reader.read_orchestration("o", now + 1);
+        assert!(again.trees[0].has_env);
+        assert_eq!((again.trees[0].ahead, again.trees[0].own_commits), (1, 1));
+        assert_eq!(again.trees[0].files, first.trees[0].files);
+        back();
+        // A commit moves its key: git is asked again.
+        std::fs::write(dir.join("more.md"), "x\n").unwrap();
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-q", "-m", "feat: more"]);
+        assert_eq!(reader.read_orchestration("o", now + 2).trees[0].ahead, 2);
+        // An agent at work: its files move with what it edits, which shows at once, not after STALE_MS.
+        std::fs::write(dir.join("edit.md"), "y\n").unwrap();
+        std::fs::write(dir.join(".claude/checked.json"), "{}").unwrap();
+        assert_eq!(reader.read_orchestration("o", now + 3).trees[0].changed, 1);
+    }
+
+    #[test]
+    fn reads_the_view_of_a_worktree_from_memory_while_no_key_moved() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let dir = worktree(&main, "10-ten", true);
+        let other = worktree(&main, "11-eleven", false);
+        // Both touch one file: an overlap.
+        std::fs::write(dir.join("README.md"), "ten\n").unwrap();
+        std::fs::write(other.join("README.md"), "eleven\n").unwrap();
+        let mut reader = LocalReader::new(&main, View::Worktree(dir.clone())).unwrap();
+        reader.is_in_herdr = false;
+        let now = now_ms();
+        let first = reader.read_worktree(&dir, now);
+        let overlaps = |local: &WorktreeLocal| local.diff.as_ref().unwrap().with_worktrees.clone();
+        assert_eq!(overlaps(&first).len(), 1);
+        assert_eq!(first.own_commits, 1);
+        let (back, back_other) = (without_git(&dir), without_git(&other));
+        let again = reader.read_worktree(&dir, now + 1);
+        assert_eq!(overlaps(&again), overlaps(&first));
+        assert_eq!(again.diff.as_ref().unwrap().files, first.diff.as_ref().unwrap().files);
+        assert_eq!(again.develop, first.develop);
+        assert_eq!(again.own_commits, 1);
+        back();
+        back_other();
+        // The other's work moves on (a commit): its overlap is read again, after STALE_MS at the latest.
+        run(&other, &["checkout", "-q", "--", "README.md"]);
+        let later = reader.read_worktree(&dir, now + STALE_MS);
+        assert!(overlaps(&later).is_empty(), "{:?}", overlaps(&later));
+    }
+
+    #[test]
+    fn asks_git_what_a_worktree_waits_for_only_when_a_ref_moved() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let base = worktree(&main, "12-base", true);
+        let dir = worktree(&main, "13-on-base", false);
+        run(&dir, &["reset", "-q", "--hard", "feature/12-base"]);
+        let mrs = vec![OpenMr {
+            iid: 12,
+            branch: "feature/12-base".into(),
+            ..Default::default()
+        }];
+        let counts = || -> Vec<u64> {
+            waiting_of(&dir, "feature/13-on-base", &mrs)
+                .iter()
+                .map(|found| found.count)
+                .collect()
+        };
+        assert_eq!(counts(), [1]);
+        let back = without_git(&dir);
+        assert_eq!(counts(), [1], "from memory");
+        back();
+        // The branch it builds on got a commit, pushed: its ref moved, git is asked again.
+        std::fs::write(base.join("b.md"), "b\n").unwrap();
+        run(&base, &["add", "."]);
+        run(&base, &["commit", "-q", "-m", "feat: b"]);
+        run(&base, &["push", "-q", "origin", "feature/12-base"]);
+        run(&dir, &["fetch", "-q", "origin"]);
+        run(&dir, &["merge", "-q", "--ff-only", "origin/feature/12-base"]);
+        assert_eq!(counts(), [2]);
     }
 
     #[test]

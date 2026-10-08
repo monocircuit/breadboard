@@ -163,6 +163,9 @@ pub struct Tree {
     pub stack: Option<String>,
     /// Whether docker answered when `stack` was set (#331: it may be slow to).
     pub docker: Docker,
+    /// When docker's answer `stack` comes from was read (ms), 0 without one:
+    /// a stack started after it is not told yet.
+    pub docker_at: i64,
     /// Files changed, new or deleted.
     pub changed: usize,
     /// Commits develop doesn't have.
@@ -181,6 +184,18 @@ pub struct Tree {
     pub files: BTreeSet<String>,
     /// Of `files`, the ones develop changed too since the merge base (#332).
     pub on_develop: Vec<String>,
+    /// The files a `git merge origin/develop` would stop at (#332, DEVELOP's
+    /// `git merge-tree`), asked only where `on_develop` has any: empty, it
+    /// merges cleanly; None where git can't tell or nothing was asked.
+    pub conflicts: Option<Vec<String>>,
+    /// The migrations its database lacks (#332, STACK's line): an
+    /// orchestration's read asks where its database runs (`develop::migrations_held`,
+    /// apart from git's cached facts); None without psql or a journal.
+    pub migrations: Option<develop::Migrations>,
+    /// When `migrations` was asked (ms), 0 never: a `pnpm pg:migrate` that ended after it isn't in it.
+    pub migrations_at: i64,
+    /// When its facts were read (ms): an act that ended after it isn't in them yet.
+    pub read_at: i64,
     /// What the commits of its branch touched (git.rs `branch_files`): what its agent knows.
     pub branch_files: Vec<String>,
     /// Commits of develop it lacks.

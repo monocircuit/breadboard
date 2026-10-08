@@ -173,6 +173,9 @@ pub struct Summary<'a> {
     pub is_stack_only: bool,
     /// The main checkout had no .env.local: the worktree has no stack, shared or own.
     pub is_stackless: bool,
+    /// origin refused the claim: the line says so, never `pushed` (round 7;
+    /// today's said `pushed` under its own `! origin refused the branch`).
+    pub is_unpushed: bool,
 }
 
 impl Default for Summary<'_> {
@@ -188,6 +191,7 @@ impl Default for Summary<'_> {
             origin: None,
             is_stack_only: false,
             is_stackless: false,
+            is_unpushed: false,
         }
     }
 }
@@ -204,8 +208,14 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         origin,
         is_stack_only,
         is_stackless,
+        is_unpushed,
     } = summary;
     let dir = dir.display();
+    let claim = if *is_unpushed {
+        format!("{branch} not pushed (git push -u origin {branch})")
+    } else {
+        format!("{branch} pushed")
+    };
     let port = 3000 + u32::from(*offset);
     let herdr = tab.as_ref().map(|tab| format!(", herdr: {tab}")).unwrap_or_default();
     if let Some(origin) = origin {
@@ -214,10 +224,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         } else {
             String::new()
         };
-        return format!(
-            "\n✓ {branch} pushed, worktree ready for {}{herdr}{own}\n",
-            label(origin)
-        );
+        return format!("\n✓ {claim}, worktree ready for {}{herdr}{own}\n", label(origin));
     }
     let mut sweep = String::new();
     if *stale > 0 {
@@ -255,7 +262,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         } else {
             String::new()
         };
-        return format!("\n✓ {branch} pushed, worktree ready{herdr}\n  {enter}{own}{sweep}\n");
+        return format!("\n✓ {claim}, worktree ready{herdr}\n  {enter}{own}{sweep}\n");
     }
     let base = Path::new(&dir.to_string())
         .file_name()
@@ -274,6 +281,11 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         "shared with the main checkout (pnpm wt:stack for an own one)".to_string()
     };
     let head = tab.as_ref().map(|tab| format!("\n▸ herdr: {tab}")).unwrap_or_default();
+    let unpushed = if *is_unpushed {
+        format!(", not pushed: git push -u origin {branch}")
+    } else {
+        String::new()
+    };
     let flag = if *offset > 0 {
         format!(" --port {port}")
     } else {
@@ -290,7 +302,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         format!("cd {VITA} && pnpm dev{flag}   → http://localhost:{port}{only}")
     };
     format!(
-        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from origin/develop)\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
+        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from origin/develop{unpushed})\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
     )
 }
 
@@ -512,5 +524,18 @@ mod tests {
         assert!(stackless.contains("  stack      none: the main checkout has no .env.local"));
         assert!(stackless.ends_with("  vita:  no stack, so no pnpm dev yet\n"));
         assert!(!stackless.contains("shared with the main checkout") && !stackless.contains("localhost"));
+        // origin refused the claim: never `pushed`.
+        let unpushed = || Summary {
+            dir,
+            branch: "feature/40-x",
+            is_unpushed: true,
+            ..Summary::default()
+        };
+        let agent = summary_text(&unpushed(), true, |name| name.into());
+        assert!(agent.starts_with("\n✓ feature/40-x not pushed (git push -u origin feature/40-x), worktree ready\n"));
+        let human = summary_text(&unpushed(), false, |name| name.into());
+        assert!(human.contains(
+            "  branch     feature/40-x (from origin/develop, not pushed: git push -u origin feature/40-x)\n"
+        ));
     }
 }

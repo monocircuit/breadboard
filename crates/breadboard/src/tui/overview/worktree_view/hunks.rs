@@ -38,6 +38,10 @@ pub struct Shown {
     pub at: String,
     /// All of its lines, not only the first LINES.
     pub is_whole: bool,
+    /// Shown because the pick moved onto its row (acts.rs `follow`): its
+    /// hunks are no stops of Tab, so Tab goes on to the next file, until
+    /// Enter on the row.
+    pub is_followed: bool,
     /// The file's counts and stamp it was read at, and what it read.
     read: RefCell<Option<(Key, String, Sides)>>,
     /// The files of the line of names it shows under, as last drawn: where a step goes next.
@@ -84,6 +88,7 @@ impl Shown {
             file,
             at,
             is_whole: false,
+            is_followed: false,
             read: RefCell::new(None),
             line: RefCell::new(Vec::new()),
         }
@@ -248,12 +253,18 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
     } else {
         "· a line: nvim there"
     };
-    let next = if shown.line.borrow().len() > 1 {
+    // The keys say themselves here too: a narrow band drops `Tab Enter pick a row`.
+    let tab = match (is_gone, shown.is_followed) {
+        (true, _) => "",
+        (false, true) => " · Tab: next file · Enter: Tab into its hunks",
+        (false, false) => " · Tab: hunk by hunk",
+    };
+    let next = if !shown.is_followed && shown.line.borrow().len() > 1 {
         " · Enter on its line: next name"
     } else {
         ""
     };
-    look::say(scene, &format!("{hint}{next} · Esc closes"), theme::dim());
+    look::say(scene, &format!("{hint}{tab}{next} · Esc closes"), theme::dim());
     scene.indent(0);
     scene.end_line();
     let numbers = [Some(&sides.here), sides.develop.as_ref()]
@@ -272,6 +283,7 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
         gutter,
         left: if shown.is_whole { usize::MAX } else { LINES },
         hidden: 0,
+        is_stop: !shown.is_followed,
     };
     match &sides.develop {
         None => side.draw(scene, &sides.here, !is_gone),
@@ -289,12 +301,18 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
             at: shown.at.clone(),
             is_whole: true,
         };
-        scene.block(whole, |scene| {
+        let rows = if more == 1 { "line" } else { "lines" };
+        let text = format!("… {more} more {rows}, click: all of them");
+        let draw = |scene: &mut Scene<Act>| {
             scene.indent(AT);
-            let rows = if more == 1 { "line" } else { "lines" };
-            scene.text(&format!("… {more} more {rows}, click: all of them"), theme::dim());
+            scene.text(&text, theme::dim());
             scene.indent(0);
-        });
+        };
+        if side.is_stop {
+            scene.block(whole, draw);
+        } else {
+            line_button(scene, AT, format!("{file}: all lines"), whole, draw);
+        }
     }
 }
 
@@ -314,6 +332,8 @@ struct Side<'a> {
     gutter: u16,
     left: usize,
     hidden: usize,
+    /// Each hunk a stop of Tab; else (followed hunks) only its lines click.
+    is_stop: bool,
 }
 
 impl Side<'_> {
@@ -345,18 +365,26 @@ impl Side<'_> {
                 hunk.iter().for_each(|line| draw_line(scene, line, self.gutter));
                 continue;
             }
-            scene.block(self.open_at(first_change(hunk)), |scene| {
+            let first = first_change(hunk);
+            let lines = |scene: &mut Scene<Act>| {
                 for line in hunk {
-                    if line.kind == Kind::Head {
+                    // The `@@` row is the hunk's own: as its block, or a button to its first change.
+                    if line.kind == Kind::Head && self.is_stop {
                         draw_line(scene, line, self.gutter);
                         continue;
                     }
-                    let label = format!("{}:{}", self.file, line.at);
-                    line_button(scene, AT, label, self.open_at(line.at), |scene| {
+                    let at = if line.kind == Kind::Head { first } else { line.at };
+                    let label = format!("{}:{at}", self.file);
+                    line_button(scene, AT, label, self.open_at(at), |scene| {
                         draw_line(scene, line, self.gutter)
                     });
                 }
-            });
+            };
+            if self.is_stop {
+                scene.block(self.open_at(first), lines);
+            } else {
+                lines(scene);
+            }
         }
     }
 }
@@ -576,8 +604,8 @@ mod tests {
         assert_eq!(
             text(&scene),
             [
-                "  src/a.ts · a line: nvim there · Esc",
-                "  closes",
+                "  src/a.ts · a line: nvim there · Tab:",
+                "  hunk by hunk · Esc closes",
                 "    @@ -1,3 +1,3 @@ fn x",
                 "    1   one",
                 "      − two",
@@ -610,6 +638,32 @@ mod tests {
     }
 
     #[test]
+    fn hunks_that_follow_the_pick_are_lines_to_click_not_stops_of_tab() {
+        let mut shown = Shown::new("src/a.ts".into(), "row".into());
+        shown.is_followed = true;
+        let dir = std::env::temp_dir().join(format!("breadboard-followed-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.ts"), "one\nzwei\nthree\n").unwrap();
+        let mut lines = parse(DIFF);
+        lines.extend(parse("@@ -9,2 +10 @@\n ten\n-gone\n"));
+        stored(&shown, &dir, (1, 1, false), Read::Lines(lines), None);
+        let mut scene = Scene::new(120);
+        draw(&mut scene, &shown, &dir, (1, 1, false), false);
+        scene.finish();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            text(&scene)[0],
+            "  src/a.ts · a line: nvim there · Tab: next file · Enter: Tab into its hunks · Esc closes"
+        );
+        // No stops: Tab goes on to the next file's row.
+        assert_eq!(stops(&scene), []);
+        // Every line still clicks, the `@@` row to the hunk's first change.
+        assert_eq!(act_at(&scene, 10, 1), open(&dir, 2));
+        assert_eq!(act_at(&scene, 10, 4), open(&dir, 2));
+        assert_eq!(act_at(&scene, 10, 6), open(&dir, 10));
+    }
+
+    #[test]
     fn a_file_develop_changed_too_shows_both_sides_and_only_ours_opens() {
         let shown = Shown::new("README.md".into(), "conflicts".into());
         assert!(shown.is_both());
@@ -634,7 +688,7 @@ mod tests {
         assert_eq!(
             text(&scene),
             [
-                "  README.md · a line here: nvim there · Esc closes",
+                "  README.md · a line here: nvim there · Tab: hunk by hunk · Esc closes",
                 "  here",
                 "    @@ -1 +1,2 @@",
                 "      − # platform",

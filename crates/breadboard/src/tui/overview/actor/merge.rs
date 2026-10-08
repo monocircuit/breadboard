@@ -13,7 +13,7 @@ use super::{Actor, Poster, browser, herdr};
 use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of, answered_of, done_action};
 use breadboard_core::git::{git, work_files};
-use breadboard_core::gitlab::{Mr, Pipeline, boxes_of};
+use breadboard_core::gitlab::{IssueBox, Mr, Pipeline, boxes_of};
 use breadboard_core::model::merge::blockers_of;
 use breadboard_core::model::order::{Go, MergeOffer};
 use breadboard_core::model::{Paint, Span};
@@ -117,6 +117,24 @@ pub fn reason_of(error: &str) -> String {
     }
     let last = without_http(text.lines().last().unwrap_or_default());
     if last.is_empty() { "GitLab refused".into() } else { last }
+}
+
+/// Why a read before the merge failed, in words: what it names is the
+/// caller's (`#305 not read: …`), never `the MR` for an issue.
+pub fn read_reason(error: &str) -> String {
+    let text = error.trim();
+    if has_code(text, &["401", "403"]) {
+        return "GitLab refuses to show it to you".into();
+    }
+    if has_code(text, &["404"]) {
+        return "GitLab doesn't find it".into();
+    }
+    let last = without_http(text.lines().last().unwrap_or_default());
+    if last.is_empty() {
+        "GitLab did not answer".into()
+    } else {
+        last
+    }
 }
 
 /// An MR as GitLab's REST answers it, in the shape the blockers read.
@@ -315,23 +333,38 @@ impl Running {
         }
     }
 
-    /// The MR fresh from GitLab, with its squash setting.
+    /// The MR fresh from GitLab, with its squash setting; Err: `!316 not read: <why>`.
     fn read_mr(&self) -> Result<(Mr, bool), String> {
-        glab::get(&self.main, &mr_endpoint(self.iid)).map(|value| {
-            let squash = value.get("squash").and_then(Value::as_bool).unwrap_or(false);
-            (mr_of_rest(&value), squash)
-        })
+        glab::get(&self.main, &mr_endpoint(self.iid))
+            .map(|value| {
+                let squash = value.get("squash").and_then(Value::as_bool).unwrap_or(false);
+                (mr_of_rest(&value), squash)
+            })
+            .map_err(|error| format!("!{} not read: {}", self.iid, read_reason(&error)))
+    }
+
+    /// The boxes of its issue fresh from GitLab, none without one; Err: `#305 not read: <why>`.
+    fn read_boxes(&self) -> Result<Vec<IssueBox>, String> {
+        let Some(number) = self.number else {
+            return Ok(Vec::new());
+        };
+        glab::get(&self.main, &format!("projects/:fullpath/issues/{number}"))
+            .map(|issue| boxes_of(issue.get("description").and_then(Value::as_str).unwrap_or_default()))
+            .map_err(|error| format!("#{number} not read: {}", read_reason(&error)))
     }
 
     /// Steps 1–5 of `runMerge`: Ok with the MR as merged at and its squash setting, Err why not.
     fn merge(&self) -> Result<(Mr, bool), String> {
-        let boxes = match self.number {
-            Some(number) => glab::get(&self.main, &format!("projects/:fullpath/issues/{number}"))
-                .map(|issue| boxes_of(issue.get("description").and_then(Value::as_str).unwrap_or_default()))
-                .map_err(|error| reason_of(&error))?,
-            None => Vec::new(),
-        };
-        let (mut fresh, mut squash) = self.read_mr().map_err(|error| reason_of(&error))?;
+        // The MR and its issue at once, as Node's Promise.all: one round trip before the PUT.
+        let (boxes, first) = std::thread::scope(|scope| {
+            let boxes = scope.spawn(|| self.read_boxes());
+            let first = self.read_mr();
+            let boxes = boxes.join().unwrap_or_else(|_| Err("its issue not read".into()));
+            (boxes, first)
+        });
+        let cant = |why: String| format!("can't merge: {why}");
+        let boxes = boxes.map_err(cant)?;
+        let (mut fresh, mut squash) = first.map_err(cant)?;
         let (actions, answered) = self.tries();
         let blockers = blockers_of(Some(&fresh), &boxes, self.can_mark_ready, &actions, &answered);
         if !blockers.is_empty() {
@@ -358,7 +391,7 @@ impl Running {
                 app.redraw();
             });
             std::thread::sleep(RETRY);
-            (fresh, squash) = self.read_mr().map_err(|error| reason_of(&error))?;
+            (fresh, squash) = self.read_mr().map_err(cant)?;
             if fresh.merge_status.as_deref() != Some("mergeable") {
                 let blockers = blockers_of(Some(&fresh), &boxes, false, &actions, &answered);
                 let why = if blockers.is_empty() {
@@ -390,7 +423,8 @@ impl Running {
             &[("title", ready_title(&fresh.title))],
         )
         .map_err(|error| reason_of(&error))?;
-        let mut ready = self.read_mr().map_err(|error| reason_of(&error))?;
+        let marked = |why: String| format!("marked ready, can't merge: {why}");
+        let mut ready = self.read_mr().map_err(marked)?;
         for _ in 1..SETTLE_TRIES {
             let is_checking = ready
                 .0
@@ -401,7 +435,7 @@ impl Running {
                 break;
             }
             std::thread::sleep(SETTLE);
-            ready = self.read_mr().map_err(|error| reason_of(&error))?;
+            ready = self.read_mr().map_err(marked)?;
         }
         Ok(ready)
     }
@@ -606,6 +640,10 @@ mod tests {
         assert_eq!(reason_of("x\nglab: 404 not found"), "GitLab doesn't find the MR");
         assert_eq!(reason_of("first\nboom (HTTP 500)"), "boom");
         assert_eq!(reason_of("HTTP 500"), "GitLab refused");
+        // A read names what it read: an issue's 404 is not the MR's.
+        assert_eq!(read_reason("glab: 404 Not Found"), "GitLab doesn't find it");
+        assert_eq!(read_reason("glab: 403 Forbidden"), "GitLab refuses to show it to you");
+        assert_eq!(read_reason("connection refused (HTTP 502)"), "connection refused");
     }
 
     #[test]

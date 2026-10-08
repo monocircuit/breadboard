@@ -684,10 +684,15 @@ fn release(root: &Path, args: &Args) {
         String::new()
     };
     outln!(
-        "✓ {CHANGELOG}: [{version}] with {} entries, {} fragments deleted, vita at {version}{note}\n  Read it, then commit: chore(release): v{version}",
-        all.len(),
-        entries.len()
+        "✓ {CHANGELOG}: [{version}] with {}, {} deleted, vita at {version}{note}\n  Read it, then commit: chore(release): v{version}",
+        counted(all.len(), "entry", "entries"),
+        counted(entries.len(), "fragment", "fragments")
     );
+}
+
+/// `1 entry`, `2 entries`.
+fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
 }
 
 fn notes(root: &Path, args: &Args) {
@@ -754,6 +759,13 @@ pub fn command(sub: &str, args: &Args) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_one_and_many() {
+        assert_eq!(counted(1, "entry", "entries"), "1 entry");
+        assert_eq!(counted(2, "entry", "entries"), "2 entries");
+        assert_eq!(counted(1, "fragment", "fragments"), "1 fragment");
+    }
 
     #[test]
     fn says_what_is_wrong_with_a_version() {

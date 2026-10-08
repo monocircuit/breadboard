@@ -132,18 +132,23 @@ pub fn ensure_binary(session: &Session) -> Result<(), Fail> {
     let (name, sha) = asset()?;
     step(&format!("download herdr {VERSION} ({name})"));
     let url = format!("https://github.com/herdrdev/herdr/releases/download/v{VERSION}/{name}");
-    let data = fetch(&url)?;
-    let actual = sha256_hex(&data);
+    install_checked(&session.bin, &fetch(&url)?, name, sha)
+}
+
+/// `data` as the executable `bin` when its sha256 is the pinned `sha`, else
+/// nothing written: a download that isn't the release never runs.
+fn install_checked(bin: &Path, data: &[u8], name: &str, sha: &str) -> Result<(), Fail> {
+    let actual = sha256_hex(data);
     if actual != sha {
         return Err(format!("{name} has sha256 {actual}, pinned is {sha}: not installed").into());
     }
-    let dir = session.bin.parent().unwrap_or(Path::new("."));
+    let dir = bin.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    let partial = session.bin.with_extension("download");
-    fs::write(&partial, &data)
+    let partial = bin.with_extension("download");
+    fs::write(&partial, data)
         .and_then(|()| fs::set_permissions(&partial, fs::Permissions::from_mode(0o755)))
-        .and_then(|()| fs::rename(&partial, &session.bin))
-        .map_err(|error| format!("{}: {error}", session.bin.display()).into())
+        .and_then(|()| fs::rename(&partial, bin))
+        .map_err(|error| format!("{}: {error}", bin.display()).into())
 }
 
 /// The body of a GET, Err when it can't be had or answers no 2xx.
@@ -182,14 +187,15 @@ pub fn sha256_hex(data: &[u8]) -> String {
 
 /// A tab bar status command as a config's `command = "…"` holds it:
 /// Node's (`node <…>/run.mjs status`, a config written before the binary,
-/// a line you added by hand, a moved package's) or a binary's (`<…>/breadboard
-/// herdr status`, maybe of a checkout that moved or isn't built). Group 2 is
-/// the command, 1 and 3 what is around it.
+/// a line you added by hand, a moved package's), the launcher's (`sh <…>/
+/// breadboard.sh --no-wait herdr status`) or a binary's run directly (`<…>/
+/// breadboard herdr status`, the rewrite's first form). Group 2 is the
+/// command, 1 and 3 what is around it.
 fn status_value() -> &'static Regex {
     static VALUE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     VALUE.get_or_init(|| {
         Regex::new(
-            r#"(command\s*=\s*["'])((?:node\s+[^\s"']*/run\.mjs|(?:[^\s"']*/)?breadboard\s+herdr)\s+status)(["'])"#,
+            r#"(command\s*=\s*["'])((?:node\s+[^\s"']*/run\.mjs|sh\s+[^\s"']*/breadboard\.sh(?:\s+--no-wait)?\s+herdr|(?:[^\s"']*/)?breadboard\s+herdr)\s+status)(["'])"#,
         )
         .expect("a valid pattern")
     })
@@ -252,37 +258,20 @@ pub fn with_status_entry(text: &str, command: &str) -> String {
     format!("{}{with_entry}{}", &text[..ui], &text[end..])
 }
 
-/// `cargo build --release` of the breadboard package in `package`, its
-/// progress on this terminal. Whether it built.
-pub fn build(package: &Path) -> bool {
-    Command::new("cargo")
-        .args(["build", "--release"])
-        .current_dir(package)
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
 /// The breadboard the plugin's manifest and the tab bar's status run (the
-/// plugin's checkout's): built when it is missing, else said with what to
-/// run. Never a failure: the session itself runs without it, but without
-/// a word its actions and the tab bar would fail every 10 s.
+/// plugin's checkout's) built from its HEAD: herdr/breadboard.sh `--built`
+/// builds it when it is missing or older, its progress on this terminal.
+/// Never a failure: the session itself runs without it, but without a word
+/// its actions and the tab bar would wait for a build or fail.
 pub fn ensure_breadboard(session: &Session) {
-    let binary = session.breadboard();
-    if binary.is_file() {
-        return;
+    if !super::launcher::built(&session.launcher()) && !session.breadboard().is_file() {
+        let package = session.plugin_dir.parent().unwrap_or(&session.plugin_dir);
+        println!(
+            "! {} is missing: the plugin's keys and the tab bar's status work once it is built (pnpm build:rs in {})",
+            shown(&session.breadboard()),
+            shown(package)
+        );
     }
-    let package = session.plugin_dir.parent().unwrap_or(&session.plugin_dir);
-    if package.join("Cargo.toml").is_file() {
-        step(&format!("{} isn't built: cargo build --release", shown(&binary)));
-        if build(package) && binary.is_file() {
-            return;
-        }
-    }
-    println!(
-        "! {} is missing: the plugin's keys and the tab bar's status fail until it is built (pnpm build:rs in {})",
-        shown(&binary),
-        shown(package)
-    );
 }
 
 /// What `write_config` wrote.
@@ -531,8 +520,8 @@ mod tests {
     }
 
     #[test]
-    fn the_old_status_becomes_the_binarys_once() {
-        let command = "/repo/packages/breadboard/herdr/../target/release/breadboard herdr status";
+    fn the_old_status_becomes_the_launchers_once() {
+        let command = "sh /repo/packages/breadboard/herdr/breadboard.sh --no-wait herdr status";
         let text = format!(
             "[ui]\ntab_bar_right = [{}, {{ type = \"zoom\" }}]",
             entry(&format!("node {RUN} status"))
@@ -550,12 +539,14 @@ mod tests {
 
     #[test]
     fn finds_every_form_of_the_status_and_nothing_else() {
-        let command = "/r/packages/breadboard/target/release/breadboard herdr status";
+        let command = "sh /r/packages/breadboard/herdr/breadboard.sh --no-wait herdr status";
         for old in [
             "command = \"node /a b/run.mjs status\"",
             "command='node /x/herdr/run.mjs status'",
             "command = \"/y/target/release/breadboard herdr status\"",
             "command = \"breadboard herdr status\"",
+            "command = \"sh /moved/packages/breadboard/herdr/breadboard.sh --no-wait herdr status\"",
+            "command = \"sh /moved/herdr/breadboard.sh herdr status\"",
         ] {
             let text = format!("[ui]\ntab_bar_right = [{{ type = \"command\", {old} }}]\n");
             let next = with_current_status(&text, command);
@@ -573,9 +564,38 @@ mod tests {
             "command = \"node run.mjs status\"",
             "# node /x/run.mjs status",
             "command = \"/y/breadboard herdr statusbar\"",
+            "command = \"sh /y/breadboard.sh --no-wait herdr restore\"",
         ] {
             assert!(!has_status(other), "{other}");
         }
+    }
+
+    #[test]
+    fn installs_only_a_download_with_the_pinned_sha256() {
+        let root = std::env::temp_dir().join(format!("herdr-install-{}", std::process::id()));
+        let bin = root.join(".herdr/bin/herdr");
+        let data = b"#!/bin/sh\necho herdr\n";
+        // Not the release: refused, nothing written, nothing half written.
+        let refused = install_checked(&bin, data, "herdr-linux-x86_64", &"0".repeat(64)).unwrap_err();
+        assert!(
+            refused.0.starts_with(&format!(
+                "herdr-linux-x86_64 has sha256 {}, pinned is 000",
+                sha256_hex(data)
+            )),
+            "{}",
+            refused.0
+        );
+        assert!(!bin.exists() && !bin.with_extension("download").exists());
+        // The release: executable where the session runs it.
+        install_checked(&bin, data, "herdr-linux-x86_64", &sha256_hex(data)).unwrap();
+        assert_eq!(fs::read(&bin).unwrap(), data);
+        assert_eq!(fs::metadata(&bin).unwrap().permissions().mode() & 0o111, 0o111);
+        assert!(!bin.with_extension("download").exists());
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

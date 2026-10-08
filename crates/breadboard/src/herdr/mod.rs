@@ -12,10 +12,15 @@
 //! breadboard hook stop-answers         Claude Code's Stop hook: answers of the overview
 //! ```
 //!
+//! What starts it on its own (the manifest, the tab bar, the hooks' shims)
+//! goes through herdr/breadboard.sh (`launcher`): built first when missing
+//! or older than the checkout's HEAD.
+//!
 //! One word for both halves: a plugin action is a word (`restore`, `open`,
 //! `pane`, `status`), the session takes flags only (rewrite-log).
 
 pub mod hook;
+mod launcher;
 mod own;
 mod plugin;
 mod reload;
@@ -99,7 +104,7 @@ pub fn finish(done: Done) -> ExitCode {
 }
 
 /// This binary as it was started: `argv[0]` against the cwd it started in
-/// (the manifest's `../target/release/breadboard`), not the file
+/// (herdr/breadboard.sh execs it by its path), not the file
 /// `/proc/self/exe` names. A rebuild replaces that file while a pane runs,
 /// and the kernel then names the old one `… (deleted)`: every command the
 /// pane started after it failed with ENOENT. A bare name (found on PATH)
@@ -110,6 +115,15 @@ pub fn started_binary() -> PathBuf {
         std::env::current_dir().ok().as_deref(),
         std::env::current_exe().ok(),
     )
+}
+
+/// `config` with every tab bar status of the plugin run as `herdr:install`
+/// writes it for the plugin in `plugin_dir` of `main`, the rest byte for
+/// byte: the lifecycle commands' #230 heal writes the same when it rewrites
+/// a gone path (one way to say the status, rewrite rule 4).
+pub fn with_status_of(config: &str, main: &Path, plugin_dir: &Path) -> String {
+    let session = session::Session::at(main.to_path_buf(), plugin_dir.to_path_buf());
+    setup::with_current_status(config, &session.status_command())
 }
 
 fn started_from(arg0: Option<PathBuf>, cwd: Option<&Path>, exe: Option<PathBuf>) -> PathBuf {
@@ -167,6 +181,12 @@ fn session_flags(args: &[String]) -> ExitCode {
     if let Some(unknown) = args.iter().find(|arg| !FLAGS.contains(&arg.as_str())) {
         return usage_error(&format!("herdr takes no {unknown}"));
     }
+    let has_plugin_env = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if is_plugin_without_action(args, &has_plugin_env) {
+        return usage_error(
+            "herdr ran this as a plugin command without an action: herdr-plugin.rs.toml names one for each (restore, open, pane, status); a session is set up from a terminal (pnpm herdr)",
+        );
+    }
     let has = |flag: &str| args.iter().any(|arg| arg == flag);
     finish(session::Session::find().and_then(|session| {
         if has("--install") {
@@ -183,9 +203,30 @@ fn session_flags(args: &[String]) -> ExitCode {
     }))
 }
 
+/// Whether bare `breadboard herdr` (the whole `pnpm herdr`) was started by
+/// herdr as a plugin command: its manifest entry lost the action word. herdr
+/// gives a plugin's commands its id, state directory and context; a session
+/// set up from there would open a window or attach in no terminal.
+fn is_plugin_without_action(args: &[String], has_env: &dyn Fn(&str) -> bool) -> bool {
+    args.is_empty()
+        && ["HERDR_PLUGIN_ID", "HERDR_PLUGIN_STATE_DIR", "HERDR_PLUGIN_CONTEXT_JSON"]
+            .into_iter()
+            .any(has_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_command_without_an_action_sets_no_session_up() {
+        let plugin = |name: &str| name == "HERDR_PLUGIN_STATE_DIR";
+        let terminal = |_: &str| false;
+        assert!(is_plugin_without_action(&[], &plugin));
+        assert!(!is_plugin_without_action(&[], &terminal));
+        // The reload pane runs `herdr --reload` from a plugin command: a flag, deliberate.
+        assert!(!is_plugin_without_action(&["--reload".into()], &plugin));
+    }
 
     #[test]
     fn the_binary_is_the_path_it_was_started_by() {

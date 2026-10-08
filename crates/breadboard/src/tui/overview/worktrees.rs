@@ -1,23 +1,28 @@
 //! WORKTREES of an orchestration (tree.mjs): a folder tree under `⇶ <name>`,
 //! a node per issue with its number, its name in herdr's pink, its app and
-//! stack in a column after the names (#332), where it stands at the right;
+//! stack in a column after the names (#332: a click opens the app or says
+//! how to start it, `▶ stack down` starts the stack), where it stands at the right;
 //! its facts below (how far develop moved on among them, #332) with who works
 //! in it (#292) at their right, always under the state (the facts that don't
 //! fit beside it go under it); where its work collides with develop and the
-//! other worktrees (#332), each file a click into that worktree's nvim;
+//! other worktrees (#332), each file a click into that worktree's nvim,
+//! whether a merge of develop conflicts, and the migrations its database
+//! lacks with `▶ pnpm pg:migrate` (STACK's and DEVELOP's lines, #332);
 //! then its title, wrapped under the name (#304), the stems of the tree in
 //! front of every line. The queue and the done ones fold
 //! (#259); a click anywhere on a node goes to its worktree's space, else to
 //! its issue's page; hover lights the whole node (#296).
 
+use super::actor::spawn::Run;
 use super::{Act, Ctx, Fold, look};
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme;
 use crate::tui::{Page, Scene};
+use breadboard_core::model::develop::Migrations;
 use breadboard_core::model::orchestration::OrchestrationModel;
 use breadboard_core::model::order::Go;
 use breadboard_core::model::tree::{AgentLine, Node, Worktrees};
-use breadboard_core::model::{self, Docker, Paint};
+use breadboard_core::model::{self, Docker, Paint, counted};
 use ratatui::layout::Rect;
 use ratatui::text::Span;
 
@@ -36,21 +41,22 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
     let note: String = counts.iter().map(|span| span.text.as_str()).collect();
     let mut note = note.trim().trim_end_matches('·').trim_end().to_string();
     let tree = &worktrees.tree;
-    let cells = Cells::of(&tree.live, scene.width());
-    // Why there is no app and no stack, or why a stack says `?`: said once, not on every node.
+    let cells = Cells::of(&tree.live, scene.width(), ctx);
+    // Why there is no app and no stack, or why a stack says `?`: said once, not on every node,
+    // on a line of its own under the record (a title too long for the line loses its note).
     let why = if !cells.is_any_env && tree.live.iter().any(|node| node.has_tree) {
-        Some("no .env.local in any")
+        Some((
+            "no .env.local in any worktree: no stack, the app can't run there",
+            theme::dim(),
+        ))
     } else if tree.live.iter().any(|node| node.docker == Docker::Silent) {
-        Some("docker does not answer: the stacks are unknown")
+        Some((
+            "docker does not answer: the stacks are unknown",
+            look::style_of(&Paint::Yellow),
+        ))
     } else {
         None
     };
-    if let Some(why) = why {
-        if !note.is_empty() {
-            note.push_str(" · ");
-        }
-        note.push_str(why);
-    }
     if !note.is_empty() {
         scene.note(note);
     }
@@ -67,11 +73,15 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
     let stem = vec![look::dim(if is_empty { "   " } else { "│  " })];
     look::gutter(scene, stem.clone(), stem, |scene| {
         look::say(scene, &worktrees.reuse, theme::dim());
+        if let Some((why, style)) = why {
+            scene.end_line();
+            look::say(scene, why, style);
+        }
     });
     let digits = digits_of(worktrees);
     for (i, node) in tree.live.iter().enumerate() {
         let is_last = i + 1 == tree.live.len() && !has_queue && !has_removed;
-        node_lines(scene, node, is_last, "", digits, &cells);
+        node_lines(scene, node, is_last, "", digits, &cells, ctx);
     }
     if has_queue {
         let is_last = !has_removed;
@@ -87,7 +97,7 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
         if !is_folded {
             let prefix = if is_last { "   " } else { "│  " };
             for (i, node) in tree.queued.iter().enumerate() {
-                node_lines(scene, node, i + 1 == tree.queued.len(), prefix, digits, &cells);
+                node_lines(scene, node, i + 1 == tree.queued.len(), prefix, digits, &cells, ctx);
             }
         }
     }
@@ -103,7 +113,7 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
         );
         if !is_folded {
             for (i, node) in tree.removed.iter().enumerate() {
-                node_lines(scene, node, i + 1 == tree.removed.len(), "   ", digits, &cells);
+                node_lines(scene, node, i + 1 == tree.removed.len(), "   ", digits, &cells, ctx);
             }
         }
     }
@@ -154,7 +164,7 @@ struct Cells {
 }
 
 impl Cells {
-    fn of(live: &[Node], width: u16) -> Cells {
+    fn of(live: &[Node], width: u16, ctx: &Ctx) -> Cells {
         let with_tree: Vec<&Node> = live.iter().filter(|node| node.has_tree).collect();
         let is_any_env = with_tree.iter().any(|node| node.app.is_some());
         let mut cells = Cells {
@@ -164,7 +174,7 @@ impl Cells {
                 .map(|node| width_of(&look::spans(&[app_of(node)])))
                 .max()
                 .unwrap_or(0),
-            stack: with_tree.iter().map(|node| stack_width(node)).max().unwrap_or(0),
+            stack: with_tree.iter().map(|node| stack_width(node, ctx)).max().unwrap_or(0),
             column: None,
         };
         if !is_any_env {
@@ -188,41 +198,156 @@ impl Cells {
         cells
     }
 
-    /// `● :3002  stack running`: the app padded to the widest, the stack after.
-    fn spans(&self, node: &Node) -> Vec<Span<'static>> {
-        let mut spans = look::spans(&[app_of(node)]);
-        let short = self.app.saturating_sub(width_of(&spans)) + 2;
-        spans.push(Span::raw(" ".repeat(usize::from(short))));
-        spans.extend(look::spans(&[stack_of(node)]));
-        spans
+    /// `● :3002  stack running`: the app padded to the widest, the stack
+    /// after; each a click where it does something (`Link`).
+    fn piece(&self, node: &Node, ctx: &Ctx) -> Piece {
+        let app = look::spans(&[app_of(node)]);
+        let app_width = width_of(&app);
+        let mut piece = Piece::default();
+        if let (Some(port), Some(dir)) = (node.app_port, &node.dir) {
+            piece.links.push(Link {
+                at: 0,
+                width: app_width,
+                label: app.iter().map(|span| span.content.as_ref()).collect(),
+                tone: theme::Tone::Green,
+                act: Act::OpenApp {
+                    dir: dir.clone(),
+                    port,
+                    is_shared: node.is_shared,
+                },
+            });
+        }
+        piece.spans = app;
+        let short = self.app.saturating_sub(app_width) + 2;
+        piece.spans.push(Span::raw(" ".repeat(usize::from(short))));
+        let (stack, act) = stack_cell(node, ctx);
+        let stack = look::spans(&[stack]);
+        if let Some(act) = act {
+            piece.links.push(Link {
+                at: self.app + 2,
+                width: width_of(&stack),
+                label: stack.iter().map(|span| span.content.as_ref()).collect(),
+                tone: theme::Tone::Cyan,
+                act,
+            });
+        }
+        piece.spans.extend(stack);
+        piece
     }
 
-    /// `spans` padded to the widest stack: at the right edge the apps line up.
-    fn padded(&self, mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
-        let short = (self.app + 2 + self.stack).saturating_sub(width_of(&spans));
-        spans.push(Span::raw(" ".repeat(usize::from(short))));
-        spans
+    /// `piece` padded to the widest stack: at the right edge the apps line up.
+    fn padded(&self, mut piece: Piece) -> Piece {
+        let short = (self.app + 2 + self.stack).saturating_sub(width_of(&piece.spans));
+        piece.spans.push(Span::raw(" ".repeat(usize::from(short))));
+        piece
     }
 
     /// The cells of a node, None where there are none to show.
-    fn of_node(&self, node: &Node) -> Option<Vec<Span<'static>>> {
-        (self.is_any_env && node.has_tree).then(|| self.spans(node))
+    fn of_node(&self, node: &Node, ctx: &Ctx) -> Option<Piece> {
+        (self.is_any_env && node.has_tree).then(|| self.piece(node, ctx))
     }
 }
 
-/// The room a stack of its own (core's `stack_of`: `stack …`, `stack down`)
-/// keeps at the least: docker's answer coming in later moves nothing.
-const RUNNING: &str = "stack running";
+/// Spans with the clicks that lie on parts of them: placed as one, each
+/// click a button region on its part (hover lights that part alone).
+#[derive(Default)]
+struct Piece {
+    spans: Vec<Span<'static>>,
+    links: Vec<Link>,
+}
 
-/// The columns a node's stack takes: an own one at least RUNNING.
-fn stack_width(node: &Node) -> u16 {
-    let stack = stack_of(node);
-    let width = Span::raw(stack.text.as_str()).width() as u16;
-    if stack.text.starts_with("stack ") {
-        width.max(RUNNING.len() as u16)
+/// A click on the columns `at..at + width` of a piece.
+struct Link {
+    at: u16,
+    width: u16,
+    label: String,
+    tone: theme::Tone,
+    act: Act,
+}
+
+impl Piece {
+    fn plain(spans: Vec<Span<'static>>) -> Piece {
+        Piece {
+            spans,
+            links: Vec::new(),
+        }
+    }
+
+    /// `other` after this one and a gap of `gap` columns.
+    fn then(mut self, gap: u16, other: Piece) -> Piece {
+        let at = width_of(&self.spans) + gap;
+        self.spans.push(Span::raw(" ".repeat(usize::from(gap))));
+        self.spans.extend(other.spans);
+        self.links.extend(other.links.into_iter().map(|link| Link {
+            at: link.at + at,
+            ..link
+        }));
+        self
+    }
+
+    /// The regions of its links, where it was placed (`rects` of one line).
+    fn place(self, scene: &mut Scene<Act>, rects: &[Rect]) {
+        let [rect] = rects else { return };
+        for link in self.links {
+            if link.at >= rect.width {
+                continue;
+            }
+            scene.regions.push(Region {
+                area: Rect::new(rect.x + link.at, rect.y, link.width.min(rect.width - link.at), 1),
+                target: Target::Button {
+                    label: link.label,
+                    tone: link.tone,
+                    action: link.act,
+                },
+            });
+        }
+    }
+}
+
+/// The room a stack of its own (`stack …`, `▶ stack down`) keeps at the
+/// least: docker's answer coming in later moves nothing.
+const OWN_STACK: &str = "▶ stack exited";
+
+/// The columns a node's stack takes: an own one at least OWN_STACK.
+fn stack_width(node: &Node, ctx: &Ctx) -> u16 {
+    let stack = stack_cell(node, ctx).0;
+    let width = width_of(&look::spans(std::slice::from_ref(&stack)));
+    if (node.app_port.is_some() && !node.is_shared) || stack.text.starts_with("stack ") {
+        width.max(Span::raw(OWN_STACK).width() as u16)
     } else {
         width
     }
+}
+
+/// `stack_of`'s run of `stack:up` from here, where one was started.
+fn stack_run<'a>(node: &Node, ctx: &'a Ctx) -> Option<&'a Run> {
+    node.dir.as_ref().and_then(|dir| ctx.actor.stacks.get(dir))
+}
+
+/// A node's stack cell and its click (#332, STACK's `▶ start the stack`):
+/// `◐ starting …` while `stack:up` runs, `stack …` once it ended until
+/// docker tells after it, `▶ stack down` where a click starts it; a running
+/// one, a shared one and one docker hasn't told are no button (the node's
+/// click goes to its space).
+fn stack_cell(node: &Node, ctx: &Ctx) -> (model::Span, Option<Act>) {
+    let start = node.dir.clone().map(Act::StartStack);
+    let run = stack_run(node, ctx);
+    if run.is_some_and(|run| run.is_running) {
+        return (model::Span::new("◐ starting …", Paint::Yellow), start);
+    }
+    if run.and_then(|run| run.done_at).is_some_and(|at| at >= node.docker_at) && !node.is_shared {
+        return (model::Span::dim("stack …"), None);
+    }
+    let stack = stack_of(node);
+    if node.can_start_stack && start.is_some() {
+        let paint = if run.is_some_and(|run| run.error.is_some()) {
+            Paint::Red
+        } else {
+            stack.paint
+        };
+        return (model::Span::new(format!("▶ {}", stack.text), paint), start);
+    }
+    (stack, None)
 }
 
 /// A worktree's stack, `no .env.local` without one (boxes.mjs `stackCell`).
@@ -237,7 +362,15 @@ fn app_of(node: &Node) -> model::Span {
 
 /// A node: its glyph and number, its name, app and stack, and state; its
 /// facts, where it collides and its title under the name.
-fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, digits: usize, cells: &Cells) {
+fn node_lines(
+    scene: &mut Scene<Act>,
+    node: &Node,
+    is_last: bool,
+    prefix: &str,
+    digits: usize,
+    cells: &Cells,
+    ctx: &Ctx,
+) {
     let glyph = if is_last { "└─ " } else { "├─ " };
     let stem = if is_last { "   " } else { "│  " };
     let place = format!("{:>digits$}. ", node.place);
@@ -254,10 +387,13 @@ fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, 
                 look::pink()
             };
             scene.atom(vec![look::span(&node.name, style)]);
-            let mine = cells.of_node(node);
-            if let (Some(spans), Some(column)) = (&mine, cells.column) {
+            let mut mine = cells.of_node(node, ctx);
+            if let Some(column) = cells.column
+                && let Some(piece) = mine.take()
+            {
                 scene.pad_to(column);
-                scene.atom_gap(spans.clone(), 0);
+                let rects = scene.atom_gap(piece.spans.clone(), 0);
+                piece.place(scene, &rects);
             }
             right(
                 scene,
@@ -268,18 +404,16 @@ fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, 
             // without a column beside the name, its app and stack, padded so
             // the apps line up down the edge. The facts flow on the left, as
             // many beside each as fit: the agent always stands under the state.
-            let agent = node.agent.as_ref().map(agent_spans);
-            let aside = mine.filter(|_| cells.column.is_none()).map(|spans| cells.padded(spans));
+            let agent = node.agent.as_ref().map(|agent| Piece::plain(agent_spans(agent)));
+            let aside = mine.map(|piece| cells.padded(piece));
             let facts = look::parts(&node.facts);
-            let rights: Vec<Vec<Span<'static>>> = match (agent, aside) {
+            let rights: Vec<Piece> = match (agent, aside) {
                 // One line when everything fits on it.
                 (Some(agent), Some(aside))
-                    if parts_width(&facts) + 2 + width_of(&agent) + 2 + width_of(&aside) <= scene.width() =>
+                    if parts_width(&facts) + 2 + width_of(&agent.spans) + 2 + width_of(&aside.spans)
+                        <= scene.width() =>
                 {
-                    let mut both = agent;
-                    both.push(Span::raw("  "));
-                    both.extend(aside);
-                    vec![both]
+                    vec![agent.then(2, aside)]
                 }
                 (agent, aside) => agent.into_iter().chain(aside).collect(),
             };
@@ -291,7 +425,14 @@ fn node_lines(scene: &mut Scene<Act>, node: &Node, is_last: bool, prefix: &str, 
                 put_parts(scene, &facts, from);
                 scene.end_line();
             }
-            if !node.collides.is_empty() {
+            stack_error_line(scene, node, ctx);
+            migrations_line(scene, node, ctx);
+            conflict_line(scene, node);
+            if node
+                .collides
+                .iter()
+                .any(|overlap| !develop_files(node, overlap).is_empty())
+            {
                 collision_line(scene, node);
                 scene.end_line();
             }
@@ -327,8 +468,8 @@ fn parts_width(parts: &[Vec<Span<'static>>]) -> u16 {
 /// The facts from `from` on this line while they fit beside `right`, then
 /// `right` at the edge; the line ends. Returns the first fact not placed. A
 /// first fact wider than the room leaves `right` on a line of its own.
-fn beside(scene: &mut Scene<Act>, facts: &[Vec<Span<'static>>], from: usize, right: Vec<Span<'static>>) -> usize {
-    let room = scene.width().saturating_sub(width_of(&right) + 2);
+fn beside(scene: &mut Scene<Act>, facts: &[Vec<Span<'static>>], from: usize, right: Piece) -> usize {
+    let room = scene.width().saturating_sub(width_of(&right.spans) + 2);
     let mut x = 0;
     let mut to = from;
     while to < facts.len() {
@@ -348,7 +489,8 @@ fn beside(scene: &mut Scene<Act>, facts: &[Vec<Span<'static>>], from: usize, rig
         }
         scene.atom(atom);
     }
-    scene.right(right);
+    let rects = scene.right(right.spans.clone());
+    right.place(scene, &rects);
     scene.end_line();
     to
 }
@@ -386,15 +528,19 @@ const NAMED: usize = 3;
 /// a file opens it in the worktree's nvim at its first change, on `+N more`
 /// the first not named (DIFF's click).
 fn collision_line(scene: &mut Scene<Act>, node: &Node) {
-    let mut groups: Vec<(Vec<&str>, &[String])> = Vec::new();
+    let mut groups: Vec<(Vec<&str>, Vec<&String>)> = Vec::new();
     for overlap in &node.collides {
         let is_develop = overlap.name == DEVELOP;
+        let files = develop_files(node, overlap);
+        if files.is_empty() {
+            continue;
+        }
         match groups
             .iter_mut()
-            .find(|(names, files)| !is_develop && names[0] != DEVELOP && *files == overlap.files.as_slice())
+            .find(|(names, known)| !is_develop && names[0] != DEVELOP && *known == files)
         {
             Some((names, _)) => names.push(&overlap.name),
-            None => groups.push((vec![&overlap.name], &overlap.files)),
+            None => groups.push((vec![&overlap.name], files)),
         }
     }
     // Its colliding files are near it too, whatever core knew of the rest.
@@ -412,6 +558,8 @@ fn collision_line(scene: &mut Scene<Act>, node: &Node) {
         })
     };
     scene.atom(vec![look::span("⚠ collides with", look::style_of(&Paint::Yellow))]);
+    // Both changed them, and git merges them cleanly (DEVELOP's `✓ merges cleanly`).
+    let is_clean = node.conflicts.as_ref().is_some_and(Vec::is_empty);
     for (i, (names, files)) in groups.iter().enumerate() {
         for (at, name) in names.iter().enumerate() {
             let mut atom = vec![if *name == DEVELOP {
@@ -419,6 +567,9 @@ fn collision_line(scene: &mut Scene<Act>, node: &Node) {
             } else {
                 look::span(name, look::pink())
             }];
+            if *name == DEVELOP && is_clean {
+                atom.push(look::dim(", merges cleanly"));
+            }
             atom.push(Span::raw(if at + 1 < names.len() { "," } else { ":" }));
             scene.atom(atom);
         }
@@ -437,8 +588,144 @@ fn collision_line(scene: &mut Scene<Act>, node: &Node) {
         if files.len() > NAMED {
             let more = look::dim(format!("+{} more", files.len() - NAMED));
             let after = if i + 1 < groups.len() { " ·" } else { "" };
-            link_atom(scene, more, after, open(&files[NAMED]));
+            link_atom(scene, more, after, open(files[NAMED]));
         }
+    }
+}
+
+/// The files of `overlap` the collision line names: develop's without the
+/// ones a merge conflicts in (the conflict line names those).
+fn develop_files<'a>(node: &Node, overlap: &'a model::diff::Overlap) -> Vec<&'a String> {
+    let conflicts = node.conflicts.as_deref().unwrap_or_default();
+    overlap
+        .files
+        .iter()
+        .filter(|file| overlap.name != DEVELOP || !conflicts.contains(file))
+        .collect()
+}
+
+/// How many files the conflict line names (DEVELOP's 4).
+const CONFLICTS_NAMED: usize = 4;
+
+/// `✗ a merge of develop conflicts in tree.mjs, render.mjs +1 more` (#332,
+/// DEVELOP's `git merge-tree` line): only where it would; each name a
+/// click into the worktree's nvim, `+N more` the first not named.
+fn conflict_line(scene: &mut Scene<Act>, node: &Node) {
+    let Some(files) = node.conflicts.as_ref().filter(|files| !files.is_empty()) else {
+        return;
+    };
+    let near: Vec<&str> = node.near.iter().chain(files).map(String::as_str).collect();
+    let open = |file: &str| {
+        node.dir.as_ref().map(|dir| Act::OpenFile {
+            dir: dir.clone(),
+            file: file.to_string(),
+            line: None,
+        })
+    };
+    scene.atom(vec![look::span(
+        "✗ a merge of develop conflicts in",
+        look::style_of(&Paint::Red),
+    )]);
+    let named = files.len().min(CONFLICTS_NAMED);
+    for (at, file) in files.iter().take(CONFLICTS_NAMED).enumerate() {
+        let after = if at + 1 < named { "," } else { "" };
+        link_atom(scene, Span::raw(short_name(file, &near)), after, open(file));
+    }
+    if files.len() > CONFLICTS_NAMED {
+        let more = look::dim(format!("+{} more", files.len() - CONFLICTS_NAMED));
+        link_atom(scene, more, "", open(&files[CONFLICTS_NAMED]));
+    }
+    scene.end_line();
+}
+
+/// `✗ the stack didn't start: <why>` under a node whose `stack:up` from here
+/// failed, while its stack still isn't running (STACK's red error).
+fn stack_error_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    let Some(why) = stack_run(node, ctx)
+        .filter(|run| !run.is_running && node.can_start_stack)
+        .and_then(|run| run.error.as_deref())
+    else {
+        return;
+    };
+    look::say(
+        scene,
+        &format!("✗ the stack didn't start: {why}"),
+        look::style_of(&Paint::Red),
+    );
+    scene.end_line();
+}
+
+/// How many migrations the line names (STACK's 3).
+const MIGRATIONS_NAMED: usize = 3;
+
+/// The migrations its database lacks (#332, STACK's line), only where
+/// something is to do: `⚠ 2 migrations not applied: 0042_a, 0043_b  ▶ pnpm
+/// pg:migrate` (`◐ migrating …` while it runs, its error red after it), or
+/// `⚠ the database doesn't answer: <why>`; all applied says nothing.
+fn migrations_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    let Some(dir) = &node.dir else { return };
+    let run = ctx.actor.migrations.get(dir);
+    let migrate = Act::Migrate(dir.clone());
+    let yellow = look::style_of(&Paint::Yellow);
+    if let Some(run) = run.filter(|run| run.is_running) {
+        let rects = scene.atom(vec![look::span("◐ migrating …", yellow)]);
+        button_on(scene, &rects, "◐ migrating …", theme::Tone::Yellow, migrate);
+        let last = run.last_line();
+        if !last.is_empty() {
+            look::say(scene, &last, theme::dim());
+        }
+        scene.redraw_in(std::time::Duration::from_millis(500));
+        scene.end_line();
+        return;
+    }
+    // It ran well after this read: the next one asks the database again.
+    if run
+        .and_then(|run| run.done_at)
+        .is_some_and(|at| at >= node.migrations_at)
+    {
+        return;
+    }
+    match &node.migrations {
+        Some(Migrations::Error(why)) => {
+            look::say(scene, &format!("⚠ the database doesn't answer: {why}"), yellow);
+            scene.end_line();
+        }
+        Some(Migrations::Pending { pending, .. }) if !pending.is_empty() => {
+            let names: Vec<&str> = pending.iter().take(MIGRATIONS_NAMED).map(String::as_str).collect();
+            let more = if pending.len() > MIGRATIONS_NAMED {
+                format!(" +{} more", pending.len() - MIGRATIONS_NAMED)
+            } else {
+                String::new()
+            };
+            let text = format!(
+                "⚠ {} not applied: {}{more}",
+                counted(pending.len() as u64, "migration"),
+                names.join(", ")
+            );
+            look::say(scene, &text, yellow);
+            let label = "▶ pnpm pg:migrate";
+            let rects = scene.atom_gap(vec![look::span(label, theme::tone(theme::Tone::Cyan))], 2);
+            button_on(scene, &rects, label, theme::Tone::Cyan, migrate);
+            if let Some(why) = run.and_then(|run| run.error.as_deref()) {
+                scene.atom_gap(vec![look::span(format!("✗ {why}"), look::style_of(&Paint::Red))], 2);
+            }
+            scene.end_line();
+        }
+        _ => {}
+    }
+}
+
+/// A button region on text placed as one atom (`rects` of one line).
+fn button_on(scene: &mut Scene<Act>, rects: &[Rect], label: &str, tone: theme::Tone, act: Act) {
+    if let [rect] = rects {
+        scene.regions.push(Region {
+            area: *rect,
+            target: Target::Button {
+                label: label.into(),
+                tone,
+                action: act,
+            },
+        });
     }
 }
 
@@ -552,6 +839,13 @@ mod tests {
             collides: vec![],
             near: vec![],
             dir: None,
+            can_start_stack: false,
+            conflicts: None,
+            migrations: None,
+            is_shared: false,
+            app_port: None,
+            migrations_at: 0,
+            docker_at: 0,
             title: format!("the title of #{}", place + 300),
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
@@ -584,6 +878,10 @@ mod tests {
     }
 
     fn draw(worktrees: &Worktrees, folds: Folds, width: u16) -> Scene<Act> {
+        draw_by(worktrees, folds, width, super::super::actor::idle())
+    }
+
+    fn draw_by(worktrees: &Worktrees, folds: Folds, width: u16, actor: &super::super::actor::Actor) -> Scene<Act> {
         let gitlab = GitlabState::default();
         let ctx = Ctx {
             is_once: false,
@@ -591,7 +889,7 @@ mod tests {
             gitlab: &gitlab,
             now: 0,
             main_name: "platform",
-            actor: super::super::actor::idle(),
+            actor,
             words: super::super::actor::view::no_words(),
         };
         let mut scene = Scene::new(width);
@@ -612,13 +910,14 @@ mod tests {
     #[test]
     fn a_node_is_its_name_and_state_its_facts_and_agent_and_title_under_its_stem() {
         let scene = draw(&worktrees(0, 0), Folds::default(), 72);
-        assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab · no .env.local in any"));
+        assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab"));
         assert_eq!(
             text(&scene),
             [
                 "0.9 GB free: fresh agents on the shared stack",
                 "⇶ breadboard  .claude/orchestrations/breadboard.json",
                 "│  agents 2 · issues 3 · reused 0 · handovers failed 0",
+                "│  no .env.local in any worktree: no stack, the app can't run there",
                 "├─ 1. 303-every-button                            waits for the pipeline",
                 "│     #301 open · ↑1               ● Mira Albrecht · 3 issues · 2 merged",
                 "│     the title of #301",
@@ -737,6 +1036,8 @@ mod tests {
             } else {
                 model::Span::dim("shared")
             });
+            node.app_port = Some(if i == 0 { 3002 } else { 3000 });
+            node.is_shared = i == 1;
         }
         worktrees.tree.live[0].collides = vec![
             Overlap {
@@ -793,7 +1094,7 @@ mod tests {
             [
                 "├─ 1. 303-every-button                      waits for the pipeline",
                 "│     #301 open · ↑1         ● Mira Albrecht · 3 issues · 2 merged",
-                "│                                           ● :3002  stack running",
+                "│                                          ● :3002  stack running",
             ]
         );
         // A long state leaves no column: at the right of the agent's own line.
@@ -805,7 +1106,7 @@ mod tests {
             [
                 "├─ 1. 303-every-button                                    waits for the pipeline",
                 "│     #301 open · ↑1                       ● Mira Albrecht · 3 issues · 2 merged",
-                "│                                                         ● :3002  stack running",
+                "│                                                        ● :3002  stack running",
             ]
         );
         // The apps line up down the right edge.
@@ -848,10 +1149,8 @@ mod tests {
             Folds::default(),
             100,
         );
-        assert_eq!(
-            silent.note.as_deref(),
-            Some("2 wait for GitLab · docker does not answer: the stacks are unknown")
-        );
+        assert_eq!(silent.note.as_deref(), Some("2 wait for GitLab"));
+        assert_eq!(text(&silent)[3], "│  docker does not answer: the stacks are unknown");
         assert!(!text(&silent).iter().any(|line| line.contains("down")));
     }
 
@@ -877,8 +1176,10 @@ mod tests {
             .regions
             .iter()
             .filter_map(|region| match &region.target {
-                Target::Button { label, action, .. } => Some((label.clone(), action.clone())),
-                Target::Block(_) => None,
+                Target::Button { label, action, .. } if matches!(action, Act::OpenFile { .. }) => {
+                    Some((label.clone(), action.clone()))
+                }
+                _ => None,
             })
             .collect();
         let open = |file: &str| Act::OpenFile {
@@ -892,7 +1193,12 @@ mod tests {
         assert_eq!(links[4], ("+1 more".into(), open("c.md")));
         // A link lies on its name only, inside the node's block.
         let block = scene.regions.iter().find(|region| !region.is_button()).unwrap().area;
-        let tree = scene.regions.iter().find(|region| region.is_button()).unwrap().area;
+        let tree = scene
+            .regions
+            .iter()
+            .find(|region| region.is_button() && matches!(region.action(), Act::OpenFile { .. }))
+            .unwrap()
+            .area;
         assert_eq!(tree.width, 8);
         assert!(tree.y >= block.y && tree.y < block.y + block.height);
     }
@@ -907,6 +1213,237 @@ mod tests {
         assert_eq!(short_name(all[0], &all), "web/src/index.ts");
         assert_eq!(short_name(all[2], &all), "tree.mjs");
         assert_eq!(short_name("tree.mjs", &["tree.mjs", "x/tree.mjs"]), "tree.mjs");
+    }
+
+    /// The buttons of a scene: (label, act).
+    fn buttons(scene: &Scene<Act>) -> Vec<(String, Act)> {
+        scene
+            .regions
+            .iter()
+            .filter_map(|region| match &region.target {
+                Target::Button { label, action, .. } => Some((label.clone(), action.clone())),
+                Target::Block(_) => None,
+            })
+            .collect()
+    }
+
+    /// `with_stacks` without collisions, the first node's own stack down where docker told at 1000.
+    fn down() -> Worktrees {
+        let mut worktrees = with_stacks();
+        for node in &mut worktrees.tree.live {
+            node.dir = Some(PathBuf::from(format!("/w/{}", node.name)));
+            node.collides.clear();
+            node.docker_at = 1_000;
+        }
+        let node = &mut worktrees.tree.live[0];
+        node.stack = Some(model::Span::new("stack down", Paint::Yellow));
+        node.app = Some(model::Span::dim("○ :3002"));
+        node.can_start_stack = true;
+        worktrees
+    }
+
+    #[test]
+    fn the_app_opens_where_it_is_and_a_stack_that_is_down_starts_on_a_click() {
+        let scene = draw(&down(), Folds::default(), 100);
+        let lines = text(&scene);
+        assert_eq!(
+            lines[3],
+            "├─ 1. 303-every-button  ○ :3002  ▶ stack down                                 waits for the pipeline"
+        );
+        let dir = PathBuf::from("/w/303-every-button");
+        assert_eq!(
+            buttons(&scene),
+            [
+                (
+                    "○ :3002".to_string(),
+                    Act::OpenApp {
+                        dir: dir.clone(),
+                        port: 3002,
+                        is_shared: false
+                    }
+                ),
+                ("▶ stack down".to_string(), Act::StartStack(dir.clone())),
+                (
+                    "⇒ :3000".to_string(),
+                    Act::OpenApp {
+                        dir: "/w/305-refresh".into(),
+                        port: 3000,
+                        is_shared: true
+                    }
+                ),
+            ]
+        );
+        // The button lies on its words, inside the node's line.
+        let start = scene
+            .regions
+            .iter()
+            .find(|region| region.action() == &Act::StartStack(dir.clone()))
+            .unwrap();
+        let x = usize::from(start.area.x);
+        assert_eq!(&lines[3].chars().skip(x).take(12).collect::<String>(), "▶ stack down");
+        // A running stack is no button: the node's click goes to its space.
+        let scene = draw(&with_stacks(), Folds::default(), 100);
+        assert!(!buttons(&scene).iter().any(|(_, act)| matches!(act, Act::StartStack(_))));
+    }
+
+    #[test]
+    fn a_stack_starting_says_so_then_waits_for_docker_and_a_failure_says_why() {
+        let dir = PathBuf::from("/w/303-every-button");
+        let mut actor = super::super::actor::Actor::new(
+            &breadboard_core::reader::View::Everything,
+            std::path::Path::new(""),
+            true,
+            false,
+        );
+        let at = |actor: &super::super::actor::Actor| text(&draw_by(&down(), Folds::default(), 100, actor));
+        actor.stacks.insert(
+            dir.clone(),
+            Run {
+                is_running: true,
+                ..Run::default()
+            },
+        );
+        let lines = at(&actor);
+        assert!(lines[3].contains("○ :3002  ◐ starting …  "), "{lines:#?}");
+        // Up after docker's last answer: `stack …` until docker tells, never `▶ stack down` again.
+        actor.stacks.insert(
+            dir.clone(),
+            Run {
+                done_at: Some(2_000),
+                ..Run::default()
+            },
+        );
+        let lines = at(&actor);
+        assert!(lines[3].contains("○ :3002  stack …  "), "{lines:#?}");
+        actor.stacks.insert(
+            dir.clone(),
+            Run {
+                done_at: Some(500),
+                ..Run::default()
+            },
+        );
+        assert!(at(&actor)[3].contains("▶ stack down"));
+        actor.stacks.insert(
+            dir.clone(),
+            Run {
+                error: Some("port 5434 is taken".into()),
+                ..Run::default()
+            },
+        );
+        let lines = at(&actor);
+        assert!(lines[3].contains("▶ stack down"));
+        assert_eq!(lines[5], "│     ✗ the stack didn't start: port 5434 is taken");
+        // The stack's column holds each of these: the names, cells and state stay where they were.
+        let idle = text(&draw(&down(), Folds::default(), 100));
+        assert_eq!(lines[3].find("waits"), idle[3].find("waits"));
+        assert_eq!(lines[4], idle[4]);
+    }
+
+    #[test]
+    fn missing_migrations_say_which_with_their_button_a_silent_database_says_so() {
+        let mut worktrees = down();
+        worktrees.tree.live[1].migrations = Some(Migrations::Pending {
+            pending: vec!["0041_a".into(), "0042_b".into(), "0043_c".into(), "0044_d".into()],
+            applied: 40,
+        });
+        worktrees.tree.live[0].migrations = Some(Migrations::Error("connection refused".into()));
+        let scene = draw(&worktrees, Folds::default(), 100);
+        let lines = text(&scene);
+        assert!(lines.contains(&"│     ⚠ the database doesn't answer: connection refused".to_string()));
+        assert!(
+            lines.contains(
+                &"      ⚠ 4 migrations not applied: 0041_a, 0042_b, 0043_c +1 more  ▶ pnpm pg:migrate".to_string()
+            ),
+            "{lines:#?}"
+        );
+        assert!(buttons(&scene).contains(&("▶ pnpm pg:migrate".into(), Act::Migrate("/w/305-refresh".into()))));
+        // All applied: nothing to say.
+        worktrees.tree.live[1].migrations = Some(Migrations::Pending {
+            pending: vec![],
+            applied: 44,
+        });
+        assert!(
+            !text(&draw(&worktrees, Folds::default(), 100))
+                .iter()
+                .any(|line| line.contains("migration"))
+        );
+        // Running, then done after the last ask: `◐ migrating …`, then nothing until asked again.
+        let mut actor = super::super::actor::Actor::new(
+            &breadboard_core::reader::View::Everything,
+            std::path::Path::new(""),
+            true,
+            false,
+        );
+        worktrees.tree.live[1].migrations = Some(Migrations::Pending {
+            pending: vec!["0044_d".into()],
+            applied: 43,
+        });
+        worktrees.tree.live[1].migrations_at = 1_000;
+        let dir = PathBuf::from("/w/305-refresh");
+        actor.migrations.insert(
+            dir.clone(),
+            Run {
+                is_running: true,
+                ..Run::default()
+            },
+        );
+        let lines = text(&draw_by(&worktrees, Folds::default(), 100, &actor));
+        assert!(lines.contains(&"      ◐ migrating …".to_string()), "{lines:#?}");
+        actor.migrations.insert(
+            dir,
+            Run {
+                done_at: Some(2_000),
+                ..Run::default()
+            },
+        );
+        let lines = text(&draw_by(&worktrees, Folds::default(), 100, &actor));
+        assert!(!lines.iter().any(|line| line.contains("migrat")), "{lines:#?}");
+    }
+
+    #[test]
+    fn a_merge_of_develop_says_whether_it_conflicts_and_the_conflicts_open_in_nvim() {
+        let mut worktrees = with_stacks();
+        let node = &mut worktrees.tree.live[0];
+        node.dir = Some("/w/303-every-button".into());
+        node.collides.truncate(2);
+        node.collides[0].files.push("packages/breadboard/src/render.mjs".into());
+        node.conflicts = Some(vec!["packages/breadboard/src/render.mjs".into()]);
+        let scene = draw(&worktrees, Folds::default(), 120);
+        let lines = text(&scene);
+        assert!(
+            lines.contains(&"│     ✗ a merge of develop conflicts in render.mjs".to_string()),
+            "{lines:#?}"
+        );
+        // develop's line keeps the file that merges cleanly, not the conflicting one twice.
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("│     ⚠ collides with develop: tree.mjs · #302:"))
+        );
+        assert!(buttons(&scene).contains(&(
+            "render.mjs".into(),
+            Act::OpenFile {
+                dir: "/w/303-every-button".into(),
+                file: "packages/breadboard/src/render.mjs".into(),
+                line: None
+            }
+        )));
+        // Every file develop changed too merges cleanly: said where develop is named.
+        worktrees.tree.live[0].conflicts = Some(vec![]);
+        let lines = text(&draw(&worktrees, Folds::default(), 120));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("│     ⚠ collides with develop, merges cleanly: tree.mjs, render.mjs ·")),
+            "{lines:#?}"
+        );
+        assert!(!lines.iter().any(|line| line.contains("✗")));
+        // Only develop, all of it conflicting: no collision line, the conflict line alone.
+        worktrees.tree.live[0].collides.truncate(1);
+        worktrees.tree.live[0].conflicts = Some(worktrees.tree.live[0].collides[0].files.clone());
+        let lines = text(&draw(&worktrees, Folds::default(), 120));
+        assert!(!lines.iter().any(|line| line.contains("collides")));
+        assert!(lines.contains(&"│     ✗ a merge of develop conflicts in tree.mjs, render.mjs".to_string()));
     }
 
     #[test]

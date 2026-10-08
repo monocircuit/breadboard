@@ -6,12 +6,14 @@
 
 use super::args::{Args, Takes};
 use super::changelog;
-use super::claude::{are_handed_over, bound_session, left_in, left_text, running_claudes, session_file};
+use super::claude::{are_handed_over, bound_session, left_in, left_refusal, running_claudes, session_file};
 use super::gitlab;
 use super::herdr;
 use super::layout::{orchestrations::prune_orchestrators, release_space};
 use super::plugin;
-use super::proc::{Done, Fail, Wait, done, exe, fail, git, output_within, run_inherit, step, text, wait_within};
+use super::proc::{
+    Done, Fail, Wait, as_step, done, exe, fail, git, output_within, run_inherit, step, text, wait_within,
+};
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
 use crate::cli::typo::nearest;
@@ -108,14 +110,40 @@ pub fn empty_claim(is_on_origin: bool, has_own: bool, open_mrs: Option<usize>) -
     (is_on_origin && !has_own && open_mrs == Some(0)).then_some("nothing on it develop lacks, no open MR")
 }
 
-/// `rm -rf`, again if a writer strikes once more in between.
-fn remove_dir(dir: &Path) {
+/// `rm -rf`, again if a writer strikes once more in between. Err: why it
+/// is still there (`Permission denied`).
+fn remove_dir(dir: &Path) -> Result<(), String> {
+    let mut why = String::new();
     for _ in 0..10 {
-        if fs::remove_dir_all(dir).is_ok() || !dir.exists() {
-            return;
+        match fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(_) if !dir.exists() => return Ok(()),
+            Err(error) => why = io_words(&error),
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    Err(why)
+}
+
+/// An I/O error in words, without its ` (os error 13)`.
+fn io_words(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.find(" (os error ") {
+        Some(at) => text[..at].to_string(),
+        None => text,
+    }
+}
+
+/// Why `dir` can't be deleted before anything of the removal starts: its
+/// parent folder doesn't let this user take it out. git would delete its
+/// files, unregister it and then fail on the folder itself, the branch left
+/// to go with a worktree that only half went (the critic's read-only root).
+fn undeletable(dir: &Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let parent = std::ffi::CString::new(dir.parent()?.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `parent` is a NUL-terminated path that outlives the call.
+    let is_writable = unsafe { libc::access(parent.as_ptr(), libc::W_OK | libc::X_OK) } == 0;
+    (!is_writable).then(|| io_words(&std::io::Error::last_os_error()))
 }
 
 /// How long origin may take for a fetch or a push before the command goes on without it.
@@ -358,7 +386,10 @@ impl Rewrite {
             format!("the changelog of {name} (GitLab, an issue at a time)"),
             REWRITE_LIMIT,
         );
-        let reason = match self.child.and_then(|child| wait_within(child, &wait)) {
+        let waited = as_step(&format!("the rewrite of the changelog of {name}"), || {
+            self.child.and_then(|child| wait_within(child, &wait))
+        });
+        let reason = match waited {
             // Killed before its atomic write: the changelog is as it was.
             Ok(None) => format!("GitLab did not answer in {} s", REWRITE_LIMIT.as_secs()),
             Ok(Some(done)) if done.status.success() => {
@@ -414,12 +445,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     let left = left_in(&dir, &running_claudes(), bound_session(&dir).as_deref());
     if !left.is_empty() {
         let dirs: Vec<&Path> = trees.iter().map(|tree| tree.dir.as_path()).collect();
-        let how = if are_handed_over(&left, &dir, &dirs) {
-            "it enters its next worktree, or as a free agent the orchestration's checkout; again once it left"
-        } else {
-            "again once it left it or ended"
-        };
-        return fail(format!("{} still stands in {feature}: {how}", left_text(&left)));
+        return fail(left_refusal(&left, feature, are_handed_over(&left, &dir, &dirs)));
     }
     // A start sets it up or moves its agent out of it: git would pull the directory from under it (#272).
     let origin = origin_of(&dir);
@@ -449,22 +475,25 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             "{feature} has uncommitted changes, commit or discard them first"
         ));
     }
+    // Nothing is touched when the folder can't go: no stack data, no files, no branch.
+    if let Some(why) = undeletable(&dir) {
+        return fail(format!("failed to delete {dir_text}: {why}"));
+    }
 
     let branch = worktree.branch.clone();
     let mut is_merged = false;
     if let Some(branch) = &branch {
         if !options.is_fetched {
-            fetch(repo);
+            as_step("git fetch --prune", || fetch(repo));
         }
         let own = own_commits(&dir, branch);
         is_merged = own == 0;
         if !is_merged && !options.is_keeping_branch {
             // GitLab only names its MR here: not waited for as long.
-            return fail(not_in_develop(
-                branch,
-                own,
-                mrs_of(repo, branch, gitlab::NAMING).as_deref(),
-            ));
+            let mrs = as_step(&format!("GitLab: which MR {branch} has"), || {
+                mrs_of(repo, branch, gitlab::NAMING)
+            });
+            return fail(not_in_develop(branch, own, mrs.as_deref()));
         }
     }
 
@@ -495,18 +524,30 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             };
             return fail(format!("git worktree remove {dir_text} failed{left}"));
         }
-        remove_dir(&dir);
+        // Still there: the branch stays with what is left of it.
+        if let Err(why) = remove_dir(&dir) {
+            return fail(format!("failed to delete {dir_text}: {why}"));
+        }
     }
     // What the removal left behind once git let go: ignored folders a process still wrote into (#268).
     if dir.exists() {
         let files = own_files(&repo.main, &dir);
         if files.is_empty() {
-            remove_dir(&dir);
+            if let Err(why) = remove_dir(&dir) {
+                return fail(format!("failed to delete {dir_text}: {why}"));
+            }
         } else {
             step(&format!("left in {dir_text}: {}", files.join(", ")));
         }
     }
     let mrs = OnceCell::new();
+    // Read once the worktree is gone, for its claim on origin and the record's merge time.
+    let read_mrs = |branch: &str| {
+        as_step(
+            &format!("GitLab: is an MR open on {branch}? (its claim on origin, when it was merged)"),
+            || mrs_of(repo, branch, AFTER_LIMIT),
+        )
+    };
     if let Some(branch) = branch.as_deref().filter(|_| is_merged && !options.is_keeping_branch) {
         step(&format!("delete {branch} (all of it is in develop)"));
         if !run_inherit("git", &["branch", "-D", branch], &repo.main) {
@@ -516,10 +557,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         let remote = format!("refs/remotes/origin/{branch}");
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;
         if is_on_origin && !has_own_commits(&remote, &repo.main) {
-            let open_mrs = mrs
-                .get_or_init(|| mrs_of(repo, branch, AFTER_LIMIT))
-                .as_deref()
-                .map(open_count);
+            let open_mrs = mrs.get_or_init(|| read_mrs(branch)).as_deref().map(open_count);
             if let Some(claim) = empty_claim(true, false, open_mrs) {
                 step(&format!("delete {branch} on origin ({claim})"));
                 let wait = Wait::new(format!("origin (git push --delete {branch})"), ORIGIN_LIMIT);
@@ -552,9 +590,7 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     // The overview of the orchestration lists it under "done and removed", with the times.
     if let (Some(origin), Some(branch)) = (&origin, &branch) {
         let merged_at = if is_merged {
-            mrs.get_or_init(|| mrs_of(repo, branch, AFTER_LIMIT))
-                .as_deref()
-                .and_then(merged_at)
+            mrs.get_or_init(|| read_mrs(branch)).as_deref().and_then(merged_at)
         } else {
             None
         };
@@ -597,17 +633,25 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             None => {}
         }
     }
-    // One stretch of herdr calls, no child process in between: its reads are remembered.
-    herdr::remembering(|| {
-        if let Some(line) = release_space(feature, options.is_closing_space) {
-            step(&format!("herdr: {line}"));
-        }
-        // Its origin went with the directory; the orchestration's space goes with its last worktree.
-        if herdr::is_in() {
-            for line in prune_orchestrators(repo) {
+    // One stretch of herdr calls, no child process in between: its reads are
+    // remembered. Its own step only when herdr keeps it waiting.
+    let release = if options.is_closing_space {
+        format!("herdr: close the space of {feature}")
+    } else {
+        format!("herdr: close the tabs of {feature}")
+    };
+    as_step(&release, || {
+        herdr::remembering(|| {
+            if let Some(line) = release_space(feature, options.is_closing_space) {
                 step(&format!("herdr: {line}"));
             }
-        }
+            // Its origin went with the directory; the orchestration's space goes with its last worktree.
+            if herdr::is_in() {
+                for line in prune_orchestrators(repo) {
+                    step(&format!("herdr: {line}"));
+                }
+            }
+        })
     });
     if herdr::is_silent() {
         step(&format!(
@@ -634,6 +678,27 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_its_parent_keeps_is_refused_before_anything_goes() {
+        let root = std::env::temp_dir().join(format!("breadboard-undeletable-{}", std::process::id()));
+        let dir = root.join("platform-303-x");
+        fs::create_dir_all(dir.join("inside")).unwrap();
+        assert_eq!(undeletable(&dir), None);
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        // root reads every folder as writable: nothing to see then.
+        let is_root = unsafe { libc::geteuid() } == 0;
+        if !is_root {
+            assert_eq!(undeletable(&dir).as_deref(), Some("Permission denied"));
+            assert_eq!(remove_dir(&dir), Err("Permission denied".to_string()));
+            assert!(dir.exists());
+        }
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(remove_dir(&dir), Ok(()));
+        assert_eq!(remove_dir(&dir), Ok(()));
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn one_read_answers_both_questions() {

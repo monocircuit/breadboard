@@ -539,6 +539,17 @@ fn next_merge(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> 
     })
 }
 
+/// When an MR was merged: `3 h ago` within a day, older by its day and time
+/// (`1 Oct 14:01`, tree.mjs `clock`), as git log dates its commits: at 42 rows
+/// `6 days ago` on 35 of them told no merge from another.
+fn merged_when(at: i64, now: i64) -> String {
+    if now - at < 24 * 3_600_000 {
+        ago(at, now)
+    } else {
+        crate::time::clock(at, now)
+    }
+}
+
 /// MERGE REQUESTS: the open ones as a graph in the merge order, the merged below.
 fn merge_requests_of(
     issues: &[Entry],
@@ -587,7 +598,7 @@ fn merge_requests_of(
                 .merged_at
                 .as_deref()
                 .and_then(crate::time::parse_iso)
-                .map(|at| ago(at, now))
+                .map(|at| merged_when(at, now))
                 .unwrap_or_default();
             Some(Span::dim(format!("merged {when}").trim_end().to_string()))
         } else if reasons.is_empty() {
@@ -939,6 +950,21 @@ mod tests {
     use crate::record::IssueEntry;
 
     const NOW: i64 = 1_790_000_000_000;
+
+    #[test]
+    fn a_merge_older_than_a_day_says_its_day_and_time() {
+        assert_eq!(merged_when(NOW - 3 * 3_600_000, NOW), "3 h ago");
+        // Two merges of the same week no longer both say `6 days ago`.
+        let (a, b) = (
+            merged_when(NOW - 6 * 86_400_000, NOW),
+            merged_when(NOW - 6 * 86_400_000 - 3_600_000, NOW),
+        );
+        assert_ne!(a, b);
+        assert!(
+            !a.contains("ago") && a.ends_with(&crate::time::hm(NOW - 6 * 86_400_000)),
+            "{a}"
+        );
+    }
 
     fn entry(number: i64, branch: &str) -> IssueEntry {
         IssueEntry {

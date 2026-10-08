@@ -14,10 +14,10 @@
 //!   of the user through a file (`local::containers`, #331), with or without it.
 //!
 //! The first overview starts it (`client::connect`), it detaches, and it ends
-//! GRACE after its last connection closed. One per binary and environment:
-//! the socket's name carries a key of both, so a rebuilt binary never talks
-//! to an old daemon and a gauntlet world (its own PATH, HOME, herdr) never
-//! reaches the user's. It only reads (rewrite rule 6): what an overview does
+//! GRACE after its last connection closed. One per user, protocol and the
+//! programs it runs: the socket's name carries a key of them (`key`), so a
+//! build of other sources never talks to another's daemon and a gauntlet
+//! world (its own herdr, glab, HOME) never reaches the user's. It only reads (rewrite rule 6): what an overview does
 //! stays in the overview. An overview that can't reach it reads by itself.
 
 pub mod client;
@@ -98,28 +98,38 @@ fn socket_in(dir: &Path, key: u64) -> PathBuf {
     PathBuf::from(format!("/tmp/breadboard-{}", unsafe { libc::getuid() })).join(name)
 }
 
-/// What the daemon must share with its clients: the binary (its path and
-/// build) and the environment its reads depend on.
+/// The protocol of the socket: a hash of the sources of what goes over it (build.rs).
+const PROTOCOL: &str = env!("BREADBOARD_PROTOCOL");
+
+/// The programs the daemon's reads run, found on PATH.
+const TOOLS: [&str; 3] = ["herdr", "glab", "git"];
+
+/// The environment the daemon's reads depend on besides those programs.
+const ENV: [&str; 6] = [
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "HERDR_ENV",
+    "HERDR_SOCKET_PATH",
+    "BREADBOARD_GITLAB_URL",
+    "GITLAB_TOKEN",
+];
+
+/// What the daemon must share with its clients: its protocol, the programs
+/// its reads run (resolved: a PATH with node_modules/.bin in front, as `pnpm
+/// overview` has it, runs the same herdr) and the environment they read.
+/// Never the binary's path or build: every overview of the user (`pnpm
+/// overview`, a tab's `'<exe>' overview` of any checkout, a copy) shares one
+/// daemon while its sources' protocol is the same (rewrite-log, daemon round 4).
 fn key() -> u64 {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let tools = TOOLS.map(|tool| breadboard_core::local::executable_on(&path, tool));
+    let env = ENV.map(|name| (name, std::env::var_os(name)));
+    key_of(PROTOCOL, &tools, &env)
+}
+
+fn key_of(protocol: &str, tools: &[Option<PathBuf>], env: &[(&str, Option<std::ffi::OsString>)]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    if let Ok(exe) = std::env::current_exe() {
-        exe.hash(&mut hasher);
-        if let Ok(meta) = std::fs::metadata(&exe) {
-            meta.len().hash(&mut hasher);
-            meta.modified().ok().hash(&mut hasher);
-        }
-    }
-    for name in [
-        "PATH",
-        "HOME",
-        "XDG_CONFIG_HOME",
-        "HERDR_ENV",
-        "HERDR_SOCKET_PATH",
-        "BREADBOARD_GITLAB_URL",
-        "GITLAB_TOKEN",
-    ] {
-        (name, std::env::var_os(name)).hash(&mut hasher);
-    }
+    (protocol, tools, env).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -137,6 +147,27 @@ mod tests {
         let long = socket_in(&Path::new("/home").join("x".repeat(120)), 0xab);
         assert!(long.starts_with("/tmp"), "{}", long.display());
         assert!(long.as_os_str().len() <= SOCKET_MAX);
+    }
+
+    #[test]
+    fn keys_the_daemon_by_what_answers_never_by_the_binary_or_path() {
+        let herdr = Some(PathBuf::from("/usr/bin/herdr"));
+        let env = |home: &str| [("HOME", Some(std::ffi::OsString::from(home)))];
+        let mine = key_of("p1", &[herdr.clone()], &env("/home/me"));
+        // Another PATH that runs the same programs, another binary of the same sources: the same daemon.
+        assert_eq!(key_of("p1", &[herdr.clone()], &env("/home/me")), mine);
+        // Another herdr (a world's fake), another HOME, another protocol: another daemon.
+        assert_ne!(key_of("p1", &[Some("/w/bin/herdr".into())], &env("/home/me")), mine);
+        assert_ne!(key_of("p1", &[herdr.clone()], &env("/w/home")), mine);
+        assert_ne!(key_of("p2", &[herdr], &env("/home/me")), mine);
+        // A PATH with node_modules/.bin in front, as `pnpm overview` runs it, finds the same programs.
+        let path = std::env::join_paths(["/nowhere/node_modules/.bin", "/usr/bin", "/bin"]).unwrap();
+        let plain = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
+        assert_eq!(
+            breadboard_core::local::executable_on(&path, "sh"),
+            breadboard_core::local::executable_on(&plain, "sh")
+        );
+        assert_eq!(PROTOCOL.len(), 16);
     }
 
     #[test]

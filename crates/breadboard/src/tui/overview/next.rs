@@ -8,6 +8,7 @@ use crate::tui::theme::{self, Tone};
 use crate::tui::{Page, Scene, Section};
 use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{GITLAB_PENDING, NextBand, OrchestrationModel};
+use breadboard_core::model::order::Item;
 use ratatui::style::Style;
 use ratatui::text::Span;
 
@@ -32,16 +33,17 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             ),
             NextBand::Nothing(text) => look::say(scene, text, theme::dim()),
             NextBand::Action(item) => {
-                // Its digits are keys while nothing is picked with Tab or it is: never two blocks' at once.
-                let is_keyed = pick.keys(item, true);
+                // Its digits are keys only while it is picked with Tab: a stray digit answers nothing.
+                let is_keyed = pick.keys(item);
                 look::gutter(scene, label, under(), |scene| {
                     actions::action_block(scene, item, ctx, is_keyed)
                 });
                 // Off the block: a click on the hint does nothing.
                 let hint = match &pick {
                     actions::Pick::Action { option, .. } if is_keyed => actions::picked_hint(item, option.as_deref()),
-                    _ if is_keyed => actions::hint(item),
-                    _ => vec![],
+                    // Another action picked: its keys are under it, never two blocks' at once.
+                    actions::Pick::Action { .. } => vec![],
+                    actions::Pick::Nothing | actions::Pick::Other => actions::unpicked_hint(item),
                 };
                 if !hint.is_empty() {
                     look::gutter(scene, under(), under(), |scene| {
@@ -50,9 +52,11 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     });
                 }
             }
-            NextBand::UpNext(item) => {
-                look::gutter(scene, label, under(), |scene| actions::next_row(scene, item, ctx));
-            }
+            // Its click did it (the plan written): the next row of UP NEXT, at once.
+            NextBand::UpNext(item) => match up_next_of(model, item) {
+                Some(item) => look::gutter(scene, label, under(), |scene| actions::next_row(scene, item, ctx)),
+                None => look::say(scene, "what comes next shows with the next read", theme::dim()),
+            },
             NextBand::Merge(merge) => {
                 look::gutter(scene, label, under(), |scene| {
                     scene.block(Act::Open(merge.url.clone()), |scene| {
@@ -77,6 +81,16 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             look::gutter(scene, under(), under(), |scene| look::say(scene, why, theme::dim()));
         }
     });
+}
+
+/// The row of UP NEXT that NEXT shows: `item`, or once its click did it,
+/// the first of UP NEXT that is still to do.
+fn up_next_of<'a>(model: &'a OrchestrationModel, item: &'a Item) -> Option<&'a Item> {
+    if !actions::is_done(item) {
+        return Some(item);
+    }
+    let section = model.actions.as_ref().ok()?;
+    section.up_next.iter().find(|other| !actions::is_done(other))
 }
 
 /// An orchestration without issues: how to give it one, nothing else.

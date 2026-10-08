@@ -100,8 +100,9 @@ impl Window {
 /// The section whose title has scrolled off while its lines still show:
 /// its title, pinned over the first scrolling rows. Only while a line of
 /// the section with something on it shows under the pin, so a title never
-/// sits over the blank after its section or the next section's title; not
-/// in a pane too short to spare it.
+/// sits over the blank after its section or the next section's title; never
+/// over a block's first line while the rest of it shows under the pin (its
+/// tail would stand without its head); not in a pane too short to spare it.
 fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pin> {
     let first = sticky + scroll;
     let placed = sheet
@@ -115,7 +116,11 @@ fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pi
             .get(usize::from(row))
             .is_some_and(|row| row.line.spans.iter().any(|span| !span.content.trim().is_empty()))
     });
-    (is_shown && room >= 4 * placed.head).then_some(Pin {
+    let is_head_covered = sheet.regions.iter().any(|region| {
+        let area = region.area;
+        !region.is_button() && area.y >= first && area.y < under && area.bottom() > under
+    });
+    (is_shown && !is_head_covered && room >= 4 * placed.head).then_some(Pin {
         from: placed.from,
         rows: placed.head,
     })
@@ -179,6 +184,16 @@ pub struct Held<A> {
     is_pointer: bool,
 }
 
+impl<A> Held<A> {
+    /// A click whose app asked to show what it opened (`Flow::Show`): placed
+    /// as Enter's, what opened scrolled into view as far as its block's top
+    /// stays on screen.
+    pub fn showing(mut self) -> Self {
+        self.is_pointer = false;
+        self
+    }
+}
+
 /// What a held run opened: the page's rows and scroll before, the rows
 /// after, so the run that closes it again gives back the frame before.
 #[derive(Clone, Debug)]
@@ -204,6 +219,10 @@ pub struct View<A> {
     /// pointer's, run by Enter. Its action and which of the blocks with
     /// that action, so it is found again in a page built anew.
     selected: Option<(A, usize)>,
+    /// The block the last click ran on, until the pointer moves: Tab
+    /// without a pick goes on from it even when what it opened scrolled
+    /// another block under the pointer.
+    clicked: Option<(A, usize)>,
     area: Rect,
     lit: Lit,
     /// The anchor the scroll was last placed by and the scroll it gave:
@@ -229,6 +248,7 @@ impl<A: Clone> Default for View<A> {
             shown_scroll: 0,
             mouse: None,
             selected: None,
+            clicked: None,
             area: Rect::default(),
             lit: Lit::default(),
             placed: None,
@@ -253,8 +273,15 @@ impl<A: Clone + PartialEq> View<A> {
         self.held = held;
     }
 
-    /// The block a click at screen cell (x, y) runs, to hold over the rebuild.
-    pub fn hold(&self, x: u16, y: u16) -> Option<Held<A>> {
+    /// The block a click at screen cell (x, y) runs, to hold over the
+    /// rebuild; Tab goes on from it.
+    pub fn hold(&mut self, x: u16, y: u16) -> Option<Held<A>> {
+        let held = self.held_at(x, y);
+        self.clicked = held.as_ref().map(|held| held.block.clone());
+        held
+    }
+
+    fn held_at(&self, x: u16, y: u16) -> Option<Held<A>> {
         let sheet = self.sheet.as_ref()?;
         let window = self.shown();
         let row = window.page_row(y)?;
@@ -267,6 +294,20 @@ impl<A: Clone + PartialEq> View<A> {
             .min_by_key(|(_, region)| region.area.height)
             .map(|(index, _)| index)?;
         self.held_of(&window, index, row, hit.action().clone(), true)
+    }
+
+    /// The block just picked with Tab, held where the next frame has it
+    /// over the rebuild of an app that follows the pick (`App::picked`).
+    pub fn hold_pick(&self) -> Option<Held<A>> {
+        let index = self.selected_index()?;
+        let region = &self.sheet.as_ref()?.regions[index];
+        self.held_of(
+            &self.window(self.scroll),
+            index,
+            region.area.y,
+            region.action().clone(),
+            false,
+        )
     }
 
     /// The block picked with Tab, held over the rebuild Enter gives.
@@ -492,10 +533,15 @@ impl<A: Clone + PartialEq> View<A> {
             return false;
         };
         let window = self.window(self.scroll);
-        // Without a pick, from the block under the pointer (the one just
-        // clicked), as lazygit's click selects the row j/k then move from.
+        // Without a pick, from the block just clicked, else the one under the
+        // pointer, as lazygit's click selects the row j/k then move from.
+        let clicked = self
+            .clicked
+            .as_ref()
+            .and_then(|(action, nth)| find(sheet, action, *nth));
         let at = match self
             .selected_index()
+            .or(clicked)
             .or(self.lit.block)
             .and_then(|index| order.iter().position(|&i| i == index))
         {
@@ -793,9 +839,21 @@ impl<A: Clone + PartialEq> View<A> {
     /// then a frame is drawn, not on every move.
     pub fn hover(&mut self, at: Option<(u16, u16)>) -> bool {
         // The pointer moved: it lights what it is on again, not the pick.
-        let was_picked = at.is_some() && self.selected.take().is_some();
+        let was_picked = at.is_some() && self.unpick();
+        if at != self.mouse {
+            self.clicked = None;
+        }
         self.mouse = at;
         was_picked || self.lit_at(&self.shown()) != self.lit
+    }
+
+    /// Drops the block picked with Tab (Esc, a click on nothing, the
+    /// pointer moving): the page is built again without its keys, so no
+    /// block shows digits that no longer answer. Whether one was picked.
+    pub fn unpick(&mut self) -> bool {
+        let was_picked = self.selected.take().is_some();
+        self.is_stale |= was_picked;
+        was_picked
     }
 
     /// What a click at screen cell (x, y) runs, in the frame on screen.
@@ -803,6 +861,24 @@ impl<A: Clone + PartialEq> View<A> {
         let row = self.shown().page_row(y)?;
         let (_, region) = self.sheet.as_ref()?.hit(x, row)?;
         Some(region.action().clone())
+    }
+
+    /// A click on a button whose block's first row is off screen (scrolled
+    /// under a pinned title: a try's `looks good  broken` without its head):
+    /// the block is shown instead of the button run, as `show_selected`, so
+    /// a click never answers what the reader can't see. Whether it had to be shown.
+    pub fn show_clicked(&mut self, x: u16, y: u16) -> bool {
+        let window = self.shown();
+        let Some(row) = window.page_row(y) else { return false };
+        let Some(sheet) = &self.sheet else { return false };
+        if !sheet.hit(x, row).is_some_and(|(_, region)| region.is_button()) {
+            return false;
+        }
+        let Some((_, block)) = sheet.block_at(x, row) else {
+            return false;
+        };
+        let area = block.area;
+        window.screen_y(area.y).is_none() && self.reveal(area)
     }
 
     /// The log's entry of a click at screen cell (x, y): what it ran, on which row.
@@ -838,13 +914,16 @@ impl<A: Clone + PartialEq> View<A> {
 
     /// Scrolls by `pages`: what the pane shows under the sticky rows, less
     /// one, so the last row seen stays on screen as the first (PgDn) or the
-    /// first as the last (PgUp), under a pinned title too.
+    /// first as the last (PgUp), under a pinned title too. A blank row is
+    /// nothing to keep: PgUp keeps the first row with text seen (the title
+    /// the reader was under), PgDn goes on past a blank it would land on.
     ///
     /// It lands where the top row the reader sees starts something, as
     /// lazygit's pages start at an item: never inside a block (its name
-    /// scrolled off) or on a section's line whose title is gone without a
-    /// pin. For that it goes up to half a page less far, never further;
-    /// the end and the top it reaches as they are.
+    /// scrolled off), on a wrapped line's rest, on a blank or on a
+    /// section's line whose title is gone without a pin. For that it goes
+    /// up to half a page less far, never further; the end and the top it
+    /// reaches as they are.
     pub fn page_by(&mut self, pages: i32) -> bool {
         let mut has_moved = false;
         for _ in 0..pages.unsigned_abs() {
@@ -855,12 +934,21 @@ impl<A: Clone + PartialEq> View<A> {
                 let then = self.window(now.scroll.saturating_add(step));
                 step.saturating_sub(then.pin.map_or(0, |pin| pin.rows))
             } else {
+                let blanks = (now.first_seen()..(now.first() + now.room).min(now.rows))
+                    .take_while(|&row| self.is_blank(row))
+                    .count() as u16;
                 step.saturating_sub(now.pin.map_or(0, |pin| pin.rows))
+                    .saturating_sub(blanks.min(step / 2))
             };
             let step = step.max(1);
             let less = step / 2;
             let target = if pages > 0 {
-                now.scroll.saturating_add(step).min(now.max_scroll)
+                let mut target = now.scroll.saturating_add(step).min(now.max_scroll);
+                // The blank it lands on was seen: on to what comes after it.
+                while target < now.max_scroll && self.is_blank(self.window(target).first_seen()) {
+                    target += 1;
+                }
+                target
             } else {
                 now.scroll.saturating_sub(step)
             };
@@ -884,9 +972,18 @@ impl<A: Clone + PartialEq> View<A> {
         has_moved
     }
 
+    /// Whether page row `row` has nothing on it (or is past the end).
+    fn is_blank(&self, row: u16) -> bool {
+        self.sheet
+            .as_ref()
+            .and_then(|sheet| sheet.rows.get(usize::from(row)))
+            .is_none_or(Row::is_blank)
+    }
+
     /// Whether the top row the reader sees in `window` starts nothing: it
     /// is inside a block that fits half the room, below the block's first
-    /// row, or a line of a section whose title scrolled off with no pin.
+    /// row, the rest of a wrapped line, a blank, or a line of a section
+    /// whose title scrolled off with no pin.
     fn is_cut(&self, window: &Window) -> bool {
         let Some(sheet) = &self.sheet else { return false };
         let row = window.first_seen();
@@ -905,7 +1002,8 @@ impl<A: Clone + PartialEq> View<A> {
                 .sections
                 .iter()
                 .any(|placed| placed.head > 0 && placed.from >= window.sticky && placed.from < row && row < placed.to);
-        is_in_block || is_orphan
+        let is_rest = sheet.rows[usize::from(row)].is_continued || sheet.rows[usize::from(row)].is_blank();
+        is_in_block || is_orphan || is_rest
     }
 
     /// Scrolls by `halves` of a page: Ctrl-D and Ctrl-U, as in less and vim.
@@ -996,10 +1094,10 @@ fn failed<A: Clone>(last: Option<Sheet<A>>, width: u16, why: &str) -> Sheet<A> {
         page::message_of(why),
         log.display()
     );
-    let row = Row {
-        line: Line::from(Span::styled(text, theme::tone(theme::Tone::Red))),
-        ground: Ground::Plain,
-    };
+    let row = Row::new(
+        Line::from(Span::styled(text, theme::tone(theme::Tone::Red))),
+        Ground::Plain,
+    );
     let mut sheet = last.unwrap_or_else(|| Page::new(width).finish());
     match sheet.rows.first_mut() {
         Some(first) => *first = row,
@@ -1384,6 +1482,32 @@ mod tests {
     }
 
     #[test]
+    fn a_click_that_shows_what_it_opened_scrolls_it_into_view() {
+        for (width, height) in [(80, 24), (120, 40)] {
+            let mut screen = Screen::new(width, height);
+            fold_at_the_end(&mut screen);
+            screen.view.scroll_by(-3);
+            screen.draw();
+            let y = screen.view.screen_y(fold_area(&screen).y).expect("the fold on screen");
+            let action = screen.view.click(width / 2, y).expect("a click there");
+            // The app opened something under the row and said `Flow::Show` (a file's hunks).
+            let held = screen.view.hold(width / 2, y).map(Held::showing);
+            assert!(screen.app.act(Input::Click(action)) == Flow::Redraw);
+            screen.view.acted(held);
+            screen.draw();
+            let area = fold_area(&screen);
+            let now = screen.view.screen_y(area.y).expect("the clicked row stays on screen");
+            assert!(now < y, "{width}: what opened needs the room: {now} >= {y}");
+            // Under it what opened, up to the last row; the row no further up than the top.
+            let (top, rows) = screen.view.body();
+            let is_full = (now + 1..top + rows).all(|at| screen.view.page_row(at).is_some_and(|row| row > area.y));
+            assert!(is_full, "{width}: {now}");
+            let is_up_to_top = screen.view.window(screen.view.scroll() + 1).screen_y(area.y).is_none();
+            assert!(is_up_to_top || screen.view.scroll() == screen.view.window(0).max_scroll);
+        }
+    }
+
+    #[test]
     fn a_page_that_got_shorter_pulls_the_scroll_up() {
         let mut screen = Screen::new(120, 40);
         screen.click(Action::Fold);
@@ -1521,6 +1645,13 @@ mod tests {
                         .any(|row| !text[row as usize].trim().is_empty()),
                     "{width}x{height} at {scroll}: {placed:?}"
                 );
+                // Never over a block's head while its tail shows under the pin.
+                assert!(
+                    !sheet.regions.iter().any(|region| !region.is_button()
+                        && (window.first()..under).contains(&region.area.y)
+                        && region.area.bottom() > under),
+                    "{width}x{height} at {scroll}: {text:#?}"
+                );
             }
             // A section scrolled up to its last line: no pin over that line.
             for placed in screen.view.sheet().sections.clone() {
@@ -1540,6 +1671,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_pinned_title_never_leaves_a_block_without_its_head() {
+        let mut checked = 0;
+        for (width, height) in [(80, 24), (120, 40), (60, 30)] {
+            let mut screen = Screen::new(width, height);
+            for region in screen.regions() {
+                let area = region.area;
+                let sticky = screen.view.shown().sticky;
+                if region.is_button() || area.height < 2 || area.y <= sticky {
+                    continue;
+                }
+                // The block's head on the first scrolling row, its section's title scrolled off.
+                screen.view.scroll_top();
+                if !screen.view.scroll_by(i32::from(area.y - sticky)) {
+                    continue;
+                }
+                screen.draw();
+                if screen.view.shown().first() != area.y {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    screen.view.screen_y(area.y).is_some(),
+                    "{width}x{height}: {:?} {:?}",
+                    region.area,
+                    screen.view.shown().pin
+                );
+            }
+        }
+        assert!(checked > 0);
     }
 
     #[test]
@@ -1776,6 +1939,83 @@ mod tests {
         }
     }
 
+    /// Sections of wrapped items with no blocks, as ISSUE's checklist: a
+    /// page has only the wraps and the blanks to tell where an item starts.
+    struct Checklist;
+
+    impl App for Checklist {
+        type Action = u16;
+        type Model = ();
+        fn header(&self) -> Header {
+            Header::new("checklist")
+        }
+        fn build(&self, page: &mut Page<u16>) {
+            for section in ["SCOPE", "ACCEPTANCE", "PIPELINE"] {
+                page.section(section, |scene| {
+                    for i in 0..10 {
+                        scene.pad_to(2);
+                        scene.atom_gap(vec![Span::raw("○")], 0);
+                        scene.indent(4);
+                        let words = "the item wraps under itself over a few lines of words ".repeat(1 + i % 3);
+                        scene.text(&format!("{section} {i}: {words}"), Style::new());
+                        scene.indent(0);
+                        scene.end_line();
+                    }
+                });
+            }
+        }
+        fn update(&mut self, _: ()) {}
+        fn act(&mut self, _: Input<u16>) -> Flow {
+            Flow::Same
+        }
+    }
+
+    #[test]
+    fn a_page_never_lands_on_a_wrapped_lines_rest_or_a_blank_and_keeps_a_row_with_text() {
+        for (width, height) in [(60, 24), (80, 24), (100, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut view = View::<u16>::default();
+            let mut draw = |view: &mut View<u16>| {
+                terminal.draw(|frame| view.draw(frame, &Checklist)).unwrap();
+            };
+            draw(&mut view);
+            let starts_nothing = |view: &View<u16>| {
+                let row = &view.sheet().rows[usize::from(view.shown().first_seen())];
+                row.is_continued || row.is_blank()
+            };
+            let text_seen = |view: &View<u16>| -> Vec<u16> {
+                let window = view.shown();
+                (window.first_seen()..(window.first() + window.room).min(window.rows))
+                    .filter(|&row| !view.is_blank(row))
+                    .collect()
+            };
+            let mut pages = 0;
+            loop {
+                let was = text_seen(&view);
+                if !view.page_by(1) {
+                    break;
+                }
+                draw(&mut view);
+                pages += 1;
+                let is_end = view.scroll() == view.shown().max_scroll;
+                assert!(is_end || !starts_nothing(&view), "{width}x{height}: page {pages}");
+                assert!(text_seen(&view).contains(was.last().unwrap()), "{width}x{height}: page {pages}");
+            }
+            assert!(pages > 2, "{width}x{height}: {pages} pages");
+            loop {
+                let was = text_seen(&view);
+                if !view.page_by(-1) {
+                    break;
+                }
+                draw(&mut view);
+                assert!(view.scroll() == 0 || !starts_nothing(&view), "{width}x{height}");
+                // The first row with text seen stays, never only a blank of overlap.
+                assert!(text_seen(&view).contains(&was[0]), "{width}x{height}: {was:?}");
+            }
+            assert_eq!(view.scroll(), 0);
+        }
+    }
+
     #[test]
     fn a_sticky_part_taller_than_half_the_pane_is_cut_and_its_rest_scrolls() {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -1890,6 +2130,54 @@ mod tests {
         screen.draw();
         screen.view.select_by(1);
         assert_eq!(screen.view.selected_index(), Some(order[2]));
+    }
+
+    #[test]
+    fn tab_after_a_click_goes_on_from_the_clicked_block_wherever_the_pointer_is_now() {
+        let mut screen = Screen::new(120, 24);
+        let order = blocks(screen.view.sheet());
+        let sticky = screen.view.sheet().sticky;
+        // A block that scrolls, on screen.
+        let at = (0..order.len())
+            .find(|&at| {
+                let area = screen.view.sheet().regions[order[at]].area;
+                area.y >= sticky && screen.view.screen_y(area.y).is_some() && at + 1 < order.len()
+            })
+            .expect("a block on screen");
+        let area = screen.view.sheet().regions[order[at]].area;
+        let y = screen.view.screen_y(area.y).unwrap();
+        // The click alone, no move reported before it: the run loop puts the pointer there.
+        screen.view.hover(Some((60, y)));
+        assert!(screen.view.hold(60, y).is_some());
+        // What it opened scrolled another block under the pointer, which stays put.
+        while screen.view.lit.block == Some(order[at]) && screen.view.scroll_by(1) {
+            screen.draw();
+            screen.view.hover(Some((60, y)));
+            screen.draw();
+        }
+        assert_ne!(
+            screen.view.lit.block,
+            Some(order[at]),
+            "another block under the pointer"
+        );
+        screen.view.select_by(1);
+        assert_eq!(screen.view.selected_index(), Some(order[at + 1]));
+        // Once the pointer moves, Tab goes on from what it is on.
+        screen.view.unpick();
+        screen.view.hover(Some((61, y)));
+        screen.draw();
+        let under = screen
+            .view
+            .lit
+            .block
+            .and_then(|index| order.iter().position(|&i| i == index));
+        screen.view.select_by(1);
+        if let Some(under) = under {
+            assert_eq!(
+                screen.view.selected_index(),
+                Some(order[(under + 1).min(order.len() - 1)])
+            );
+        }
     }
 
     #[test]

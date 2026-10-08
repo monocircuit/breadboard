@@ -409,7 +409,14 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
                 let who = feature_of(&app.actor.main, &done);
                 match &error {
                     None => {
-                        app.actor.stacks.remove(&done);
+                        // Kept with its end: WORKTREES says `stack …` until docker tells after it (#332).
+                        app.actor.stacks.insert(
+                            done.clone(),
+                            Run {
+                                done_at: Some(breadboard_core::time::now_ms()),
+                                ..Run::default()
+                            },
+                        );
                         app.actor.log_as(
                             &format!("stack:{who}"),
                             Paint::Green,
@@ -458,6 +465,77 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
             );
             app.actor
                 .log(Paint::Red, format!("the stack of {who} didn't start: {why}"));
+        }
+    }
+}
+
+/// `pnpm pg:migrate` in a worktree's vita, detached (STACK's `▶ pnpm
+/// pg:migrate`, from WORKTREES since #332), once at a time; its log in
+/// `$TMPDIR/overview-migrate-<basename>.log`. Its end forgets the
+/// migrations core holds of it: the next read asks the database again.
+pub fn migrate(app: &mut Overview, dir: &Path) {
+    if app.actor.migrations.get(dir).is_some_and(|run| run.is_running) {
+        return;
+    }
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let log = spawn::log_file(&format!("overview-migrate-{base}.log"));
+    let poster = app.actor.poster();
+    let done = dir.to_path_buf();
+    let started = spawn::start(
+        Background {
+            program: Path::new("pnpm"),
+            args: vec!["pg:migrate".into()],
+            cwd: &dir.join(breadboard_core::model::develop::VITA),
+            log: &log,
+            env: Vec::new(),
+            is_paneless: false,
+        },
+        move |code, last| {
+            breadboard_core::model::develop::forget_migrations(&done);
+            poster.post(move |app: &mut Overview| {
+                let error = error_of(code, &last, "pnpm pg:migrate ");
+                let who = feature_of(&app.actor.main, &done);
+                let (paint, text) = match &error {
+                    None => (Paint::Green, format!("the migrations of {who} are applied")),
+                    Some(why) => (Paint::Red, format!("the migrations of {who} failed: {why}")),
+                };
+                app.actor.migrations.insert(
+                    done.clone(),
+                    Run {
+                        done_at: error.is_none().then(breadboard_core::time::now_ms),
+                        error,
+                        ..Run::default()
+                    },
+                );
+                app.actor.log_as(&format!("migrate:{who}"), paint, text, None);
+                app.redraw();
+            });
+        },
+    );
+    let who = feature_of(&app.actor.main, dir);
+    match started {
+        Ok(()) => {
+            app.actor.migrations.insert(dir.to_path_buf(), Run::running(&log));
+            app.actor.log_as(
+                &format!("migrate:{who}"),
+                Paint::Yellow,
+                format!("migrating the database of {who} …"),
+                Some("pnpm pg:migrate".into()),
+            );
+        }
+        Err(why) => {
+            app.actor.migrations.insert(
+                dir.to_path_buf(),
+                Run {
+                    error: Some(why.clone()),
+                    ..Run::default()
+                },
+            );
+            app.actor
+                .log(Paint::Red, format!("the migrations of {who} didn't start: {why}"));
         }
     }
 }

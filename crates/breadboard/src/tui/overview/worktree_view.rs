@@ -62,6 +62,14 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
     }
 }
 
+/// Tab moved the pick: hunks that show follow it to the file of its row (acts.rs `follow`).
+pub fn picked(app: &mut Overview, picked: Option<&Act>) -> Flow {
+    if !matches!(app.model, Some(Model::Worktree(_))) {
+        return Flow::Same;
+    }
+    acts::follow(&mut app.worktree, picked)
+}
+
 /// A key the frame has no use for: `u` starts the stack whose button shows,
 /// Esc closes the hunks that show.
 pub fn key(app: &mut Overview, key: KeyEvent) -> Flow {

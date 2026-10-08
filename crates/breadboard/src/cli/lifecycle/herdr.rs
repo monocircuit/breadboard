@@ -374,13 +374,53 @@ fn ancestors_of(pid: i64) -> Vec<i64> {
     chain
 }
 
+/// What `current_pane` found in this process: the id of the pane whose
+/// shell is an ancestor, or None when no pane's is. A shell started before
+/// this process; so a pane found none of stays none for the run, and one
+/// found is asked about once (a move gives it a new id).
+static FOUND: Mutex<Option<Option<String>>> = Mutex::new(None);
+
+/// How many panes are asked for their shell at once: herdr answers each in
+/// milliseconds, 94 one after another took 3.4 s (rewrite-log 21:05 (4)).
+const AT_ONCE: usize = 16;
+
+/// The first pane, in herdr's order, whose shell is in `chain`, asked
+/// [`AT_ONCE`] at a time; and whether herdr told the shell of every pane
+/// it asked about (else "none" is no answer).
+fn first_ours(panes: &[Value], chain: &[i64]) -> (Option<Value>, bool) {
+    let mut has_every_shell = true;
+    for batch in panes.chunks(AT_ONCE) {
+        let shells: Vec<Option<i64>> = std::thread::scope(|scope| {
+            let asked: Vec<_> = batch
+                .iter()
+                .map(|pane| scope.spawn(|| shell_of(s(pane, "pane_id"))))
+                .collect();
+            asked.into_iter().map(|one| one.join().ok().flatten()).collect()
+        });
+        has_every_shell &= shells.iter().all(Option::is_some);
+        if let Some(at) = shells
+            .iter()
+            .position(|shell| shell.is_some_and(|shell| chain.contains(&shell)))
+        {
+            return (Some(batch[at].clone()), true);
+        }
+    }
+    (None, has_every_shell)
+}
+
 /// The pane running this: the one whose shell is an ancestor of this
 /// process. Not trusting HERDR_PANE_ID alone: a pane that moved got a new
 /// id, and herdr answers a gone id with the focused pane (#287). Without
 /// HERDR_PANE_ID this process has no pane (a detached ✕ of the overview):
 /// None, where today's asked herdr and took whichever pane is focused.
+/// Asked again in one run (wt:new asks three times), the answer found is
+/// checked, not searched again.
 pub fn current_pane() -> Option<Value> {
     if !is_in() || std::env::var_os("HERDR_PANE_ID").is_none() {
+        return None;
+    }
+    let found = FOUND.lock().ok().and_then(|found| found.clone());
+    if found == Some(None) {
         return None;
     }
     let current = call(&["pane", "current", "--current"]).and_then(|result| result.get("pane").cloned());
@@ -388,11 +428,29 @@ pub fn current_pane() -> Option<Value> {
     if chain.len() < 2 {
         return current;
     }
-    let is_ours = |pane: &Value| shell_of(s(pane, "pane_id")).is_some_and(|shell| chain.contains(&shell));
-    if let Some(current) = current.filter(is_ours) {
+    let is_ours = |id: &str| shell_of(id).is_some_and(|shell| chain.contains(&shell));
+    let remember = |pane: Option<&Value>| {
+        if let Ok(mut found) = FOUND.lock() {
+            *found = Some(pane.map(|pane| s(pane, "pane_id").to_string()));
+        }
+    };
+    if let Some(current) = current.filter(|pane| is_ours(s(pane, "pane_id"))) {
+        remember(Some(&current));
         return Some(current);
     }
-    all_panes().into_iter().find(is_ours)
+    let panes = all_panes();
+    if let Some(Some(id)) = &found
+        && let Some(pane) = panes.iter().find(|pane| s(pane, "pane_id") == id)
+        && is_ours(id)
+    {
+        return Some(pane.clone());
+    }
+    let (ours, is_answer) = first_ours(&panes, &chain);
+    // An empty list, or a shell herdr didn't tell, is no "in no pane".
+    if ours.is_some() || (is_answer && !panes.is_empty()) {
+        remember(ours.as_ref());
+    }
+    ours
 }
 
 /// A method of herdr's socket API the CLI has no command for

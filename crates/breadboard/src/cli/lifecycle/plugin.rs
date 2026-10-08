@@ -22,6 +22,8 @@ use std::sync::Once;
 /// The plugin's id in `herdr-plugin.toml`.
 pub const PLUGIN: &str = "monocircuit.platform";
 const MANIFEST: &str = "herdr-plugin.toml";
+/// What runs the binary for herdr, beside the manifest.
+const LAUNCHER: &str = "breadboard.sh";
 
 /// Checks the plugin and the configs once per process, inside herdr only,
 /// and not in a child of this binary whose parent checked them (#230: said
@@ -30,7 +32,8 @@ pub fn heal(main: &Path) {
     static ONCE: Once = Once::new();
     if herdr::is_in() && std::env::var_os(crate::cli::setup::PLUGIN_CHECKED).is_none() {
         ONCE.call_once(|| {
-            for line in check(main) {
+            let lines = super::proc::as_step("herdr: where the plugin is linked from (#230)", || check(main));
+            for line in lines {
                 step(&line);
             }
         });
@@ -64,6 +67,7 @@ fn check(main: &Path) -> Vec<String> {
     let config = main.join(".herdr").join("config.toml");
     if let Ok(was) = fs::read_to_string(&config) {
         let (now, replaced) = rewritten(&was, &gone, &current);
+        let now = with_status(now, &was, main, &current);
         if now != was && fs::write(&config, &now).is_ok() {
             let reloaded = if is_session_config(&config) && herdr::did(&["server", "reload-config"]) {
                 ", and reloaded"
@@ -258,6 +262,18 @@ fn rewritten(config: &str, gone: &[PathBuf], current: &Path) -> (String, Vec<Pat
     (now, stale)
 }
 
+/// The config after a rewrite of gone paths with its tab bar's status as
+/// `herdr:install` writes it, the launcher of `current` (the plugin piece's
+/// `breadboard.sh`), when that is there: a heal must not write back
+/// Node's `run.mjs status` that the next install replaces. Nothing gone,
+/// nothing changes: a healthy config is no write of this (rule 6).
+fn with_status(now: String, was: &str, main: &Path, current: &Path) -> String {
+    if now == was || !current.join(LAUNCHER).is_file() {
+        return now;
+    }
+    crate::herdr::with_status_of(&now, main, current)
+}
+
 /// `old` replaced where it is a whole directory: followed by `/`, a quote,
 /// a space, `,`, `]` or the end, never as the start of a longer name.
 fn replace_dir(config: &str, old: &str, new: &str) -> String {
@@ -376,6 +392,34 @@ mod tests {
         let (again, none) = rewritten(&now, &[], &current);
         assert!(none.is_empty());
         assert_eq!(again, now);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_heal_writes_the_status_herdr_install_writes() {
+        let root = std::env::temp_dir().join(format!("lifecycle-plugin-status-{}", std::process::id()));
+        let current = root.join("packages/breadboard/herdr");
+        fs::create_dir_all(&current).unwrap();
+        let config = concat!(
+            "tab_bar_right = [{ type = \"command\", command = \"node /gone/packages/workflow/herdr/run.mjs status\" }]\n",
+            "[keys]\nx = \"node /gone/packages/workflow/herdr/run.mjs open overview\"\n",
+        );
+        let (now, _) = rewritten(config, &[], &current);
+        let run = format!("{}/run.mjs", text(&current));
+        // Without the launcher: the path is healed, the command stays.
+        assert_eq!(with_status(now.clone(), config, &root, &current), now);
+        assert!(now.contains(&format!("node {run} status")));
+        fs::write(current.join(LAUNCHER), "#!/bin/sh\n").unwrap();
+        let healed = with_status(now.clone(), config, &root, &current);
+        assert_eq!(healed, crate::herdr::with_status_of(&now, &root, &current));
+        assert!(!healed.contains("run.mjs status"), "{healed}");
+        assert!(healed.contains(&text(&current.join(LAUNCHER))), "{healed}");
+        assert!(
+            healed.contains(&format!("node {run} open overview")),
+            "keys keep their command"
+        );
+        // Nothing gone: a healthy config is left as it is.
+        assert_eq!(with_status(config.to_string(), config, &root, &current), config);
         fs::remove_dir_all(root).unwrap();
     }
 

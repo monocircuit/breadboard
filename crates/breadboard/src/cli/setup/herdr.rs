@@ -15,10 +15,21 @@ use breadboard_core::json::str_of;
 use breadboard_core::record::{self, ORCHESTRATOR, Origin, SPACE};
 use serde_json::Value;
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub use crate::cli::lifecycle::herdr::{all_panes, current_pane, id_at, is_idle, panes_of, spaces, tabs_of};
 pub use crate::cli::lifecycle::layout::exclusive;
 pub use crate::cli::lifecycle::layout::tabs::idle_pane_of;
+
+/// The pane running this, asked once a run. wt:new asks three times (the
+/// orchestration it runs in, the worktree an agent leaves, the tab it
+/// moves) and nothing moves the pane in between; a pane not found is a
+/// scan of every pane's shell, one herdr call each (critic, round 7: 190
+/// calls and 7 s before `▸ git fetch` when herdr told no shell).
+pub fn pane_here() -> Option<Value> {
+    static HERE: OnceLock<Option<Value>> = OnceLock::new();
+    HERE.get_or_init(current_pane).clone()
+}
 
 pub fn is_in_herdr() -> bool {
     lifecycle_herdr::is_in()
@@ -109,7 +120,7 @@ pub fn mark_origins() {
 
 /// The orchestration whose space holds the pane running this (#245).
 pub fn orchestration_here() -> Option<String> {
-    let pane = current_pane()?;
+    let pane = pane_here()?;
     let label = spaces()
         .into_iter()
         .find(|space| field(space, "workspace_id") == field(&pane, "workspace_id"))
@@ -159,7 +170,7 @@ pub fn open_space(feature: &str, dir: &Path, origin: Option<&Origin>, stays: Opt
             return Some(format!("opened the space {feature}"));
         }
         let workspace = spaces::worktree_space(&repo, dir, false, false)?;
-        let pane = current_pane()?;
+        let pane = pane_here()?;
         let moved = herdr(&[
             "pane",
             "move",

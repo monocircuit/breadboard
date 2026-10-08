@@ -90,6 +90,8 @@ pub struct Actor {
     /// `stack:up` started for a try or the view of everything, by checkout
     /// (the worktree view keeps its own, worktree_view/acts.rs).
     pub stacks: HashMap<PathBuf, Run>,
+    /// `pnpm pg:migrate` started from WORKTREES (#332), by worktree.
+    pub migrations: HashMap<PathBuf, Run>,
     pub tries: tries::Tries,
     pub sync: sync::Sync,
     /// What was done, newest first.
@@ -115,6 +117,7 @@ impl Actor {
             chat: None,
             dismissing: HashMap::new(),
             stacks: HashMap::new(),
+            migrations: HashMap::new(),
             tries: tries::Tries::default(),
             sync: sync::Sync::default(),
             did: VecDeque::new(),
@@ -179,6 +182,11 @@ impl Actor {
     /// A thing done into the log. One that was under way with the same
     /// words before its ` · ` (an answer waiting for its agent) is replaced.
     pub fn log(&mut self, paint: Paint, text: impl Into<String>) {
+        self.log_with(paint, text, None);
+    }
+
+    /// `log` with what was run or typed word for word under it (`detail`).
+    pub fn log_with(&mut self, paint: Paint, text: impl Into<String>, detail: Option<String>) {
         let text = text.into();
         let head = head_of(&text).to_string();
         self.did
@@ -187,7 +195,7 @@ impl Actor {
             at: now_ms(),
             paint,
             text,
-            detail: None,
+            detail,
             key: None,
             times: 1,
         });

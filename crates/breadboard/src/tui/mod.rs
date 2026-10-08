@@ -46,6 +46,12 @@ pub trait App {
     fn update(&mut self, model: Self::Model);
     /// A click, `r`, or a key the frame has no use for.
     fn act(&mut self, input: Input<Self::Action>) -> Flow;
+    /// Tab moved the pick to `picked` (lazygit's j/k): an app whose panel
+    /// follows the selection (the worktree view's hunks) changes with it and
+    /// says `Show`; the page is built again with the pick kept on screen.
+    fn picked(&mut self, _picked: Option<&Self::Action>) -> Flow {
+        Flow::Same
+    }
 }
 
 /// What the app is asked to do.
@@ -64,6 +70,10 @@ pub enum Input<A> {
 pub enum Flow {
     /// The app's state changed: build the page again.
     Redraw,
+    /// As `Redraw`, and the act opened something under the block it ran on
+    /// (a file's hunks): scrolled into view, a click's as Enter's, its block
+    /// no further than the top. A `Redraw` click keeps its row under the pointer.
+    Show,
     /// Nothing to show.
     Same,
     Quit,
