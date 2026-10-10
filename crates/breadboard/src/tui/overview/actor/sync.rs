@@ -19,7 +19,7 @@ use breadboard_core::git::feature_of;
 use breadboard_core::gitlab::{Mr, Pipeline};
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
 use breadboard_core::local::ORCHESTRATOR_TAB;
-use breadboard_core::model::agent_state::{Facts, NextIssue, sidebar_line_of};
+use breadboard_core::model::agent_state::{Facts, NextIssue, agent_state_of, sidebar_line_of};
 use breadboard_core::model::merge::checks_of;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, RemoteOf};
@@ -71,10 +71,6 @@ pub struct Sync {
     memory: Arc<Mutex<Memory>>,
     /// The worktrees and whether their stack runs, at the last tick; None before the first.
     known: Option<BTreeMap<PathBuf, bool>>,
-    /// The acts the last tick logged: one that a tick does again is the same
-    /// entry, counted, never a new one (with the world's herdr, which never
-    /// drops a closed tab, a prune repeats on every tick).
-    previous: HashSet<String>,
 }
 
 /// After a read of the view of everything with `--herdr`.
@@ -123,11 +119,7 @@ pub fn after_read(app: &mut Overview) {
             .collect(),
         _ => Vec::new(),
     };
-    // GitLab answered: the sidebar's lines say what it said. Before that (or
-    // while it fails) a line would guess, an awaited MR open and no pipeline
-    // (#262: `waits for !309` of a merged !309): none is written, the
-    // lines herdr holds stay.
-    let is_gitlab_in = is_gitlab_in(mrs.as_deref());
+    let lab = Lab::of(mrs.as_deref(), app.gitlab.error.is_some());
     let trees = local.trees.clone();
     let main = app.actor.main.clone();
     let memory = app.actor.sync.memory.clone();
@@ -136,7 +128,7 @@ pub fn after_read(app: &mut Overview) {
     app.actor.queue(move || {
         // Free again however the job ends: a panic costs this tick, not every next one.
         let _free = Free(is_busy);
-        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), is_gitlab_in, is_layout, &memory);
+        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), lab, is_layout, &memory);
         if is_layout || !stacks.is_empty() {
             // One change of the layout at a time, with wt:herdr and the other overviews.
             let repo = Repo { main: main.clone() };
@@ -171,21 +163,7 @@ pub fn after_read(app: &mut Overview) {
             }
         }
         Some(Box::new(move |app: &mut Overview| {
-            let keys: HashSet<String> = logged.iter().map(Logged::key).collect();
-            let mut is_done: HashSet<String> = HashSet::new();
-            for act in logged {
-                let key = act.key();
-                // The layout prunes too: the same act twice in one tick is one.
-                if !is_done.insert(key.clone()) {
-                    continue;
-                }
-                if app.actor.sync.previous.contains(&key) {
-                    app.actor.again(&key);
-                } else {
-                    app.actor.log_as(&key, act.paint, act.text, act.detail);
-                }
-            }
-            app.actor.sync.previous = keys;
+            log_acts(&mut app.actor, logged);
             // What came in meanwhile, at once: the newest local and GitLab read.
             if app.actor.sync.is_due {
                 after_read(app);
@@ -194,9 +172,58 @@ pub fn after_read(app: &mut Overview) {
     });
 }
 
-/// Whether the sidebar's lines can be written: GitLab's open MRs are in.
-fn is_gitlab_in(mrs: Option<&[OpenMr]>) -> bool {
-    mrs.is_some()
+/// What a tick did into the log: an act the log already has (the same words
+/// and commands) is counted on its entry, once for each time its commands
+/// ran, whatever ticks came between; DONE's `· N times` is the number of
+/// rounds of those calls (the world's herdr never drops a closed tab, so a
+/// prune repeats on each tick that prunes).
+fn log_acts(actor: &mut super::Actor, logged: Vec<Logged>) {
+    for act in logged {
+        let key = act.key();
+        if !actor.again(&key) {
+            actor.log_as(&key, act.paint, act.text, act.detail);
+        }
+    }
+}
+
+/// Where GitLab stands for the sidebar's lines. In: they say what it said.
+/// Waiting (its first read under way): only the lines no GitLab answer can
+/// change (at work, asks you), so the first write of the others is the right
+/// one, never a guess followed by a second write (#262: `waits for !309` of a
+/// merged !309). Out (its read failed, nothing came yet): every line, of the
+/// facts that need no GitLab, an awaited MR named by none of its iids (it may
+/// be merged), so a line herdr holds from before never outlives its fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lab {
+    Waiting,
+    Out,
+    In,
+}
+
+impl Lab {
+    fn of(mrs: Option<&[OpenMr]>, has_failed: bool) -> Lab {
+        match (mrs, has_failed) {
+            (Some(_), _) => Lab::In,
+            (None, true) => Lab::Out,
+            (None, false) => Lab::Waiting,
+        }
+    }
+}
+
+/// An agent's sidebar line as GitLab stands (`Lab`), None to leave it as herdr holds it.
+fn line_of(tree: &Tree, facts: &Facts, lab: Lab) -> Option<String> {
+    let state = agent_state_of(tree, facts);
+    match (lab, state.key) {
+        (Lab::In, _) => Some(sidebar_line_of(tree, facts)),
+        (_, "working" | "asks") => Some(state.text),
+        (Lab::Waiting, _) => None,
+        (Lab::Out, "waitsForMr") => Some("waits for other MRs".into()),
+        (Lab::Out, "next") => Some(match facts.handover {
+            Some(handover) if !handover.open.is_empty() => format!("→ next #{} after other MRs", handover.number),
+            _ => state.text,
+        }),
+        (Lab::Out, _) => Some(state.text),
+    }
 }
 
 /// Marks the sync free when dropped, at the end of its job.
@@ -211,14 +238,14 @@ impl Drop for Free {
 /// One tick: sessions, chats, the spaces pruned and sorted (not when the
 /// whole layout follows, `is_layout`: it prunes and sorts itself, and a
 /// second pass in one tick would close what the first just closed), the
-/// sidebar's lines once GitLab is in (`is_gitlab_in`), the notifications.
+/// sidebar's lines as GitLab stands (`Lab`), the notifications.
 /// What it did, for the log, and the spaces it read (id → label) for the
 /// layout's commands.
 fn tick(
     main: &Path,
     trees: &[Tree],
     mrs: Option<&[OpenMr]>,
-    is_gitlab_in: bool,
+    lab: Lab,
     is_layout: bool,
     memory: &Mutex<Memory>,
 ) -> (Vec<Logged>, HashMap<String, String>) {
@@ -249,9 +276,7 @@ fn tick(
         logged.extend(before.gone(&Leftovers::of(main), main, &names));
     }
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
-    if is_gitlab_in {
-        report_states(main, trees, mrs, &panes, &all_spaces, &mut memory);
-    }
+    report_states(main, trees, mrs, lab, &panes, &all_spaces, &mut memory);
     notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut logged);
     (logged, known)
 }
@@ -439,6 +464,7 @@ fn report_states(
     main: &Path,
     trees: &[Tree],
     mrs: Option<&[OpenMr]>,
+    lab: Lab,
     panes: &[Pane],
     all_spaces: &[breadboard_core::herdr::Space],
     memory: &mut Memory,
@@ -446,6 +472,8 @@ fn report_states(
     let agents: Vec<&Pane> = panes.iter().filter(|pane| pane.agent.is_some()).collect();
     let open: HashSet<i64> = mrs.unwrap_or_default().iter().map(|(_, iid, _)| *iid).collect();
     let mut lines: HashMap<String, String> = HashMap::new();
+    // Panes whose line waits for GitLab's first answer: left as herdr holds it.
+    let mut held: HashSet<String> = HashSet::new();
     let claudes = breadboard_core::local::claudes();
     for listed in trees.iter().filter(|tree| tree.dir != main) {
         let label = herdr::space_label(main, &listed.dir);
@@ -478,17 +506,21 @@ fn report_states(
         let handover = handover_of(main, &tree, mrs.map(|_| &open));
         let checks = checks_of(&[], &tree.actions, &tree.answered);
         for pane in own {
-            let line = sidebar_line_of(
-                &tree,
-                &Facts {
-                    mr: mr.as_ref(),
-                    status: pane.status.as_deref(),
-                    merged: Some(&merged),
-                    handover: handover.as_ref(),
-                    checks: &checks,
-                },
-            );
-            lines.insert(pane.id.clone(), line);
+            let facts = Facts {
+                mr: mr.as_ref(),
+                status: pane.status.as_deref(),
+                merged: Some(&merged),
+                handover: handover.as_ref(),
+                checks: &checks,
+            };
+            match line_of(&tree, &facts, lab) {
+                Some(line) => {
+                    lines.insert(pane.id.clone(), line);
+                }
+                None => {
+                    held.insert(pane.id.clone());
+                }
+            }
         }
     }
     let repos = repos_of(all_spaces, &agents);
@@ -496,10 +528,11 @@ fn report_states(
     ids.extend(memory.reported.keys().cloned());
     for pane in &ids {
         // In Node's order: the state, the repo, the gone ones.
-        let mut tokens: Tokens = vec![
-            (STATE_TOKEN.into(), lines.get(pane).cloned()),
-            (REPO_TOKEN.into(), repos.get(pane).cloned()),
-        ];
+        let mut tokens: Tokens = Vec::new();
+        if !held.contains(pane) {
+            tokens.push((STATE_TOKEN.into(), lines.get(pane).cloned()));
+        }
+        tokens.push((REPO_TOKEN.into(), repos.get(pane).cloned()));
         tokens.extend(GONE.iter().map(|gone| (gone.to_string(), None)));
         report(pane, tokens, memory);
     }
@@ -728,9 +761,89 @@ mod tests {
     }
 
     #[test]
-    fn writes_no_sidebar_line_before_gitlab_answers() {
-        assert!(!is_gitlab_in(None));
-        assert!(is_gitlab_in(Some(&[])));
+    fn counts_an_act_once_for_each_round_of_its_calls() {
+        let mut actor = super::super::Actor::new(
+            &breadboard_core::reader::View::Everything,
+            Path::new("/r"),
+            false,
+            false,
+        );
+        let close = || {
+            Logged::new(
+                Paint::Green,
+                "closed 8 tabs of 299-x · its worktree is gone",
+                Some("herdr tab close w4P:t1; herdr tab close w4P:t2".into()),
+            )
+        };
+        let other = || Logged::new(Paint::Green, "wrote down the conversation of 307-x", None);
+        // Round 1, a tick with something else, a tick with nothing, round 2, then round 3 twice in one tick.
+        log_acts(&mut actor, vec![close()]);
+        log_acts(&mut actor, vec![other()]);
+        log_acts(&mut actor, vec![]);
+        log_acts(&mut actor, vec![close()]);
+        log_acts(&mut actor, vec![close(), close()]);
+        let closes: Vec<&super::super::Did> = actor.did.iter().filter(|did| did.text.starts_with("closed")).collect();
+        assert_eq!(closes.len(), 1, "one entry");
+        assert_eq!(closes[0].times, 4, "as often as its calls ran");
+        assert_eq!(actor.did.len(), 2);
+    }
+
+    #[test]
+    fn writes_no_guess_before_gitlab_answers_and_no_awaited_iid_while_it_is_out() {
+        assert_eq!(Lab::of(None, false), Lab::Waiting);
+        assert_eq!(Lab::of(None, true), Lab::Out);
+        assert_eq!(Lab::of(Some(&[]), true), Lab::In);
+        let waiting = Tree {
+            wait: Some(breadboard_core::wait::Wait {
+                mrs: vec![309, 310, 311],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let none = HashSet::new();
+        let facts = |status| Facts {
+            status,
+            merged: Some(&none),
+            ..Default::default()
+        };
+        // The first read under way: only what no answer changes.
+        assert_eq!(line_of(&waiting, &facts(None), Lab::Waiting), None);
+        assert_eq!(line_of(&Tree::default(), &facts(None), Lab::Waiting), None);
+        assert_eq!(
+            line_of(&waiting, &facts(Some("working")), Lab::Waiting).as_deref(),
+            Some("at work")
+        );
+        // GitLab out: every line, no awaited MR counted open (#262).
+        assert_eq!(
+            line_of(&waiting, &facts(None), Lab::Out).as_deref(),
+            Some("waits for other MRs")
+        );
+        assert_eq!(
+            line_of(&Tree::default(), &facts(None), Lab::Out).as_deref(),
+            Some("free")
+        );
+        let handover = NextIssue {
+            number: 226,
+            open: vec![232],
+        };
+        let next = Facts {
+            handover: Some(&handover),
+            ..facts(None)
+        };
+        assert_eq!(
+            line_of(&Tree::default(), &next, Lab::Out).as_deref(),
+            Some("→ next #226 after other MRs")
+        );
+        // GitLab in: its words, the merged ones left out.
+        let merged: HashSet<i64> = [309, 310].into();
+        let known = Facts {
+            merged: Some(&merged),
+            ..facts(None)
+        };
+        assert_eq!(
+            line_of(&waiting, &known, Lab::In).as_deref(),
+            Some("waits for !311 · 2 merged")
+        );
     }
 
     #[test]

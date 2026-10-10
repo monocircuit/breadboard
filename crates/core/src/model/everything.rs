@@ -34,35 +34,6 @@ pub struct EverythingModel {
     pub remote: Option<EverythingRemote>,
 }
 
-/// A checkout's stack as a cell (boxes.mjs `stackCell`): `+2 running(5)`, `default down`, `shared`.
-pub fn stack_cell(tree: &Tree) -> Span {
-    if !tree.has_env {
-        return Span::dim("no .env.local");
-    }
-    if !tree.has_own_port {
-        return Span::dim("shared");
-    }
-    let label = if tree.offset > 0 {
-        format!("+{}", tree.offset)
-    } else {
-        "default".into()
-    };
-    match (tree.docker, &tree.stack) {
-        // docker hasn't answered: unknown, never `down` (#331).
-        (Docker::NotYet, _) => Span::dim(format!("{label} …")),
-        (Docker::Silent, _) => Span::new(format!("{label} ?"), Paint::Yellow),
-        (Docker::Answered, None) => Span::dim(format!("{label} down")),
-        (Docker::Answered, Some(state)) => Span::new(
-            format!("{label} {state}"),
-            if state.starts_with("running") {
-                Paint::Green
-            } else {
-                Paint::Yellow
-            },
-        ),
-    }
-}
-
 /// A checkout's app as a cell (render.mjs): `● :3002` up (its page linked),
 /// `○ :3002` down, `⇒ :3000` on the shared one, `—` without .env.local.
 pub fn app_cell(tree: &Tree) -> Span {
@@ -129,29 +100,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_stack_docker_has_not_answered_for_is_unknown_never_down() {
-        let own = |docker: Docker, stack: Option<&str>| Tree {
-            has_env: true,
-            has_own_port: true,
-            offset: 2,
-            docker,
-            stack: stack.map(str::to_string),
-            ..Default::default()
-        };
-        let cell = |tree: &Tree| {
-            let span = stack_cell(tree);
-            (span.text, span.paint)
-        };
-        assert_eq!(cell(&own(Docker::NotYet, None)), ("+2 …".into(), Paint::Dim));
-        assert_eq!(cell(&own(Docker::Silent, None)), ("+2 ?".into(), Paint::Yellow));
-        assert_eq!(cell(&own(Docker::Answered, None)), ("+2 down".into(), Paint::Dim));
-        assert_eq!(
-            cell(&own(Docker::Answered, Some("running(2)"))),
-            ("+2 running(2)".into(), Paint::Green)
-        );
-    }
-
-    #[test]
     fn rows_every_worktree_with_its_mr_and_finds_stacks_without_one() {
         let tree = |name: &str, branch: &str, project: &str| Tree {
             name: name.into(),
@@ -194,7 +142,7 @@ mod tests {
         assert_eq!(rows[2].branch.as_deref(), Some("fix/9-other"));
         assert_eq!(model.orphans, [("vita-7".to_string(), "exited(3)".to_string())]);
         assert!(model.has_docker && !model.can_start_main);
-        assert_eq!(stack_cell(&rows[0].tree).text, "default running(5)");
+        assert_eq!(rows[0].tree.stack.as_deref(), Some("running(5)"));
         let silent = everything_of(
             &EverythingLocal {
                 projects: None,
@@ -202,15 +150,13 @@ mod tests {
             },
             None,
         );
-        assert_eq!(stack_cell(&silent.trees.unwrap()[0].tree).text, "default ?");
-        assert_eq!(stack_cell(&rows[1].tree).text, "no .env.local");
+        assert_eq!(silent.trees.unwrap()[0].tree.docker, Docker::Silent);
         let own = Tree {
             has_env: true,
             has_own_port: true,
             offset: 2,
             ..Default::default()
         };
-        assert_eq!(stack_cell(&own).text, "+2 down");
         assert_eq!(app_cell(&own).text, "○ :3002");
         let up = app_cell(&Tree { is_up: true, ..own });
         assert_eq!(

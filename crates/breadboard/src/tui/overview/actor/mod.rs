@@ -63,8 +63,10 @@ pub struct Did {
     pub detail: Option<String>,
     /// One act's entry: its end replaces its start, never a second entry.
     pub key: Option<String>,
-    /// How often it was done: an act done again at the next tick counts here.
+    /// How often it was done: an act done again, at any later tick, counts here.
     pub times: u32,
+    /// When it was done the last time (ms): `at` stays its first.
+    pub last: i64,
 }
 
 /// The actor of one overview.
@@ -191,13 +193,15 @@ impl Actor {
         let head = head_of(&text).to_string();
         self.did
             .retain(|did| !(did.key.is_none() && did.paint == Paint::Yellow && head_of(&did.text) == head));
+        let at = now_ms();
         self.push(Did {
-            at: now_ms(),
+            at,
             paint,
             text,
             detail,
             key: None,
             times: 1,
+            last: at,
         });
     }
 
@@ -210,20 +214,29 @@ impl Actor {
             known.detail.clone()
         });
         self.did.retain(|did| did.key.as_deref() != Some(key));
+        let at = now_ms();
         self.push(Did {
-            at: now_ms(),
+            at,
             paint,
             text: text.into(),
             detail,
             key: Some(key.to_string()),
             times: 1,
+            last: at,
         });
     }
 
-    /// The act under `key` done once more: counted on its entry, which stays where it is.
-    pub fn again(&mut self, key: &str) {
-        if let Some(did) = self.did.iter_mut().find(|did| did.key.as_deref() == Some(key)) {
-            did.times += 1;
+    /// The act under `key` done once more: counted on its entry, which stays
+    /// where it is, with when it was done last. False: no entry has it (any
+    /// more), log it anew.
+    pub fn again(&mut self, key: &str) -> bool {
+        match self.did.iter_mut().find(|did| did.key.as_deref() == Some(key)) {
+            Some(did) => {
+                did.times += 1;
+                did.last = now_ms();
+                true
+            }
+            None => false,
         }
     }
 
@@ -350,9 +363,11 @@ mod tests {
         assert_eq!(actor.did.len(), 3);
         assert_eq!(actor.did[0].paint, Paint::Green);
         // Done again at the next tick: counted, in place.
-        actor.again("remove:x");
+        assert!(actor.again("remove:x"));
         assert_eq!(actor.did.len(), 3);
         assert_eq!(actor.did[1].times, 2);
+        assert!(actor.did[1].last >= actor.did[1].at);
+        assert!(!actor.again("gone"), "nothing to count it on");
     }
 
     #[test]

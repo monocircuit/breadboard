@@ -32,10 +32,10 @@ use breadboard_core::check::CheckState;
 use breadboard_core::git::orchestrations_dir;
 use breadboard_core::gitlab::read::{ListedIssue, ListedMr};
 use breadboard_core::herdr;
-use breadboard_core::model::Tree;
 use breadboard_core::model::everything::{EverythingModel, TreeRow};
 use breadboard_core::model::order::Go;
 use breadboard_core::model::tree::{check_fact, pipeline_mark, stack_of};
+use breadboard_core::model::{Docker, Tree};
 use breadboard_core::reader::Model;
 use crossterm::event::KeyCode;
 use ratatui::style::{Modifier, Style};
@@ -743,9 +743,19 @@ fn orphans(scene: &mut Scene<Act>, orphans: &[(String, String)]) {
         .iter()
         .map(|(name, _)| vec![look::span(name, Style::new())])
         .collect();
+    // WORKTREES' words for a stack (`stack exited`, `stack 2 running, 1
+    // exited`), never compose's `exited(1)`: one fact, one way on the page.
     let states: Vec<_> = orphans
         .iter()
-        .map(|(_, status)| vec![look::span(status, theme::tone(Tone::Yellow))])
+        .map(|(_, status)| {
+            let tree = Tree {
+                has_own_port: true,
+                docker: Docker::Answered,
+                stack: Some(status.clone()),
+                ..Tree::default()
+            };
+            look::spans(&[stack_of(&tree)])
+        })
         .collect();
     let at = columns(
         NAME_AT,
@@ -1853,6 +1863,11 @@ mod tests {
         // The stray stacks come after the lists, whole.
         let stray = row_of(&text, "STACKS WITHOUT A WORKTREE");
         assert!(stray > row_of(&text, "ISSUES"), "{text:#?}");
+        // In WORKTREES' words for a stack, never compose's `exited(1)`.
+        let said = |name: &str, state: &str| text.iter().any(|line| line.contains(name) && line.contains(state));
+        assert!(said("vita-gone", "stack exited"), "{text:#?}");
+        assert!(said("vita-old-thing", "stack running"), "{text:#?}");
+        assert!(!text.iter().any(|line| line.contains("exited(1)")), "{text:#?}");
         assert!(
             text[stray + 1].contains("docker compose -p vita-gone down -v"),
             "{text:#?}"
@@ -1896,22 +1911,6 @@ mod tests {
             text.contains("▶ start the default stack  click or u  ✗ pnpm stack:up failed"),
             "{text}"
         );
-    }
-
-    #[test]
-    fn zz_debug_regions() {
-        let mut model = model(64);
-        if let Some(remote) = &mut model.remote {
-            remote.mrs = (0..14)
-                .map(|i| mr(100 + i, &format!("feature/{i}-x"), "success"))
-                .collect();
-        }
-        let folds = super::super::Folds { is_every_mr_shown: true, ..Default::default() };
-        let sheet = sheet_with(&model, 80, Some(24), folds);
-        for (i, line) in sheet.text().iter().enumerate() { eprintln!("{i:3} {line}"); }
-        for r in &sheet.regions { eprintln!("region y={} h={} button={}", r.area.y, r.area.height, r.is_button()); }
-        for p in &sheet.sections { eprintln!("section {} from={} head={} to={}", p.name, p.from, p.head, p.to); }
-        panic!("debug");
     }
 
     #[test]

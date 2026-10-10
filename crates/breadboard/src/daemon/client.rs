@@ -1,5 +1,5 @@
-//! An overview as the daemon's client: herdr's reads through it from any
-//! thread (`share_herdr`), its view's GitLab feed followed (`follow`), the
+//! An overview as the daemon's client: herdr's reads and its worktrees'
+//! `git status` through it from any thread (`share_reads`), its view's GitLab feed followed (`follow`), the
 //! daemon started when none answers. Whatever fails, the overview reads by
 //! itself: a herdr read goes to herdr, a lost feed to `read_gitlab`. A daemon
 //! that hangs (stopped, wedged) counts as lost too: a herdr read it doesn't
@@ -23,7 +23,9 @@ use tokio::sync::{mpsc, watch};
 
 /// A herdr read through the daemon may take this long (it waits for another's read at most): else herdr is asked here.
 const HERDR_WAIT: Duration = Duration::from_secs(3);
-/// After a herdr read the daemon didn't answer, herdr is asked here this long before the daemon is tried again.
+/// A worktree's `git status` through the daemon may take this long (git in a big worktree, another's read waited for).
+const STATUS_WAIT: Duration = Duration::from_secs(10);
+/// After a read the daemon didn't answer, herdr and git are asked here this long before the daemon is tried again.
 const HERDR_SKIP: Duration = Duration::from_secs(30);
 /// A feed that said nothing this long (not even that it is there): its daemon hangs.
 const SILENT: Duration = Duration::from_secs(ALIVE_EVERY.as_secs() * 3);
@@ -32,33 +34,53 @@ const MAX_LOSSES: usize = 3;
 /// How long a daemon that said it listens gets to answer.
 const START_WAIT: Duration = Duration::from_millis(500);
 
-/// From now on this process's herdr reads go through the daemon while it answers.
-pub fn share_herdr() {
+/// From now on this process's herdr reads and its worktrees' `git status` go through the daemon while it answers.
+pub fn share_reads() {
     herdr::share_reads(herdr_read);
+    breadboard_core::reader::share_status(status_read);
 }
 
-/// Until when (ms) herdr's reads skip the daemon: it left one unanswered.
-static HERDR_SKIPPED_UNTIL: AtomicI64 = AtomicI64::new(0);
+/// Until when (ms) the reads skip the daemon: it left one unanswered.
+static SKIPPED_UNTIL: AtomicI64 = AtomicI64::new(0);
 
 /// herdr's answer to `args` from the daemon; None when it doesn't answer (herdr is asked here then).
 fn herdr_read(args: &[&str]) -> Option<Option<Value>> {
     if !super::is_socket_ours() {
         return None;
     }
-    herdr_read_at(super::socket(), args, HERDR_WAIT, &HERDR_SKIPPED_UNTIL)
+    let request = Request::Herdr {
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+    };
+    ask_at(super::socket(), &request, HERDR_WAIT, &SKIPPED_UNTIL)
 }
 
-/// One read through the daemon at `socket`, waiting `wait` at most; one it
-/// leaves unanswered makes the reads skip it for HERDR_SKIP (`skipped_until`).
-fn herdr_read_at(socket: &Path, args: &[&str], wait: Duration, skipped_until: &AtomicI64) -> Option<Option<Value>> {
+/// The `git status` of the worktree `dir` under `stamp` from the daemon, with
+/// when it was read; None when it doesn't answer (git is asked here then).
+fn status_read(dir: &Path, stamp: u64) -> Option<(i64, String)> {
+    if !super::is_socket_ours() {
+        return None;
+    }
+    let request = Request::Status {
+        dir: dir.to_path_buf(),
+        stamp,
+    };
+    ask_at::<Option<(i64, String)>>(super::socket(), &request, STATUS_WAIT, &SKIPPED_UNTIL).flatten()
+}
+
+/// One question to the daemon at `socket`, its one-line answer, waiting
+/// `wait` at most; one it leaves unanswered makes the reads skip it for
+/// HERDR_SKIP (`skipped_until`). None: no daemon, or it didn't answer.
+fn ask_at<T: serde::de::DeserializeOwned>(
+    socket: &Path,
+    request: &Request,
+    wait: Duration,
+    skipped_until: &AtomicI64,
+) -> Option<T> {
     if now_ms() < skipped_until.load(Ordering::Relaxed) {
         return None;
     }
     let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
-    let request = Request::Herdr {
-        args: args.iter().map(|arg| arg.to_string()).collect(),
-    };
-    let mut line = serde_json::to_string(&request).ok()?;
+    let mut line = serde_json::to_string(request).ok()?;
     line.push('\n');
     let answer = (|| {
         stream.set_read_timeout(Some(wait)).ok()?;
@@ -75,6 +97,15 @@ fn herdr_read_at(socket: &Path, args: &[&str], wait: Duration, skipped_until: &A
         return None;
     };
     serde_json::from_str(&answer).ok()
+}
+
+/// `herdr_read` of the daemon at `socket` (tests).
+#[cfg(test)]
+fn herdr_read_at(socket: &Path, args: &[&str], wait: Duration, skipped_until: &AtomicI64) -> Option<Option<Value>> {
+    let request = Request::Herdr {
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+    };
+    ask_at(socket, &request, wait, skipped_until)
 }
 
 /// A connection to the daemon, which is started when none answers; None when it can't be.
@@ -141,7 +172,7 @@ pub async fn follow(
     let followed = follow_at(main, view, asks, refreshes, out, SILENT, connect).await;
     if followed == Followed::Silent {
         // Given up for GitLab, given up for herdr: no read waits for it again.
-        HERDR_SKIPPED_UNTIL.store(i64::MAX, Ordering::Relaxed);
+        SKIPPED_UNTIL.store(i64::MAX, Ordering::Relaxed);
     }
     followed
 }
@@ -284,6 +315,59 @@ mod tests {
             herdr_read_at(&socket, &["tab", "close", "t1"], HERDR_WAIT, &skipped),
             Some(None)
         );
+        assert_eq!(skipped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn reads_a_worktrees_status_once_for_every_overview_under_the_same_stamp() {
+        let scratch = Scratch::new("status");
+        let socket = scratch.join("serve.sock");
+        let repo = scratch.join("repo");
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&["init", "--quiet"]);
+        std::fs::write(repo.join("a.md"), "a\n").unwrap();
+        let skipped = AtomicI64::new(0);
+        let status = |dir: &Path, stamp: u64| -> Option<(i64, String)> {
+            let request = Request::Status {
+                dir: dir.to_path_buf(),
+                stamp,
+            };
+            ask_at::<Option<(i64, String)>>(&socket, &request, STATUS_WAIT, &skipped).flatten()
+        };
+        // No daemon: git is asked here.
+        assert_eq!(status(&repo, 1), None);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.spawn(super::super::serve::serve_at(socket.clone()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (at, first) = status(&repo, 1).unwrap();
+        assert_eq!(first, "?? a.md\n");
+        assert!(now_ms() - at < 5_000);
+        // Another overview under the same stamp: the same read, not a new one (b.md isn't in it).
+        std::fs::write(repo.join("b.md"), "b\n").unwrap();
+        assert_eq!(status(&repo, 1), Some((at, first)));
+        // The stamp moved: read again.
+        let (_, second) = status(&repo, 2).unwrap();
+        assert_eq!(second, "?? a.md\n?? b.md\n");
+        // No worktree there, or a relative path: git is asked here.
+        assert_eq!(status(&scratch.join("gone"), 1), None);
+        assert_eq!(status(Path::new("repo"), 1), None);
         assert_eq!(skipped.load(Ordering::Relaxed), 0);
     }
 

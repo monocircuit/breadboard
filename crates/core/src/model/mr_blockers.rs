@@ -170,13 +170,21 @@ pub fn row_blockers_of(
 
 /// How far an MR is by its issue's boxes (#294, mr-blockers.mjs `progressOf`):
 /// ticked of all, and `(ticked, all)` of the Work and the acceptance boxes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Progress {
     pub ticked: usize,
     pub total: usize,
     pub work: (usize, usize),
     pub acceptance: (usize, usize),
+    /// The boxes under neither (an issue's `## Scope`): no reason names them,
+    /// they hold no merge up, but `total` counts them.
+    pub other: (usize, usize),
+    /// Their section's name when they share one (`scope`), else `other`.
+    pub other_name: String,
 }
+
+/// The longest section name the bar's counts take; a longer one is `other`.
+const SECTION_NAME: usize = 16;
 
 /// None for an issue without boxes: its row shows no bar.
 pub fn progress_of(boxes: &[IssueBox]) -> Option<Progress> {
@@ -187,12 +195,25 @@ pub fn progress_of(boxes: &[IssueBox]) -> Option<Progress> {
         let all: Vec<&IssueBox> = boxes.iter().filter(|issue_box| is(issue_box)).collect();
         (all.iter().filter(|issue_box| issue_box.is_ticked).count(), all.len())
     };
+    let is_other = |issue_box: &IssueBox| !is_work(issue_box) && !is_acceptance(issue_box);
     let (ticked, total) = count(|_| true);
+    let mut headings = boxes
+        .iter()
+        .filter(|issue_box| is_other(issue_box))
+        .map(|issue_box| issue_box.heading.as_deref().map(str::trim).unwrap_or(""));
+    let first = headings.next().unwrap_or("");
+    let is_shared = !first.is_empty() && first.chars().count() <= SECTION_NAME && headings.all(|name| name == first);
     Some(Progress {
         ticked,
         total,
         work: count(is_work),
         acceptance: count(is_acceptance),
+        other: count(is_other),
+        other_name: if is_shared {
+            first.to_lowercase()
+        } else {
+            "other".into()
+        },
     })
 }
 
@@ -452,7 +473,26 @@ mod tests {
                 total: 3,
                 work: (1, 2),
                 acceptance: (0, 1),
+                other: (0, 0),
+                other_name: "other".into(),
             })
         );
+    }
+
+    #[test]
+    fn progress_names_the_section_of_the_other_boxes() {
+        let under = |heading: Option<&str>, is_ticked: bool| IssueBox {
+            heading: heading.map(Into::into),
+            text: "x".into(),
+            is_ticked,
+            line: 0,
+        };
+        let scope = [under(Some("Scope"), true), under(Some("Scope"), false), acceptance("c")];
+        let found = progress_of(&scope).unwrap();
+        assert_eq!((found.other, found.other_name.as_str()), ((1, 2), "scope"));
+        // Two sections, or boxes under no heading: `other`.
+        let mixed = [under(Some("Scope"), false), under(Some("Later"), false)];
+        assert_eq!(progress_of(&mixed).unwrap().other_name, "other");
+        assert_eq!(progress_of(&[under(None, false)]).unwrap().other_name, "other");
     }
 }

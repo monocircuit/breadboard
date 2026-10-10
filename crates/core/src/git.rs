@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// What a git call answered: `ok` its exit code was 0, `out` its output
 /// trimmed (proc.mjs `git`), `stdout` as it came.
@@ -484,7 +484,10 @@ mod tests {
         run(&main, &["add", "."]);
         run(&main, &["commit", "--quiet", "-m", "feat: x"]);
         // Its memo holds what it answered: the commit isn't seen through it, it is without.
-        assert_eq!(remembered(&memo, || git(&main, &["rev-parse", "HEAD"]).out().to_string()), head);
+        assert_eq!(
+            remembered(&memo, || git(&main, &["rev-parse", "HEAD"]).out().to_string()),
+            head
+        );
         assert_ne!(git(&main, &["rev-parse", "HEAD"]).out(), head);
         // A call to origin is never kept.
         remembered(&memo, || remote_heads(&main));

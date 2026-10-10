@@ -356,15 +356,9 @@ impl Running {
     /// Steps 1–5 of `runMerge`: Ok with the MR as merged at and its squash setting, Err why not.
     fn merge(&self) -> Result<(Mr, bool), String> {
         // The MR and its issue at once, as Node's Promise.all: one round trip before the PUT.
-        let (boxes, first) = std::thread::scope(|scope| {
-            let boxes = scope.spawn(|| self.read_boxes());
-            let first = self.read_mr();
-            let boxes = boxes.join().unwrap_or_else(|_| Err("its issue not read".into()));
-            (boxes, first)
-        });
+        let (boxes, first) = both(|| self.read_boxes(), || self.read_mr());
+        let (boxes, mut fresh, mut squash) = fresh_of(boxes, first)?;
         let cant = |why: String| format!("can't merge: {why}");
-        let boxes = boxes.map_err(cant)?;
-        let (mut fresh, mut squash) = first.map_err(cant)?;
         let (actions, answered) = self.tries();
         let blockers = blockers_of(Some(&fresh), &boxes, self.can_mark_ready, &actions, &answered);
         if !blockers.is_empty() {
@@ -516,6 +510,34 @@ impl Running {
     }
 }
 
+/// Two reads at once (Node's `Promise.all`): `first` on a thread of its
+/// own, `second` on this one; a read whose thread died says so.
+fn both<A: Send, B>(
+    first: impl FnOnce() -> Result<A, String> + Send,
+    second: impl FnOnce() -> B,
+) -> (Result<A, String>, B) {
+    std::thread::scope(|scope| {
+        let first = scope.spawn(first);
+        let second = second();
+        (
+            first.join().unwrap_or_else(|_| Err("its issue not read".into())),
+            second,
+        )
+    })
+}
+
+/// The fresh reads before a merge, or why it can't merge: a read that
+/// failed ends it as a blocker does, `can't merge: #305 not read: …`.
+fn fresh_of(
+    boxes: Result<Vec<IssueBox>, String>,
+    first: Result<(Mr, bool), String>,
+) -> Result<(Vec<IssueBox>, Mr, bool), String> {
+    let cant = |why: String| format!("can't merge: {why}");
+    let boxes = boxes.map_err(cant)?;
+    let (fresh, squash) = first.map_err(cant)?;
+    Ok((boxes, fresh, squash))
+}
+
 fn merge_endpoint(iid: i64) -> String {
     format!("{}/merge", mr_endpoint(iid))
 }
@@ -662,6 +684,40 @@ mod tests {
             ["draft: its agent posts the merge"]
         );
         assert!(blockers_of(Some(&mr), &[], true, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn reads_the_mr_and_its_issue_at_once() {
+        use std::sync::mpsc::channel;
+        // Each read waits for the other to have started: one after the other, neither sees the other.
+        let (to_second, at_second) = channel();
+        let (to_first, at_first) = channel();
+        let wait = Duration::from_secs(5);
+        let (first, second) = both(
+            move || {
+                to_second.send(()).unwrap();
+                Ok(at_first.recv_timeout(wait).is_ok())
+            },
+            move || {
+                to_first.send(()).unwrap();
+                at_second.recv_timeout(wait).is_ok()
+            },
+        );
+        assert_eq!((first, second), (Ok(true), true));
+    }
+
+    #[test]
+    fn a_read_that_fails_ends_the_merge_with_cant_merge() {
+        let mr = || Ok((Mr::default(), false));
+        assert_eq!(
+            fresh_of(Err("#305 not read: GitLab doesn't find it".into()), mr()).unwrap_err(),
+            "can't merge: #305 not read: GitLab doesn't find it"
+        );
+        assert_eq!(
+            fresh_of(Ok(Vec::new()), Err("!316 not read: GitLab did not answer".into())).unwrap_err(),
+            "can't merge: !316 not read: GitLab did not answer"
+        );
+        assert!(fresh_of(Ok(Vec::new()), mr()).is_ok());
     }
 
     #[test]

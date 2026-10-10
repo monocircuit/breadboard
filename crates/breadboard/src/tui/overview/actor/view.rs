@@ -327,8 +327,7 @@ fn entry(scene: &mut Scene<Act>, did: &super::Did, is_open: bool) {
         _ => ("·", None),
     };
     let style = tone.map_or_else(theme::dim, theme::tone);
-    let seconds = (did.at / 1000).rem_euclid(60);
-    scene.atom(vec![look::dim(format!("{}:{seconds:02}", hm(did.at)))]);
+    scene.atom(vec![look::dim(clock_of(did.at))]);
     scene.atom(vec![look::span(mark, style)]);
     scene.indent(11);
     scene.pad_to(11);
@@ -338,8 +337,8 @@ fn entry(scene: &mut Scene<Act>, did: &super::Did, is_open: bool) {
         theme::dim()
     };
     look::flow(scene, &[look::span(&did.text, text)]);
-    if did.times > 1 {
-        look::flow(scene, &[look::dim(format!("· {} times", did.times))]);
+    if let Some(times) = times_of(did) {
+        look::flow(scene, &[look::dim(times)]);
     }
     // What was run or typed, word for word, under it (lazygit's command log).
     if let Some(detail) = did.detail.as_ref().filter(|_| is_open || did.paint == Paint::Red) {
@@ -348,6 +347,16 @@ fn entry(scene: &mut Scene<Act>, did: &super::Did, is_open: bool) {
         look::flow(scene, &[look::dim(detail)]);
     }
     scene.indent(0);
+}
+
+/// `06:18:58`: when a thing was done, in DONE.
+fn clock_of(at: i64) -> String {
+    format!("{}:{:02}", hm(at), (at / 1000).rem_euclid(60))
+}
+
+/// `· 3 times, the last at 06:19:18` for an act done again: its entry keeps the first time.
+fn times_of(did: &super::Did) -> Option<String> {
+    (did.times > 1).then(|| format!("· {} times, the last at {}", did.times, clock_of(did.last)))
 }
 
 #[cfg(test)]
@@ -444,7 +453,10 @@ mod tests {
         assert!(text.contains("click one to show the commands"), "{text}");
         assert!(!text.contains("herdr pane move"), "{text}");
         // A failure's command stands under it whatever the fold.
-        assert!(text.contains("pnpm stack:up\n") || text.ends_with("pnpm stack:up"), "{text}");
+        assert!(
+            text.contains("pnpm stack:up\n") || text.ends_with("pnpm stack:up"),
+            "{text}"
+        );
         let lines = sheet.text();
         let row = lines.iter().position(|line| line.contains("put the tabs")).unwrap();
         assert_eq!(
@@ -457,8 +469,31 @@ mod tests {
         })
         .text()
         .join("\n");
-        assert!(text.contains("herdr pane move w46:p2 --workspace w46 --new-tab"), "{text}");
+        assert!(
+            text.contains("herdr pane move w46:p2 --workspace w46 --new-tab"),
+            "{text}"
+        );
         assert!(text.contains("click one to hide the commands"), "{text}");
+    }
+
+    #[test]
+    fn an_act_done_again_says_how_often_and_when_last() {
+        let mut did = super::super::Did {
+            at: 1_000_000,
+            paint: Paint::Green,
+            text: "closed 8 tabs of 299-x".into(),
+            detail: None,
+            key: Some("k".into()),
+            times: 1,
+            last: 1_000_000,
+        };
+        assert_eq!(times_of(&did), None);
+        did.times = 3;
+        did.last = 1_020_000;
+        let said = times_of(&did).unwrap();
+        assert!(said.starts_with("· 3 times, the last at "), "{said}");
+        assert!(said.ends_with(&clock_of(1_020_000)), "{said}");
+        assert!(clock_of(1_020_000).ends_with(":00"), "{}", clock_of(1_020_000));
     }
 
     #[test]

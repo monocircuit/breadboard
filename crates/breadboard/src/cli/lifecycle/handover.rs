@@ -684,17 +684,32 @@ pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) ->
 /// issue is replaced by the undone one with its why: today's `writeRecord`
 /// kept the entry the start wrote before (no why) over it, so the record
 /// said the worktree was gone but not why. Fresh starts and handovers, one.
-pub fn undo_start(repo: &Repo, name: &str, issue: &Issue, known: Option<&Value>, why: &str, release: impl FnOnce()) {
+/// Whether the worktree is gone after it, read from git, never assumed:
+/// wt:remove refuses a worktree with changes (a setup that left a file), and
+/// a child that did not start removed nothing; its ✗ then says where it stays.
+pub fn undo_start(
+    repo: &Repo,
+    name: &str,
+    issue: &Issue,
+    known: Option<&Value>,
+    why: &str,
+    release: impl FnOnce(),
+) -> bool {
     release();
-    if repo.worktrees().iter().any(|tree| tree.dir == issue.dir) {
+    let is_there = || repo.worktrees().iter().any(|tree| tree.dir == issue.dir);
+    if is_there() {
         let _ = std::io::stdout().flush();
-        let _ = herdr::pass_silence(&mut Command::new(exe()))
+        let removed = herdr::pass_silence(&mut Command::new(exe()))
             .args(["wt:remove", &issue.feature])
             .current_dir(&repo.main)
             .env(super::super::setup::PLUGIN_CHECKED, "1")
             .stdin(Stdio::null())
             .status();
+        if let Err(error) = removed {
+            eprintln!("✗ wt:remove {} did not start: {error}", issue.feature);
+        }
     }
+    let is_gone = !is_there();
     let entry = start_entry(issue, known, Some(why));
     let raw = json::read(&record::record_file(&repo.main, name));
     let issues = with_entry(
@@ -708,6 +723,23 @@ pub fn undo_start(repo: &Repo, name: &str, issue: &Issue, known: Option<&Value>,
     let mut fields = Map::new();
     fields.insert("issues".into(), Value::Array(issues));
     let _ = record::update_record(&repo.main, name, fields);
+    is_gone
+}
+
+/// What became of the worktree of an undone start, for its ✗: removed
+/// again, or where it stays (the run again takes it as it is, or `pnpm
+/// wt:remove <feature>` once what wt:remove said is dealt with).
+pub fn undone(is_gone: bool, issue: &Issue) -> String {
+    if is_gone {
+        format!("the worktree of #{} is removed again", issue.number)
+    } else {
+        format!(
+            "the worktree of #{} stays at {}, not removed (see above why; pnpm wt:remove {} takes it)",
+            issue.number,
+            text(&issue.dir),
+            issue.feature
+        )
+    }
 }
 
 /// `issues` with `entry` in place of the one of its number (or added at the end).
@@ -1199,10 +1231,11 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         Ok(pane) => pane,
         Err(why) => {
             // Not the agent's failure: its history stays as it was.
-            undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
+            let is_gone = undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
             return fail(format!(
-                "{why}: can't tell whether {} is still idle after the setup; the worktree of #{number} is removed again{queued}; run the same command again once herdr answers",
-                worker.name
+                "{why}: can't tell whether {} is still idle after the setup; {}{queued}; run the same command again once herdr answers",
+                worker.name,
+                undone(is_gone, &issue)
             ));
         }
     };
@@ -1212,10 +1245,11 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             worker.name,
             now.strip_prefix("it ").unwrap_or(&now)
         );
-        undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
+        let is_gone = undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
         record_failure(repo, name, &worker.id, number, &format!("after the setup, {now}"));
         return fail(format!(
-            "{why}: the worktree of #{number} is removed again{queued}; run the same command again once it is idle"
+            "{why}: {}{queued}; run the same command again once it is idle",
+            undone(is_gone, &issue)
         ));
     }
     let Some(pane) = pane else {
@@ -1495,6 +1529,27 @@ mod tests {
         );
         assert_eq!(start_entry(&issue, None, Some("x"))["why"], json!("failed: x"));
         assert_eq!(start_entry(&issue, None, None)["why"], Value::Null);
+    }
+
+    #[test]
+    fn an_undone_start_says_removed_again_only_when_the_worktree_is_gone() {
+        let issue = Issue {
+            number: 247,
+            title: "t".into(),
+            description: String::new(),
+            feature: "247-t".into(),
+            is_fix: true,
+            dir: PathBuf::from("/r/p-247-t"),
+            why: None,
+            branch: "fix/247-t".into(),
+        };
+        assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
+        let stays = undone(false, &issue);
+        assert!(!stays.contains("removed again"), "{stays}");
+        assert_eq!(
+            stays,
+            "the worktree of #247 stays at /r/p-247-t, not removed (see above why; pnpm wt:remove 247-t takes it)"
+        );
     }
 
     #[test]

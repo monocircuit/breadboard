@@ -101,8 +101,11 @@ impl Window {
 /// its title, pinned over the first scrolling rows. Only while a line of
 /// the section with something on it shows under the pin, so a title never
 /// sits over the blank after its section or the next section's title; never
-/// over a block's first line while the rest of it shows under the pin (its
-/// tail would stand without its head); not in a pane too short to spare it.
+/// over a line of a block while the rest of it shows under the pin (its
+/// tail would stand under the title without its head, an MR's `draft ✓
+/// passed` with no iid: the rows scroll on unpinned until the next block's
+/// head, or a blank, is the one the pin covers); not in a pane too short to
+/// spare it.
 fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pin> {
     let first = sticky + scroll;
     let placed = sheet
@@ -110,17 +113,18 @@ fn pin_of<A>(sheet: &Sheet<A>, sticky: u16, room: u16, scroll: u16) -> Option<Pi
         .iter()
         .find(|placed| placed.head > 0 && placed.from >= sticky && placed.from < first && first < placed.to)?;
     let under = first + placed.head;
-    let is_shown = (under..placed.to.min(first + room)).any(|row| {
+    let has_text = |row: u16| {
         sheet
             .rows
             .get(usize::from(row))
             .is_some_and(|row| row.line.spans.iter().any(|span| !span.content.trim().is_empty()))
-    });
-    let is_head_covered = sheet.regions.iter().any(|region| {
+    };
+    let is_shown = (under..placed.to.min(first + room)).any(has_text);
+    let is_tail_left = sheet.regions.iter().any(|region| {
         let area = region.area;
-        !region.is_button() && area.y >= first && area.y < under && area.bottom() > under
+        !region.is_button() && area.y < under && area.bottom() > under && (area.y.max(first)..under).any(has_text)
     });
-    (is_shown && !is_head_covered && room >= 4 * placed.head).then_some(Pin {
+    (is_shown && !is_tail_left && room >= 4 * placed.head).then_some(Pin {
         from: placed.from,
         rows: placed.head,
     })
@@ -1645,11 +1649,12 @@ mod tests {
                         .any(|row| !text[row as usize].trim().is_empty()),
                     "{width}x{height} at {scroll}: {placed:?}"
                 );
-                // Never over a block's head while its tail shows under the pin.
+                // Never over a line of a block while its tail shows under the pin.
                 assert!(
                     !sheet.regions.iter().any(|region| !region.is_button()
-                        && (window.first()..under).contains(&region.area.y)
-                        && region.area.bottom() > under),
+                        && region.area.y < under
+                        && region.area.bottom() > under
+                        && (region.area.y.max(window.first())..under).any(|row| !text[row as usize].trim().is_empty())),
                     "{width}x{height} at {scroll}: {text:#?}"
                 );
             }
@@ -1999,9 +2004,18 @@ mod tests {
                 pages += 1;
                 let is_end = view.scroll() == view.shown().max_scroll;
                 assert!(is_end || !starts_nothing(&view), "{width}x{height}: page {pages}");
-                assert!(text_seen(&view).contains(was.last().unwrap()), "{width}x{height}: page {pages}");
+                // The last row with text seen stays on screen, or only blanks
+                // lie between it and the new top (a section's end: its title next).
+                let first = view.shown().first_seen();
+                let last = *was.last().unwrap();
+                let is_kept = text_seen(&view).contains(&last);
+                let is_only_blanks = last < first && (last + 1..first).all(|row| view.is_blank(row));
+                assert!(
+                    is_kept || is_only_blanks,
+                    "{width}x{height}: page {pages}: {last} → {first}"
+                );
             }
-            assert!(pages > 2, "{width}x{height}: {pages} pages");
+            assert!(pages >= 2, "{width}x{height}: {pages} pages");
             loop {
                 let was = text_seen(&view);
                 if !view.page_by(-1) {

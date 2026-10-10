@@ -32,11 +32,12 @@ mod tests {
     const LAUNCHER: &str = include_str!("../../../../herdr/breadboard.sh");
 
     /// A cargo that "builds" a binary saying `ran <args>`, each call logged;
-    /// one that fails with `CARGO_FAIL` set.
+    /// one that fails with `CARGO_FAIL` set. Only the tools the launcher has
+    /// (no dirname: a short PATH).
     const CARGO: &str = r#"#!/bin/sh
 echo "$*" >>"$CARGO_LOG"
 [ -n "$CARGO_FAIL" ] && exit 101
-for arg; do case $arg in */Cargo.toml) package=$(dirname "$arg") ;; esac; done
+for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
 mkdir -p "$package/target/release"
 printf '#!/bin/sh\necho "ran $*"\n' >"$package/target/release/breadboard"
 chmod +x "$package/target/release/breadboard"
@@ -345,6 +346,20 @@ chmod +x "$package/target/release/breadboard"
         // Its exit code is the binary's.
         fs::write(checkout.binary(), "#!/bin/sh\nexit 3\n").unwrap();
         assert_eq!(run(&herdr, &["run.mjs", "pane", "reload"]).status.code(), Some(3));
+    }
+
+    #[test]
+    fn a_first_build_that_fails_is_written_down_so_the_tab_bar_stops_trying() {
+        let checkout = Checkout::new("firstfail");
+        // No target/ yet: the failure still lands next to where the binary goes.
+        let key = checkout.run(&["herdr", "open", "overview"], true, &[("CARGO_FAIL", "1")]);
+        assert!(!key.status.success());
+        assert!(!err(&key).contains("No such file"), "{}", err(&key));
+        assert!(checkout.binary().with_extension("failed").is_file());
+        let status = checkout.run(&["--no-wait", "herdr", "status"], true, &[("CARGO_FAIL", "1")]);
+        assert_eq!(out(&status), "breadboard didn't build: pnpm build:rs");
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(checkout.builds(), 1);
     }
 
     #[test]

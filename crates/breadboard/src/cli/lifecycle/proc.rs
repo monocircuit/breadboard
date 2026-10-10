@@ -301,10 +301,27 @@ pub fn text(path: &Path) -> String {
 
 /// This binary, for the commands a tab or a child process runs: the
 /// rewrite's tabs run `breadboard …` where today's ran `node …/*.mjs`.
+/// The path it was started by (herdr's `started_binary`), never the one
+/// `/proc/self/exe` names: a build that relinks `target/release/breadboard`
+/// while this runs turns that into `<path> (deleted)`, and every wt:remove
+/// of an undone start, every wt:new of a handover failed with ENOENT. A
+/// started path that is gone (a relative argv[0] after a chdir) takes
+/// current_exe without that suffix.
 pub fn exe() -> String {
+    let started = crate::herdr::started_binary();
+    if started.is_file() {
+        return text(&started);
+    }
     std::env::current_exe()
         .map(|exe| text(&exe))
+        .map(|path| without_deleted(&path).to_string())
         .unwrap_or_else(|_| "breadboard".into())
+}
+
+/// `path` without the ` (deleted)` the kernel adds to the link of an
+/// executable whose file was replaced.
+fn without_deleted(path: &str) -> &str {
+    path.strip_suffix(" (deleted)").unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -320,6 +337,19 @@ mod tests {
         assert!(!is_coloured(false, None));
         assert_eq!(painted(tone::DONE, "✓", true), "\x1b[1;32m✓\x1b[0m");
         assert_eq!(painted(tone::DONE, "✓", false), "✓");
+    }
+
+    #[test]
+    fn a_child_runs_the_binary_by_its_path_never_the_deleted_link() {
+        assert_eq!(
+            without_deleted("/a/target/release/breadboard (deleted)"),
+            "/a/target/release/breadboard"
+        );
+        assert_eq!(without_deleted("/a/breadboard"), "/a/breadboard");
+        // The test binary is not relinked while it runs: its path, as started.
+        let exe = exe();
+        assert!(!exe.ends_with(" (deleted)"), "{exe}");
+        assert!(Path::new(&exe).is_file(), "{exe}");
     }
 
     #[test]

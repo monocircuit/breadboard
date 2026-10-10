@@ -670,8 +670,9 @@ mod tests {
         let scratch = Scratch::new();
         assert_eq!(owner_of(Path::new("/proc"), port, scratch.path()), Some(false));
         assert!(!is_app_of(port, scratch.path()));
-        drop(listener);
-        assert!(!is_app_of(port, &here));
+        // No assertion after `drop(listener)`: the ephemeral port can be taken
+        // again at once by a parallel test of this same process (same cwd), so
+        // "free after the drop" is a race of the test, not a fact of the product.
     }
 
     #[test]

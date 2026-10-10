@@ -6,6 +6,10 @@
 //! - herdr's reads (`pane list`, `tab list`, …): answered from one call made
 //!   at most once in HERDR_FRESH for all overviews together (`client` puts
 //!   core's `herdr::herdr` reads through it);
+//! - git's key check of a worktree (`git status`, core's `reader::STATUS`):
+//!   one call per worktree and stamp of its files in STALE_MS for all
+//!   overviews together; what the key holds (merge base, diff, ahead,
+//!   cherry, …) each overview keeps in its own memo while the key holds;
 //! - GitLab: one feed per view (`feed`), read on the overview's cadence
 //!   (`gitlab::read_gitlab`) and sent to every overview of that view; `r` in
 //!   any of them reads again for all; an overview opened later gets the last
@@ -53,6 +57,10 @@ pub const SILENT_TEXT: &str = "breadboard serve stopped answering: this overview
 pub enum Request {
     /// One herdr read: answered with one line, its result (`null`: none).
     Herdr { args: Vec<String> },
+    /// `git status` of a worktree under the stamp of its files (core's
+    /// `reader::SharedStatus`): answered with one line, `[at, stdout]`
+    /// (`null`: ask git here).
+    Status { dir: PathBuf, stamp: u64 },
     /// The GitLab reads of a view (`view`: which one, `ask`: what its local
     /// read asks for): answered with a `Feed` a line while the connection
     /// stays open; the client's lines are `Said`.
@@ -153,12 +161,12 @@ mod tests {
     fn keys_the_daemon_by_what_answers_never_by_the_binary_or_path() {
         let herdr = Some(PathBuf::from("/usr/bin/herdr"));
         let env = |home: &str| [("HOME", Some(std::ffi::OsString::from(home)))];
-        let mine = key_of("p1", &[herdr.clone()], &env("/home/me"));
+        let mine = key_of("p1", std::slice::from_ref(&herdr), &env("/home/me"));
         // Another PATH that runs the same programs, another binary of the same sources: the same daemon.
-        assert_eq!(key_of("p1", &[herdr.clone()], &env("/home/me")), mine);
+        assert_eq!(key_of("p1", std::slice::from_ref(&herdr), &env("/home/me")), mine);
         // Another herdr (a world's fake), another HOME, another protocol: another daemon.
         assert_ne!(key_of("p1", &[Some("/w/bin/herdr".into())], &env("/home/me")), mine);
-        assert_ne!(key_of("p1", &[herdr.clone()], &env("/w/home")), mine);
+        assert_ne!(key_of("p1", std::slice::from_ref(&herdr), &env("/w/home")), mine);
         assert_ne!(key_of("p2", &[herdr], &env("/home/me")), mine);
         // A PATH with node_modules/.bin in front, as `pnpm overview` runs it, finds the same programs.
         let path = std::env::join_paths(["/nowhere/node_modules/.bin", "/usr/bin", "/bin"]).unwrap();

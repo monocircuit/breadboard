@@ -4,6 +4,454 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-10 06:55 · overview / MERGE REQUESTS, round 4 · a block with nothing lacking ends at its bar
+Chose: an open MR's reasons line opens only when `lacks` draws something
+(`has_lacks`: a reason, a failed merge, or a conflict state other than
+`no merge conflicts`). Before: round 3's (6) left `no merge conflicts`
+unsaid but still opened the line for `Some(Conflict::None)`, so a ready
+MR (no reasons, settled clean) had an empty reasons row plus the parting
+row: two blank rows before the next `●` (the verifier, mrc-graph probe
+with ONLY_START=1, !316 at 120 and 80). Now one. Why: rule 4 (one gap
+between blocks, as the 06:40 entry decided), and the ready MR is the row a
+developer looks for. Unit:
+`a_ready_mr_with_nothing_lacking_ends_at_its_bar_with_one_empty_row`
+(fails on the old condition). Release: content 24/24, hover 5/5, buttons
+28/28; cargo test 484 + 255, also with `env -i`; clippy -D warnings,
+rustfmt clean.
+
+## 2026-10-10 07:40 · cli-lifecycle, round 4 · an undone start says removed only when git says so; children run the binary by its started path
+Chose: (1) `handover::undo_start` returns whether the worktree is gone,
+read from `git worktree list` after its `wt:remove` child, never assumed
+from having called it; the ✗ of the handover then says `the worktree of
+#N is removed again` or `the worktree of #N stays at <dir>, not removed
+(see above why; pnpm wt:remove <feature> takes it)` (`handover::undone`).
+A child that did not start says `✗ wt:remove <feature> did not start:
+<error>`. Before (and Node, orchestrator.mjs `undoStart`): a setup that
+left an untracked file made wt:remove refuse (`has uncommitted changes`),
+and the ✗ still said `removed again` while the worktree, its branch and
+its herdr space stayed (the verifier's repro A). Against: forcing the
+removal: what is in the worktree may be work, wt:remove's refusal stands.
+The run again takes the worktree as it is (the handover's `is_made`).
+The record's entry keeps its `failed: …` / `requeued` why either way.
+(2) `proc::exe()`, the program of every child and tab the lifecycle
+starts (the undo's wt:remove, the handover's wt:new, the changelog's
+rewrite, the overview and changelog tabs), is the path this process was
+started by (`herdr::started_binary`), never `/proc/self/exe`: once cargo
+or herdr/breadboard.sh relinks `target/release/breadboard` during a run
+that names `<path> (deleted)`, the spawn failed with ENOENT and, through
+(1), silently (repro B, the flaky cli check `an agent that started working
+during the setup is refused`). A started path that is gone (a relative
+argv[0] after the overview's chdir) takes current_exe without ` (deleted)`.
+Why: rule 1 of the triage (a wrong fact, `removed again`; work left with no
+word), rule 7 (measured: both repros of `verify-lc6-dirty.tmp.mjs`, plain
+and with RELINK: the first now says `stays at …`, the second removes the
+worktree and its branch, exit as before). Not in the suite: repro A fails
+on Node as well, so it needs a knownBug with a filed issue (the loop files
+none; for the lead); repro B relinks the subject, which the Node subject
+has no file for. Unit: `an_undone_start_says_removed_again_only_when_the_worktree_is_gone`,
+`a_child_runs_the_binary_by_its_path_never_the_deleted_link`.
+Left to their pieces (not this piece's files): the same raw `current_exe()`
+re-spawns in `cli/setup/proc.rs:487`, `tui/overview/actor/spawn.rs:47`
+(the overview actor's wt:remove and wt:orchestrate, a process that runs
+for hours across rebuilds), `worktree_view/acts.rs:251`, `overall.rs:78`;
+and `cli/setup/orchestrate/mod.rs`, whose `its claude did not start, the
+worktree is removed again` ignores the bool `undo_start` now returns.
+Suite (release): cli + lifecycle 31 pass, 1 todo (needs claude in the
+world). cargo test 485 + 255, also with `env -i`; clippy -D warnings.
+
+## 2026-10-10 07:10 · worktrees, round 5 · the app-owner test asserts nothing after its listener is gone
+Chose: `local::an_app_is_the_checkouts_only_where_a_process_in_it_listens`
+no longer asserts "not the app" after `drop(listener)`. The port is an
+ephemeral one, and a parallel test of the same process (same cwd) may bind
+it at once, so the test failed in about 1 of 10 runs (the verifier's
+report) and made `wt:check` red at random. `is_app_of` stays as it is:
+app ports are 3000 and up, never ephemeral, so the product reads no wrong
+fact; the two `owner_of` cases (this checkout: yes, another: no) still run
+while the listener lives. Measured: 15 runs of `cargo test -p
+breadboard-core` in a row, 0 failures. Rule 7 (measured: the flake rate before,
+none after); a test checks a fact of the product, not a race of the
+harness, and `wt:check` must not go red at random.
+
+## 2026-10-10 06:45 · daemon, round 4 · git is read by key, its key check once for all overviews; one daemon whatever the PATH or binary
+Chose: (1) git's facts of a worktree are kept by its key (the stat of
+HEAD, index, its branch's and develop's refs, its other files, and `git
+status` with each listed file's size and time; core's `reader::Key`), and
+every git read under one key is answered from its memo (`git::remembered`:
+merge base, diff, ahead/behind, cherry, develop's log, overlaps): an idle
+worktree costs one `git status` in STALE_MS (15 s, the core entry of
+10-01) and stat calls. (2) That key check is the daemon's: `Request::Status
+{dir, stamp}` answers one `git status` per worktree and stamp of its files
+in STALE_MS for every overview (`serve::status_read`, the others wait for
+the one read), with when it was read; the overview holds it from then, so
+a status is never older than STALE_MS, as before, and seeds the key's memo
+with it (no second status for the facts). A stamp that moved (a commit,
+the index, an agent's transcript) reads again at once. No daemon, a hung
+one (10 s, then skipped as herdr's reads are), or git failing: the
+overview asks git itself. Against: the plan's daemon serving whole views
+(item 5 of the critic): the measurement says git was the cost, and with the
+key check shared it is 54 git calls/min for 5 overviews, the rest one
+`worktree list` per look; serde on ~30 model types of other pieces' files
+buys at most those. Measured (critic7-daemon.tmp.mjs, 5 overviews, 60 s
+after 25 s, idle world): distinct mix git 1480/min → **54/min** (status
+196 → 32, rev-parse 406 → 0, rev-list 280 → 0, merge-base 140 → 0, diff 140
+→ 0), CPU with children 10.88 % → 4.83 % (of it 3.15 % the fake herdr's
+node processes the daemon starts); live mix (--herdr) git 1588/min →
+**78/min**, the overviews other than `--herdr` 0.02-0.20 % reaped each
+(was ~1 %). Fake calls the same (62/min, 294/min live), docker 4/min,
+GitLab 16/min, the daemon gone 30-35 s after the last overview.
+(3) The socket's key (`daemon::key`) is the protocol (a hash of core's and
+the daemon's sources, build.rs), the resolved herdr, glab and git, and the
+environment their reads take (HOME, XDG_CONFIG_HOME, HERDR_ENV,
+HERDR_SOCKET_PATH, BREADBOARD_GITLAB_URL, GITLAB_TOKEN); never PATH itself
+nor the binary's path or mtime. Probed (critic7-daemon-keys.tmp.mjs): 2
+plain overviews, one with node_modules/.bin in front of PATH (`pnpm
+overview`), one from a copy of the binary: **1 daemon** (was 3). A build
+of other core or daemon sources keeps its own daemon (its answers could
+differ); a feed line it can't read is a lost daemon, never no news. Against:
+a hand-bumped protocol constant (one more thing a change can forget, and
+a wrong fact when it does). Supersedes the 21:15 key entry of 10-07.
+(4) After a layout pass the actor's log reads `herdr::spaces_now()` (asked
+by this process), never the 1 s shared `workspace list` from before the
+spaces it opened (actor/sync.rs, round 3).
+Left to the actor/layout piece (not this piece's files): the `--herdr`
+overview's 108/min `tab list` and 48/min `tab close` in the world: the
+fake herdr is stateless (fakes/herdr.mjs applies no write), so the closed
+tab is listed again; whether a close real herdr refuses is retried every
+look is for `cli/lifecycle/layout.rs` and `actor/tries.rs` to check (Node:
+122/min). Not in the suite: a git count needs a wrapper git in the world
+and a known-bug issue (Node: 7292/min); the unit tests hold it
+(`reader::takes_a_shared_status_for_no_longer_than_stale_ms_from_its_read`,
+`client::reads_a_worktrees_status_once_for_every_overview_under_the_same_stamp`,
+`daemon::keys_the_daemon_by_what_answers_never_by_the_binary_or_path`).
+Why: rule 7, the spec's "each is cached by its key" (overview-worktree-
+everything §7.3), #331's one shared read, rule 4 (one memo, one cadence).
+Suite against the release binary: budgets 11/11, content 24/24, views
+13/13. cargo test 482 + 255, also with `env -i`; clippy -D warnings, rustfmt.
+
+## 2026-10-10 06:40 · overview / MERGE REQUESTS, round 3 · a block's reasons stay its own, merges dated, every box the bar counts named
+Chose: (1) an empty row ends an open MR's block when the next row is an
+MR (`open_row`'s `is_parted`; a row of the graph alone, `├─┘`, parts them
+already), so what an MR lacks never stands right above the next `●`. The
+empty row is the block's above: it lights and clicks with it (#296).
+Before: in the breadboard world every MR in one lane, title, bar and
+reasons with no gap, so !303's `try #1 broken → you · try #2 broken → you`
+sat on top of `●  !304` and `draft: mark ready → you` read as !314's (the
+critic, 120x40, 13 notches). Against: a dim `│` under every `●` through its
+block (git log --graph's body lines): in this graph a lane under an MR says
+another MR needs it (Node draws none between independent MRs), so it would
+show a wrong fact. Why: rule 1's "a wrong fact" (a developer scanning for
+`→ you` lands on the wrong MR), the bar (lazygit's one row per item never
+has this). Cost: one row per MR (6 in the world). Probe
+`breadboard-gauntlet/src/checks/mr-blocks.tmp.mjs` (the line above every
+`●  !iid` but the first holds only graph; `try #1 broken → you` under !303,
+`draft: mark ready → you` under !308; 120x40 wheeled through, 120x300,
+80x300): ours 3/3; Node fails at 120x300 and 80x300 (its reasons line
+stands right above the next `●` too). Not a suite check: it fails against Node and a knownBug needs a
+filed issue (the loop writes no issues; for the lead). Unit:
+`what_an_mr_lacks_never_stands_on_the_next_mrs_node`.
+(3) A reason that names the MR acting on it has no arrow: `after !304
+(needs #294)`, not `… → !304` (`names_its_who`; `after !3030 … → !303`
+keeps its arrow). Why: rule 4, as the 08:40 entry's `waits for !N`: two
+neighbouring reasons followed two rules.
+(4) A merged row older than a day says its local day and time, `1 Oct
+16:01` (core's `merged_when` through `time::clock`, the form WORKTREES
+uses, tree.mjs `clock`); within a day `3 h ago`. Before: 35 of 42 rows
+`6 days ago`, 7 `7 days ago`. Against: `Oct 1 14:01` (the critic's): one
+date form in the whole overview (rule 4). Wording change against Node's
+`merged 9 days ago` (rule 3: the same fact, dated finer).
+(5) The bar's counts name the boxes under neither Work nor Acceptance by
+their section while one is open: `0/9 boxes · acceptance 0/2 · scope 0/7`
+(core's `Progress.other`, `other_name`: the shared heading lowercased,
+`other` for two sections, no heading or a name over 16 characters). Before:
+`0/9 boxes · acceptance 0/2` beside reasons naming 2 boxes, 7 nowhere.
+Against: counting only Work and acceptance in the total: #294's `T/A boxes`
+and Node's `progressOf` count every box (rules 2, 3); against `7 scope boxes
+open → agent` as a reason: they hold no merge up (merge.mjs), a reason
+would claim they do. Dropped first with the other sections at a narrow
+width, as #294's.
+(6) `no merge conflicts` goes unsaid; `checking for conflicts …`, the
+conflicts, their button and `✓ conflicts resolved` stay. Rule 3 deviation:
+Node says it on every settled row, where it pushed the reasons onto a
+second line at 80 columns; an open MR always has a conflict state, so a
+row without one is clean (lazygit leaves a clean file unmarked).
+Decided against (7): the bar beside the title's last line. #294's
+acceptance puts it on a line under the title (rule 2). Measured at 80x300
+in the world: the open MRs take 40 rows, Node 20 (Node cuts titles at 80
+with `…`, #304, and has no bar); of ours 7 bars, 6 parting rows, the rest
+whole titles and the world's `checking for conflicts …` (in the live
+workflow GitLab settles, so (6) takes it off most rows).
+Left to the frame (8): right-aligned text at the scrollbar (`acceptance
+2/2┃`), as logged before; not this piece's files. Deferred (9): #308's
+`merged automatically HH:MM` / `merging automatically …` until #308 lands
+(Node lacks it too).
+Suite tool (2): `pty.mjs` decoded each read with `chunk.toString("utf8")`,
+so a character split across two reads became `��` (two cells, the row
+shifted by one: the critic's `━━━��━━` and a stray `d`). Now a streaming
+`StringDecoder` per stream; `pty.test.mjs` +1 (`━` written as two bytes, a
+pause, the last byte: one cell; fails on the old decoder). No check
+changed. Release: content 24/24, hover 5/5, buttons 28/28. cargo test 482
++ 255, also with `env -i`; clippy -D warnings, rustfmt clean. Smallest
+change elsewhere: core `model/mr_blockers.rs` (`Progress` no longer
+`Copy`, its two fields and a test).
+
+## 2026-10-10 06:42 · overview / worktree view, round 5 · round 4 checked in the critic's world; the keys line at 80 columns stays the band's
+Chose: round 4 (08 22:58, written as the machine shut down, unchecked) is
+kept as it stands, now built, tested and run in the critic's rich world
+(`.claude/gauntlet/tmp/wvc5/rich.tmp.mjs`, shots in `tmp/wtv5/`), item by
+item: (1) 120x40, PgDn, a click on README.md in DEVELOP's `✗ a merge
+conflicts in …` (row 36): `here` and `on develop` whole on screen, the
+clicked row moved up to row 30; gx-render.mjs: its 15-line hunk and its
+`on develop` side whole; at 80x24 a click on the last row's `boxes.mjs`
+moves it up and shows its hunk whole. (2) no move report before
+`click:6,16` on `M long.md`: Tab picks `18 of 42`, long.md's first hunk.
+(3) Tab past long.md's last hunk lands on `notes.md` and shows its hunks
+under it (`Tab: next file · Enter: Tab into its hunks`). (5) at 80
+columns every `+a −r` stands in its column, a long name's on the next
+line. Why: rule 1 (each item re-run as the critic ran it).
+Decided, kept: (4) the keys line at 80 columns still ends at `PgUp PgDn
+space`: the band cuts Node's keys at a word and adds the pick only whole
+(band.rs `keys_line`, the band's piece). This view does not write its own
+keys string to work around it: every view's band would then say
+different keys (rule 4, one keys line), and Node's words come first (rule
+3). What it adds is in its own rows: the open hunks' header names `Tab:
+hunk by hunk` / `Tab: next file`. Nothing is written or wrong without it
+(no defect by the rules); the band's piece owns a narrow band's keys.
+Verified: cargo test of the binary crate 482/482, also under `env -i
+PATH=/usr/bin:/bin HOME=<empty> LANG=C.UTF-8` (core there: 254/255, the
+failing `local::tests::an_app_is_the_checkouts_only_where_a_process_in_it_listens`
+is WORKTREES' `is_app_of`, another piece); clippy --all-targets -D
+warnings clean; rustfmt clean in `worktree_view*`. Suite (release): views
+13/13, buttons + hover 33/33.
+
+## 2026-10-10 06:40 · overview / actor, round 4 · a failed removal stays red, DONE counts each round of a repeated act
+Checked in worlds against the release binary, each critic item:
+(1) A removal whose folder can't go: wt:remove now refuses before
+anything is touched (`undeletable`, cli-lifecycle round 3), exits 1 with
+`✗ failed to delete <dir>: Permission denied`; the actor logs red `303-…
+stays: failed to delete …` and UP NEXT keeps `remove the worktree 303-…
+<error>` for a second click; folder, `.git` and branch stay
+(`critic-actor-rmfail`). Replaces round 2's "not changed here". Suite:
+buttons' two read-only-root checks pass (one still marked `knownBug("to
+file: …")`: the lead files it). (2) No `pane move` of a tab the #332
+pass just closed (`keep_order_except`, cli-lifecycle round 3): no `put
+the tabs … back in order` in DONE. The journal holds only writes herdr
+took (exit 0), so a move real herdr refuses is never a ✓. (3) Chose: an
+act the log has already (same words and commands) is counted on its
+entry each time its commands run, whatever ticks lie between, and DONE
+says `· 3 times, the last at 06:27:20` (`sync::log_acts`, `Did::last`).
+Against: round 3's count only when the tick before had it too: a prune
+that came back after a quiet tick replaced its entry and the count started
+at 1 again (`· 3 times` beside 5 rounds). Why: rule 1 (a wrong count is a
+wrong fact). The 2026-10-02 claim "ours 8 in 20 s" no longer holds:
+measured in the world with `--herdr`, 25 s: 31 `tab close` (the 8 tabs of
+w4P, 3 rounds at 2, 6 and 21 s, plus the 7 #332 closes once), Node 56.
+The rounds are the fake herdr's, which never drops a closed tab; real
+herdr has nothing left to close after the first. Not changed: the prune
+itself (cli-lifecycle's `prune_spaces`). (4) A delivered answer names
+the agent (`decide #2 of Lucía Nkemelu → “Rust + ratatui” · typed into
+its agent's pane`) with the typed line under it (NEXT/ACTIONS' round 5,
+`actions.rs`). (6) NEXT after `marked ready, can't merge: draft` says
+`two clicks merge it once GitLab no longer calls it a draft` (same).
+(7) The second click reads the MR and its issue at once (`merge::both`,
+Node's Promise.all) and a failed read ends as `can't merge: #305 not
+read: …` (`fresh_of`); unit tests for both. (8) ACTIONS' header says
+`auto ones leave once done` (NEXT/ACTIONS' round). (9) A worktree whose
+`.claude/herdr-session` is missing: the push click types its line into
+herdr's agent of its tab (`agent prompt w4N:p3 [overview] 2 commits of
+… are not pushed`, `✓ told Lucía Nkemelu to push its commits`), the
+pipeline row says `click to tell its agent` and falls back to the job's
+page (core's `auto_actions`): the screen no longer contradicts WORKTREES.
+Decided against (5), a click on the band jumping to DONE: the band and
+its clicks are the frame's (`band.rs`, `view.rs`, `run.rs`), and DONE
+stays the page's last section so it never moves a row above it; `G`
+reaches it. Why: rule 4 (one owner of the band's clicks), rule 3 has
+nothing (Node has no log). Left to the frame piece as its gap.
+Suite against the binary: buttons 28/28, isolation 4/4, cli 19/19 + 1
+todo. cargo test: binary 482/482 (also with `env -i`), actor 47 (+4:
+rounds counted, the last time, the reads at once, `can't merge:` on a
+failed read); core 255/255 once, but core's
+`local::an_app_is_the_checkouts_only_where_a_process_in_it_listens`
+failed in 2 of 3 runs (plain and `env -i`, local.rs:674: the port the
+test freed is busy again, likely another test of the same process;
+WORKTREES piece's). clippy -D warnings clean.
+
+## 2026-10-10 06:40 · overview / everything, round 3 · the stray stacks give way to both lists, the default stack says its run, one stack vocabulary, the MRs said nowhere else first
+Checked and kept: the fix pass of 08 23:02 (written as the machine shut
+down), now built, tested and run in worlds against the critic's ten items.
+Chose: (1) STACKS WITHOUT A WORKTREE stands after MERGE REQUESTS and ISSUES
+and gets its rows only from what the two lists' first items leave: at 80x24
+with vita-304 running and the stray vita-old-thing and vita-gone (the
+critic's `probe-stacks.tmp.mjs`), the band, 11 worktree rows, the button,
+`!317` and `#307` are on the first screen; a tall pane shows the stray
+stacks with both lists, `--once` prints them after the lists. Against:
+folding them to one line (one more click to see a fact docker has; under
+the lists they cost the first screen nothing). Why: rule 2 (the piece's
+80x24 requirement), rule 3 (Node's section, whole, moved). Suite: views
+`overview of everything at 80x24, with stacks of no worktree in docker`
+(knownBug `to file:`, todo against Node, passes against ours).
+(2) The default stack's button follows its run as Node's `pushStackButton`:
+`◐ starting the default stack …` with the log's last line while it runs,
+`▶ start the default stack  click or u  ✗ pnpm stack:up failed` after a
+failure (seen in the world: the click with a failing stack:up). A second
+click while it runs does nothing, as Node's `isStarting`; the button now
+says why. `u` starts it (overview.mjs `upTarget`). Why: rule 3 (spec
+2.13/3.1, #303's button list).
+(4) MERGE REQUESTS lists the MRs of no worktree here first, GitLab's order
+inside each part (`others_first`). Against: Node's GitLab order (!318
+first). Why: a worktree's MR already stands on its row in WORKTREES with
+its pipeline, so where the pane shows one or two (80x24), they are the ones
+said nowhere else; nothing is lost, `… N more` opens the rest. Rule 3
+deviation for rule 2 (the 80x24 requirement) and rule 4 (one place for a
+fact).
+(5) A stack reads the same at every width: WORKTREES' words of
+`tree::stack_of` (`stack down`, `stack running`, `stack 2 running, 1
+exited`, `shared`, `no .env.local`) in the wide columns too, where they
+said boxes.mjs's `default down` / `+4 running(2)`; the app's port says the
+offset. Supersedes the 07 22:31 entry's "the view of everything keeps
+`stack_cell`"; core's `stack_cell` had no caller left and is gone. Why:
+rule 4 (one fact, one way), the 22:31 entry's reason (`+7 down` read as
+`7 down`, `exited(1)` as an exit code); rule 3 deviation, nothing lost.
+(3) `--herdr` writes no sidebar line before GitLab's open MRs are in
+(`sync.rs` `is_gitlab_in`): a line before then guessed (`waits for !309,
+!310, !311`, two of them merged: #262) and a second write followed. Now
+the first write is the right one (world: `waits for the pipeline · !303`
+for w46:p3). Why: rule 1 (the #262 known bug passes), rule 6 (no extra
+herdr write). Suite: views `no sidebar line waits for an MR GitLab has
+merged` (#262; todo against Node, passes against ours).
+(7) No `pane move … --new-tab` in the main overview's first tick any more:
+the 7 moves were the closed overview tabs (#332) moved into the order, gone
+with the lifecycle's `keep_order_except` (08 22:50 (6)). World, 120x40,
+first 25 s: herdr writes `tab close`, `pane report-metadata`, one `worktree
+open`/`workspace create`/`workspace report-metadata`, no `pane move`; Node
+the same kinds. Why: rule 6.
+(8) DONE folds each entry's commands (a click shows them, a failure's
+always stand): at 120x40 with `--herdr` 5 entries in 17 rows (was 41). The
+actor's `view.rs`; rule 4 (a log, not a wall).
+(10) `snap.mjs --blind` masks the PNG's cells one by one as it masks the
+text, so a name in a line whose length the mask changed is masked too
+(world: no `breadboard`/`ratatui`/`lazygit` in shot.html).
+Not done here: (6) a pinned section title over the second row of a
+3-row block (an MR whose title wraps at 80, a DONE entry) leaves its tail
+without its head: `pin_of` (tui/view.rs) declines a pin only when the
+block's head is the pinned row. The frame's to build (scroll the head
+under the pin, or pin it too), as the 08 23:01 entry left it; no wrong
+act: a click there shows the block first and runs nothing.
+Measured, no gap (critic's 9): first WORKTREES frame 83–155 ms, idle CPU
+near 0, keepOverall as Node's.
+Tests: everything 24/24 (new: stray stacks give way at 80x24, the button's
+three states, a stack the same at 80/120/200), core everything 1/1. Suite
+(release): views 13/13; against Node the three new checks are todo.
+
+## 2026-10-10 06:35 · overview / WORKTREES, round 5 · round 4 checked: the suite holds the app that answers and the database; nothing else changed
+Chose: round 4 (08 23:00, written as the machine shut down, unchecked) is
+kept as it stands, now built, tested and run in worlds: the critic's
+eight items against it: (1) the app's and stack's cells act (`○ :3067` says
+`pnpm dev in products/vita/web starts the app of #305`, `▶ stack down` runs
+`stack:up` there and turns red with its last log line, a running and a
+shared stack keep the node's click: calls.jsonl of the critic's probe);
+(2) the suite's `worktrees.check.mjs` gets two more checks: an app served
+from its worktree opens `http://localhost:<port>` in the browser
+(xdg-open in the world) without the node's click, and a database of a
+running (shared) stack that doesn't answer for its migrations says so on
+the node, a node without migrations to ask says nothing; (3) the merge
+result and the migrations stand as 23:00 decided; (4) still no Node design
+(`origin/feature/332-…` is an ancestor of `origin/develop`, `git log
+origin/develop -F --grep '#332'` empty on 10-10): re-check once it lands;
+(5) `local::is_app_of` (/proc); (6) the env-less line under the record,
+`— no .env.local` on a node beside others; (7) at 80x24 a colliding node is
+6 rows, the first screen holds 305 and 302 whole (was: 305 and part of
+302); open as 23:00 says (#304: a title is never cut); (8) as 21:55 and
+23:00 decided. Against: a `▶ pnpm pg:migrate` click in the suite (the
+world has no pnpm and its psql answers nothing: the check would only see
+`stack:up`'s twin fail; the unit test holds the button). Why: rule 1 (a
+user-visible fact gets a suite check), rule 3.
+Fixed with it: three unit tests of the tree still counted lines from
+before the env-less line (`first_node`), an unused `mut`, a clippy
+`field_reassign_with_default` in core's `reader::files_of` (the .env.local
+added to a worktree's files).
+Suite (release): worktrees 10/10 (Node: 10 todo), content 24/24, hover
+5/5, isolation 4/4. cargo test: 477 + 255, also under `env -i` (one
+failing test there is another piece's `zz_debug_regions`, being written).
+
+## 2026-10-10 06:30 · herdr-plugin, round 6 · a first build that fails is written down; restore's extra writes are #332's; the reload after a pull checked
+Chose: (1) `herdr/breadboard.sh` makes `target/release/` before it
+writes `breadboard.failed`: a first build that fails in a checkout with no
+`target/` yet (an upgrade from the Node plugin where cargo fails before
+it makes `target/`, e.g. offline, unable to fetch the crates) used to
+fail writing the mark too, so the tab bar started
+a new build behind it every 10 s and printed a shell error into the build
+log. Why: rule 6 (a build every 10 s is work nobody asked for), the
+critic's item 1 (the upgrade path). The launcher's unit tests ran their
+fake cargo with `dirname`, which the launcher's short PATH lacks (three
+tests red since round 5's wip); the fake now uses only sh.
+(2) restore's writes over Node's (critic's item 3): measured again in the
+breadboard world, ours closes `<space>:t2` in 7 worktree spaces; each is
+the `overview` tab of a worktree of the `breadboard` orchestration, closed
+by #332 (entry "herdr layout · #332", rule 2). The `pane move … --new-tab`
+the critic saw is gone with the layout piece's round since. The line
+`space … not set up: herdr gave no id back` stays: Node leaves the same
+space unbuilt without a word, which is a wrong fact by omission; the line
+belongs to the layout piece.
+(3) Coverage (critic's item 6): a suite check for `--reload` after a pull
+that moved develop (the main checkout fast-forwards to origin's new
+develop, the overviews get one `q`, restore runs once: the rerun with
+`--pulled` neither repeats nor skips the reload); green against Node and
+ours. Not as suite checks: `--here` attaching and the new window's spawn
+(they need a terminal emulator and a real herdr client; `terminal_window`
+is unit tested), ensureBinary's download (a network fetch; the sha256
+refusal is unit tested: nothing written on a mismatch), the Omarchy hint
+(a pacman database; unit tested on one), `herdr:install`'s y/N prompt and
+the panes' key wait (a tty; the prompt's yes and no are unit tested, the
+key wait was checked by hand in a pty). Why: rule 4 (a pty harness for
+two prompts is more than the prompts), and none of them writes to GitLab
+or herdr.
+(4) The commands pane from a worktree's `packages/breadboard` (critic's
+item 7) now lists that package's commands first in ours (the commands
+piece takes the root from the cwd's checkout); Node still shows only
+`platform (root)`. Checked in a world.
+Suite: plugin 25/25 against ours, 18 + 5 skipped + 2 todo against Node;
+cli 19/19.
+
+## 2026-10-10 06:22 · TUI frame, round 8 · the keys line cut by parts, pages that start an item, Esc lets the pick go
+Chose: the band's keys line is Node's words, cut at a word as Node cuts
+them, then the added ` · Tab Enter pick a row` whole or not at all
+(`band::keys_line`, as `fitParts` cuts a box title). Against: one cut
+word by word over both (round 7: `… scroll · Tab` at 98–102 columns,
+`· Tab Enter pick a` at 110, the usual width of a herdr split). Why:
+rule 3 keeps Node's part and its cut (`… space` at 80, `… space g G` at
+86, as Node's `spread`); the critic: a key with no action is a wrong
+fact about the keys. Now 80–114 columns end in Node's words, 115 and up
+show the pick whole.
+Chose: a page never lands on the rest of a wrapped line (`Row::is_continued`,
+set by the scene's wrap) or on a blank, so ISSUE's `○` items start a page
+like blocks do; PgUp keeps the first row with text seen as the last (a
+blank of overlap only was the round-7 `↑42 → ↑23` that lost `PIPELINE
+✓ passed`); PgDn whose last row seen is a blank goes on past it to what
+follows (a section's title, the next MR): only blanks lie between the
+last text seen and the new top. Against: keeping the blank as the row of
+overlap (the critic: at 80x24 with ACTIONS the first PgDn spent one of
+12 rows on the blank above WORKTREES). Why: the 08:55 rule (a page starts
+something, as lazygit's) and rule 3's reason for the overlap (what was
+read last stays), which a blank doesn't serve. The critic's probe 5
+counts such a page as `LOST` (`checking for conflicts …` of an MR seen
+whole, the next MR on top), and a title it took for a pin; read on the
+screens, no row with text is skipped.
+Chose: Esc and a click on nothing let the Tab pick go (`View::unpick`, the
+band's `N of M` and the ▌ bar with it), as lazygit's Esc steps back; a
+pointer move did already. Esc is still the app's too (the worktree view
+closes its hunks). Why: the critic: a pick with no way back but the
+mouse. Rule 3: Node has no pick.
+Kept: a pinned title never stands over a block's first row while the
+rest of the block shows under it (`pin_of`); a click on a button whose
+block's head is off screen shows the block and runs nothing (`View::
+show_clicked`, `…, not run: its block shown first` in overview-clicks.log).
+Suite: hover's Tab check is rewrite-only now (Node has no pick: it
+passed there without a pick) and fails when Tab picks nothing. Against
+the release binary: hover 4/4 (+ the Tab check), budgets 9/9 (first
+frame 223 ms, idle 0.10 % at 21 MiB, 40 reports/s 1.9 % CPU settled
+10 ms, #315's slowest notch 18 ms). Unit: the checklist page test
+asserts "the last text seen stays, or only blanks lie between".
+
 ## 2026-10-08 23:01 · overview / NEXT and ACTIONS, round 5 · no digit acts on a block the user didn't pick
 Chose: with nothing picked a digit does nothing, NEXT's action included;
 the digits answer only the block picked with Tab (NEXT's own is the first

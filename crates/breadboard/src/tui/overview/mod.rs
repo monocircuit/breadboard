@@ -119,7 +119,7 @@ pub fn main(args: &[String]) -> ExitCode {
     let (wake, woken) = std::sync::mpsc::sync_channel(1);
     app.wake_local = Some(wake);
     act::start(&mut app, sender.clone());
-    daemon::client::share_herdr();
+    daemon::client::share_reads();
     read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
     runtime.spawn(read_gitlab(main, view_key(&args.view), asked, refreshes, sender));
     super::serve(runtime, &mut app, models)

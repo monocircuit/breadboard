@@ -39,7 +39,7 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
     let (warnings, counts): (Vec<&model::Span>, Vec<&model::Span>) =
         worktrees.head.iter().partition(|span| span.paint == Paint::Red);
     let note: String = counts.iter().map(|span| span.text.as_str()).collect();
-    let mut note = note.trim().trim_end_matches('·').trim_end().to_string();
+    let note = note.trim().trim_end_matches('·').trim_end().to_string();
     let tree = &worktrees.tree;
     let cells = Cells::of(&tree.live, scene.width(), ctx);
     // Why there is no app and no stack, or why a stack says `?`: said once, not on every node,
@@ -898,6 +898,11 @@ mod tests {
         scene
     }
 
+    /// The line of the first node.
+    fn first_node(lines: &[String]) -> usize {
+        lines.iter().position(|line| line.starts_with("├─ 1.")).unwrap()
+    }
+
     fn text(scene: &Scene<Act>) -> Vec<String> {
         scene
             .lines
@@ -931,8 +936,9 @@ mod tests {
     #[test]
     fn facts_that_do_not_fit_beside_the_agent_go_under_it_the_agent_stays_under_the_state() {
         let lines = text(&draw(&worktrees(0, 0), Folds::default(), 56));
+        let at = first_node(&lines);
         assert_eq!(
-            lines[3..7],
+            lines[at..at + 4],
             [
                 "├─ 1. 303-every-button            waits for the pipeline",
                 "│     #301 open    ● Mira Albrecht · 3 issues · 2 merged",
@@ -958,8 +964,9 @@ mod tests {
         worktrees.tree.live[0].state.text =
             "start: → Elif Kowalczyk: its handover failed: wt:orchestrate: not built yet; a click tries again".into();
         let lines = text(&draw(&worktrees, Folds::default(), 60));
+        let at = first_node(&lines);
         assert_eq!(
-            lines[3..6],
+            lines[at..at + 3],
             [
                 "├─ 1. 303-every-button",
                 "│              start: → Elif Kowalczyk: its handover failed:",
@@ -989,8 +996,8 @@ mod tests {
         assert_eq!(
             blocks,
             [
-                (3, 3, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
-                (6, 3, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
+                (4, 3, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
+                (7, 3, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
             ]
         );
     }

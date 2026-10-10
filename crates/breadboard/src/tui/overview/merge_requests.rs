@@ -214,7 +214,7 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, i
         look::gutter(scene, first, rest, |scene| {
             head(scene, mr, columns, merge_of(ctx, mr));
             let at = columns.title_at();
-            if let Some(progress) = mr.progress {
+            if let Some(progress) = &mr.progress {
                 let beside = if columns.status > 0 { columns.status + 2 } else { 0 };
                 let room = scene.width().saturating_sub(at);
                 let size = (columns.title_in(scene.width()) + beside).min(room);
@@ -224,7 +224,7 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, i
                     scene.end_line();
                 }
             }
-            if mr.conflict.is_some() || !mr.reasons.is_empty() || failed_of(ctx, mr).is_some() {
+            if has_lacks(mr, ctx) {
                 let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
                 scene.indent(at);
                 scene.pad_to(at);
@@ -495,23 +495,24 @@ fn title_spans(title: &str, is_merged: bool) -> Vec<Span<'static>> {
 /// ticked part a thick line, green (yellow once only acceptance boxes are
 /// open), the rest a thin dim one; behind it the counts, dropped section by
 /// section on a narrow width, never `…`.
-fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
-    let Progress {
+fn bar(progress: &Progress, width: u16) -> Vec<Span<'static>> {
+    let &Progress {
         ticked,
         total,
         work,
         acceptance,
+        other,
+        ..
     } = progress;
     // The boxes under neither Work nor Acceptance (an issue's `## Scope`): no
-    // reason names them (they hold no merge up), so the bar's label does while
-    // one is open, or `0/9 boxes` would count 7 the row says nothing of.
-    let other = (
-        ticked.saturating_sub(work.0 + acceptance.0),
-        total.saturating_sub(work.1 + acceptance.1),
-    );
+    // reason names them (they hold no merge up), so the bar's label does by
+    // their section while one is open, or `0/9 boxes` would count 7 the row
+    // says nothing of.
     let mut full = vec![format!("{ticked}/{total} boxes")];
-    for (name, (done, all)) in [("work", work), ("acceptance", acceptance), ("other", other)] {
-        if all > 0 && (name != "other" || done < all) {
+    let sections = [("work", work, true), ("acceptance", acceptance, true)];
+    let other = (progress.other_name.as_str(), other, other.0 < other.1);
+    for (name, (done, all), is_said) in sections.into_iter().chain([other]) {
+        if all > 0 && is_said {
             full.push(format!("{name} {done}/{all}"));
         }
     }
@@ -542,6 +543,17 @@ fn bar(progress: Progress, width: u16) -> Vec<Span<'static>> {
         spans.push(look::dim(format!("  {label}")));
     }
     spans
+}
+
+/// Whether `lacks` draws anything: a ready MR with no conflicts (unsaid),
+/// no reasons and no failed merge has no line, so its block ends at its bar.
+fn has_lacks(mr: &MrFacts, ctx: &Ctx) -> bool {
+    !mr.reasons.is_empty()
+        || failed_of(ctx, mr).is_some()
+        || mr
+            .conflict
+            .as_ref()
+            .is_some_and(|conflict| !matches!(conflict, Conflict::None))
 }
 
 /// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
@@ -690,17 +702,18 @@ mod tests {
             total: 12,
             work: (9, 9),
             acceptance: (0, 3),
+            ..Default::default()
         };
-        let wide = text(&bar(progress, 50));
+        let wide = text(&bar(&progress, 50));
         assert!(wide.ends_with("  9/12 boxes · work 9/9 · acceptance 0/3"), "{wide}");
         assert_eq!(Span::raw(wide.as_str()).width(), 50);
         // Wider: the bar takes the room it is given, the counts at its end (#294).
-        let wide = text(&bar(progress, 80));
+        let wide = text(&bar(&progress, 80));
         assert_eq!(Span::raw(wide.as_str()).width(), 80);
         assert!(wide.starts_with(&"━".repeat(30)), "{wide}");
-        assert!(text(&bar(progress, 20)).ends_with("  9/12 boxes"));
-        assert!(text(&bar(progress, 15)).ends_with("  9/12"));
-        assert_eq!(text(&bar(progress, 8)), "━━━━━━──");
+        assert!(text(&bar(&progress, 20)).ends_with("  9/12 boxes"));
+        assert!(text(&bar(&progress, 15)).ends_with("  9/12"));
+        assert_eq!(text(&bar(&progress, 8)), "━━━━━━──");
     }
 
     #[test]
@@ -711,12 +724,18 @@ mod tests {
             total: 9,
             work: (0, 0),
             acceptance: (0, 2),
+            other: (0, 7),
+            other_name: "scope".into(),
         };
-        let label = text(&bar(progress, 80));
-        assert!(label.ends_with("  0/9 boxes · acceptance 0/2 · other 0/7"), "{label}");
+        let label = text(&bar(&progress, 80));
+        assert!(label.ends_with("  0/9 boxes · acceptance 0/2 · scope 0/7"), "{label}");
         // Once they are ticked they go unnamed: the label accounts for the open boxes.
-        let done = Progress { ticked: 7, ..progress };
-        assert!(text(&bar(done, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
+        let done = Progress {
+            ticked: 7,
+            other: (7, 7),
+            ..progress
+        };
+        assert!(text(&bar(&done, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
     }
 
     #[test]
@@ -726,14 +745,15 @@ mod tests {
             total: 4,
             work: (2, 2),
             acceptance: (0, 2),
+            ..Default::default()
         };
-        assert_eq!(bar(only_acceptance, 8)[0].style.fg, Some(Tone::Yellow.fg()));
+        assert_eq!(bar(&only_acceptance, 8)[0].style.fg, Some(Tone::Yellow.fg()));
         let work_open = Progress {
             work: (1, 2),
             acceptance: (1, 2),
             ..only_acceptance
         };
-        assert_eq!(bar(work_open, 8)[0].style.fg, Some(Tone::Green.fg()));
+        assert_eq!(bar(&work_open, 8)[0].style.fg, Some(Tone::Green.fg()));
     }
 
     #[test]
@@ -909,6 +929,64 @@ mod tests {
     }
 
     #[test]
+    fn a_ready_mr_with_nothing_lacking_ends_at_its_bar_with_one_empty_row() {
+        // GitLab settled on `no merge conflicts`, no reasons: no reasons line
+        // (it would be empty), the parting row alone before the next `●`.
+        let row = |iid: i64, conflict: Conflict, reasons: Vec<Reason>| MrRow {
+            number: Some(iid),
+            graph: "●".into(),
+            below: String::new(),
+            mr: Some(MrFacts {
+                iid,
+                conflict: Some(conflict),
+                reasons,
+                progress: Some(Progress {
+                    ticked: 9,
+                    total: 9,
+                    work: (7, 7),
+                    acceptance: (2, 2),
+                    ..Default::default()
+                }),
+                ..facts("feat(breadboard): an open MR shows a progress bar", None)
+            }),
+        };
+        let gitlab = super::super::GitlabState::default();
+        let ctx = Ctx {
+            is_once: false,
+            folds: Default::default(),
+            gitlab: &gitlab,
+            now: 60_000,
+            main_name: "platform",
+            actor: super::super::actor::idle(),
+            words: super::super::actor::view::no_words(),
+        };
+        for width in [80, 120] {
+            let mrs = MergeRequests {
+                open: vec![
+                    row(316, Conflict::None, vec![]),
+                    row(311, Conflict::None, vec![reason("draft: mark ready", "you")]),
+                    row(318, Conflict::None, vec![]),
+                ],
+                ..Default::default()
+            };
+            let mut scene = Scene::<Act>::new(width);
+            rows(&mut scene, &mrs, &ctx);
+            scene.finish();
+            let lines = lines(&scene);
+            let nodes: Vec<usize> = (0..lines.len()).filter(|&i| lines[i].starts_with('●')).collect();
+            assert_eq!(nodes.len(), 3, "{lines:?}");
+            // !316: title, bar, one empty row, then !311's `●`.
+            assert!(lines[nodes[1] - 2].contains("9/9 boxes"), "{width}: {lines:?}");
+            assert_eq!(lines[nodes[1] - 1].trim(), "", "{width}: {lines:?}");
+            // !311 keeps its reasons line, then the empty row.
+            assert!(lines[nodes[2] - 2].contains("→\u{a0}you"), "{width}: {lines:?}");
+            assert_eq!(lines[nodes[2] - 1].trim(), "", "{width}: {lines:?}");
+            // The last block ends at its bar.
+            assert!(lines.last().unwrap().contains("9/9 boxes"), "{width}: {lines:?}");
+        }
+    }
+
+    #[test]
     fn what_an_mr_lacks_never_stands_on_the_next_mrs_node() {
         // The breadboard world: every MR in one lane, each a block of title, bar
         // and reasons. The line right above an `●` is never a reasons line.
@@ -925,6 +1003,7 @@ mod tests {
                     total: 8,
                     work: (6, 6),
                     acceptance: (2, 2),
+                    ..Default::default()
                 }),
                 ..facts("feat(breadboard): an open MR shows a progress bar", None)
             }),

@@ -66,6 +66,7 @@ build() {
   now=$(source_now)
   echo "▸ breadboard is built from $(git -C "$package" rev-parse --short HEAD 2>/dev/null) (cargo build --release in $package)" >&2
   if ! cargo build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
+    mkdir -p "${binary%/*}"
     printf '%s\n' "$now" >"$failed"
     echo "✗ cargo build --release failed in $package" >&2
     return 1

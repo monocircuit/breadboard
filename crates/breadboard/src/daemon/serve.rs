@@ -4,8 +4,9 @@
 
 use super::feed::Feed;
 use super::{ALIVE_EVERY, GRACE, HERDR_FRESH, Request, Said};
-use breadboard_core::herdr;
 use breadboard_core::lock::PidFile;
+use breadboard_core::reader::{STALE_MS, STATUS};
+use breadboard_core::{git, herdr};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
@@ -24,11 +25,17 @@ const LOOK_EVERY: Duration = Duration::from_secs(5);
 /// A herdr read as last made, shared by every overview while HERDR_FRESH.
 type Answer = Arc<tokio::sync::Mutex<Option<(Instant, Option<Value>)>>>;
 
+/// A worktree's `git status` as last read: the stamp of its files it was
+/// asked under, and when (ms) and what git said (None: it failed).
+type Status = Arc<tokio::sync::Mutex<Option<(u64, i64, Option<String>)>>>;
+
 #[derive(Default)]
 struct State {
     connections: AtomicUsize,
     idle_since: Mutex<Option<Instant>>,
     herdr: Mutex<HashMap<Vec<String>, Answer>>,
+    /// The last `git status` by worktree.
+    status: Mutex<HashMap<std::path::PathBuf, Status>>,
     /// The feeds followed now, by view.
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
     /// The last answer of a feed that ended, by view, for GRACE.
@@ -171,6 +178,13 @@ async fn serve(listener: UnixListener, socket: &Path) -> std::io::Result<()> {
                     return Ok(());
                 }
                 state.kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (at, _)| at.elapsed() < GRACE);
+                // A worktree no overview asked about for a while (removed, its views closed): forgotten.
+                let old = breadboard_core::time::now_ms() - STALE_MS - GRACE.as_millis() as i64;
+                state.status.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, status| match status.try_lock() {
+                    // Read now: kept.
+                    Err(_) => true,
+                    Ok(held) => held.as_ref().is_none_or(|(_, at, _)| *at > old),
+                });
                 let idle = *state.idle_since.lock().unwrap_or_else(|e| e.into_inner());
                 if state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
                     let _ = std::fs::remove_file(socket);
@@ -189,6 +203,12 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
     match serde_json::from_str::<Request>(&first) {
         Ok(Request::Herdr { args }) => {
             let answer = herdr_read(state, args).await;
+            let mut line = serde_json::to_string(&answer).unwrap_or_else(|_| "null".into());
+            line.push('\n');
+            write.write_all(line.as_bytes()).await
+        }
+        Ok(Request::Status { dir, stamp }) => {
+            let answer = status_read(state, dir, stamp).await;
             let mut line = serde_json::to_string(&answer).unwrap_or_else(|_| "null".into());
             line.push('\n');
             write.write_all(line.as_bytes()).await
@@ -255,6 +275,38 @@ async fn herdr_read(state: &State, args: Vec<String>) -> Option<Value> {
     .flatten();
     *answer = Some((Instant::now(), value.clone()));
     value
+}
+
+/// `git status` of the worktree `dir` under the stamp of its files: one
+/// call for every overview that asks under the same stamp within STALE_MS
+/// (the others wait for it); a stamp that moved, or an answer older, reads
+/// again. None (the overview asks git itself): no worktree there, or git failed.
+async fn status_read(state: &State, dir: std::path::PathBuf, stamp: u64) -> Option<(i64, String)> {
+    if !dir.is_absolute() || !dir.is_dir() {
+        return None;
+    }
+    let status = state
+        .status
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(dir.clone())
+        .or_default()
+        .clone();
+    let mut status = status.lock().await;
+    let now = breadboard_core::time::now_ms();
+    if let Some((held, at, out)) = status.as_ref()
+        && *held == stamp
+        && now - at < STALE_MS
+    {
+        return out.clone().map(|out| (*at, out));
+    }
+    let out = tokio::task::spawn_blocking(move || git::git(&dir, &STATUS))
+        .await
+        .ok()
+        .filter(|out| out.is_ok)
+        .map(|out| out.stdout);
+    *status = Some((stamp, now, out.clone()));
+    out.map(|out| (now, out))
 }
 
 /// A follower of a feed: its lines out, what it says in, until it closes;

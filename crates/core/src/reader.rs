@@ -148,9 +148,48 @@ impl Key {
     }
 }
 
-/// `git status --porcelain -uall` of `dir` with each listed file's size and time, hashed: one git call.
-fn status_key(dir: &Path) -> u64 {
-    let status = git::git(dir, &["status", "--porcelain", "-uall"]).stdout;
+/// The `git status` a worktree's key is read from (`status_key`); its answer
+/// also stands for the same call with `--untracked-files=all`.
+pub const STATUS: [&str; 3] = ["status", "--porcelain", "-uall"];
+
+/// What answers a worktree's `git status` (`STATUS`) in place of a call of
+/// this process: the overviews' shared reader (`breadboard serve`), asked
+/// with the worktree and the stamp of its files (`Key`). Its answer: when
+/// that status was read (ms; never more than STALE_MS before) and what it
+/// said; None: ask git here.
+pub type SharedStatus = fn(&Path, u64) -> Option<(i64, String)>;
+
+static SHARED_STATUS: std::sync::OnceLock<SharedStatus> = std::sync::OnceLock::new();
+
+/// From now on this process's worktree keys take `git status` from `shared` first (a live overview does this).
+pub fn share_status(shared: SharedStatus) {
+    let _ = SHARED_STATUS.set(shared);
+}
+
+/// `git status` of `dir` under the stamp of its files, and when it was read:
+/// another overview's read of the same stamp (the shared reader) when it has
+/// one, else this process's at `now`.
+fn status_of(dir: &Path, stamp: u64, now: i64) -> (i64, git::Out) {
+    if let Some((at, stdout)) = SHARED_STATUS.get().and_then(|shared| shared(dir, stamp)) {
+        let out = git::Out {
+            is_ok: true,
+            stdout,
+            ..Default::default()
+        };
+        return (at, out);
+    }
+    (now, git::git(dir, &STATUS))
+}
+
+/// The stamps of a worktree's git files and of its other files as one: what a shared `git status` is asked under.
+fn stamp_pair(stamp: u64, other: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (stamp, other).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `git status` (`STATUS`) of `dir` with each listed file's size and time, hashed.
+fn status_key(dir: &Path, status: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     for line in status.split('\n').filter(|line| !line.is_empty()) {
         line.hash(&mut hasher);
@@ -287,8 +326,7 @@ impl LocalReader {
     /// The files a worktree's facts come from.
     fn files_of(&mut self, dir: &Path, branch: &str) -> Files {
         let claude = dir.join(".claude");
-        let mut files = Files::default();
-        files.other = [
+        let other = [
             "actions.json",
             "wait.json",
             "origin",
@@ -298,9 +336,10 @@ impl LocalReader {
         ]
         .iter()
         .map(|name| claude.join(name))
-        .collect();
         // Its stack's ports and project.
-        files.other.push(env_file_of(dir));
+        .chain([env_file_of(dir)])
+        .collect();
+        let mut files = Files { git: Vec::new(), other };
         let dirs = self
             .git_dirs
             .entry(dir.to_path_buf())
@@ -337,6 +376,16 @@ impl LocalReader {
     /// by `(dir, branch)`: the key from the stat of its git files while they
     /// hold and STALE_MS hasn't passed, else with one `git status` each, side by side.
     fn keys_of(&mut self, dirs: &[(PathBuf, String)], now: i64) -> Vec<(u64, u64)> {
+        self.keys_with(dirs, now, status_of)
+    }
+
+    /// `keys_of` with `git status` asked of `status` (tests).
+    fn keys_with(
+        &mut self,
+        dirs: &[(PathBuf, String)],
+        now: i64,
+        status: impl Fn(&Path, u64, i64) -> (i64, git::Out) + Copy + Send,
+    ) -> Vec<(u64, u64)> {
         let stamps: Vec<(u64, u64)> = dirs
             .iter()
             .map(|(dir, branch)| {
@@ -345,7 +394,7 @@ impl LocalReader {
             })
             .collect();
         let keys = &self.keys;
-        let looked: Vec<Option<u64>> = std::thread::scope(|scope| {
+        let looked: Vec<Option<(i64, git::Out)>> = std::thread::scope(|scope| {
             let handles: Vec<_> = dirs
                 .iter()
                 .zip(&stamps)
@@ -353,7 +402,8 @@ impl LocalReader {
                     let is_held = keys.get(dir).is_some_and(|key| {
                         key.stamp == *stamp && key.other == *other && now - key.looked_at < STALE_MS
                     });
-                    (!is_held).then(|| scope.spawn(move || status_key(dir)))
+                    let both = stamp_pair(*stamp, *other);
+                    (!is_held).then(|| scope.spawn(move || status(dir, both, now)))
                 })
                 .collect();
             handles
@@ -365,14 +415,24 @@ impl LocalReader {
             .zip(stamps)
             .zip(looked)
             .map(|(((dir, _), (stamp, other)), status)| {
-                if let Some(status) = status {
+                if let Some((looked_at, status)) = status {
                     let key = Key {
                         stamp,
                         other,
-                        status,
-                        looked_at: now,
+                        status: status_key(dir, &status.stdout),
+                        // Another overview's read counts from when it was made: never held longer than STALE_MS in all.
+                        looked_at,
                     };
                     self.keys.insert(dir.clone(), key);
+                    // The facts read under this key take the same answer: no second `git status`.
+                    if status.is_ok {
+                        let memo = memo_of(dir, key.of());
+                        let mut memo = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        for args in [&STATUS[..], &["status", "--porcelain", "--untracked-files=all"]] {
+                            let words = args.iter().map(|word| word.to_string()).collect();
+                            memo.entry((dir.clone(), words)).or_insert_with(|| status.clone());
+                        }
+                    }
                 }
                 (self.keys[dir].of(), other)
             })
@@ -987,6 +1047,34 @@ mod tests {
         let (link, hidden) = (dir.join(".git"), dir.join(".git-hidden"));
         std::fs::rename(&link, &hidden).unwrap();
         move || std::fs::rename(&hidden, &link).unwrap()
+    }
+
+    #[test]
+    fn takes_a_shared_status_for_no_longer_than_stale_ms_from_its_read() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let dir = worktree(&main, "14-fourteen", false);
+        std::fs::write(dir.join("new.md"), "new\n").unwrap();
+        let mut reader = LocalReader::new(&main, View::Everything).unwrap();
+        let dirs = [(dir.clone(), "feature/14-fourteen".to_string())];
+        let now = now_ms();
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        // Another overview read it 10 s ago (the shared reader's answer): held 5 s more, not 15.
+        let shared = |dir: &Path, _stamp: u64, _now: i64| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            (now - 10_000, git::git(dir, &STATUS))
+        };
+        let key = reader.keys_with(&dirs, now, shared)[0].0;
+        reader.keys_with(&dirs, now + 4_000, shared);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+        reader.keys_with(&dirs, now + 5_000, shared);
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // The facts under that key take its answer: no second `git status` (git gone here, the memo answers).
+        let back = without_git(&dir);
+        let memo = memo_of(&dir, key);
+        assert_eq!(git::remembered(&memo, || git::changed_count(&dir)), 1);
+        assert_eq!(git::remembered(&memo, || git::git(&dir, &STATUS).lines().count()), 1);
+        back();
     }
 
     #[test]
