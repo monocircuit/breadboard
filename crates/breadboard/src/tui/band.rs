@@ -70,11 +70,9 @@ impl Header {
 /// `GitLab 14:57` says when GitLab last answered.
 pub fn clock(at: SystemTime) -> String {
     let seconds = at.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()) as libc::time_t;
-    // SAFETY: localtime_r writes only into `tm`, which outlives the call.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+    let Some(tm) = breadboard_core::time::local_tm(seconds) else {
         return "--:--".into();
-    }
+    };
     format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 

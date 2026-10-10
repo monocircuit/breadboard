@@ -4,6 +4,17 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-10 08:40 · time · the zone TZ names; a world pins its fixture's
+Chose: local times go through `core::time::local_tm`, which calls `tzset`
+once, so `TZ` is honoured (glibc's localtime_r reads only /etc/localtime
+otherwise); a gauntlet world sets `TZ` to the zone its fixture was captured
+in (POSIX form of Europe/Berlin, no zoneinfo needed). The "skip as root"
+for the read-only removal checks: root deletes in a read-only folder, so
+in CI's containers the failure can't be made; they run for everyone else.
+Why: rule 1: CI (UTC, root) failed a changelog check and a removal check
+that pass here; the changelog's times are local, so a merge placed by the
+machine's zone among a fixture's CEST times landed one row off.
+
 ## 2026-10-10 08:10 · cut-over · every entry point runs the binary, made by the launcher from a store the worktrees share; the Node code goes
 Chose: (1) every entry point starts the binary through `herdr/breadboard.sh`:
 the root scripts (`"wt:new": "sh packages/breadboard/herdr/breadboard.sh

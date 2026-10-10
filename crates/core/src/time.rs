@@ -127,18 +127,32 @@ pub fn ago(then: i64, now: i64) -> String {
     }
 }
 
-/// The local time of `ms`: `(year, month, day, hour, minute)`, from the
-/// system's zone (localtime_r); UTC when it can't tell.
-fn local(ms: i64) -> (i64, i64, i64, i64, i64) {
-    let seconds = ms.div_euclid(1000) as libc::time_t;
-    // SAFETY: localtime_r writes into the tm it is given and reads the zone once.
+/// The local time of `seconds` since the epoch, in the zone `TZ` names (else
+/// the system's): glibc's localtime_r reads `TZ` only after a tzset, so a
+/// changelog written in CI (UTC) or a world pinned to its fixture's zone
+/// would otherwise get the machine's.
+pub fn local_tm(seconds: libc::time_t) -> Option<libc::tm> {
+    unsafe extern "C" {
+        // POSIX, in every libc; the libc crate leaves it out.
+        fn tzset();
+    }
+    static ZONE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: tzset only reads TZ and the zone files, once, before any localtime_r.
+    ZONE.call_once(|| unsafe { tzset() });
+    // SAFETY: localtime_r writes into the tm it is given.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let found = unsafe { libc::localtime_r(&seconds, &mut tm) };
-    if found.is_null() {
+    (!found.is_null()).then_some(tm)
+}
+
+/// The local time of `ms`: `(year, month, day, hour, minute)` (`local_tm`); UTC when it can't tell.
+fn local(ms: i64) -> (i64, i64, i64, i64, i64) {
+    let seconds = ms.div_euclid(1000) as libc::time_t;
+    let Some(tm) = local_tm(seconds) else {
         let (year, month, day) = civil_from_days(ms.div_euclid(86_400_000));
         let rest = ms.rem_euclid(86_400_000);
         return (year, month, day, rest / 3_600_000, rest / 60_000 % 60);
-    }
+    };
     (
         i64::from(tm.tm_year) + 1900,
         i64::from(tm.tm_mon) + 1,
