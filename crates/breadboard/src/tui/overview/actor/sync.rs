@@ -20,6 +20,7 @@ use breadboard_core::gitlab::{Mr, Pipeline};
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
 use breadboard_core::local::ORCHESTRATOR_TAB;
 use breadboard_core::model::agent_state::{Facts, NextIssue, agent_state_of, sidebar_line_of};
+use breadboard_core::model::change::is_change_open;
 use breadboard_core::model::merge::checks_of;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, RemoteOf};
@@ -187,12 +188,15 @@ fn log_acts(actor: &mut super::Actor, logged: Vec<Logged>) {
 }
 
 /// Where GitLab stands for the sidebar's lines. In: they say what it said.
-/// Waiting (its first read under way): only the lines no GitLab answer can
-/// change (at work, asks you), so the first write of the others is the right
-/// one, never a guess followed by a second write (#262: `waits for !309` of a
-/// merged !309). Out (its read failed, nothing came yet): every line, of the
-/// facts that need no GitLab, an awaited MR named by none of its iids (it may
-/// be merged), so a line herdr holds from before never outlives its fact.
+/// Waiting (its first read under way): none written, the lines herdr holds
+/// stay, so the first write is the right one, never a guess followed by a
+/// second write (#262: `waits for !309` of a merged !309; even `at work`
+/// gets its ` · !316` from GitLab). Out (its read failed, nothing came yet):
+/// every line, of the facts that need no GitLab, an awaited MR named by none
+/// of its iids (it may be merged), and `GitLab out, its MR unknown` where the
+/// state hangs on an MR only GitLab knows (`free` of a branch ahead of
+/// develop, a change whose fix is pushed), so a line herdr holds from before
+/// never outlives its fact and none says a guess.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lab {
     Waiting,
@@ -215,14 +219,38 @@ fn line_of(tree: &Tree, facts: &Facts, lab: Lab) -> Option<String> {
     let state = agent_state_of(tree, facts);
     match (lab, state.key) {
         (Lab::In, _) => Some(sidebar_line_of(tree, facts)),
-        (_, "working" | "asks") => Some(state.text),
         (Lab::Waiting, _) => None,
         (Lab::Out, "waitsForMr") => Some("waits for other MRs".into()),
         (Lab::Out, "next") => Some(match facts.handover {
             Some(handover) if !handover.open.is_empty() => format!("→ next #{} after other MRs", handover.number),
             _ => state.text,
         }),
+        (Lab::Out, key) if hangs_on_its_mr(tree, key) => Some(UNKNOWN_MR.into()),
         (Lab::Out, _) => Some(state.text),
+    }
+}
+
+/// The sidebar's line of an agent whose state only its MR can tell while GitLab is out.
+const UNKNOWN_MR: &str = "GitLab out, its MR unknown";
+
+/// Whether an agent's `free` or `change requested` hangs on an MR GitLab
+/// didn't tell: a branch ahead of develop may have one (its pipeline may run
+/// or have failed), and a requested change whose fix is pushed is done once
+/// its MR's pipeline passed on it.
+fn hangs_on_its_mr(tree: &Tree, key: &str) -> bool {
+    let passed = Mr {
+        state: "opened".into(),
+        pipeline: Some(Pipeline {
+            status: "success".into(),
+            sha: tree.pushed.clone(),
+            ..Pipeline::default()
+        }),
+        ..Mr::default()
+    };
+    match key {
+        "free" => tree.ahead > 0,
+        "change" => !is_change_open(Some(tree), Some(&passed)),
+        _ => false,
     }
 }
 
@@ -472,7 +500,7 @@ fn report_states(
     let agents: Vec<&Pane> = panes.iter().filter(|pane| pane.agent.is_some()).collect();
     let open: HashSet<i64> = mrs.unwrap_or_default().iter().map(|(_, iid, _)| *iid).collect();
     let mut lines: HashMap<String, String> = HashMap::new();
-    // Panes whose line waits for GitLab's first answer: left as herdr holds it.
+    // Panes whose line waits for GitLab's first answer: left as herdr holds them.
     let mut held: HashSet<String> = HashSet::new();
     let claudes = breadboard_core::local::claudes();
     for listed in trees.iter().filter(|tree| tree.dir != main) {
@@ -526,13 +554,13 @@ fn report_states(
     let repos = repos_of(all_spaces, &agents);
     let mut ids: HashSet<String> = agents.iter().map(|pane| pane.id.clone()).collect();
     ids.extend(memory.reported.keys().cloned());
-    for pane in &ids {
+    // A held pane gets all its tokens in one write once GitLab answers, as Node's one write.
+    for pane in ids.iter().filter(|pane| !held.contains(*pane)) {
         // In Node's order: the state, the repo, the gone ones.
-        let mut tokens: Tokens = Vec::new();
-        if !held.contains(pane) {
-            tokens.push((STATE_TOKEN.into(), lines.get(pane).cloned()));
-        }
-        tokens.push((REPO_TOKEN.into(), repos.get(pane).cloned()));
+        let mut tokens: Tokens = vec![
+            (STATE_TOKEN.into(), lines.get(pane).cloned()),
+            (REPO_TOKEN.into(), repos.get(pane).cloned()),
+        ];
         tokens.extend(GONE.iter().map(|gone| (gone.to_string(), None)));
         report(pane, tokens, memory);
     }
@@ -806,11 +834,11 @@ mod tests {
             merged: Some(&none),
             ..Default::default()
         };
-        // The first read under way: only what no answer changes.
+        // The first read under way: nothing, not even `at work` (GitLab adds its MR).
         assert_eq!(line_of(&waiting, &facts(None), Lab::Waiting), None);
-        assert_eq!(line_of(&Tree::default(), &facts(None), Lab::Waiting), None);
+        assert_eq!(line_of(&Tree::default(), &facts(Some("working")), Lab::Waiting), None);
         assert_eq!(
-            line_of(&waiting, &facts(Some("working")), Lab::Waiting).as_deref(),
+            line_of(&Tree::default(), &facts(Some("working")), Lab::Out).as_deref(),
             Some("at work")
         );
         // GitLab out: every line, no awaited MR counted open (#262).
@@ -818,10 +846,37 @@ mod tests {
             line_of(&waiting, &facts(None), Lab::Out).as_deref(),
             Some("waits for other MRs")
         );
+        // `free` only where no MR can be (nothing ahead of develop); else GitLab is said out.
         assert_eq!(
             line_of(&Tree::default(), &facts(None), Lab::Out).as_deref(),
             Some("free")
         );
+        let ahead = Tree {
+            ahead: 1,
+            pushed: Some("b".into()),
+            ..Default::default()
+        };
+        assert_eq!(line_of(&ahead, &facts(None), Lab::Out).as_deref(), Some(UNKNOWN_MR));
+        assert_eq!(line_of(&ahead, &facts(None), Lab::In).as_deref(), Some("free"));
+        // A requested change: open while its fix isn't pushed, unknown once it is.
+        let change = |head: &str| breadboard_core::actions::Change {
+            text: "rename it".into(),
+            head: Some(head.into()),
+            ..Default::default()
+        };
+        let unfixed = Tree {
+            change: Some(change("b")),
+            ..ahead.clone()
+        };
+        assert_eq!(
+            line_of(&unfixed, &facts(None), Lab::Out).as_deref(),
+            Some("change requested")
+        );
+        let fixed = Tree {
+            change: Some(change("a")),
+            ..ahead.clone()
+        };
+        assert_eq!(line_of(&fixed, &facts(None), Lab::Out).as_deref(), Some(UNKNOWN_MR));
         let handover = NextIssue {
             number: 226,
             open: vec![232],

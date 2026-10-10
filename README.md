@@ -9,28 +9,52 @@ to use it: skill
 [`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). Nothing here
 ships; the package is private.
 
+One binary, `breadboard`, in Rust with ratatui (#314; why:
+[`docs/stack-evidence.md`](docs/stack-evidence.md), how it was rebuilt:
+[`docs/rewrite-plan.md`](docs/rewrite-plan.md) and
+[`docs/rewrite-log.md`](docs/rewrite-log.md)).
+
 | Path | What it is |
 | ---- | ---------- |
-| `src/worktree.mjs` | `pnpm wt:*` and `pnpm stack:*`: the entry, its exports are what the rest imports |
-| `src/worktree/` | its parts: `commands/` (one file per command), `layout`, `spaces`, `tabs`, `lock`, `conversations`, `origins` and `orchestrator` (orchestrations), `changelog` and `overall-changelog` with their view `changelog-view`, `platform-changelog` (CHANGELOG.md), `prune`, `stack`, `worktrees`, `issues`, `constants` |
-| `src/overview.mjs` | `pnpm overview`: the loop of the live view; `--herdr` keeps herdr in step |
-| `src/overview/` | its parts: reading (`read`, `claude`, `gitlab`, `diff`, `develop`), drawing (`render*`, `boxes`, `agents`), `actions` (clicks and keys), `screen`, `view`, `args` |
-| `src/lib/` | what both use: `proc` (`run`, `git`, `sh`, `lines`, `step`, `fail`), `glab`, `herdr`, `tty` (colours, widths, tables) |
-| `src/herdr.mjs`, `src/session/` | `pnpm herdr`, `pnpm herdr:install`, `--reload`: the session `platform` (`session`, `setup`), your own herdr (`own`), `reload` |
-| `src/git-hooks/pre-push.mjs` | the push guard (`worktree/push-guard`): refuses a push to the branch of a merged or closed MR, and (`worktree/check`, #298) a commit whose tree `pnpm wt:check` didn't pass; an empty or docs-only branch passes. `wt:new` and `wt:mr` install it as a shim into the hooks folder all worktrees share |
-| `src/browser.mjs` | `pnpm browser`: a URL in the Chromium tab group of its herdr space |
-| `src/commands.mjs` | `pnpm commands`: every script with what it is for |
-| [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` |
+| `crates/core/` | `breadboard-core`: the data formats (records, actions, origin, waits), git, the herdr client, GitLab (GraphQL, cached on disk), the view models (`model/`) |
+| `crates/breadboard/src/main.rs` | the commands, named as in the root `package.json`: `breadboard overview`, `wt:*`, `stack:*`, `changelog*`, `commands`, `browser`, `herdr`, `herdr:install`, `hook` |
+| `crates/breadboard/src/tui/` | `pnpm overview`: the frame (`run`, `scene`, `view`, `band`, clicks and hover) and `overview/`, one file per section, `actor/` (what the overview does on its own: answers, merges, `--herdr`'s sidebar) |
+| `crates/breadboard/src/daemon/` | `breadboard serve`: one process per user reads herdr, GitLab and git's status once for every overview; started by the first, gone after the last |
+| `crates/breadboard/src/cli/` | `wt:*`, `stack:*`, `changelog*` in four groups: `read` (`wt:list`, `wt:plan`, `wt:issues`, `overview --once`), `write` (`wt:action`, `wt:tick`, `wt:note`, `wt:mr`, `wt:wait`), `lifecycle` (`wt:remove`, `wt:prune`, `wt:herdr`, the layout, handovers), `setup` (`wt:new`, `wt:stack`, `stack:*`, `wt:check`, `wt:orchestrate`, `commands`, `browser`, the changelogs, `hook pre-push`) |
+| `crates/breadboard/src/herdr/` | `pnpm herdr`, `pnpm herdr:install`, `--reload`, the plugin's actions, the Stop hook's `hook stop-answers` |
+| [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` (`herdr-plugin.toml`) and `breadboard.sh`, the launcher everything starts the binary through (below) |
+| `hooks/` | the shims of the git pre-push hook (`wt:new` and `wt:mr` install it) and of Claude Code's Stop hook (`.claude/settings.json`) |
+| `commands.json` | the line of every script `pnpm commands` shows: a new script gets its line here |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
 | `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
 | `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
-| `src/worktree/ide.mjs` | the plugin pinned and cloned into `.claude/nvim/` of the main checkout, its switch, `claude --ide` |
-| `src/worktree/nvim.mjs` | the socket of an nvim tab (`.claude/nvim.sock`, relative to its checkout: a socket's path holds 107 bytes at most) and `nvim --server` to open `file:line` in it; the overview's clicks on files use it |
 
-The commands run from the root `package.json` (`node packages/breadboard/src/…`),
+What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
+The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
+
+## How a checkout gets its binary
+
+Everything starts the binary through `herdr/breadboard.sh`: the root
+scripts, the herdr plugin, the tab bar, the hooks, nvim's `changes` tab. It
+runs `target/release/breadboard` of its checkout when that is the build of
+the checkout's HEAD (`breadboard.source` next to it says what it was built
+from: a few ms), else makes it first:
+
+- from the repo's store, `<git common dir>/breadboard/bin/<key>/`, when any
+  checkout of the clone built these sources before (a copy, ~15 MB): a new
+  worktree of `wt:new`, a pull another checkout made first;
+- else `cargo build --release` into the store's `target/`, one for every
+  worktree (the dependencies are built once; one build at a time), its
+  progress on stderr, kept in the store for the others (the newest 8).
+
+Uncommitted changes to the crates build in the package's own `target/` and
+stay out of the store. So a `git pull` never leaves the code from before
+running, `wt:new` needs no `pnpm install`, and a worktree costs no cargo
+target of its own. Without cargo (https://rustup.rs) and without a build of
+those sources, the binary from before runs and says so.
 
 ## The nvim tab
 
@@ -86,8 +110,8 @@ own, so every worktree's claude connects to its own nvim. With that
 - claude sees the open file and the selection: select lines, then ask about
   "this" in claude's tab; `<leader>as` sends the selection as a reference.
 
-The first nvim tab clones the plugin, pinned by tag and commit (`PLUGIN` in
-`src/worktree/ide.mjs`), into `.claude/nvim/` of the main checkout; git
+The first nvim tab clones the plugin, pinned by tag and commit (`PLUGIN_TAG` in
+`crates/breadboard/src/cli/lifecycle/layout/nvim.rs`), into `.claude/nvim/` of the main checkout; git
 ignores it. Your nvim and claude config stay as they are; while it runs, the
 plugin writes its lock file into `~/.claude/ide/` like any IDE.
 
@@ -107,19 +131,19 @@ came into the worktree with EnterWorktree, connects with `/ide`.
 
 The platform's `CHANGELOG.md` (Keep a Changelog, a section per vita release)
 is written by people: fragments in `.changelog/`, folded in at the release by
-`src/worktree/platform-changelog.mjs` (`pnpm changelog:*`,
+`crates/breadboard/src/cli/setup/fragments.rs` (`pnpm changelog:*`,
 [`.changelog/README.md`](../../.changelog/README.md)). The two below are live
 views for working, not a record:
 
-Two, both written in node from GitLab (no model asked) into the ignored
+Two, both written by breadboard from GitLab (no model asked) into the ignored
 `.claude/` of the main checkout, both shown live in a tab `changelog`
 (scroll like the overview; `]` `[` and `1`–`9` jump between sections, a click
 on a heading or `z` folds it, `Z` folds all):
 
-- **An orchestration's** (`src/worktree/changelog.mjs`):
+- **An orchestration's** (`crates/breadboard/src/cli/setup/changelog.rs`):
   `.claude/orchestrations/<name>.changelog.md`, every merged MR of it, in the
   tab of its space `⇶ <title>`. `pnpm wt:orchestrate <name> --changelog`.
-- **The repo's** (`src/worktree/overall-changelog.mjs`): `.claude/changelog.md`,
+- **The repo's** (the same file): `.claude/changelog.md`,
   what got into develop, a section per product and package (`vita`,
   `monolithium`, `breadboard`, …, `repo` for CI, `.claude` and root config).
   A merged MR goes into every section whose paths it changes, a changeset
@@ -133,16 +157,11 @@ on a heading or `z` folds it, `Z` folds all):
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
   new ones. The tab is in the main space, `root · overview · changelog`.
 
-## No dependencies
-
-`src/` and `herdr/` import `node:` modules and each other, nothing else.
-*Why:* `wt:new` runs before `pnpm install` of the worktree it creates, and the
-herdr plugin runs from its directory in any session. `devDependencies` (lint)
-are fine.
-
 ## Checks
 
 ```sh
-pnpm --filter @monocircuit/breadboard lint
-pnpm --filter @monocircuit/breadboard test   # node --test, *.test.mjs next to the code
+pnpm --filter @monocircuit/breadboard lint   # ESLint of the JavaScript left, cargo fmt, clippy -D warnings
+pnpm --filter @monocircuit/breadboard test   # nvim's Lua in a headless nvim, cargo test (tests next to the code)
+pnpm --filter @monocircuit/breadboard build:rs
+pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite against this checkout's binary
 ```

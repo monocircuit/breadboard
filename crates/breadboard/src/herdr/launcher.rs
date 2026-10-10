@@ -1,9 +1,11 @@
-//! herdr/breadboard.sh, the launcher everything outside a terminal starts
-//! the binary through: the plugin's manifest, the tab bar's status, the
-//! hooks' shims, `--reload` after a pull. It builds the binary of its
-//! checkout first when it is missing or older than the checkout's HEAD, so
-//! an upgrade or a pull by hand never leaves a key, the tab bar or a hook on
-//! a binary that isn't there or runs the code from before (rewrite-log).
+//! herdr/breadboard.sh, the launcher everything starts the binary through:
+//! the root package.json's scripts, the plugin's manifest, the tab bar's
+//! status, the hooks' shims, `--reload` after a pull. It makes the binary of
+//! its checkout first when it is missing or older than the checkout's HEAD
+//! (from the repo's store when a checkout built those sources before, else
+//! with cargo), so an upgrade or a pull by hand never leaves a script, a key,
+//! the tab bar or a hook on a binary that isn't there or runs the code from
+//! before (rewrite-log).
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -31,16 +33,18 @@ mod tests {
 
     const LAUNCHER: &str = include_str!("../../../../herdr/breadboard.sh");
 
-    /// A cargo that "builds" a binary saying `ran <args>`, each call logged;
-    /// one that fails with `CARGO_FAIL` set. Only the tools the launcher has
-    /// (no dirname: a short PATH).
+    /// A cargo that "builds" a binary saying `<CARGO_SAYS or ran> <args>`
+    /// into `CARGO_TARGET_DIR` (else the package's target/), each call logged
+    /// with that dir; one that fails with `CARGO_FAIL` set. Only the tools the
+    /// launcher has (no dirname: a short PATH).
     const CARGO: &str = r#"#!/bin/sh
-echo "$*" >>"$CARGO_LOG"
+echo "$* in ${CARGO_TARGET_DIR:-}" >>"$CARGO_LOG"
 [ -n "$CARGO_FAIL" ] && exit 101
 for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
-mkdir -p "$package/target/release"
-printf '#!/bin/sh\necho "ran $*"\n' >"$package/target/release/breadboard"
-chmod +x "$package/target/release/breadboard"
+target=${CARGO_TARGET_DIR:-$package/target}
+mkdir -p "$target/release"
+printf '#!/bin/sh\necho "%s $*"\n' "${CARGO_SAYS:-ran}" >"$target/release/breadboard"
+chmod +x "$target/release/breadboard"
 "#;
 
     struct Checkout {
@@ -70,7 +74,9 @@ chmod +x "$package/target/release/breadboard"
             // The tools the launcher runs, without a cargo (the system's may be in /usr/bin).
             let tools = root.join("tools");
             fs::create_dir_all(&tools).unwrap();
-            for tool in ["sh", "git", "cat", "mkdir", "rm", "setsid", "chmod"] {
+            for tool in [
+                "sh", "git", "cat", "mkdir", "rm", "setsid", "chmod", "cp", "mv", "ls", "tail", "sleep",
+            ] {
                 if let Some(found) = ["/usr/bin", "/bin"]
                     .iter()
                     .map(|dir| Path::new(dir).join(tool))
@@ -190,10 +196,102 @@ chmod +x "$package/target/release/breadboard"
         assert_eq!(checkout.builds(), 3);
         assert!(checkout.run(&["--built"], true, &[]).status.success());
         assert_eq!(checkout.builds(), 3);
-        // A binary built by hand (no stamp): one build, cargo finds it current.
+        // A binary built by hand (no stamp): the store's of HEAD, no build.
         fs::remove_file(checkout.binary().with_extension("source")).unwrap();
-        checkout.run(&["x"], true, &[]);
-        assert_eq!(checkout.builds(), 4);
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "ran x");
+        assert_eq!(checkout.builds(), 3);
+    }
+
+    /// A second worktree of the checkout's repo, at `branch`.
+    fn worktree(checkout: &Checkout, branch: &str) -> PathBuf {
+        let dir = checkout.root.join(branch);
+        checkout.git(&["worktree", "add", "--quiet", "-b", branch, dir.to_str().unwrap()]);
+        dir.join("packages/breadboard")
+    }
+
+    /// `sh herdr/breadboard.sh <args>` of the package at `package`, with cargo.
+    fn run_in(checkout: &Checkout, package: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+        Command::new("sh")
+            .arg("breadboard.sh")
+            .args(args)
+            .current_dir(package.join("herdr"))
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:{}", checkout.bin.display(), checkout.root.join("tools").display()),
+            )
+            .env("HOME", &checkout.root)
+            .env("CARGO_LOG", checkout.root.join("cargo.log"))
+            .env("GIT_CEILING_DIRECTORIES", &checkout.root)
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    // #314's cut-over: every worktree of a clone shares one store in its git
+    // dir, so a new worktree copies the binary its sources were built to
+    // instead of a cargo build and a target/ of its own (~1 GB).
+    #[test]
+    fn worktrees_share_one_store_a_build_of_the_same_sources_is_copied() {
+        let checkout = Checkout::new("store");
+        let store = checkout.root.join("repo/.git/breadboard");
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        assert_eq!(checkout.builds(), 1);
+        let calls = fs::read_to_string(checkout.root.join("cargo.log")).unwrap();
+        assert!(
+            calls
+                .trim_end()
+                .ends_with(&format!("in {}", store.join("target").display())),
+            "{calls}"
+        );
+        assert!(!checkout.package.join("target/release/deps").exists());
+        // A new worktree with the same sources: copied, no build, no word.
+        let other = worktree(&checkout, "feature/1-x");
+        let copied = run_in(&checkout, &other, &["wt:list"], &[]);
+        assert_eq!(out(&copied), "ran wt:list");
+        assert_eq!(err(&copied), "");
+        assert_eq!(checkout.builds(), 1);
+        assert!(other.join("target/release/breadboard.source").is_file());
+        // Its own change builds once in the store's target; the main checkout
+        // keeps its binary, and gets the change's when it pulls it.
+        let lib = other.join("crates/core/lib.rs");
+        fs::write(&lib, "2\n").unwrap();
+        let git = |args: &[&str]| {
+            let done = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(&other)
+                .env("GIT_CEILING_DIRECTORIES", &checkout.root)
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        };
+        git(&["commit", "--quiet", "-am", "y"]);
+        let built = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS", "new")]);
+        assert_eq!(out(&built), "new x");
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "ran x");
+        checkout.git(&["merge", "--quiet", "feature/1-x"]);
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
+        // Uncommitted changes to the sources build in the package's own
+        // target/ and never enter the store under HEAD's key.
+        fs::write(&lib, "3\n").unwrap();
+        fs::remove_file(other.join("target/release/breadboard.source")).unwrap();
+        let dirty = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS", "dirty")]);
+        assert_eq!(out(&dirty), "dirty x");
+        assert_eq!(checkout.builds(), 3);
+        let calls = fs::read_to_string(checkout.root.join("cargo.log")).unwrap();
+        assert!(
+            calls
+                .trim_end()
+                .ends_with(&format!("in {}", other.join("target").display())),
+            "{calls}"
+        );
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
     }
 
     #[test]
@@ -293,11 +391,8 @@ chmod +x "$package/target/release/breadboard"
             return;
         };
         let checkout = Checkout::new("cutover");
-        for (from, to) in [
-            ("cutover/run.mjs", "herdr/run.mjs"),
-            ("cutover/herdr.mjs", "src/herdr.mjs"),
-        ] {
-            let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../herdr").join(from));
+        for (from, to) in [("herdr/run.mjs", "herdr/run.mjs"), ("src/herdr.mjs", "src/herdr.mjs")] {
+            let text = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(from));
             fs::create_dir_all(checkout.package.join(to).parent().unwrap()).unwrap();
             fs::write(checkout.package.join(to), text.unwrap()).unwrap();
         }

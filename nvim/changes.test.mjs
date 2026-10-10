@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 
-import { CHANGES_LUA } from "./nvim.mjs";
+const CHANGES_LUA = path.join(import.meta.dirname, "changes.lua");
 
 const hasNvim = !spawnSync("nvim", ["--version"]).error;
 

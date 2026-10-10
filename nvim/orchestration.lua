@@ -1,5 +1,5 @@
 -- What an orchestration changed in the code (#256), read only, in nvim. The tab
--- `changes` of the space ⇶ <title> loads it (packages/breadboard/src/worktree/orchestrator.mjs);
+-- `changes` of the space ⇶ <title> loads it (crates/breadboard/src/cli/lifecycle/layout/orchestrations.rs);
 -- any nvim can: :luafile packages/breadboard/nvim/orchestration.lua, then :OrchestrationChanges <name>.
 -- Built-ins only.
 --
@@ -18,8 +18,7 @@
 
 local here = debug.getinfo(1, "S").source:sub(2)
 local PACKAGE = vim.fn.fnamemodify(here, ":p:h:h")
-local BINARY = PACKAGE .. "/target/release/breadboard"
-local ENTRY = PACKAGE .. "/src/worktree.mjs"
+local LAUNCHER = PACKAGE .. "/herdr/breadboard.sh"
 local REFRESH_MS = 60000
 
 local state = { name = nil, set = nil, isCombined = false, error = nil, isReading = false, at = nil, lines = {} }
@@ -148,14 +147,11 @@ local function draw()
   state.lines = targets
 end
 
--- The change set from breadboard: the binary of this package (pnpm build:rs), the Node
--- code only while it is still here and the binary isn't built (#314). Nil: neither is.
+-- The change set from breadboard: the binary of this package through its launcher, which
+-- makes it first when it is missing or older than the checkout (#314). Nil: no launcher.
 local function changesCommand(name)
-  if vim.fn.executable(BINARY) == 1 then
-    return { BINARY, "wt:orchestrate", name, "--changes" }
-  end
-  if vim.fn.filereadable(ENTRY) == 1 then
-    return { "node", ENTRY, "orchestrate", name, "--changes" }
+  if vim.fn.filereadable(LAUNCHER) == 1 then
+    return { "sh", LAUNCHER, "wt:orchestrate", name, "--changes" }
   end
   return nil
 end
@@ -166,7 +162,7 @@ local function read()
   end
   local command = changesCommand(state.name)
   if not command then
-    state.error = BINARY .. " isn't built: pnpm build:rs in " .. PACKAGE
+    state.error = LAUNCHER .. " is missing: breadboard can't run from " .. PACKAGE
     draw()
     return
   end

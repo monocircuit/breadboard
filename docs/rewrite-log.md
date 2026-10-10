@@ -4,6 +4,148 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-10 08:10 · cut-over · every entry point runs the binary, made by the launcher from a store the worktrees share; the Node code goes
+Chose: (1) every entry point starts the binary through `herdr/breadboard.sh`:
+the root scripts (`"wt:new": "sh packages/breadboard/herdr/breadboard.sh
+wt:new"`, the same for `overview`, `wt:*`, `stack:*`, `changelog*`,
+`commands`, `browser`, `herdr`, `herdr:install`), the plugin's manifest
+(`herdr-plugin.rs.toml` is now `herdr-plugin.toml`, one manifest), the
+Stop hook (`settings.json` runs `sh packages/breadboard/hooks/stop-answers`;
+`.claude/hooks/stop-answers.mjs` is gone), the pre-push shim (as round 4
+made it), nvim's `changes` tab (`orchestration.lua` runs `sh breadboard.sh
+wt:orchestrate <name> --changes`, its Node fallback gone). (2) How a
+checkout gets its binary: the launcher as before (fresh = `breadboard.source`
+equals HEAD's `ls-tree` of crates, hooks, Cargo files), plus the repo's
+store `<git common dir>/breadboard`: `bin/<key>/breadboard` per build, the
+key the hash of that `ls-tree`, so a worktree whose sources some checkout
+built copies the binary; a miss builds with `CARGO_TARGET_DIR` the store's
+one `target/` under a lock (one cargo build per clone at a time), keeps the
+newest 8 builds. Uncommitted changes to the sources build in the package's
+own `target/` and never enter the store. Measured (this machine, load ~25
+from the other builders): the fresh check 6-7 ms (launcher + `--help` 8-19
+ms vs the binary's 2 ms), a store hit 27 ms (a 14 MB copy), a cold release
+build 96.5 s and 398 MB of target (`release` only), the same sources from
+another path into that target 72.5 s (the workspace crates rebuild per
+path: thin LTO is the time), the overview's first frame unchanged (the
+budgets check runs the binary). Against: (a) `postinstall` builds it:
+`wt:new` runs before the new worktree's `pnpm install` (and CI installs
+with `--ignore-scripts`), and a `git pull` runs no install, so a stale
+binary would run the pulled scripts; 96 s on every fresh install; (b) a
+shared `CARGO_TARGET_DIR` alone: one `release/breadboard` for every
+worktree, the last build wins, and it saves only the dependencies (72 of 96
+s are the workspace crates); (c) a target per worktree: ~400 MB and 96 s
+each (the main checkout's dev target is 11 GB). Why: rule 7 (the numbers),
+rule 8 (sh, git and cargo at run time, no Node), rule 4 (one launcher for
+every entry point, the one the plugin already had), the issue's "a pull
+never leaves a stale binary". (3) `pnpm commands`' lines move from
+`src/commands.mjs` (read as JS by a tokenizer) to `commands.json`, read with
+serde_json (cli/setup/commands.rs: ~110 lines less); AGENTS.md says so.
+(4) The Node code goes: `packages/breadboard/src` is deleted but
+`src/herdr.mjs`, and `herdr/run.mjs` is the cut-over's shim (both were
+`herdr/cutover/`): the Node plugin's reload runs the pulled `node
+src/herdr.mjs --reload --pulled`, its manifest and tab bar `node run.mjs …`
+until that reload relinks the plugin (rule 5: a reader for the old form);
+both only call `sh breadboard.sh`, and go once every checkout has
+reloaded (named in rewrite-plan.md). The headless-nvim test of
+`changes.lua` moves to `nvim/changes.test.mjs` (a test, not shipped); the
+other Node tests went with their code. (5) The gauntlet's default subject
+is `target/release/breadboard` of the checkout (subject.mjs; the Node
+subject is in its history); the `rewriteOnly` skips and `isLegacy` go; the
+setup checks' world gets the built binary and the repo's pre-push shim
+instead of a copy of `src/`. (6) knownBug goes (the coordinator's ask,
+rule 1): it only kept the suite green against Node. All 43 marks, the
+`to file: …` ones of views and lifecycle included, are plain checks now,
+each with a comment naming the bug it was; `GAUNTLET_STRICT` and the
+README's mechanism go with it. (7) CI: `build:breadboard` builds the
+release binary once (its own cache, every MR and `v*` tag);
+`check:breadboard-gauntlet` runs the suite against it and blocks (the Node
+job and `check:breadboard-gauntlet-rs`'s `allow_failure` are gone);
+`check:changelog` and the release notes (`release:notes`, the Alpine
+release image can't run a glibc binary) run `breadboard-bin changelog:*`;
+`check:breadboard-rs` is fmt, clippy, test; `check:breadboard` the ESLint
+of what is JavaScript and the Lua test. Verified: see the cut-over's report
+(suite, cargo test under `env -i`, the root scripts in a world).
+
+## 2026-10-10 08:05 · overview / everything, round 5 · while GitLab is out, a line that hangs on an MR says so
+Chose: under `Lab::Out` (GitLab's read failed, nothing in yet) an agent's
+sidebar line whose state only its MR can tell is `GitLab out, its MR
+unknown` (`sync.rs` `hangs_on_its_mr`, `UNKNOWN_MR`): `free` of a branch
+ahead of develop (it may have an MR whose pipeline runs or failed: the
+verifier's w4G:p3 of 302, !311 pending, got `free`, and `waits for the
+pipeline · !311` once GitLab answered), and `change requested` whose fix
+is pushed (it is done once the MR's pipeline passed on it; asked as
+`is_change_open` against a passed pipeline on the pushed commit). `free`
+stays where nothing is ahead of develop (no MR to wait on: a merged branch
+in the world), `change requested` where the fix isn't pushed. The other
+lines need no GitLab to be true (`at work`, `asks you`, `waits for you:
+<action>`, `not pushed …`, `waits for other MRs`, `→ next #N after other
+MRs`); what GitLab would add above them (a failed pipeline) is left out,
+not said wrong. Supersedes the 07:15 entry's listing of `free` among the
+lines of what needs no GitLab. Against: Node's `free` (a guess, #262's
+class), no line at all (round 3: a line from before outlives its fact).
+Why: rule 1 (no wrong fact), rule 6 (still one write per pane: the right
+one replaces it once GitLab answers, as any change of state). Measured,
+world, GitLab at 127.0.0.1:9, 20 s (`verify-every3-nogitlab.tmp.mjs`):
+w4G:p3 `GitLab out, its MR unknown`, w4N:p3 `at work`, 5 × `waits for
+other MRs`, no `free`. Suite: views `overview of everything with --herdr,
+GitLab out` now also asserts no `free` for an agent whose worktree's MR is
+open in the fake GitLab's model (todo against Node as #262, passes against
+ours). Unit: `writes_no_guess_before_gitlab_answers_and_no_awaited_iid_while_it_is_out`
+(ahead → unknown, in → `free`; a change unfixed → `change requested`,
+fixed → unknown). Verified: clippy --all-targets -D warnings, cargo test
+486 + 255 (also under `env -i PATH=/usr/bin:/bin HOME=<empty> LANG=C.UTF-8`),
+views 14/14 (release); against Node (HEAD's sources, `BREADBOARD_NODE_SOURCE`:
+the working tree's Node `src/` is being removed by the cut-over) 6 pass, 8 todo.
+
+## 2026-10-10 07:15 · overview / everything, round 4 · no pin over a block's line, the sidebar's lines while GitLab is out, the stray stacks in WORKTREES' words
+Chose: (6) a section's title is pinned only where the row it covers holds
+no text of a block that goes on under it (`pin_of`'s `is_tail_left`, tui/
+view.rs: any block region across the pin's lower edge with text in the
+covered rows; was: only a block whose first row was covered). So the row
+under a pinned `MERGE REQUESTS 14 open` is an MR's `!iid`, a blank or `…
+N more`, never `draft ✓ passed …` or a branch line without its MR; while a
+2-3 row block passes under the title the rows scroll on unpinned. Against:
+scrolling the head under the pin (one `j` would not move the view inside
+a block, and the end of the page could no longer be reached) and pinning
+the head too (two non-adjacent rows pinned, one more way to map a click).
+Why: rule 1 (a tail under a title reads as a row of its own: the critic's
+defect), rule 4 (one condition in one function). Measured: the verifier's
+`every-pin.tmp.mjs` (80x24, MR list opened, 60 `j`): 0 of 60 (was 30).
+Unit: `a_title_is_pinned_only_while_a_line_of_its_section_shows_under_it`
+now asserts it at every scroll of 80x24, 120x40, 200x30 (fails on the old
+condition). Supersedes round 3's "the frame's to build".
+(3) The `--herdr` sidebar line by where GitLab stands (`sync.rs` `Lab`,
+`line_of`): its first read under way: no write to an agent's pane at all
+(not even `wt_repo` or `at work`: GitLab adds ` · !316` to it), so the
+first write is the whole right one; its read failed with nothing in yet
+(`gitlab.error`): every line, of what needs no GitLab (`at work`, `free`,
+`waits for you: …`, `not pushed …`), an awaited MR named by none of its
+iids (`waits for other MRs`, `→ next #N after other MRs`), no ` · !N`;
+GitLab in: as before. Against round 3's gate on GitLab in (the
+verifier: with GitLab down, offline or the token expired 0 lines were
+written, so a line from an earlier overview outlived its fact, and
+`wt_repo` and the clearing of panes that went were skipped too). Against
+Node's guess (`waits for !309, !310, !311` with two merged: #262).
+Measured in the world, 20 s: GitLab at 127.0.0.1:9: 7 lines, one write per
+pane (`at work` w4N:p3, `free` w4G:p3, 5 × `waits for other MRs`); GitLab
+answering: 7 lines, one write per pane, the first the right one
+(`waits for the pipeline · !303` w46:p3). Why: rule 1 (no wrong fact,
+#262), rule 6 (one write per pane, as Node), rule 3 (Node writes every
+line without GitLab). Suite: views `overview of everything with --herdr,
+GitLab out · every agent gets a sidebar line, none naming an MR`
+(knownBug #262: Node writes `waits for !316, …`; passes against ours).
+Unit: `writes_no_guess_before_gitlab_answers_and_no_awaited_iid_while_it_is_out`.
+(minor) STACKS WITHOUT A WORKTREE says a stack in WORKTREES' words
+(`tree::stack_of`: `stack exited`, `stack running`, `stack 2 running, 1
+exited`, green when all run), never compose's `exited(1)` / `running(1)`.
+Why: rule 4, as round 3's (5): one fact, one way on the page.
+Not this piece's to do: the `to file:` knownBugs of the views checks need
+a filed issue number; the loop writes no issues (for the lead).
+Verified: cargo fmt, clippy --all-targets -D warnings, cargo test 485 +
+255, also under `env -i PATH=/usr/bin:/bin HOME=<empty> LANG=C.UTF-8`.
+Suite (release): views 14/14, content 24/24, hover 5/5; against Node views
+6 pass, 8 todo.
+
 ## 2026-10-10 06:55 · overview / MERGE REQUESTS, round 4 · a block with nothing lacking ends at its bar
 Chose: an open MR's reasons line opens only when `lacks` draws something
 (`has_lacks`: a reason, a failed merge, or a conflict state other than

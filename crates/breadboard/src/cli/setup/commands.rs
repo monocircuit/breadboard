@@ -1,6 +1,6 @@
-//! `pnpm commands [--all]` (commands.mjs): every pnpm command of the repo with
-//! what it is for. The scripts come from the package.json files, so nothing
-//! goes out of date; a script without a line here shows its command.
+//! `pnpm commands [--all]`: every pnpm command of the repo with what it is
+//! for. The scripts come from the package.json files, so nothing goes out of
+//! date; a script without a line in commands.json shows its command.
 
 use super::proc::{git, outln};
 use super::repo;
@@ -11,150 +11,34 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Where the lines of the commands are kept, the one place a new script gets
-/// its line (AGENTS.md): the `DESCRIPTIONS` of commands.mjs, read as data.
-const SOURCE: &str = "packages/breadboard/src/commands.mjs";
+/// its line (AGENTS.md): `<package dir>` → script → what it is for, the root "".
+const SOURCE: &str = "packages/breadboard/commands.json";
 
 /// `<package dir>` → script → what it is for; the root is "".
 type Descriptions = Vec<(String, Vec<(String, String)>)>;
 
-/// The `DESCRIPTIONS` object of commands.mjs: a `{ key: value, … }` of
-/// package dirs, each one of scripts and strings (`'…'` or `"…"`, joined
-/// with `+`). Nothing when the file or the object isn't there.
+/// The lines of commands.json; nothing when it isn't there or isn't JSON.
 fn descriptions_of(text: &str) -> Descriptions {
-    let Some(start) = text.find("const DESCRIPTIONS = {") else {
+    let Ok(Value::Object(dirs)) = serde_json::from_str::<Value>(text) else {
         return Vec::new();
     };
-    let body = &text[start + "const DESCRIPTIONS = ".len()..];
-    let tokens = tokens_of(body);
-    let mut at = 0;
-    match object_of(&tokens, &mut at) {
-        Some(Value::Object(dirs)) => dirs
-            .into_iter()
-            .map(|(dir, scripts)| {
-                let lines = scripts
-                    .as_object()
-                    .map(|scripts| {
-                        scripts
-                            .iter()
-                            .filter_map(|(script, line)| Some((script.clone(), line.as_str()?.to_string())))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (dir, lines)
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+    dirs.into_iter()
+        .map(|(dir, scripts)| {
+            let lines = scripts
+                .as_object()
+                .map(|scripts| {
+                    scripts
+                        .iter()
+                        .filter_map(|(script, line)| Some((script.clone(), line.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (dir, lines)
+        })
+        .collect()
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum Token {
-    Text(String),
-    Word(String),
-    Mark(char),
-}
-
-/// The tokens of a JS object literal up to the `}` that closes it.
-fn tokens_of(body: &str) -> Vec<Token> {
-    let mut tokens = Vec::new();
-    let mut depth = 0;
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' | '\'' => {
-                let mut text = String::new();
-                while let Some(next) = chars.next() {
-                    match next {
-                        '\\' => text.extend(chars.next()),
-                        _ if next == c => break,
-                        _ => text.push(next),
-                    }
-                }
-                tokens.push(Token::Text(text));
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                for next in chars.by_ref() {
-                    if next == '\n' {
-                        break;
-                    }
-                }
-            }
-            '{' | '}' | ':' | ',' | '+' => {
-                tokens.push(Token::Mark(c));
-                depth += match c {
-                    '{' => 1,
-                    '}' => -1,
-                    _ => 0,
-                };
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ if c.is_alphanumeric() || c == '_' || c == '$' => {
-                let mut word = c.to_string();
-                while let Some(next) = chars
-                    .peek()
-                    .copied()
-                    .filter(|n| n.is_alphanumeric() || *n == '_' || *n == '$')
-                {
-                    word.push(next);
-                    chars.next();
-                }
-                tokens.push(Token::Word(word));
-            }
-            _ => {}
-        }
-    }
-    tokens
-}
-
-/// `{ key: value, … }` from `at`, a value a string (joined) or an object.
-fn object_of(tokens: &[Token], at: &mut usize) -> Option<Value> {
-    if tokens.get(*at) != Some(&Token::Mark('{')) {
-        return None;
-    }
-    *at += 1;
-    let mut object = serde_json::Map::new();
-    loop {
-        let key = match tokens.get(*at)? {
-            Token::Mark('}') => {
-                *at += 1;
-                return Some(Value::Object(object));
-            }
-            Token::Mark(',') => {
-                *at += 1;
-                continue;
-            }
-            Token::Text(key) | Token::Word(key) => key.clone(),
-            Token::Mark(_) => return None,
-        };
-        *at += 1;
-        if tokens.get(*at) != Some(&Token::Mark(':')) {
-            return None;
-        }
-        *at += 1;
-        let value = if tokens.get(*at) == Some(&Token::Mark('{')) {
-            object_of(tokens, at)?
-        } else {
-            let mut text = String::new();
-            loop {
-                let Some(Token::Text(part)) = tokens.get(*at) else {
-                    return None;
-                };
-                text.push_str(part);
-                *at += 1;
-                if tokens.get(*at) != Some(&Token::Mark('+')) {
-                    break;
-                }
-                *at += 1;
-            }
-            Value::String(text)
-        };
-        object.insert(key, value);
-    }
-}
-
-/// The lines of the repo at `root`, read from its commands.mjs.
+/// The lines of the repo at `root`, read from its commands.json.
 fn descriptions(root: &Path) -> Descriptions {
     descriptions_of(&fs::read_to_string(root.join(SOURCE)).unwrap_or_default())
 }
@@ -333,9 +217,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_the_lines_of_commands_mjs() {
-        let text = "const X = 1;\nconst DESCRIPTIONS = {\n  \"\": {\n    build: \"build it\", // why\n    \"wt:new\":\n      '<feature> it\\'s new' +\n      \" (--fix)\",\n  },\n  \"packages/x\": { test: \"t\" },\n};\nconst Y = { z: 'no' };\n";
-        let read = descriptions_of(text);
+    fn reads_the_lines_of_commands_json() {
+        let text =
+            r#"{"": {"build": "build it", "wt:new": "<feature> it's new", "x": 1}, "packages/x": {"test": "t"}}"#;
+        let mut read = descriptions_of(text);
+        read.sort();
         assert_eq!(
             read,
             vec![
@@ -343,13 +229,13 @@ mod tests {
                     String::new(),
                     vec![
                         ("build".to_string(), "build it".to_string()),
-                        ("wt:new".to_string(), "<feature> it's new (--fix)".to_string())
+                        ("wt:new".to_string(), "<feature> it's new".to_string())
                     ]
                 ),
                 ("packages/x".to_string(), vec![("test".to_string(), "t".to_string())])
             ]
         );
-        assert!(descriptions_of("const DESCRIPTIONS = { broken").is_empty());
+        assert!(descriptions_of("{ broken").is_empty());
     }
 
     #[test]

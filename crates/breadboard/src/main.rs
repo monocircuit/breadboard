@@ -17,7 +17,7 @@ fn main() -> ExitCode {
         "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),
         // The overviews' one reader, started by the first of them (daemon/).
         "serve" => daemon::main(rest),
-        // pnpm herdr, herdr:install and the herdr plugin's actions (herdr/herdr-plugin.rs.toml).
+        // pnpm herdr, herdr:install and the herdr plugin's actions (herdr/herdr-plugin.toml).
         "herdr" => herdr::main(rest),
         "herdr:install" => herdr::install(rest),
         // Claude Code's Stop hook; `hook pre-push` is the setup group's.

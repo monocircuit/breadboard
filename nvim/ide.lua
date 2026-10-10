@@ -1,6 +1,6 @@
 -- Claude Code's IDE integration in a worktree's nvim (#258). The herdr tab
 -- `nvim` of a worktree's space runs it with the plugin's directory
--- (packages/breadboard/src/worktree/ide.mjs): :lua dofile("…/ide.lua")("<plugin>").
+-- (crates/breadboard/src/cli/lifecycle/layout/nvim.rs): :lua dofile("…/ide.lua")("<plugin>").
 --
 -- coder/claudecode.nvim listens for the worktree's claude (`claude --ide`) and
 -- writes ~/.claude/ide/<port>.lock with this nvim's directory, the worktree.

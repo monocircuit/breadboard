@@ -1,5 +1,5 @@
 //! The herdr plugin's actions (herdr/run.mjs; the manifest
-//! herdr/herdr-plugin.rs.toml runs them):
+//! herdr/herdr-plugin.toml runs them):
 //!
 //! ```text
 //! breadboard herdr restore [--startup]  the main space and a space per worktree (wt:herdr)

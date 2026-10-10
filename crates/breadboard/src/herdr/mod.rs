@@ -6,7 +6,7 @@
 //! breadboard herdr --here|--no-attach  … attached here, or not at all
 //! breadboard herdr --reload|--stop     new workflow code into a running herdr; stop the session
 //! breadboard herdr:install             pnpm herdr:install: the plugin in your own herdr
-//! breadboard herdr restore [--startup] the plugin's actions (herdr/herdr-plugin.rs.toml):
+//! breadboard herdr restore [--startup] the plugin's actions (herdr/herdr-plugin.toml):
 //! breadboard herdr open|pane <pane>      herdr runs them in the plugin's directory
 //! breadboard herdr status                the tab bar's line
 //! breadboard hook stop-answers         Claude Code's Stop hook: answers of the overview
@@ -184,7 +184,7 @@ fn session_flags(args: &[String]) -> ExitCode {
     let has_plugin_env = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     if is_plugin_without_action(args, &has_plugin_env) {
         return usage_error(
-            "herdr ran this as a plugin command without an action: herdr-plugin.rs.toml names one for each (restore, open, pane, status); a session is set up from a terminal (pnpm herdr)",
+            "herdr ran this as a plugin command without an action: herdr-plugin.toml names one for each (restore, open, pane, status); a session is set up from a terminal (pnpm herdr)",
         );
     }
     let has = |flag: &str| args.iter().any(|arg| arg == flag);
