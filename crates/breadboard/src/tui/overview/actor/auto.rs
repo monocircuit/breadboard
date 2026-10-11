@@ -7,6 +7,8 @@
 
 use super::spawn::{self, Background, error_of};
 use super::{Effect, herdr};
+use crate::cli::lifecycle::handover::restart;
+use crate::cli::lifecycle::layout::nvim;
 use crate::tui::overview::Overview;
 use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
@@ -23,7 +25,7 @@ use breadboard_core::model::{Entry, Paint, Tree, issues_of};
 use breadboard_core::record::{Worker, orchestration_of_label, titles, write_worker};
 use breadboard_core::time::{now_ms, to_iso};
 use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -123,6 +125,12 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     }
     if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
         tell(app, &model.tells, &local.agents);
+        // herdr's sidebar reads them: it knows neither the merge order nor the boxes (#344).
+        if is_remote {
+            for (dir, record) in &model.turn_records {
+                let _ = breadboard_core::model::merge_turn::write_turn_record(dir, record);
+            }
+        }
         if is_remote {
             deliver_waits(app, &local, remote);
         }
@@ -526,29 +534,32 @@ impl Free {
             .find(|space| orchestration_of_label(&space.label, &names).as_deref() == Some(&self.name))
             .ok_or_else(|| format!("no space of {}", self.name))?
             .id;
-        let moved = herdr::ask(&[
-            "pane",
-            "move",
-            &self.pane,
-            "--workspace",
-            &workspace,
-            "--new-tab",
-            "--no-focus",
-        ])
-        .ok_or("herdr did not move its pane")?;
-        let result = moved.get("move_result").cloned().unwrap_or(Value::Null);
-        let tab = result
-            .get("created_tab")
-            .and_then(|tab| tab.get("tab_id"))
-            .and_then(Value::as_str)
-            .ok_or("herdr did not move its pane")?;
-        herdr::did(&["tab", "rename", tab, &format!("free {}", self.agent)]);
-        let target = result
-            .get("pane")
-            .and_then(|pane| pane.get("pane_id"))
-            .and_then(Value::as_str)
-            .unwrap_or(&self.pane)
-            .to_string();
+        // Ended in its worktree, resumed in the checkout (#335): a claude can't EnterWorktree out of where it was resumed.
+        let checkout = breadboard_core::git::orchestrations_dir(&self.main).join(&self.name);
+        let label = format!("free {}", self.agent);
+        let line = free_line(self.iid, &checkout);
+        let restarted = restart::restart(
+            &restart::Machine,
+            &restart::Restart {
+                id: &self.id,
+                workspace: &workspace,
+                label: &label,
+                cwd: &checkout,
+                name: &self.agent,
+                prompt: &line,
+                from: Some(&self.pane),
+                ide: nvim::ide_flag(&checkout),
+            },
+        );
+        match restarted {
+            Ok(_) => {}
+            Err(restart::Failed::Before(why)) => return Err(why),
+            Err(restart::Failed::After { why, command }) => {
+                return Err(format!(
+                    "its claude ended, but {why}: resume it from a shell: {command}"
+                ));
+            }
+        }
         let mut files: Vec<String> = self.known.clone().unwrap_or_default();
         for file in work_files(&self.dir) {
             if !files.contains(&file) {
@@ -568,8 +579,6 @@ impl Free {
         );
         // Unbound: no restart resumes it in the worktree, and wt:remove waits until it left.
         let _ = std::fs::remove_file(breadboard_core::conversations::session_file(&self.dir));
-        let checkout = breadboard_core::git::orchestrations_dir(&self.main).join(&self.name);
-        herdr::did(&["agent", "prompt", &target, &free_line(self.iid, &checkout)]);
         Ok(self.agent.clone())
     }
 }
@@ -577,7 +586,7 @@ impl Free {
 /// The line a merged agent is freed with (`freeLine`).
 pub fn free_line(iid: i64, checkout: &Path) -> String {
     format!(
-        "[overview] !{iid} merged, your worktree is removed: you are free. EnterWorktree(path: \"{}\"), then stop and wait for the next issue, it comes as one line.",
+        "[overview] !{iid} merged, your worktree is removed: you are free, your conversation runs again in the orchestration's checkout {}. Stop and wait: a next issue resumes you in its worktree, its line your first prompt.",
         checkout.display()
     )
 }
@@ -892,10 +901,10 @@ mod tests {
     }
 
     #[test]
-    fn frees_an_agent_with_nodes_line() {
+    fn frees_an_agent_resumed_in_the_checkout() {
         assert_eq!(
             free_line(316, Path::new("/r/platform/.claude/orchestrations/breadboard")),
-            "[overview] !316 merged, your worktree is removed: you are free. EnterWorktree(path: \"/r/platform/.claude/orchestrations/breadboard\"), then stop and wait for the next issue, it comes as one line."
+            "[overview] !316 merged, your worktree is removed: you are free, your conversation runs again in the orchestration's checkout /r/platform/.claude/orchestrations/breadboard. Stop and wait: a next issue resumes you in its worktree, its line your first prompt."
         );
     }
 
