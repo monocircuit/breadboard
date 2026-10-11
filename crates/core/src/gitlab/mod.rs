@@ -196,8 +196,21 @@ pub struct Remote {
     /// iid → state of the MRs handovers, waits and queued issues wait for.
     pub awaited: HashMap<i64, String>,
     pub develop: Option<DevelopPipeline>,
+    /// Its epic branch's last pipeline and open MR into develop (#350).
+    #[serde(default)]
+    pub epic: Option<Box<EpicRemote>>,
     /// When it was read, ms since the epoch.
     pub at: i64,
+}
+
+/// The GitLab side of an orchestration's epic branch (#350): its last
+/// finished pipeline (jobs only when it failed) and its open MR into develop.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EpicRemote {
+    pub branch: String,
+    pub pipeline: Option<DevelopPipeline>,
+    pub mr: Option<Mr>,
 }
 
 impl Remote {

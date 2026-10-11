@@ -631,6 +631,7 @@ impl LocalReader {
             chat,
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
+            epic: epic_local(&self.main, record.as_ref()),
             record,
         }
     }
@@ -840,6 +841,10 @@ impl LocalReader {
                     branches,
                     awaited,
                     deploys,
+                    epic: local
+                        .record
+                        .as_ref()
+                        .and_then(|record| crate::epic::epic_of(&record.raw)),
                 })
             }
             Local::Worktree(local) => RemoteAsk::Worktree {
@@ -962,6 +967,22 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
             Model::Everything(Box::new(everything_of(local, remote)))
         }
     }
+}
+
+/// The epic branch of an orchestration's record and how far develop has gone
+/// on since it (#350), from what origin was last fetched.
+fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::model::epic_row::EpicLocal> {
+    let branch = crate::epic::epic_of(&record?.raw)?;
+    let behind = git::git(
+        main,
+        &["rev-list", "--count", &format!("origin/{branch}..origin/develop")],
+    );
+    Some(crate::model::epic_row::EpicLocal {
+        behind: (behind.status == 0)
+            .then(|| behind.stdout.trim().parse().ok())
+            .flatten(),
+        branch,
+    })
 }
 
 #[cfg(test)]
