@@ -1,0 +1,663 @@
+//! `breadboard.toml` (#342): everything breadboard knows about the repo it
+//! runs in, read from the root of the main checkout. Without the file every
+//! default holds: the branch origin's HEAD names, no stack, commands shown as
+//! `breadboard <command>`. The schema is `docs/config.md`; a file that
+//! doesn't match it is refused with the key and why, never half read.
+
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::SystemTime;
+
+/// The file, at the root of the main checkout.
+pub const FILE: &str = "breadboard.toml";
+
+/// The whole file.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub repo: Repo,
+    pub worktrees: Worktrees,
+    /// The dev stack of a checkout; None: worktrees have none.
+    pub stack: Option<Stack>,
+    pub mr: Mr,
+    pub check: Check,
+    /// The fragments folded into a changelog at a release; None: no `changelog:*`.
+    pub changelog: Option<Changelog>,
+    /// Release tags and the paths each one releases.
+    pub releases: Vec<Release>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Repo {
+    /// The branch work starts from and merges into; None: origin's HEAD, else `main`.
+    pub default_branch: Option<String>,
+    /// How a command is shown to type: `<run> wt:new` (`pnpm` where the
+    /// root package.json has the scripts); None: `breadboard`.
+    pub run: Option<String>,
+    /// Shown where the repo is named (briefs, errors); None: the GitLab project from origin.
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Worktrees {
+    /// What a new worktree runs after `git worktree add`, in order (`pnpm install`).
+    pub setup: Vec<Step>,
+}
+
+/// A command with what it does, as the step line says it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Step {
+    pub run: String,
+    /// The step line; None: the command itself.
+    pub says: Option<String>,
+    /// Its output stays hidden unless it fails.
+    pub is_quiet: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Stack {
+    /// The folder of the checkout the stack's files and commands are in.
+    #[serde(default = "dot")]
+    pub dir: String,
+    /// The env file of the stack in `dir`: copied from the main checkout, ports moved.
+    #[serde(default = "env_local")]
+    pub env_file: String,
+    /// docker compose's file in `dir`.
+    #[serde(default = "compose_yml")]
+    pub compose_file: String,
+    /// The compose project of the main checkout; a worktree's own is `<project>-<feature>`.
+    pub project: String,
+    /// What sets an own stack up (containers, migrations, seed); None: `docker compose up -d`.
+    pub setup: Option<Step>,
+    /// `stack:up|down|reset`; None: compose's `up -d`, `down`, `down -v` then `up -d`.
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub reset: Option<String>,
+    pub app: App,
+    /// The ports besides the app's, each moved by a worktree's offset.
+    #[serde(default)]
+    pub services: Vec<Service>,
+    pub migrations: Option<Migrations>,
+    /// What a worktree may run beside its stack, on a port moved with it (Storybook).
+    #[serde(default)]
+    pub tools: Vec<Tool>,
+}
+
+/// The app a checkout serves: its port, how it starts.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct App {
+    pub port: u16,
+    /// Run in the stack's `dir`; `--port <p>` follows for an own stack.
+    #[serde(default = "pnpm_dev")]
+    pub dev: String,
+    /// The variable of the env file it is moved with, None: none.
+    pub env: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Service {
+    /// The container's service name (`postgres`): its herdr tab, its row.
+    pub name: String,
+    /// As a line names it (`Postgres`); None: the name.
+    pub label: Option<String>,
+    pub port: u16,
+    /// The variable of the env file the port is moved with.
+    pub env: Option<String>,
+    /// Where it answers, `{port}` its moved port (`http://localhost:{port}/admin`): a link in WHERE.
+    pub url: Option<String>,
+    /// Or where to connect to it (`localhost:{port}`). With neither it has no row.
+    pub address: Option<String>,
+}
+
+/// The migrations a worktree's database may lack: drizzle's journal against
+/// its table, asked with psql.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Migrations {
+    /// drizzle's `meta/_journal.json` in the stack's `dir`.
+    pub journal: String,
+    /// What applies them, in the stack's `dir`.
+    pub run: String,
+    /// The variable of the env file with the database's URL.
+    #[serde(default = "database_url")]
+    pub database_env: String,
+}
+
+/// Something a worktree runs beside its stack on a port moved with it
+/// (a database studio, Storybook): a row in its WHERE, a herdr tab.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Tool {
+    /// Its tab and row.
+    pub name: String,
+    /// The folder it runs in; None: the stack's.
+    pub dir: Option<String>,
+    pub port: u16,
+    /// What starts it, `{port}` its moved port.
+    pub run: String,
+    /// Where it is looked at, `{port}`; None: `http://localhost:{port}`.
+    pub url: Option<String>,
+    /// Its tab opens while the stack runs, as the app's `dev` does; else a click starts it.
+    #[serde(default)]
+    pub is_with_stack: bool,
+}
+
+impl Tool {
+    /// `run` with the port of `offset`.
+    pub fn command(&self, offset: u16) -> String {
+        self.run.replace("{port}", &(self.port + offset).to_string())
+    }
+    pub fn url(&self, offset: u16) -> String {
+        self.url
+            .as_deref()
+            .unwrap_or("http://localhost:{port}")
+            .replace("{port}", &(self.port + offset).to_string())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Mr {
+    /// The template a description starts from.
+    pub template: String,
+    /// Boxes the Tests section gets when the branch changes one of their paths.
+    pub tests: Vec<TestBox>,
+}
+
+impl Default for Mr {
+    fn default() -> Self {
+        Mr {
+            template: ".gitlab/merge_request_templates/Default.md".into(),
+            tests: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TestBox {
+    /// Regular expressions on the changed paths.
+    pub paths: Vec<String>,
+    /// The box's line, `- [ ] …`.
+    pub line: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Check {
+    /// Packages whose tests need the stack: what the check says instead of running them.
+    pub stack_tests: Vec<StackTests>,
+    /// What `wt:check` builds before it checks, each a step.
+    pub before: Vec<Step>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct StackTests {
+    pub package: String,
+    pub says: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Changelog {
+    /// Who the changelog is of: "All notable changes to <title> …".
+    pub title: String,
+    /// What its versions are, in its head's sentence.
+    pub versions: String,
+    /// Folders whose subfolders are areas, `strip` taken off their names.
+    pub area_dirs: Vec<String>,
+    pub strip: Option<String>,
+    /// Areas besides those.
+    pub areas: Vec<String>,
+    /// The package.json files a release sets to its version.
+    pub version_files: Vec<String>,
+    /// Libraries released on their own, named in the release that follows theirs.
+    pub libraries: Vec<Library>,
+}
+
+impl Default for Changelog {
+    fn default() -> Self {
+        Changelog {
+            title: "this project".into(),
+            versions: "its releases (`vX.Y.Z`)".into(),
+            area_dirs: Vec::new(),
+            strip: None,
+            areas: vec!["ci".into(), "repo".into()],
+            version_files: Vec::new(),
+            libraries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Library {
+    /// Its area.
+    pub name: String,
+    /// Its folder, with its package.json and CHANGELOG.md.
+    pub path: String,
+    /// Its tag before the version: `monolithium-v`.
+    pub tag: String,
+    /// Released together with it, as the entry says: `with utilities`.
+    pub with: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Release {
+    /// What the tag is before the version: `v`, `monolithium-v`.
+    pub tag: String,
+    /// The name the overview shows it under.
+    pub name: String,
+    /// The folders it releases.
+    pub paths: Vec<String>,
+}
+
+fn dot() -> String {
+    ".".into()
+}
+fn env_local() -> String {
+    ".env.local".into()
+}
+fn compose_yml() -> String {
+    "docker-compose.yml".into()
+}
+fn pnpm_dev() -> String {
+    "pnpm dev".into()
+}
+fn database_url() -> String {
+    "DATABASE_URL".into()
+}
+
+/// One port of a stack: the app's or a service's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Port {
+    pub name: String,
+    pub port: u16,
+    pub env: Option<String>,
+}
+
+impl Stack {
+    /// Every port, the app's, the services' and the tools', by number.
+    pub fn ports(&self) -> Vec<Port> {
+        let mut all = vec![Port {
+            name: "app".into(),
+            port: self.app.port,
+            env: self.app.env.clone(),
+        }];
+        all.extend(self.services.iter().map(|service| Port {
+            name: service.name.clone(),
+            port: service.port,
+            env: service.env.clone(),
+        }));
+        all.extend(self.tools.iter().map(|tool| Port {
+            name: tool.name.clone(),
+            port: tool.port,
+            env: None,
+        }));
+        all.sort_by_key(|port| port.port);
+        all
+    }
+
+    /// The port a worktree's offset is read back from: the first service's
+    /// with a variable, else the app's.
+    pub fn offset_port(&self) -> Option<Port> {
+        let services = self.services.iter().map(|service| Port {
+            name: service.name.clone(),
+            port: service.port,
+            env: service.env.clone(),
+        });
+        let app = Port {
+            name: "app".into(),
+            port: self.app.port,
+            env: self.app.env.clone(),
+        };
+        services.chain(std::iter::once(app)).find(|port| port.env.is_some())
+    }
+
+    /// A service by its name.
+    pub fn service(&self, name: &str) -> Option<&Service> {
+        self.services.iter().find(|service| service.name == name)
+    }
+
+    /// A tool by its name.
+    pub fn tool(&self, name: &str) -> Option<&Tool> {
+        self.tools.iter().find(|tool| tool.name == name)
+    }
+}
+
+impl Service {
+    pub fn label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+    /// `url` with the port of `offset`.
+    pub fn url(&self, offset: u16) -> Option<String> {
+        let port = (self.port + offset).to_string();
+        self.url.as_ref().map(|url| url.replace("{port}", &port))
+    }
+    pub fn address(&self, offset: u16) -> Option<String> {
+        let port = (self.port + offset).to_string();
+        self.address.as_ref().map(|address| address.replace("{port}", &port))
+    }
+}
+
+impl Config {
+    /// Parses and checks a file's text.
+    pub fn parse(text: &str) -> Result<Config, String> {
+        let config: Config = toml::from_str(text).map_err(|error| error.to_string().trim_end().to_string())?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// What serde can't say: names and ports that must be there and apart.
+    fn validate(&self) -> Result<(), String> {
+        let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
+        if let Some(branch) = &self.repo.default_branch
+            && (branch.trim().is_empty() || branch.contains(char::is_whitespace))
+        {
+            return bad("repo.default_branch", "must be a branch name");
+        }
+        if let Some(stack) = &self.stack {
+            if stack.project.trim().is_empty()
+                || !stack
+                    .project
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return bad(
+                    "stack.project",
+                    "must be a compose project name (letters, digits, - and _)",
+                );
+            }
+            if stack.offset_port().is_none() {
+                return bad(
+                    "stack",
+                    "no port has an `env`: a worktree's own stack is told apart by the moved port of one (`env = \"POSTGRES_PORT\"` on a service, or on the app)",
+                );
+            }
+            let mut seen: Vec<(u16, String)> = Vec::new();
+            for port in stack.ports() {
+                if let Some((_, other)) = seen.iter().find(|(taken, _)| *taken == port.port) {
+                    return bad(
+                        &format!("stack ({})", port.name),
+                        &format!("port {} is {other}'s already", port.port),
+                    );
+                }
+                seen.push((port.port, port.name.clone()));
+            }
+            for (at, service) in stack.services.iter().enumerate() {
+                if service.name.trim().is_empty() {
+                    return bad(&format!("stack.services[{at}].name"), "must not be empty");
+                }
+            }
+        }
+        for (at, test) in self.mr.tests.iter().enumerate() {
+            for path in &test.paths {
+                if let Err(error) = regex::Regex::new(path) {
+                    return bad(
+                        &format!("mr.tests[{at}].paths"),
+                        &format!("{path:?} is no regular expression ({error})"),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The branch named, else None (the caller asks origin).
+    pub fn branch(&self) -> Option<&str> {
+        self.repo.default_branch.as_deref()
+    }
+
+    /// How a command is typed: `pnpm wt:new`, `breadboard wt:new`.
+    pub fn command(&self, command: &str) -> String {
+        format!("{} {command}", self.repo.run.as_deref().unwrap_or("breadboard"))
+    }
+}
+
+/// A repo's config with the branch resolved.
+#[derive(Debug, Clone)]
+pub struct Loaded {
+    pub config: Config,
+    /// The main checkout it was read from.
+    pub main: PathBuf,
+    /// `develop`, `main`.
+    pub branch: String,
+    /// Why the file was refused; the defaults hold meanwhile.
+    pub error: Option<String>,
+}
+
+impl Loaded {
+    /// `origin/<branch>`.
+    pub fn base(&self) -> String {
+        format!("origin/{}", self.branch)
+    }
+
+    /// The stack's folder in a checkout.
+    pub fn stack_dir(&self, checkout: &Path) -> Option<PathBuf> {
+        let stack = self.config.stack.as_ref()?;
+        Some(checkout.join(&stack.dir))
+    }
+
+    /// The stack's env file in a checkout, None without a stack.
+    pub fn env_file(&self, checkout: &Path) -> Option<PathBuf> {
+        let stack = self.config.stack.as_ref()?;
+        Some(checkout.join(&stack.dir).join(&stack.env_file))
+    }
+
+    pub fn command(&self, command: &str) -> String {
+        self.config.command(command)
+    }
+
+    /// The name the repo goes by.
+    pub fn name(&self) -> String {
+        self.config.repo.name.clone().unwrap_or_else(|| {
+            let origin = crate::git::git(&self.main, &["remote", "get-url", "origin"]);
+            crate::gitlab::client::remote_of(origin.out())
+                .filter(|_| origin.is_ok)
+                .map(|(_, project)| project)
+                .unwrap_or_else(|| {
+                    self.main
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "the repo".into())
+                })
+        })
+    }
+}
+
+/// Reads `<main>/breadboard.toml`, the defaults without one.
+pub fn load(main: &Path) -> Loaded {
+    let file = main.join(FILE);
+    let (config, error) = match std::fs::read_to_string(&file) {
+        Ok(text) => match Config::parse(&text) {
+            Ok(config) => (config, None),
+            Err(error) => (Config::default(), Some(format!("{}: {error}", file.display()))),
+        },
+        Err(_) => (Config::default(), None),
+    };
+    let branch = config
+        .branch()
+        .map(String::from)
+        .unwrap_or_else(|| origin_head(main).unwrap_or_else(|| "main".into()));
+    Loaded {
+        config,
+        main: main.to_path_buf(),
+        branch,
+        error,
+    }
+}
+
+/// The branch origin's HEAD points at, from the refs git has.
+fn origin_head(main: &Path) -> Option<String> {
+    let out = crate::git::git(
+        main,
+        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    );
+    out.out()
+        .strip_prefix("origin/")
+        .filter(|branch| out.is_ok && !branch.is_empty())
+        .map(String::from)
+}
+
+/// The configs read, by main checkout, with the file's time then.
+type Cache = HashMap<PathBuf, (Option<SystemTime>, Arc<Loaded>)>;
+static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The main checkout of a directory asked before.
+static MAINS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn mtime(main: &Path) -> Option<SystemTime> {
+    std::fs::metadata(main.join(FILE)).and_then(|meta| meta.modified()).ok()
+}
+
+/// The config of the main checkout `main`, read again once its file changed.
+pub fn of_main(main: &Path) -> Arc<Loaded> {
+    let time = mtime(main);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was, loaded)) = cache.get(main)
+        && *was == time
+    {
+        return Arc::clone(loaded);
+    }
+    let loaded = Arc::new(load(main));
+    cache.insert(main.to_path_buf(), (time, Arc::clone(&loaded)));
+    loaded
+}
+
+/// The config of the repo `dir` lies in (any checkout or a folder in one);
+/// outside any repo the defaults, as if `dir` were a main checkout.
+pub fn of(dir: &Path) -> Arc<Loaded> {
+    let known = MAINS.lock().unwrap_or_else(|e| e.into_inner()).get(dir).cloned();
+    let main = known.unwrap_or_else(|| {
+        let main = main_of(dir).unwrap_or_else(|| dir.to_path_buf());
+        MAINS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dir.to_path_buf(), main.clone());
+        main
+    });
+    of_main(&main)
+}
+
+/// The config of the repo of the working directory.
+pub fn here() -> Arc<Loaded> {
+    of(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+/// The main checkout of `dir` from its `.git` alone, no git process: a
+/// worktree's `.git` file names `<main>/.git/worktrees/<name>`.
+fn main_of(dir: &Path) -> Option<PathBuf> {
+    let top = dir.ancestors().find(|at| at.join(".git").exists())?;
+    let dot_git = top.join(".git");
+    if dot_git.is_dir() {
+        return Some(top.to_path_buf());
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+    let gitdir = if gitdir.is_absolute() { gitdir } else { top.join(gitdir) };
+    // <main>/.git/worktrees/<name>
+    let common = gitdir.parent()?.parent()?;
+    if common.file_name()? == ".git" {
+        return common.parent().map(Path::to_path_buf);
+    }
+    crate::git::main_dir(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The monorepo's own file, None where only this package is (its public mirror).
+    fn platform() -> Option<String> {
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../breadboard.toml")).ok()
+    }
+
+    #[test]
+    fn the_defaults_hold_without_a_file() {
+        let config = Config::parse("").unwrap();
+        assert_eq!(config, Config::default());
+        assert!(config.stack.is_none());
+        assert_eq!(config.command("wt:new 1-x"), "breadboard wt:new 1-x");
+        assert_eq!(config.mr.template, ".gitlab/merge_request_templates/Default.md");
+    }
+
+    #[test]
+    fn reads_platform_s_file() {
+        let Some(text) = platform() else { return };
+        let config = Config::parse(&text).unwrap();
+        assert_eq!(config.branch(), Some("develop"));
+        assert_eq!(config.command("wt:new"), "pnpm wt:new");
+        let stack = config.stack.unwrap();
+        assert_eq!(stack.dir, "products/vita/web");
+        assert_eq!(stack.offset_port().unwrap().env.as_deref(), Some("POSTGRES_PORT"));
+        assert_eq!(
+            stack.ports().iter().map(|port| port.port).collect::<Vec<_>>(),
+            [3000, 4983, 5432, 6006, 8080, 8333, 64738]
+        );
+    }
+
+    #[test]
+    fn a_wrong_file_is_refused_with_its_key() {
+        let error = Config::parse("[repo]\ndefault_brnch = \"x\"\n").unwrap_err();
+        assert!(error.contains("default_brnch"), "{error}");
+        let error = Config::parse("[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n").unwrap_err();
+        assert!(error.starts_with("stack: no port has an `env`"), "{error}");
+        let error = Config::parse(
+            "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n[[stack.services]]\nname = \"db\"\nport = 3000\nenv = \"DB_PORT\"\n",
+        )
+        .unwrap_err();
+        assert_eq!(error, "stack (db): port 3000 is app's already");
+        let error = Config::parse("[[mr.tests]]\npaths = [\"(\"]\nline = \"x\"\n").unwrap_err();
+        assert!(
+            error.starts_with("mr.tests[0].paths: \"(\" is no regular expression"),
+            "{error}"
+        );
+        let error = Config::parse("[stack]\nproject = \"a b\"\n[stack.app]\nport = 1\nenv = \"P\"\n").unwrap_err();
+        assert!(error.starts_with("stack.project:"), "{error}");
+    }
+
+    #[test]
+    fn a_minimal_stack_takes_its_defaults() {
+        let config = Config::parse("[stack]\nproject = \"app\"\n[stack.app]\nport = 8000\nenv = \"PORT\"\n").unwrap();
+        let stack = config.stack.unwrap();
+        assert_eq!((stack.dir.as_str(), stack.env_file.as_str()), (".", ".env.local"));
+        assert_eq!(stack.compose_file, "docker-compose.yml");
+        assert_eq!(stack.offset_port().unwrap().name, "app");
+    }
+
+    #[test]
+    fn finds_the_main_checkout_of_a_worktree_without_git() {
+        let root = std::env::temp_dir().join(format!("config-main-{}", std::process::id()));
+        let main = root.join("repo");
+        let tree = root.join("repo-1-x");
+        std::fs::create_dir_all(main.join(".git/worktrees/repo-1-x")).unwrap();
+        std::fs::create_dir_all(tree.join("a/b")).unwrap();
+        std::fs::write(
+            tree.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/repo-1-x").display()),
+        )
+        .unwrap();
+        assert_eq!(main_of(&tree.join("a/b")), Some(tree.parent().unwrap().join("repo")));
+        assert_eq!(main_of(&main), Some(main.clone()));
+        std::fs::write(main.join(FILE), "[repo]\ndefault_branch = \"trunk\"\n").unwrap();
+        assert_eq!(of(&tree).branch, "trunk");
+        assert_eq!(of(&tree).base(), "origin/trunk");
+        std::fs::write(main.join(FILE), "[repo]\nnope = 1\n").unwrap();
+        // A changed file is read again; a wrong one keeps the defaults and says why.
+        let filetime = SystemTime::now() + std::time::Duration::from_secs(5);
+        let file = std::fs::File::options().write(true).open(main.join(FILE)).unwrap();
+        file.set_modified(filetime).unwrap();
+        let loaded = of(&tree);
+        assert!(loaded.error.as_deref().is_some_and(|error| error.contains("nope")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
