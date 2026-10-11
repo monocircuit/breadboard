@@ -23,6 +23,14 @@ fn main() {
         std::fs::read(file).unwrap_or_default().hash(&mut hasher);
     }
     println!("cargo:rustc-env=BREADBOARD_PROTOCOL={:016x}", hasher.finish());
+    // The key of the sources the launcher builds (#339, herdr/breadboard.sh):
+    // in the binary, so a stored copy can be checked against the key it is
+    // stored under. Empty for every other build.
+    println!("cargo:rerun-if-env-changed=BREADBOARD_SOURCE_KEY");
+    println!(
+        "cargo:rustc-env=BREADBOARD_SOURCE_KEY_MARK=breadboard-source-key:{}",
+        std::env::var("BREADBOARD_SOURCE_KEY").unwrap_or_default()
+    );
 }
 
 /// The `.rs` files under `dir`, at any depth.
