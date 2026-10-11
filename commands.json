@@ -91,7 +91,8 @@
   },
   "packages/breadboard-gauntlet": {
     "snap": "a screenshot (text, PNG) of any TUI in a pty, in a gauntlet world: for the rewrite's critics",
-    "gauntlet": "the black-box suite: breadboard in a pty against a recorded world (this checkout's binary; BREADBOARD_SUBJECT: another)"
+    "gauntlet": "the black-box suite: breadboard in a pty against a recorded world (this checkout's binary; BREADBOARD_SUBJECT: another)",
+    "gitlab:schema": "refresh the snapshot of gitlab.com's GraphQL schema that breadboard's queries and the fake GitLab are checked against (glab's login)"
   },
   "packages/eslint-config": {
     "build": "build the configs (dev) and types",
