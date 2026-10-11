@@ -53,18 +53,27 @@ fn make_branch(main: &Path, branch: &str) -> Result<(), String> {
     let _ = git(&["fetch", "--quiet", "origin"], main);
     let remote = format!("refs/remotes/origin/{branch}");
     if git(&["rev-parse", "--verify", "--quiet", &remote], main).is_ok {
-        step(&format!("the epic branch {branch} is on origin already: its tasks branch off it"));
+        step(&format!(
+            "the epic branch {branch} is on origin already: its tasks branch off it"
+        ));
         return Ok(());
     }
     let pushed = git(
-        &["push", "--quiet", "origin", &format!("refs/remotes/origin/develop:refs/heads/{branch}")],
+        &[
+            "push",
+            "--quiet",
+            "origin",
+            &format!("refs/remotes/origin/develop:refs/heads/{branch}"),
+        ],
         main,
     );
     if !pushed.is_ok {
         return Err(format!("{branch} not pushed: {}", pushed.err.trim()));
     }
     let _ = git(&["fetch", "--quiet", "origin", branch], main);
-    step(&format!("made the epic branch {branch} from origin/develop and pushed it"));
+    step(&format!(
+        "made the epic branch {branch} from origin/develop and pushed it"
+    ));
     Ok(())
 }
 

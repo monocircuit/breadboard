@@ -43,7 +43,12 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     let epic = json::read(&record::record_file(&repo.main, name)).and_then(|raw| epic_of(&raw));
     let path = text(&dir);
     let add = checkout_args(epic.as_deref(), &path, |branch| {
-        git(&repo.main, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")], None).is_ok
+        git(
+            &repo.main,
+            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            None,
+        )
+        .is_ok
     });
     let args: Vec<&str> = add.iter().map(String::as_str).collect();
     if !git(&repo.main, &args, None).is_ok {
