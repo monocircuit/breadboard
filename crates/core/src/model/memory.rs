@@ -3,7 +3,9 @@
 //! shared stack; the overview names the threshold.
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-/// What a worktree's own dev stack takes, and what a claude does.
+/// What a worktree's own dev stack takes, and what a claude does (a
+/// headless agent only while its run is in flight, `runs::RUN`: idle it is
+/// no process and costs nothing, #358).
 pub const STACK: u64 = 1 << 30;
 pub const AGENT: u64 = 1 << 29;
 /// Below this much free memory a fresh agent gets the shared stack.
