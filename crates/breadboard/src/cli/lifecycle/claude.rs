@@ -202,7 +202,7 @@ pub fn left_refusal(left: &[Running], feature: &str, is_handed_over: bool) -> St
     let who = left_text(left);
     if is_handed_over {
         return format!(
-            "{who} still stands in {feature}: it enters its next worktree, or as a free agent the orchestration's checkout; again once it left"
+            "{who} still stands in {feature}: it restarts in its next worktree, or as a free agent its claude ends; again once it left"
         );
     }
     let pids: Vec<String> = left.iter().map(|claude| claude.pid.to_string()).collect();

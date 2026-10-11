@@ -203,6 +203,8 @@ pub struct Worker {
     /// The person's name it is shown by (#292): `Mira Albrecht`.
     pub display_name: Option<String>,
     pub issues: Vec<i64>,
+    /// The MRs it got merged (#345), as its freeings recorded them.
+    pub mrs: Vec<i64>,
     pub files: Vec<String>,
     /// Its name before the last handover (#251), and when it was renamed.
     pub was: Option<String>,
@@ -254,6 +256,7 @@ impl Worker {
             name: str_of(value, "name").map(String::from),
             display_name: str_of(value, "displayName").map(String::from),
             issues: ints_of(value, "issues"),
+            mrs: ints_of(value, "mrs"),
             files: strs_of(value, "files"),
             was: str_of(value, "was").map(String::from),
             renamed: str_of(value, "renamed").map(String::from),
