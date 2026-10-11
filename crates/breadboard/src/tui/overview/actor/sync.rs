@@ -533,6 +533,14 @@ fn report_states(
         };
         let handover = handover_of(main, &tree, mrs.map(|_| &open));
         let checks = checks_of(&[], &tree.actions, &tree.answered);
+        // For the commit GitLab's pipeline ran on, while what it waits for is open; else no merge is claimed.
+        let turn = tree.merge_turn.as_ref().and_then(|record| {
+            let sha = mr
+                .as_ref()
+                .and_then(|mr| mr.pipeline.as_ref())
+                .and_then(|pipeline| pipeline.sha.as_deref());
+            record.turn_now(sha, &open)
+        });
         for pane in own {
             let facts = Facts {
                 mr: mr.as_ref(),
@@ -540,6 +548,8 @@ fn report_states(
                 merged: Some(&merged),
                 handover: handover.as_ref(),
                 checks: &checks,
+                // The merge order isn't known here: the orchestration's overview left the turn (#344).
+                turn: turn.as_ref(),
             };
             match line_of(&tree, &facts, lab) {
                 Some(line) => {
