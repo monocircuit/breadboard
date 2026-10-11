@@ -180,6 +180,7 @@ pub(crate) mod tests {
             prompt: None,
             prompt_at: None,
             answer: None,
+            answer_at: None,
             transcript: PathBuf::new(),
             cwd: PathBuf::new(),
             model: None,
