@@ -500,7 +500,7 @@ impl Loaded {
     }
 
     /// The folder name of the main checkout: `platform`.
-    fn folder(&self) -> String {
+    pub fn folder(&self) -> String {
         self.main
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())

@@ -155,7 +155,7 @@ fn current_dir(main: &Path) -> Option<PathBuf> {
                 .filter(|dir| breadboard_core::git::main_dir(dir).as_deref() == Some(main))
         })
     };
-    let own = main.join("packages/breadboard/herdr");
+    let own = crate::cli::files_dir(main).join("herdr");
     if own.join(MANIFEST).is_file() {
         Some(own)
     } else {

@@ -30,6 +30,8 @@ pub enum Named {
     Space,
     /// The herdr plugin's id (`[herdr] plugin`).
     Plugin,
+    /// The session of the pinned herdr: the main checkout's folder.
+    Session,
 }
 
 /// The main herdr space of the repo (`[herdr] space`, constants.mjs `SPACE`).
@@ -44,6 +46,7 @@ impl Named {
         match self {
             Named::Space => loaded.space(),
             Named::Plugin => loaded.plugin(),
+            Named::Session => loaded.folder(),
         }
     }
 }

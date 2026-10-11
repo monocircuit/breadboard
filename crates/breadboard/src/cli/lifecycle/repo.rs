@@ -116,7 +116,8 @@ pub fn compose_args(dir: &Path, args: &[&str]) -> Option<Vec<String>> {
 
 /// packages/breadboard, where the nvim Lua and the Chromium extension lie:
 /// the one above this binary (`target/release/` of a checkout), else the
-/// cwd's main checkout's, else the one it was built in. One for the setup
+/// cwd's main checkout's (its `.breadboard/` in a repo breadboard isn't
+/// developed in, breadboard init), else the one it was built in. One for the setup
 /// and the lifecycle group.
 pub fn package_dir() -> PathBuf {
     let is_package = |dir: &Path| dir.join("nvim").join("changes.lua").is_file();
@@ -125,7 +126,7 @@ pub fn package_dir() -> PathBuf {
         .and_then(|exe| exe.ancestors().find(|dir| is_package(dir)).map(Path::to_path_buf));
     let here = || {
         let cwd = std::env::current_dir().ok()?;
-        Some(git::main_dir(&cwd)?.join("packages").join("breadboard")).filter(|dir| is_package(dir))
+        Some(crate::cli::files_dir(&git::main_dir(&cwd)?)).filter(|dir| is_package(dir))
     };
     above.or_else(here).unwrap_or_else(|| {
         let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

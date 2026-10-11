@@ -151,10 +151,11 @@ fn quote(text: &str) -> String {
 /// checkout didn't switch it off (#258), on the file at the line.
 fn editor_command(checkout: &Checkout, file: &str, line: u64) -> String {
     let socket = quote(SOCKET);
-    let changes = checkout.main.join("packages/breadboard/nvim/changes.lua");
+    let nvim = crate::cli::files_dir(checkout.main).join("nvim");
+    let changes = nvim.join("changes.lua");
     let mut commands = vec![format!("luafile {}", changes.display())];
     if let Some(plugin) = ide_plugin(checkout) {
-        let lua = checkout.main.join("packages/breadboard/nvim/ide.lua");
+        let lua = nvim.join("ide.lua");
         let json = |path: &Path| serde_json::to_string(&path.to_string_lossy()).unwrap_or_default();
         commands.push(format!("lua dofile({})({})", json(&lua), json(&plugin)));
     }
@@ -269,7 +270,7 @@ mod tests {
             editor_command(&checkout, "src/a b.ts", 7),
             "cd '/nowhere/platform-1-x'; nvim --server '.claude/nvim.sock' --remote-expr 1 >/dev/null 2>&1 \
              || rm -f '.claude/nvim.sock'; nvim --listen '.claude/nvim.sock' \
-             -c 'luafile /nowhere/platform/packages/breadboard/nvim/changes.lua' +7 'src/a b.ts'"
+             -c 'luafile /nowhere/platform/.breadboard/nvim/changes.lua' +7 'src/a b.ts'"
         );
     }
 

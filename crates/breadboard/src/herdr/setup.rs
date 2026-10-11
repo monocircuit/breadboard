@@ -94,7 +94,7 @@ pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
         "{SPACE} in the herdr session {SESSION}, attaching (detach: prefix+d, back: pnpm herdr)"
     ));
     let status = Command::new(&session.bin)
-        .args(["--session", SESSION])
+        .args(["--session", &SESSION.get()])
         .env_clear()
         .envs(session.session_env())
         .status()
@@ -398,7 +398,7 @@ fn start_server(session: &Session) -> Result<(), Fail> {
     step(&format!("start the herdr session {SESSION}"));
     let mut command = Command::new(&session.bin);
     command
-        .args(["--session", SESSION, "server"])
+        .args(["--session", &SESSION.get(), "server"])
         .env_clear()
         .envs(session.session_env())
         .stdin(Stdio::null())

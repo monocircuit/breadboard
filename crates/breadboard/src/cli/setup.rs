@@ -1,6 +1,7 @@
 //! The commands that set up (#314): `wt:new`, `wt:orchestrate`, `wt:stack`,
 //! `stack:up|down|reset|ps`, `wt:check`, `changelog [--watch]`,
-//! `changelog:add|unreleased|release|notes|check`, `commands`, `browser`.
+//! `changelog:add|unreleased|release|notes|check`, `commands`, `browser`,
+//! `init` (#342).
 //! Names, flags and wording as today's Node commands (rewrite rules 2, 3, 5);
 //! what other groups and core should share is in their own modules here
 //! until breadboard-core offers it (herdr, GitLab, local time).
@@ -14,6 +15,7 @@ mod fragments;
 mod gitlab;
 mod herdr;
 mod hook;
+pub(crate) mod init;
 mod new;
 mod orchestrate;
 mod proc;
@@ -83,6 +85,7 @@ fn shape_of(command: &str) -> Option<Shape> {
         "commands" => shape(&["--all"], &[], Some(0), "usage: pnpm commands [--all]"),
         "browser" => shape(&[], &[], Some(0), "usage: pnpm browser"),
         "hook" => shape(&[], &[], Some(3), hook::USAGE),
+        "init" => shape(&["--check"], &[], Some(0), init::USAGE),
         _ => return None,
     })
 }
@@ -143,6 +146,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "commands" => commands::command(args.has("--all")),
         "browser" => browser::command(),
         "hook" => hook::command(&args.all),
+        "init" => init::command(&args),
         _ => return None,
     })
 }

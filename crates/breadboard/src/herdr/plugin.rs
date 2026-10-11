@@ -254,7 +254,7 @@ fn status_main() -> Option<PathBuf> {
         .flatten()
         .filter(|dir| dir.is_dir())
         .filter_map(|dir| git::main_dir(&dir))
-        .find(|main| main.join("packages/breadboard/herdr/herdr-plugin.toml").is_file())
+        .find(|main| crate::cli::files_dir(main).join("herdr/herdr-plugin.toml").is_file())
 }
 
 /// How many of the repo's stacks run: compose projects named `<project>…`
