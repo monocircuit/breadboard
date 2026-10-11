@@ -2,7 +2,9 @@
 //! test of every package the branch changes against develop and of those
 //! depending on them, through turbo; on success the tree it tested is
 //! stamped in `.claude/checked.json` (`{ passed, failed, running }`), which
-//! the pre-push hook reads: it lets a commit of that tree through. The
+//! the pre-push hook reads: it lets a commit of that tree through. `passed`
+//! names the packages and tasks it ran and the source key of the binary
+//! that ran it (#366): the hook holds the packages against git's own list. The
 //! stamp's format stays (rule 5): Node's hook and overview read it.
 
 use super::proc::{Stream, fail, git, outln, step, write_bytes};
@@ -123,9 +125,112 @@ pub fn is_rust_changed(dir: &Path, base: &str, head: Option<&str>) -> bool {
     !git(&untracked, dir).text().is_empty()
 }
 
+/// A workspace package as its `package.json` says: its directory (`""` the
+/// root), its name, whether it has one of `TASKS` to check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manifest {
+    pub dir: String,
+    pub name: String,
+    pub has_checks: bool,
+}
+
+/// The manifest of the `package.json` at `path` with the text `text`.
+fn manifest_of(path: &str, text: &str) -> Option<Manifest> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    let name = json.get("name")?.as_str()?.to_string();
+    let scripts = json.get("scripts").and_then(Value::as_object);
+    Some(Manifest {
+        dir: path.strip_suffix("package.json")?.trim_end_matches('/').to_string(),
+        name,
+        has_checks: scripts.is_some_and(|scripts| TASKS.iter().any(|task| scripts.contains_key(*task))),
+    })
+}
+
+/// The packages the changed `files` lie in: each file's innermost package,
+/// not the root, only one with something to check; in the order found.
+pub fn packages_of(files: &[String], manifests: &[Manifest]) -> Vec<String> {
+    let mut packages: Vec<String> = Vec::new();
+    for file in files {
+        let owner = manifests
+            .iter()
+            .filter(|manifest| !manifest.dir.is_empty() && file.starts_with(&format!("{}/", manifest.dir)))
+            .max_by_key(|manifest| manifest.dir.len());
+        if let Some(manifest) = owner.filter(|manifest| manifest.has_checks)
+            && !packages.contains(&manifest.name)
+        {
+            packages.push(manifest.name.clone());
+        }
+    }
+    packages
+}
+
+fn is_manifest(path: &str) -> bool {
+    (path == "package.json" || path.ends_with("/package.json")) && !path.contains("node_modules/")
+}
+
+/// The packages the change from `base` to `head` (the working tree, untracked
+/// files too, without one) touches, by plain git (#366): turbo names one
+/// reason per package, picked anew each run, and a `RootInternalDepChanged`
+/// can hide a package's own `FileChanged`; this list doesn't ask turbo.
+pub fn changed_packages(dir: &Path, base: &str, head: Option<&str>) -> Vec<String> {
+    let mut diff = vec!["diff", "--name-only", base];
+    diff.extend(head);
+    let mut files: Vec<String> = git(&diff, dir).text().lines().map(String::from).collect();
+    let manifests: Vec<Manifest> = match head {
+        Some(head) => git(&["ls-tree", "-r", "--name-only", head], dir)
+            .text()
+            .lines()
+            .filter(|path| is_manifest(path))
+            .filter_map(|path| manifest_of(path, &git(&["show", &format!("{head}:{path}")], dir).out))
+            .collect(),
+        None => {
+            files.extend(
+                git(&["ls-files", "--others", "--exclude-standard"], dir)
+                    .text()
+                    .lines()
+                    .map(String::from),
+            );
+            git(&["ls-files", "--cached", "--others", "--exclude-standard"], dir)
+                .text()
+                .lines()
+                .filter(|path| is_manifest(path))
+                .filter_map(|path| manifest_of(path, &fs::read_to_string(dir.join(path)).ok()?))
+                .collect()
+        }
+    };
+    packages_of(&files, &manifests)
+}
+
+/// What a passed check of a tree left out of the change it stamps (#366):
+/// a package `changed` names that it didn't check, breadboard's cargo checks
+/// with its Rust sources changed. `passed` is the stamp's `passed`.
+pub fn gap_of(passed: &Value, changed: &[String], is_rust_changed: bool) -> Option<String> {
+    let listed = |key: &str| -> Vec<String> {
+        passed
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|list| list.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default()
+    };
+    let (packages, tasks) = (listed("packages"), listed("tasks"));
+    let mut missing: Vec<String> = changed
+        .iter()
+        .filter(|package| !packages.contains(package))
+        .cloned()
+        .collect();
+    let rust: Vec<&str> = RUST_TASKS
+        .into_iter()
+        .filter(|task| !tasks.iter().any(|known| known == task))
+        .collect();
+    if is_rust_changed && !rust.is_empty() {
+        missing.push(format!("breadboard's {}", rust.join(", ")));
+    }
+    (!missing.is_empty()).then(|| missing.join(", "))
+}
+
 /// What a check of the change from `base` to `head` runs (#336): the
-/// packages turbo says it affects, breadboard's cargo checks only with its
-/// Rust sources changed.
+/// packages turbo says it affects and those git says it touches (#366),
+/// breadboard's cargo checks only with its Rust sources changed.
 pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Result<Scope, String> {
     let output = Command::new(turbo)
         .args(["query", &affected_query(base, head)])
@@ -153,10 +258,14 @@ pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Res
     if is_rust_changed(dir, base, head) {
         tasks.extend(RUST_TASKS.iter().map(|task| task.to_string()));
     }
-    Ok(Scope {
-        tasks,
-        filters: filters_of(&answer),
-    })
+    let mut filters = filters_of(&answer);
+    for package in changed_packages(dir, base, head) {
+        let filter = format!("...{package}");
+        if !filters.contains(&filter) {
+            filters.push(filter);
+        }
+    }
+    Ok(Scope { tasks, filters })
 }
 
 fn ci_only(package: &str) -> Option<&'static str> {
@@ -463,7 +572,7 @@ pub fn command() -> ExitCode {
         write_check(
             &dir,
             json!({
-                "passed": { "sha": sha, "tree": tree, "packages": packages, "at": to_iso(now_ms()), "duration": 0 },
+                "passed": { "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": to_iso(now_ms()), "duration": 0 },
                 "failed": null, "running": null,
             }),
         );
@@ -548,7 +657,7 @@ pub fn command() -> ExitCode {
         &dir,
         json!({
             "running": null, "failed": null,
-            "passed": { "sha": sha, "tree": tree, "packages": packages, "at": at, "duration": duration },
+            "passed": { "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": at, "duration": duration },
         }),
     );
     let head = git(&["rev-parse", "HEAD"], &dir).text().to_string();
@@ -772,6 +881,97 @@ mod tests {
         assert!(is_rust_changed(&dir, &base, Some(&rust)));
         // develop moved on and was merged in: the merge base moves with it.
         assert!(!is_rust_changed(&dir, &rust, None));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn manifest(dir: &str, name: &str, has_checks: bool) -> Manifest {
+        Manifest {
+            dir: dir.into(),
+            name: name.into(),
+            has_checks,
+        }
+    }
+
+    #[test]
+    fn reads_a_package_json() {
+        assert_eq!(
+            manifest_of(
+                "packages/a/package.json",
+                r#"{ "name": "@m/a", "scripts": { "test": "x" } }"#
+            ),
+            Some(manifest("packages/a", "@m/a", true))
+        );
+        assert_eq!(
+            manifest_of("package.json", r#"{ "name": "root", "scripts": { "build": "x" } }"#),
+            Some(manifest("", "root", false))
+        );
+        assert_eq!(manifest_of("a/package.json", "{}"), None);
+    }
+
+    #[test]
+    fn a_file_belongs_to_its_innermost_package_with_checks() {
+        let manifests = [
+            manifest("", "root", true),
+            manifest("products/vita", "@m/vita", false),
+            manifest("products/vita/web", "@m/vita-web", true),
+            manifest("packages/breadboard", "@m/breadboard", true),
+            manifest("packages/breadboard-gauntlet", "@m/gauntlet", true),
+        ];
+        let files: Vec<String> = [
+            "packages/breadboard/crates/x.rs",
+            "packages/breadboard-gauntlet/src/a.mjs",
+            "products/vita/web/src/a.ts",
+            "products/vita/AGENTS.md",
+            "AGENTS.md",
+            "packages/breadboard/Cargo.toml",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            packages_of(&files, &manifests),
+            vec!["@m/breadboard", "@m/gauntlet", "@m/vita-web"]
+        );
+    }
+
+    #[test]
+    fn a_stamp_that_left_out_a_changed_package_has_a_gap() {
+        let passed = json!({ "packages": ["@m/vita-web"], "tasks": ["lint", "test"] });
+        assert_eq!(gap_of(&passed, &["@m/vita-web".into()], false), None);
+        assert_eq!(
+            gap_of(&passed, &["@m/breadboard".into(), "@m/vita-web".into()], true).as_deref(),
+            Some("@m/breadboard, breadboard's lint:rs, test:rs")
+        );
+        // A stamp from before #366 names no tasks: Rust changed, it is no check of them.
+        let old = json!({ "packages": ["@m/breadboard"] });
+        assert!(gap_of(&old, &["@m/breadboard".into()], true).is_some());
+        let full = json!({ "packages": ["@m/breadboard"], "tasks": ["lint", "lint:rs", "test:rs"] });
+        assert_eq!(gap_of(&full, &["@m/breadboard".into()], true), None);
+    }
+
+    // #366: the packages a change touches, by git alone, committed or in the working tree.
+    #[test]
+    fn git_names_the_changed_packages() {
+        let dir = repo("packages");
+        for (path, text) in [
+            (
+                "packages/breadboard/package.json",
+                r#"{ "name": "@m/breadboard", "scripts": { "test": "x" } }"#,
+            ),
+            (
+                "products/vita/ui/package.json",
+                r#"{ "name": "@m/vita-ui", "scripts": { "lint": "x" } }"#,
+            ),
+        ] {
+            fs::write(dir.join(path), text).unwrap();
+        }
+        let base = commit_all(&dir);
+        assert!(changed_packages(&dir, &base, None).is_empty());
+        fs::write(dir.join("packages/breadboard/crates/core/lib.rs"), "2\n").unwrap();
+        let rust = commit_all(&dir);
+        assert_eq!(changed_packages(&dir, &base, Some(&rust)), vec!["@m/breadboard"]);
+        assert!(changed_packages(&dir, &base, Some(&base)).is_empty());
+        fs::write(dir.join("products/vita/ui/new.ts"), "1\n").unwrap();
+        assert_eq!(changed_packages(&dir, &base, None), vec!["@m/breadboard", "@m/vita-ui"]);
         let _ = fs::remove_dir_all(&dir);
     }
 }
