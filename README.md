@@ -64,6 +64,21 @@ it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
 its own (~2 GB): use the scripts. The launcher removes such a `target/` once
 (keeping the binary), unless a cargo holds it.
 
+**A stored copy is what its key says** (#339). cargo's hash of a workspace
+crate leaves out where the workspace is, and it judges freshness by mtimes:
+in a shared `target/`, a worktree's older files count as built after another
+worktree's build, and the binary (or clippy's verdict, the test binaries) is
+the other one's. So `cargo.sh` holds a `flock` on the target for the whole
+run and, when another checkout used it last (`.breadboard-from`), cleans the
+workspace's own crates first: switching worktrees recompiles breadboard and
+core, never the dependencies. The launcher reads the sources' key under the
+store's lock, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
+binary carries it (`breadboard --source-key`). It stores a build only when
+the sources were committed and unchanged across it and the file carries the
+key, and it uses a stored copy only when that copy carries its key (found with
+`grep`, never run); one that doesn't is removed. A stamp from before #339
+counts as none, so every checkout takes a checked binary once.
+
 ## The main checkout follows develop
 
 The main checkout keeps itself on `origin/develop` (#348). `breadboard

@@ -39,7 +39,50 @@ fi
 command -v cargo >/dev/null 2>&1 || PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 
 cd "$package" || exit 1
-if command -v nice >/dev/null 2>&1; then
-  exec nice -n 10 cargo "$@"
+
+# One run at a time in the shared target/ (#339), held for the whole run:
+# the check below and the build it guards stay one step.
+if [ -z "${BREADBOARD_CARGO_HELD-}" ] && command -v flock >/dev/null 2>&1; then
+  mkdir -p "$CARGO_TARGET_DIR"
+  BREADBOARD_CARGO_HELD=1 exec flock "$CARGO_TARGET_DIR/.breadboard.lock" sh "$package/herdr/cargo.sh" "$@"
 fi
-exec cargo "$@"
+
+# cargo's hash of a workspace crate leaves out where the workspace is, and it
+# judges freshness by mtimes: after another worktree's build, this one's
+# older files count as built, and the binary, clippy's verdict and the tests
+# are the other worktree's (#339). So a checkout that takes over the target/
+# from another cleans the workspace's own crates first, the dependencies stay.
+# Another: the record names another checkout, or a cargo that doesn't keep
+# the record (a branch's older cargo.sh, a plain cargo) built after this
+# one's last run: a fingerprint newer than the record.
+from="$CARGO_TARGET_DIR/.breadboard-from"
+is_mine() {
+  [ "$(cat "$from" 2>/dev/null)" = "$package" ] || return 1
+  for prints in "$CARGO_TARGET_DIR"/*/.fingerprint; do
+    [ -d "$prints" ] || continue
+    [ -z "$(find "$prints" -maxdepth 1 -newer "$from" -print 2>/dev/null | head -n 1)" ] || return 1
+  done
+  return 0
+}
+if [ "${1-}" != fmt ] && ! is_mine; then
+  members=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$package"/crates/*/Cargo.toml 2>/dev/null)
+  if [ -n "$members" ]; then
+    specs=
+    for member in $members; do specs="$specs -p $member"; done
+    # shellcheck disable=SC2086 # one word per -p and name
+    cargo clean --quiet $specs >/dev/null 2>&1
+    # shellcheck disable=SC2086
+    cargo clean --quiet --release $specs >/dev/null 2>&1
+  fi
+  mkdir -p "$CARGO_TARGET_DIR" && printf '%s\n' "$package" >"$from"
+fi
+
+niced=
+command -v nice >/dev/null 2>&1 && niced="nice -n 10"
+[ "${1-}" = fmt ] && exec $niced cargo "$@"
+$niced cargo "$@"
+ran=$?
+# Written after the run: what it built is older than the record, what
+# another cargo builds next is newer.
+printf '%s\n' "$package" >"$from"
+exit $ran
