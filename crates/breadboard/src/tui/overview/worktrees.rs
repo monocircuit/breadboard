@@ -462,8 +462,9 @@ fn said_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
         scene.pad_to(SAID_AT);
         scene.indent(SAID_AT);
         look::say(scene, text, ratatui::style::Style::new());
+        // The age one atom: `5 min ago` never splits over two lines.
         if let Some(age) = age {
-            look::say(scene, &format!("· {age}"), theme::dim());
+            look::say(scene, &format!("·\u{a0}{}", age.replace(' ', "\u{a0}")), theme::dim());
         }
         scene.indent(0);
         scene.end_line();
@@ -993,7 +994,7 @@ mod tests {
                 "│     the title of #301",
                 "│     problem The overview's node names the topic of its",
                 "│             issue but not the problem it works on.",
-                "│     now     cause found, fix pushed · 4 min ago",
+                "│     now     cause found, fix pushed ·\u{a0}4\u{a0}min\u{a0}ago",
             ]
         );
         let second = lines

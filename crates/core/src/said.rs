@@ -63,6 +63,11 @@ pub fn problem_of(description: &str) -> Option<String> {
         paragraph.push(LEAD.replace(line, "").into_owned());
     }
     let text = plain(&paragraph.join(" "));
+    // A paragraph that leads into an example (`… under its name:`) ends as a sentence.
+    let text = match text.strip_suffix(':') {
+        Some(lead) => format!("{lead}."),
+        None => text,
+    };
     (!text.is_empty()).then(|| sentences(&text, PROBLEM_CHARS))
 }
 
@@ -209,6 +214,10 @@ mod tests {
         assert_eq!(
             problem_of(description).as_deref(),
             Some("wt:new hangs. It waits for herdr forever. More here.")
+        );
+        assert_eq!(
+            problem_of("## Goal\nA node shows who works in it, under its name:\n\n```\nx\n```").as_deref(),
+            Some("A node shows who works in it, under its name.")
         );
         assert_eq!(problem_of("## Scope\n- [ ] a"), None);
         assert_eq!(problem_of("## Goal\n\n## Scope"), None);
