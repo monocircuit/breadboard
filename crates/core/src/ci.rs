@@ -84,7 +84,9 @@ pub fn set_push_option(dir: &Path, now: i64) -> Option<PushOption> {
     let origin = git(&["remote", "get-url", "--push", "origin"]);
     let is_network = origin.is_ok && is_network_url(origin.out());
     let is_on = git(&["config", "--get", MODE_KEY]).out() != "push";
-    let is_running = crate::git::main_dir(dir).is_some_and(|main| Queue::read(&main, now).is_some());
+    let is_running = crate::git::main_dir(dir)
+        .and_then(|main| Queue::read(&main, now))
+        .is_some_and(|queue| !queue.is_dry);
     let is_queued = is_network && is_on && is_running;
     let options = git(&["config", "--get-all", "push.pushOption"]);
     let has_skip = options.lines().any(|line| line.trim() == SKIP_OPTION);
@@ -317,6 +319,8 @@ pub struct Queue {
     pub places: BTreeMap<i64, Place>,
     /// What it did last, for the band: `started !339`.
     pub last: Option<String>,
+    /// A try's queue: it starts and cancels nothing, so no push may skip CI for it.
+    pub is_dry: bool,
 }
 
 impl Queue {
@@ -338,11 +342,12 @@ impl Queue {
         } else {
             format!("CI {} running", self.slots.running)
         };
-        if waiting == 0 {
+        let text = if waiting == 0 {
             slots
         } else {
             format!("{slots} · {waiting} queued")
-        }
+        };
+        if self.is_dry { format!("{text} (dry)") } else { text }
     }
 }
 
@@ -987,6 +992,18 @@ mod tests {
             Some(PushOption::Dropped("no breadboard serve runs the CI queue".into()))
         );
         assert_eq!(options(&tree).trim(), "");
+        // A try's dry queue starts nothing: no heartbeat for the pushes.
+        write_whole(
+            &queue_file(&main),
+            &Queue {
+                at: NOW,
+                is_dry: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(set_push_option(&tree, NOW), None);
+        beat(NOW);
         assert_eq!(set_push_option(&tree, NOW), Some(PushOption::Set));
         run(&main, &["config", MODE_KEY, "push"]);
         assert_eq!(
@@ -1020,6 +1037,8 @@ mod tests {
         queue.places.insert(1, Place::Next { at: 1 });
         queue.places.insert(2, Place::Running);
         assert_eq!(queue.load_text(), "CI 3/4 slots · 1 queued");
+        queue.is_dry = true;
+        assert_eq!(queue.load_text(), "CI 3/4 slots · 1 queued (dry)");
     }
 
     #[test]

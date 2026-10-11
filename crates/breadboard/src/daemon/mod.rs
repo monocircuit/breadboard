@@ -117,13 +117,15 @@ const PROTOCOL: &str = env!("BREADBOARD_PROTOCOL");
 const TOOLS: [&str; 3] = ["herdr", "glab", "git"];
 
 /// The environment the daemon's reads depend on besides those programs.
-const ENV: [&str; 6] = [
+const ENV: [&str; 7] = [
     "HOME",
     "XDG_CONFIG_HOME",
     "HERDR_ENV",
     "HERDR_SOCKET_PATH",
     "BREADBOARD_GITLAB_URL",
     "GITLAB_TOKEN",
+    // A dry queue (a try) never shares the daemon of a live one.
+    "BREADBOARD_CI_DRY",
 ];
 
 /// What the daemon must share with its clients: its protocol, the programs

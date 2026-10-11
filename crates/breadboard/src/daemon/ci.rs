@@ -4,7 +4,9 @@
 //! where each MR stands to `.claude/ci/queue.json` for the rows. The user
 //! asked for these writes (#357, rewrite rule 6): a pipeline created, its
 //! superseded one cancelled, nothing else. Off with `git config
-//! breadboard.ci push`: pushes start their pipelines themselves then.
+//! breadboard.ci push`: pushes start their pipelines themselves then. With
+//! `BREADBOARD_CI_DRY` set (a try) it decides and says so, and writes nothing
+//! to GitLab.
 
 use breadboard_core::ci::{self, Decision, MODE_KEY, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
@@ -37,6 +39,7 @@ pub async fn schedule(main: PathBuf) {
     // The commits whose pipeline the queue cancelled for an MR ahead: queued again.
     let mut preempted: HashMap<i64, String> = HashMap::new();
     let mut preempted_at: Option<std::time::Instant> = None;
+    let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -91,7 +94,17 @@ pub async fn schedule(main: PathBuf) {
         };
         started = was_started;
         let Decision { places, start, preempt } = decision;
-        if let Some((iid, id, sha)) = preempt.filter(|_| preempted_at.is_none_or(|at| at.elapsed() >= PREEMPT_EVERY)) {
+        if is_dry {
+            last = start
+                .as_ref()
+                .map(|start| format!("would start !{}", start.iid))
+                .or(preempt
+                    .as_ref()
+                    .map(|(iid, _, _)| format!("would hold !{iid} for the MR ahead")))
+                .or(last);
+        } else if let Some((iid, id, sha)) =
+            preempt.filter(|_| preempted_at.is_none_or(|at| at.elapsed() >= PREEMPT_EVERY))
+        {
             preempted_at = Some(std::time::Instant::now());
             let main = main.clone();
             let said = tokio::task::spawn_blocking(move || {
@@ -108,7 +121,7 @@ pub async fn schedule(main: PathBuf) {
                 });
             }
         }
-        if let Some(start) = start {
+        if let Some(start) = start.filter(|_| !is_dry) {
             preempted.remove(&start.iid);
             let main = main.clone();
             let done = tokio::task::spawn_blocking(move || {
@@ -145,6 +158,7 @@ pub async fn schedule(main: PathBuf) {
             slots,
             places,
             last: last.clone(),
+            is_dry,
         };
         let _ = ci::write_whole(&ci::queue_file(&main), &queue);
     }
