@@ -824,6 +824,7 @@ mod tests {
             main_name: "platform",
             actor: super::super::actor::idle(),
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         let mrs = MergeRequests {
             open: vec![MrRow {
@@ -959,6 +960,7 @@ mod tests {
             main_name: "platform",
             actor: super::super::actor::idle(),
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         for width in [80, 120] {
             let mrs = MergeRequests {
@@ -1023,6 +1025,7 @@ mod tests {
             main_name: "platform",
             actor: super::super::actor::idle(),
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         for width in [80, 120] {
             let mrs = MergeRequests {

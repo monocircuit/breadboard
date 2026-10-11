@@ -184,6 +184,9 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
             model = models.recv(), if is_models_open => match model {
                 Some(model) => {
                     app.update(model);
+                    if app.is_over() {
+                        return Ok(());
+                    }
                     view.stale();
                     is_dirty = true;
                 }

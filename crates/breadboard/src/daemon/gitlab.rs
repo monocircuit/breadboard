@@ -43,6 +43,7 @@ pub async fn read_gitlab(
     let mut is_full = true;
     let mut has_data = false;
     let mut merged: Option<usize> = None;
+    let mut develop: Option<String> = None;
     loop {
         let ask = loop {
             if let Some(ask) = asks.borrow_and_update().clone() {
@@ -77,6 +78,12 @@ pub async fn read_gitlab(
                 let count = merged_in(&remote);
                 is_full = merged.is_some_and(|was| count > was);
                 merged = Some(count);
+                // develop moved on GitLab: the main checkout follows now, not at its next look (#348).
+                let now = develop_in(&remote);
+                if now.is_some() && develop.is_some() && now != develop {
+                    breadboard_core::main_update::wake(&main);
+                }
+                develop = now.or(develop);
                 Ok(Box::new(remote))
             }
             Err(error) => {
@@ -113,6 +120,16 @@ fn merged_in(remote: &RemoteOf) -> usize {
             .filter(|part| part.mr.as_ref().is_some_and(|mr| mr.is_merged()))
             .count(),
         _ => 0,
+    }
+}
+
+/// What says develop moved: its head on origin (the view of everything), or
+/// its newest pipeline (an orchestration's). None: the read has neither.
+fn develop_in(remote: &RemoteOf) -> Option<String> {
+    match remote {
+        RemoteOf::Everything(remote) => remote.head.clone(),
+        RemoteOf::Orchestration(remote) => remote.develop.as_ref().map(|pipeline| pipeline.id.to_string()),
+        RemoteOf::Worktree(_) => None,
     }
 }
 

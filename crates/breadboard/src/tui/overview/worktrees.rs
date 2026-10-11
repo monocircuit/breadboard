@@ -891,6 +891,7 @@ mod tests {
             main_name: "platform",
             actor,
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         let mut scene = Scene::new(width);
         tree(&mut scene, worktrees, &ctx);

@@ -23,10 +23,14 @@
 //! build of other sources never talks to another's daemon and a gauntlet
 //! world (its own herdr, glab, HOME) never reaches the user's. It only reads (rewrite rule 6): what an overview does
 //! stays in the overview. An overview that can't reach it reads by itself.
+//! One exception (#348, `keep_up`): it fast-forwards the main checkouts of
+//! its overviews to origin/develop, when that is safe, and goes on in a
+//! build installed over its binary.
 
 pub mod client;
 mod feed;
 pub mod gitlab;
+mod keep_up;
 mod serve;
 
 pub use gitlab::{Feed, read_gitlab};

@@ -93,7 +93,7 @@ pub fn main(args: &[String]) -> ExitCode {
     let mut args = args_of(args, &cwd);
     args.is_once |= !std::io::stdout().is_terminal();
     // `here` decides the → of the view of everything: where pnpm was started.
-    let here = std::env::var_os("INIT_CWD").map(PathBuf::from).unwrap_or(cwd);
+    let here = std::env::var_os("INIT_CWD").map(PathBuf::from).unwrap_or(cwd.clone());
     let Some(reader) = LocalReader::new(&here, args.view.clone()) else {
         eprintln!("overview: {} is in no git repo", here.display());
         return ExitCode::FAILURE;
@@ -105,6 +105,14 @@ pub fn main(args: &[String]) -> ExitCode {
     if args.is_once {
         return once(app, reader);
     }
+    // The folds of the overview this one replaced (#348): it went on in a new build.
+    if let Some(folds) = std::env::var(RESUME)
+        .ok()
+        .and_then(|folds| serde_json::from_str(&folds).ok())
+    {
+        app.folds = folds;
+    }
+    let binary = crate::binary::Started::now();
     let runtime = match super::runtime() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -121,8 +129,39 @@ pub fn main(args: &[String]) -> ExitCode {
     act::start(&mut app, sender.clone());
     daemon::client::share_reads();
     read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
-    runtime.spawn(read_gitlab(main, view_key(&args.view), asked, refreshes, sender));
-    super::serve(runtime, &mut app, models)
+    runtime.spawn(read_gitlab(
+        main,
+        view_key(&args.view),
+        asked,
+        refreshes,
+        sender.clone(),
+    ));
+    let replaced = std::sync::Arc::new(binary);
+    runtime.spawn(watch_binary(replaced.clone(), sender));
+    let code = super::serve(runtime, &mut app, models);
+    if app.is_replaced {
+        // Its arguments as they were given: from where it was started.
+        let _ = std::env::set_current_dir(&cwd);
+        let folds = serde_json::to_string(&app.folds).unwrap_or_default();
+        let error = replaced.exec(std::env::args_os().skip(1), &[(RESUME, folds)]);
+        eprintln!("overview: the new build didn't start: {error}");
+    }
+    code
+}
+
+/// The folds an overview hands the build it goes on in.
+const RESUME: &str = "BREADBOARD_RESUME_FOLDS";
+
+/// Says `Replaced` once a build was installed over this binary, and again
+/// every look while the overview waits for its actor to finish.
+async fn watch_binary(binary: std::sync::Arc<crate::binary::Started>, sender: mpsc::UnboundedSender<Msg>) {
+    let mut look = tokio::time::interval(Duration::from_millis(LOCAL_EVERY_MS as u64));
+    loop {
+        look.tick().await;
+        if binary.is_replaced() && sender.send(Msg::Replaced).is_err() {
+            return;
+        }
+    }
 }
 
 /// `--once`: the local read, then GitLab's, the frame printed (a print never acts).
@@ -241,6 +280,8 @@ pub enum Msg {
     Gitlab(Feed),
     /// What the actor did, back on the view (act.rs).
     Acted(actor::Effect),
+    /// A build was installed over this binary: the overview goes on in it (#348).
+    Replaced,
 }
 
 /// Where GitLab stands for the view.
@@ -265,8 +306,9 @@ impl GitlabState {
     }
 }
 
-/// The user's folds, kept over redraws; None: the model's default.
-#[derive(Debug, Clone, Copy, Default)]
+/// The user's folds, kept over redraws and into a new build; None: the model's default.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Folds {
     pub removed: Option<bool>,
     pub is_queued_folded: bool,
@@ -289,6 +331,8 @@ pub struct Ctx<'a> {
     /// What the overview does, and its words for the rows while it does it.
     pub actor: &'a actor::Actor,
     pub words: &'a actor::view::Words,
+    /// How the main checkout followed develop (#348): the band's, `true` a warning.
+    pub develop: Option<&'a (String, bool)>,
 }
 
 /// The overview: what was read, the model of its view, the user's folds.
@@ -307,10 +351,16 @@ pub struct Overview {
     refresh: Option<mpsc::UnboundedSender<()>>,
     /// Wakes the local reader: after something the actor did, its result shows at once.
     wake_local: Option<std::sync::mpsc::SyncSender<()>>,
+    /// The clone's shared folder (`main_update::store_of`): where the band reads how develop was updated.
+    store: Option<PathBuf>,
+    /// What the band says of the main checkout's update (#348), read with every local read; `true`: a warning.
+    develop: Option<(String, bool)>,
     /// What the view of a worktree started: delete armed, stack, migrations, nvim.
     worktree: worktree_view::State,
     actor: actor::Actor,
     words: actor::view::Words,
+    /// A build was installed over its binary: it ends once its actor is idle and goes on in it.
+    is_replaced: bool,
 }
 
 impl Overview {
@@ -334,9 +384,12 @@ impl Overview {
             folds: Folds::default(),
             refresh: None,
             wake_local: None,
+            store: breadboard_core::main_update::store_of(main),
+            develop: None,
             worktree: worktree_view::State::default(),
             actor: actor::Actor::new(&args.view, main, args.is_once, args.is_herdr),
             words: actor::view::Words::new(),
+            is_replaced: false,
         }
     }
 
@@ -349,6 +402,7 @@ impl Overview {
             main_name: &self.main_name,
             actor: &self.actor,
             words: &self.words,
+            develop: self.develop.as_ref(),
         }
     }
 
@@ -431,6 +485,10 @@ impl App for Overview {
             matches!(message, Msg::Gitlab(Feed::Remote { .. })),
         );
         match message {
+            Msg::Replaced => {
+                self.is_replaced = true;
+                return;
+            }
             Msg::Acted(effect) => {
                 effect(self);
                 // A full channel: a look is already due.
@@ -439,7 +497,13 @@ impl App for Overview {
                 }
                 return;
             }
-            Msg::Local(local) => self.local = Some(*local),
+            Msg::Local(local) => {
+                self.local = Some(*local);
+                self.develop = self
+                    .store
+                    .as_deref()
+                    .and_then(|store| breadboard_core::main_update::band(&breadboard_core::main_update::read(store)));
+            }
             Msg::Gitlab(Feed::Remote { result, at, rate }) => {
                 self.gitlab.rate = rate;
                 match result {
@@ -486,6 +550,10 @@ impl App for Overview {
     fn picked(&mut self, picked: Option<&Act>) -> Flow {
         worktree_view::picked(self, picked)
     }
+
+    fn is_over(&self) -> bool {
+        self.is_replaced && !self.actor.is_busy()
+    }
 }
 
 #[cfg(test)]
@@ -510,5 +578,34 @@ mod tests {
         let once = args(&["--once", "--herdr"]);
         assert_eq!(once.view, View::Everything);
         assert!(once.is_once && once.is_herdr);
+    }
+
+    #[test]
+    fn a_replaced_binary_ends_the_view_once_its_actor_is_idle() {
+        let main = Path::new("/nowhere");
+        let mut app = Overview::new(&args(&["--once"]), main);
+        assert!(!app.is_over());
+        app.update(Msg::Replaced);
+        assert!(app.is_over());
+        // A merge on its thread: not cut off, the next look ends it.
+        app.actor.merges.of.insert(
+            7,
+            actor::merge::Merge {
+                phase: actor::merge::Phase::Running,
+                error: None,
+                seq: 0,
+            },
+        );
+        assert!(!app.is_over());
+        app.actor.merges.of.clear();
+        assert!(app.is_over());
+        // Its folds go along as text and come back.
+        let folds = Folds {
+            is_merged_folded: true,
+            removed: Some(false),
+            ..Folds::default()
+        };
+        let back: Folds = serde_json::from_str(&serde_json::to_string(&folds).unwrap()).unwrap();
+        assert!(back.is_merged_folded && back.removed == Some(false) && !back.is_queued_folded);
     }
 }

@@ -324,6 +324,8 @@ impl Running {
             app.refresh_gitlab();
         });
         if let Ok((fresh, _)) = result {
+            // The main checkout takes it now, not at its next look (#348).
+            breadboard_core::main_update::wake(&self.main);
             let told = self.carry_on(&fresh);
             self.poster.post(move |app: &mut Overview| {
                 for (who, about, line, is_in) in told {

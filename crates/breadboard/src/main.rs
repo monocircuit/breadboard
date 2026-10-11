@@ -1,6 +1,7 @@
 //! `breadboard <command> [args…]`: the commands keep the names of the root
 //! package.json (`overview`, `wt:<cmd>`, `stack:<cmd>`, …).
 
+mod binary;
 mod cli;
 mod daemon;
 mod herdr;

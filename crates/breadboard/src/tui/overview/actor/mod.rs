@@ -127,6 +127,16 @@ impl Actor {
         }
     }
 
+    /// Whether it does something on a thread of this process that an exec
+    /// would cut off: a merge, the end of the orchestration.
+    pub fn is_busy(&self) -> bool {
+        self.merges
+            .of
+            .values()
+            .any(|merge| merge.phase == merge::Phase::Running)
+            || self.end.as_ref().is_some_and(|end| end.is_running)
+    }
+
     /// The view's channel: effects come back on it; the actor's thread starts.
     pub fn start(&mut self, sender: UnboundedSender<Msg>) {
         let (jobs, queue) = std::sync::mpsc::channel::<Job>();

@@ -52,6 +52,11 @@ pub trait App {
     fn picked(&mut self, _picked: Option<&Self::Action>) -> Flow {
         Flow::Same
     }
+    /// Whether the app ends by itself after a model came in (the overview
+    /// whose binary a build replaced goes on in the new one, #348).
+    fn is_over(&self) -> bool {
+        false
+    }
 }
 
 /// What the app is asked to do.
