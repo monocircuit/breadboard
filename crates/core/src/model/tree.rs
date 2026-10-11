@@ -1843,7 +1843,7 @@ mod tests {
         };
         assert_eq!(
             text_of(&head_of(&tree, Some(THRESHOLD + super::super::memory::STACK))),
-            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)"
+            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.0 GB free (shared stack below 1.0 GB)"
         );
         let few = TreeOf {
             live: vec![node("x", Some(Tone::You))],

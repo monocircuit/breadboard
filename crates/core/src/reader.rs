@@ -783,7 +783,11 @@ impl LocalReader {
             .map(|(at, worktree)| (worktree, at == 0))
             .collect();
         let trees = self.trees(&list, projects.as_ref(), false, &[], now);
-        EverythingLocal { trees, projects }
+        let epics = git::orchestrator_checkouts(&self.main)
+            .iter()
+            .filter_map(|dir| local::read_env(&env_file_of(dir))?.get("COMPOSE_PROJECT_NAME").cloned())
+            .collect();
+        EverythingLocal { trees, projects, epics }
     }
 
     /// What a GitLab read of the view asks for, from a local read.
