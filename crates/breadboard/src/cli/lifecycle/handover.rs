@@ -110,6 +110,8 @@ pub struct Issue {
     /// Why it can't get a worktree: closed, there already, claimed on origin.
     pub why: Option<String>,
     pub branch: String,
+    /// Its milestone's title: which epic it belongs to (#350).
+    pub milestone: Option<String>,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -297,6 +299,10 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         is_fix,
         dir,
         why,
+        milestone: found
+            .get("milestone")
+            .and_then(|milestone| str_of(milestone, "title"))
+            .map(String::from),
     })
 }
 
@@ -1521,6 +1527,7 @@ mod tests {
             dir: PathBuf::from("/r/p-5-t"),
             why: None,
             branch: "feature/5-t".into(),
+            milestone: None,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1542,6 +1549,7 @@ mod tests {
             dir: PathBuf::from("/r/p-247-t"),
             why: None,
             branch: "fix/247-t".into(),
+            milestone: None,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);
