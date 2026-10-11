@@ -213,7 +213,7 @@ pub struct OrchestrationModel {
     /// itself: the live overview writes them into the worktrees (#344).
     pub turn_records: Vec<(PathBuf, TurnRecord)>,
     /// The epic's head row (#350), None for one that works on develop.
-    pub epic: Option<Vec<Span>>,
+    pub epic: Option<Vec<Vec<Span>>>,
 }
 
 /// An action of ACTIONS: a try opens its spot, a merge merges on two clicks.

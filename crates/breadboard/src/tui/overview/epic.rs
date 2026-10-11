@@ -8,8 +8,9 @@ use breadboard_core::model::orchestration::OrchestrationModel;
 
 pub fn build(page: &mut Page<Act>, model: &OrchestrationModel) {
     let Some(row) = &model.epic else { return };
+    let parts: Vec<_> = row.iter().map(|part| look::spans(part)).collect();
     page.section("EPIC", |scene| {
         let room = scene.width();
-        look::whole(scene, &look::words_of(&look::spans(row)), room);
+        look::whole(scene, &parts, room);
     });
 }

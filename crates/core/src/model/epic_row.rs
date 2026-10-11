@@ -3,6 +3,8 @@
 //! yet in develop, its last pipeline, and its milestone MR into develop.
 
 use super::orchestration::OrchestrationLocal;
+#[cfg(test)]
+use super::text_of;
 use super::tree::pipeline_mark;
 use super::{Paint, Span};
 use crate::epic::is_in_epic;
@@ -16,13 +18,14 @@ pub struct EpicLocal {
     pub behind: Option<u64>,
 }
 
-/// The row: one line of spans, the milestone MR's link in it.
-pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Vec<Span>> {
+/// The row as parts, each whole on a line where it fits (the view parts
+/// them with ` · `); the milestone MR's link in its part.
+pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Vec<Vec<Span>>> {
     let epic = local.epic.as_ref()?;
-    let mut row = vec![Span::new(epic.branch.clone(), Paint::Cyan)];
+    let mut row = vec![vec![Span::new(epic.branch.clone(), Paint::Cyan)]];
     match epic.behind {
-        Some(0) => row.push(Span::dim("  has develop")),
-        Some(behind) => row.push(Span::new(format!("  {behind} behind develop"), Paint::Yellow)),
+        Some(0) => row.push(vec![Span::dim("has develop")]),
+        Some(behind) => row.push(vec![Span::new(format!("{behind} behind develop"), Paint::Yellow)]),
         None => {}
     }
     let Some(remote) = remote else {
@@ -38,44 +41,44 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
         })
         .count();
     if in_epic > 0 {
-        row.push(Span::dim(format!("  {in_epic} in epic")));
+        row.push(vec![Span::dim(format!("{in_epic} in epic"))]);
     }
     let Some(found) = remote.epic.as_ref() else {
         return Some(row);
     };
     if let Some(pipeline) = &found.pipeline {
-        row.push(Span::plain("  "));
-        let mark = pipeline_mark(Some(&Pipeline {
+        row.push(vec![pipeline_mark(Some(&Pipeline {
             id: pipeline.id,
             status: pipeline.status.clone(),
             web_url: pipeline.url.clone(),
             ..Pipeline::default()
-        }));
-        row.push(mark);
+        }))]);
     }
-    match &found.mr {
-        Some(mr) => {
-            row.push(Span::plain("  "));
-            row.push(Span::link(format!("!{}", mr.iid), Some(&mr.url)));
-            let state = if mr.is_draft {
-                " draft → develop"
+    row.push(match &found.mr {
+        Some(mr) => vec![
+            Span::link(format!("!{}", mr.iid), Some(&mr.url)),
+            Span::dim(if mr.is_draft {
+                " draft → develop "
             } else {
-                " → develop"
-            };
-            row.push(Span::dim(state));
-            row.push(Span::plain(" "));
-            row.push(pipeline_mark(mr.pipeline.as_ref()));
-        }
-        None => row.push(Span::dim("  no MR into develop yet")),
-    }
+                " → develop "
+            }),
+            pipeline_mark(mr.pipeline.as_ref()),
+        ],
+        None => vec![Span::dim("no MR into develop yet")],
+    });
     Some(row)
+}
+
+/// The parts as one text, as the view parts them.
+#[cfg(test)]
+fn text_of_parts(parts: &[Vec<Span>]) -> String {
+    parts.iter().map(|part| text_of(part)).collect::<Vec<_>>().join(" · ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gitlab::{BranchRemote, DevelopPipeline, EpicRemote, Issue, Mr};
-    use crate::model::text_of;
     use crate::record::{IssueEntry, Record};
 
     fn local(behind: Option<u64>) -> OrchestrationLocal {
@@ -104,8 +107,8 @@ mod tests {
             "no epic: no row"
         );
         assert_eq!(
-            text_of(&epic_row_of(&local(Some(3)), None).unwrap()),
-            "epic/15-b  3 behind develop"
+            text_of_parts(&epic_row_of(&local(Some(3)), None).unwrap()),
+            "epic/15-b · 3 behind develop"
         );
         let mut remote = Remote::default();
         remote.of.insert(
@@ -132,8 +135,8 @@ mod tests {
             mr: None,
         }));
         assert_eq!(
-            text_of(&epic_row_of(&local(Some(0)), Some(&remote)).unwrap()),
-            "epic/15-b  has develop  1 in epic  ✓ passed  no MR into develop yet"
+            text_of_parts(&epic_row_of(&local(Some(0)), Some(&remote)).unwrap()),
+            "epic/15-b · has develop · 1 in epic · ✓ passed · no MR into develop yet"
         );
         remote.epic.as_mut().unwrap().mr = Some(Mr {
             iid: 400,
@@ -141,8 +144,8 @@ mod tests {
             ..Mr::default()
         });
         assert_eq!(
-            text_of(&epic_row_of(&local(None), Some(&remote)).unwrap()),
-            "epic/15-b  1 in epic  ✓ passed  !400 draft → develop no pipeline"
+            text_of_parts(&epic_row_of(&local(None), Some(&remote)).unwrap()),
+            "epic/15-b · 1 in epic · ✓ passed · !400 draft → develop no pipeline"
         );
     }
 }
