@@ -91,6 +91,19 @@ pub struct Diff {
     /// Its files its base changed too since the merge base.
     pub with_base: Vec<String>,
     pub with_worktrees: Vec<Overlap>,
+    /// The branch it is against (#349): develop, or an epic; empty: develop.
+    pub base: String,
+}
+
+impl Diff {
+    /// The branch it is against.
+    pub fn base(&self) -> &str {
+        if self.base.is_empty() {
+            crate::git::DEVELOP
+        } else {
+            &self.base
+        }
+    }
 }
 
 fn lines(text: &str) -> impl Iterator<Item = &str> {
@@ -135,7 +148,8 @@ fn statuses(dir: &Path, base: &str) -> HashMap<String, char> {
 
 /// The diff of `dir` against its base, without the overlaps with other worktrees; None without a merge base.
 pub fn own_diff_of(dir: &Path) -> Option<Diff> {
-    let remote = crate::git::base_of(dir).remote;
+    let against = crate::git::base_of(dir);
+    let remote = against.remote.clone();
     let base = crate::git::merge_base(dir)?;
     let status = git(dir, &["status", "--porcelain", "-uall"]).stdout;
     let count = |range: &str| crate::git::count(dir, range).unwrap_or(0);
@@ -213,6 +227,7 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         areas,
         with_base,
         with_worktrees: Vec::new(),
+        base: against.local,
     })
 }
 

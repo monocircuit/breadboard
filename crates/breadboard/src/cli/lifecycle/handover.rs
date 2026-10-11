@@ -493,7 +493,7 @@ pub fn before_line(issues: &[(i64, Option<String>)]) -> Option<String> {
         })
         .collect();
     Some(format!(
-        "You are a reused agent: you worked on {} before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged.",
+        "You are a reused agent: you worked on {} before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged.",
         list.join(", ")
     ))
 }
@@ -641,6 +641,18 @@ impl Made {
 /// may fail after the setup (#130), so the worktree counts when it is there.
 /// The one for a fresh start (the setup group's) and a handover.
 pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Made {
+    // One issue, one worktree, one MR (#349): never a branch that claims another issue.
+    let claimed = breadboard_core::git::issue_of_branch(&issue.branch);
+    if claimed.and_then(|claimed| i64::try_from(claimed).ok()) != Some(issue.number) {
+        return Made {
+            is_there: false,
+            failed: Some(format!(
+                "#{} gets a worktree of its own, {} claims another issue",
+                issue.number, issue.branch
+            )),
+            status: None,
+        };
+    }
     let mut args = vec!["wt:new", issue.feature.as_str(), "--origin", name];
     if issue.is_fix {
         args.push("--fix");
@@ -1601,7 +1613,7 @@ mod tests {
         assert_eq!(before_line(&[]), None);
         assert_eq!(
             before_line(&[(3, Some("a".into())), (4, None)]).unwrap(),
-            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged."
+            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged."
         );
     }
 

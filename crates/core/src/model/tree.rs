@@ -655,13 +655,11 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let Some((_, _, mine)) = works.iter().find(|(at, _, _)| *at == index) else {
             return Vec::new();
         };
-        let develop = issues[index]
-            .tree
-            .as_ref()
-            .map(|tree| tree.on_base.clone())
-            .unwrap_or_default();
+        let tree = issues[index].tree.as_ref();
+        let develop = tree.map(|tree| tree.on_base.clone()).unwrap_or_default();
+        // Named after its base: develop, or its epic (#349).
         let develop = (!develop.is_empty()).then(|| Overlap {
-            name: "develop".into(),
+            name: tree.map_or_else(|| "develop".into(), |tree| tree.base.local.clone()),
             files: develop,
         });
         let others = works

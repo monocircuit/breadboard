@@ -398,7 +398,7 @@ fn resolve(app: &mut Overview, iid: i64) {
         let who = breadboard_core::git::feature_of(&main, &tree.dir);
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
-            let about = format!("to merge develop in and resolve the conflicts of !{}", mr.iid);
+            let about = format!("to merge {} in and resolve the conflicts of !{}", mr.target(), mr.iid);
             if is_sent {
                 app.actor.told(&who, &about, &line, true);
             } else {

@@ -208,7 +208,7 @@ fn collision(
     file_line(scene, prefix, &whole(files), NAMES, suffix, at, place, WRAP);
 }
 
-/// DIFF's title after its name: where it stands against develop.
+/// DIFF's title after its name: where it stands against its base.
 pub fn note(diff: &Diff) -> String {
     let mut counts = vec![format!("{} ahead", diff.ahead), format!("{} behind", diff.behind)];
     if diff.uncommitted > 0 {
@@ -221,7 +221,7 @@ pub fn note(diff: &Diff) -> String {
     } else {
         ""
     };
-    format!("against develop  {}{hint}", counts.join(" · "))
+    format!("against {}  {}{hint}", diff.base(), counts.join(" · "))
 }
 
 pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&Shown>) {
@@ -241,9 +241,9 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&S
     if !diff.with_base.is_empty() {
         collision(
             scene,
-            vec![look::span("also changed on develop:", Style::new())],
+            vec![look::span(format!("also changed on {}:", diff.base()), Style::new())],
             &diff.with_base,
-            Some("merge develop in while it is small"),
+            Some(&format!("merge {} in while it is small", diff.base())),
             "develop",
             &place,
         );
