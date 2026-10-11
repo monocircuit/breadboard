@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod check;
+pub mod ci;
 pub mod conversations;
 pub mod git;
 pub mod gitlab;
