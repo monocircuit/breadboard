@@ -11,6 +11,7 @@ pub mod json;
 pub mod local;
 pub mod lock;
 pub mod model;
+pub mod permissions;
 pub mod reader;
 pub mod record;
 pub mod said;
