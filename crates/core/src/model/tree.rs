@@ -7,6 +7,7 @@
 
 use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
+use super::boxes::{BoxSection, all_sections_of};
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
 use super::develop::Migrations;
@@ -26,6 +27,7 @@ use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
+use crate::said::{Now, now_of};
 use crate::setups::Setup;
 use crate::time::{ago, clock, parse_iso};
 use crate::wait::waits_text;
@@ -288,6 +290,13 @@ pub struct Node {
     pub migrations_at: i64,
     pub docker_at: i64,
     pub title: String,
+    /// Its issue's boxes one by one, as its fold lists them (#346); none without a worktree.
+    pub boxes: Vec<BoxSection>,
+    /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
+    /// only where its worktree is.
+    pub problem: Option<String>,
+    /// What its agent is on now (#341): its note or its last answer's first line.
+    pub now: Option<Now>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -661,13 +670,11 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let Some((_, _, mine)) = works.iter().find(|(at, _, _)| *at == index) else {
             return Vec::new();
         };
-        let develop = issues[index]
-            .tree
-            .as_ref()
-            .map(|tree| tree.on_develop.clone())
-            .unwrap_or_default();
+        let tree = issues[index].tree.as_ref();
+        let develop = tree.map(|tree| tree.on_base.clone()).unwrap_or_default();
+        // Named after its base: develop, or its epic (#349).
         let develop = (!develop.is_empty()).then(|| Overlap {
-            name: "develop".into(),
+            name: tree.map_or_else(|| "develop".into(), |tree| tree.base.local.clone()),
             files: develop,
         });
         let others = works
@@ -804,6 +811,24 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .map(|found| found.title.clone())
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
+                boxes: match (tree, found) {
+                    (Some(tree), Some(found)) => all_sections_of(
+                        &found.boxes,
+                        mr.map(|mr| (mr.iid, &mr.boxes[..])),
+                        &tree.actions,
+                        &tree.answered,
+                    ),
+                    _ => Vec::new(),
+                },
+                problem: tree.and(found).and_then(|found| found.problem.clone()),
+                now: tree.and_then(|tree| {
+                    let claude = tree.claude.as_ref();
+                    now_of(
+                        tree.note.as_ref(),
+                        claude.and_then(|claude| claude.answer.as_deref()),
+                        claude.and_then(|claude| claude.answer_at.or(claude.at)),
+                    )
+                }),
                 go,
             }
         })
@@ -1241,7 +1266,7 @@ mod tests {
                 ahead: 1,
                 behind: 3,
                 files: files.iter().map(|file| file.to_string()).collect(),
-                on_develop: on_develop.iter().map(|file| file.to_string()).collect(),
+                on_base: on_develop.iter().map(|file| file.to_string()).collect(),
                 has_env: true,
                 app_port: 3000,
                 has_own_port: true,
@@ -1772,6 +1797,9 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: String::new(),
+            boxes: Vec::new(),
+            problem: None,
+            now: None,
             go: Go::Nothing,
         }
     }
@@ -1815,7 +1843,7 @@ mod tests {
         };
         assert_eq!(
             text_of(&head_of(&tree, Some(THRESHOLD + super::super::memory::STACK))),
-            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)"
+            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.0 GB free (shared stack below 1.0 GB)"
         );
         let few = TreeOf {
             live: vec![node("x", Some(Tone::You))],

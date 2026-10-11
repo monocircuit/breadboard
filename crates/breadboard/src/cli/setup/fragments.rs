@@ -551,12 +551,8 @@ fn base_of(root: &Path) -> Option<String> {
         .ok()
         .filter(|sha| !sha.is_empty())
         .or_else(|| {
-            Some(
-                git(&["merge-base", &breadboard_core::git::base(root), "HEAD"], root)
-                    .text()
-                    .to_string(),
-            )
-            .filter(|sha| !sha.is_empty())
+            let base = breadboard_core::git::base_of(root).remote;
+            Some(git(&["merge-base", &base, "HEAD"], root).text().to_string()).filter(|sha| !sha.is_empty())
         })
 }
 
@@ -779,7 +775,7 @@ fn check(root: &Path, args: &Args) {
     let Some(base) = base_of(root) else {
         fail(&format!(
             "no base to compare with (fetch {})",
-            breadboard_core::git::base(root)
+            breadboard_core::git::base_of(root).remote
         ))
     };
     let changed: Vec<(String, String)> = git(&["diff", "--name-status", "--no-renames", &base, "HEAD"], root)

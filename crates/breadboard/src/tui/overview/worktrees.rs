@@ -8,13 +8,14 @@
 //! other worktrees (#332), each file a click into that worktree's nvim,
 //! whether a merge of develop conflicts, and the migrations its database
 //! lacks with `▶ pnpm pg:migrate` (STACK's and DEVELOP's lines, #332);
-//! then its title, wrapped under the name (#304), the stems of the tree in
+//! then its title, wrapped under the name (#304), the problem it works on
+//! and what its agent is on now (#341), the stems of the tree in
 //! front of every line. The queue and the done ones fold
 //! (#259); a click anywhere on a node goes to its worktree's space, else to
 //! its issue's page; hover lights the whole node (#296).
 
 use super::actor::spawn::Run;
-use super::{Act, Ctx, Fold, look};
+use super::{Act, Ctx, Fold, boxes, look};
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme;
 use crate::tui::{Page, Scene};
@@ -23,6 +24,7 @@ use breadboard_core::model::orchestration::OrchestrationModel;
 use breadboard_core::model::order::Go;
 use breadboard_core::model::tree::{AgentLine, Node, Worktrees};
 use breadboard_core::model::{self, Docker, Paint, counted};
+use breadboard_core::time::ago;
 use ratatui::layout::Rect;
 use ratatui::text::Span;
 
@@ -438,6 +440,8 @@ fn node_lines(
             }
             look::say(scene, &node.title, theme::dim());
             scene.end_line();
+            said_lines(scene, node, ctx);
+            boxes_line(scene, node, ctx);
         });
     };
     if node.go == Go::Nothing {
@@ -446,6 +450,65 @@ fn node_lines(
         scene.block(Act::Go(node.go.clone()), draw);
     }
 }
+
+/// `▸ 2/6 boxes · 2 open` under the title, the fold of its issue's boxes
+/// (#346): a click or Enter lists them under it, another folds them. None
+/// without boxes, and none for `--once`.
+fn boxes_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    let Some(number) = node.number.filter(|_| !node.boxes.is_empty() && !ctx.is_once) else {
+        return;
+    };
+    let all = node.boxes.iter().flat_map(|section| &section.boxes);
+    let (ticked, total) = all.fold((0, 0), |(ticked, total), line| {
+        (ticked + usize::from(line.is_ticked), total + 1)
+    });
+    let is_open = ctx.folds.boxes.worktrees.contains(&number);
+    scene.block(Act::Fold(Fold::TreeBoxes(number)), |scene| {
+        let mut spans = vec![boxes::mark(is_open), look::dim(format!("{ticked}/{total} boxes"))];
+        if ticked < total {
+            spans.push(look::span(
+                format!(" · {} open", total - ticked),
+                theme::tone(theme::Tone::Yellow),
+            ));
+        }
+        scene.atom_gap(spans, 0);
+        scene.end_line();
+        if is_open {
+            boxes::list(scene, &node.boxes, 2);
+        }
+    });
+}
+
+/// What the node says of its work in plain words (#341), each wrapped under
+/// its text: `problem` from its issue, then `now` (its agent's note) or
+/// `said` (the first line of its last answer) with how long ago.
+fn said_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    if !node.has_tree {
+        return;
+    }
+    let mut labeled = |label: &str, text: &str, age: Option<String>| {
+        scene.atom(vec![look::dim(label)]);
+        scene.pad_to(SAID_AT);
+        scene.indent(SAID_AT);
+        look::say(scene, text, ratatui::style::Style::new());
+        // The age one atom: `5 min ago` never splits over two lines.
+        if let Some(age) = age {
+            look::say(scene, &format!("·\u{a0}{}", age.replace(' ', "\u{a0}")), theme::dim());
+        }
+        scene.indent(0);
+        scene.end_line();
+    };
+    if let Some(problem) = &node.problem {
+        labeled("problem", problem, None);
+    }
+    if let Some(now) = &node.now {
+        let label = if now.is_note { "now" } else { "said" };
+        labeled(label, &now.text, now.at.map(|at| ago(at, ctx.now)));
+    }
+}
+
+/// Where the text of `problem` and `now` starts, 1 after the label `problem`.
+const SAID_AT: u16 = 8;
 
 /// `● Mira Albrecht · 3 issues · 2 MRs merged` (#292): the dot in the colour
 /// of whom the agent waits for, its name, what it did in this orchestration.
@@ -530,14 +593,14 @@ const NAMED: usize = 3;
 fn collision_line(scene: &mut Scene<Act>, node: &Node) {
     let mut groups: Vec<(Vec<&str>, Vec<&String>)> = Vec::new();
     for overlap in &node.collides {
-        let is_develop = overlap.name == DEVELOP;
+        let is_develop = is_base(&overlap.name);
         let files = develop_files(node, overlap);
         if files.is_empty() {
             continue;
         }
         match groups
             .iter_mut()
-            .find(|(names, known)| !is_develop && names[0] != DEVELOP && *known == files)
+            .find(|(names, known)| !is_develop && !is_base(names[0]) && *known == files)
         {
             Some((names, _)) => names.push(&overlap.name),
             None => groups.push((vec![&overlap.name], files)),
@@ -562,12 +625,12 @@ fn collision_line(scene: &mut Scene<Act>, node: &Node) {
     let is_clean = node.conflicts.as_ref().is_some_and(Vec::is_empty);
     for (i, (names, files)) in groups.iter().enumerate() {
         for (at, name) in names.iter().enumerate() {
-            let mut atom = vec![if *name == DEVELOP {
+            let mut atom = vec![if is_base(name) {
                 look::bold(name)
             } else {
                 look::span(name, look::pink())
             }];
-            if *name == DEVELOP && is_clean {
+            if is_base(name) && is_clean {
                 atom.push(look::dim(", merges cleanly"));
             }
             atom.push(Span::raw(if at + 1 < names.len() { "," } else { ":" }));
@@ -600,7 +663,7 @@ fn develop_files<'a>(node: &Node, overlap: &'a model::diff::Overlap) -> Vec<&'a 
     overlap
         .files
         .iter()
-        .filter(|file| overlap.name != DEVELOP || !conflicts.contains(file))
+        .filter(|file| !is_base(&overlap.name) || !conflicts.contains(file))
         .collect()
 }
 
@@ -622,8 +685,14 @@ fn conflict_line(scene: &mut Scene<Act>, node: &Node) {
             line: None,
         })
     };
+    let base = node
+        .collides
+        .iter()
+        .map(|overlap| overlap.name.as_str())
+        .find(|name| is_base(name))
+        .unwrap_or(DEVELOP);
     scene.atom(vec![look::span(
-        "✗ a merge of develop conflicts in",
+        format!("✗ a merge of {base} conflicts in"),
         look::style_of(&Paint::Red),
     )]);
     let named = files.len().min(CONFLICTS_NAMED);
@@ -765,6 +834,12 @@ pub fn migrate_run(dir: &std::path::Path) -> String {
 /// The name of develop among the collisions (core's tree).
 const DEVELOP: &str = "develop";
 
+/// Whether a collision is with the worktree's base, not another worktree:
+/// develop or a branch (`epic/12-x`); worktrees are named `#12` or kebab-case.
+fn is_base(name: &str) -> bool {
+    name == DEVELOP || name.contains('/')
+}
+
 /// The shortest end of `file`'s path no other of `all` ends in: `tree.mjs`,
 /// `web/src/index.ts` beside `core/src/index.ts`.
 fn short_name(file: &str, all: &[&str]) -> String {
@@ -814,6 +889,7 @@ mod tests {
     use breadboard_core::model::Tone;
     use breadboard_core::model::diff::Overlap;
     use breadboard_core::model::tree::{Lifecycle, TreeOf};
+    use breadboard_core::said::Now;
     use std::path::PathBuf;
 
     fn node(place: usize, name: &str, key: &'static str, has_tree: bool) -> Node {
@@ -857,6 +933,9 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
+            boxes: vec![],
+            problem: None,
+            now: None,
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
             } else {
@@ -923,6 +1002,53 @@ mod tests {
     }
 
     #[test]
+    fn a_nodes_boxes_fold_under_its_title_and_list_every_box() {
+        use breadboard_core::model::boxes::{BoxLine, BoxSection};
+        let mut worktrees = worktrees(0, 0);
+        worktrees.tree.live[1].boxes = vec![BoxSection {
+            heading: "Scope".into(),
+            boxes: vec![
+                BoxLine {
+                    is_ticked: true,
+                    text: "The same fold on the worktree node".into(),
+                    check: None,
+                },
+                BoxLine {
+                    is_ticked: false,
+                    text: "Gauntlet checks: fold and unfold by click and key".into(),
+                    check: None,
+                },
+            ],
+        }];
+        let folded = draw(&worktrees, Folds::default(), 56);
+        let lines = text(&folded);
+        assert_eq!(lines.last().unwrap(), "      ▸ 1/2 boxes · 1 open", "{lines:?}");
+        let fold = Act::Fold(Fold::TreeBoxes(302));
+        let region = folded
+            .regions
+            .iter()
+            .find(|region| *region.action() == fold)
+            .expect("the fold's block");
+        assert_eq!(region.area.y as usize, lines.len() - 1);
+
+        let mut folds = Folds::default();
+        folds.boxes.worktrees.insert(302);
+        let lines = text(&draw(&worktrees, folds, 56));
+        let at = lines.iter().position(|line| line.contains("▾ 1/2 boxes")).unwrap();
+        assert_eq!(
+            lines[at + 1..],
+            [
+                "        Scope",
+                "        ☑ The same fold on the worktree node",
+                "        ☐ Gauntlet checks: fold and unfold by click and",
+                "          key",
+            ]
+        );
+        // The first node has no boxes: no fold.
+        assert_eq!(lines.iter().filter(|line| line.contains("boxes")).count(), 1);
+    }
+
+    #[test]
     fn a_node_is_its_name_and_state_its_facts_and_agent_and_title_under_its_stem() {
         let scene = draw(&worktrees(0, 0), Folds::default(), 72);
         assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab"));
@@ -941,6 +1067,51 @@ mod tests {
                 "      the title of #302",
             ]
         );
+    }
+
+    #[test]
+    fn a_node_says_its_problem_and_what_its_agent_does_now_wrapped_under_their_text() {
+        let mut worktrees = worktrees(0, 0);
+        let live = &mut worktrees.tree.live;
+        live[0].problem =
+            Some("The overview's node names the topic of its issue but not the problem it works on.".into());
+        live[0].now = Some(Now {
+            text: "cause found, fix pushed".into(),
+            at: Some(-4 * 60_000),
+            is_note: true,
+        });
+        // Without a note: the problem only.
+        live[1].problem = Some("wt:new hangs.".into());
+        let lines = text(&draw(&worktrees, Folds::default(), 56));
+        let at = lines
+            .iter()
+            .position(|line| line.ends_with("the title of #301"))
+            .unwrap();
+        assert_eq!(
+            lines[at..at + 4],
+            [
+                "│     the title of #301",
+                "│     problem The overview's node names the topic of its",
+                "│             issue but not the problem it works on.",
+                "│     now     cause found, fix pushed ·\u{a0}4\u{a0}min\u{a0}ago",
+            ]
+        );
+        let second = lines
+            .iter()
+            .position(|line| line.ends_with("the title of #302"))
+            .unwrap();
+        assert_eq!(
+            lines[second..],
+            ["      the title of #302", "      problem wt:new hangs."]
+        );
+        // The first line of the last answer, marked as said, without a time.
+        worktrees.tree.live[1].now = Some(Now {
+            text: "Pushed the fix.".into(),
+            at: None,
+            is_note: false,
+        });
+        let lines = text(&draw(&worktrees, Folds::default(), 56));
+        assert_eq!(lines.last().unwrap(), "      said    Pushed the fix.");
     }
 
     #[test]

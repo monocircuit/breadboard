@@ -149,9 +149,9 @@ pub fn with_tests(text: &str, lines: &[String], decided: &[TestBox]) -> String {
         .join("\n")
 }
 
-/// The files the branch changes against develop, committed or not, untracked included.
+/// The files the branch changes against its base, committed or not, untracked included.
 fn changed_files(top: &Path) -> Vec<String> {
-    let base = git(top, &["merge-base", &breadboard_core::git::base(top), "HEAD"]);
+    let base = git(top, &["merge-base", &breadboard_core::git::base_of(top).remote, "HEAD"]);
     let mut files = BTreeSet::new();
     if base.is_ok && !base.out().is_empty() {
         files.extend(git(top, &["diff", "--name-only", base.out()]).lines().map(String::from));

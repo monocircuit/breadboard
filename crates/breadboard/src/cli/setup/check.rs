@@ -456,6 +456,51 @@ fn watch_signals() {
     });
 }
 
+/// drizzle's journal in the checkout, as breadboard.toml's `[stack.migrations]` places it.
+fn journal_of(dir: &Path) -> Option<String> {
+    let stack = breadboard_core::stack::of(dir)?;
+    let journal = Path::new(&stack.dir).join(&stack.migrations?.journal);
+    Some(journal.to_string_lossy().trim_start_matches("./").to_string())
+}
+
+/// A journal's migrations: `(tag, when)`.
+fn journal_entries(text: &str) -> Vec<(String, i64)> {
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|journal| journal.get("entries")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| Some((entry.get("tag")?.as_str()?.to_string(), entry.get("when")?.as_i64()?)))
+        .collect()
+}
+
+/// The branch's own migrations made before the base's newest: drizzle skips a
+/// migration older than the last one applied, so after the merge it never
+/// runs. `ours` and `base` are the journals (#351).
+pub fn older_migrations(ours: &str, base: &str) -> Option<String> {
+    let base = journal_entries(base);
+    let (newest, at) = base.iter().max_by_key(|(_, when)| *when)?;
+    let stale: Vec<String> = journal_entries(ours)
+        .into_iter()
+        .filter(|(tag, when)| !base.iter().any(|(known, _)| known == tag) && when <= at)
+        .map(|(tag, _)| tag)
+        .collect();
+    (!stale.is_empty()).then(|| {
+        format!(
+            "the migration {} is older than {newest} of the base, drizzle would skip it once merged: delete it, merge the base in and run pnpm pg:generate again (skill db-migration)",
+            stale.join(", ")
+        )
+    })
+}
+
+/// The refusal of `older_migrations` for the working tree against `base`'s tip.
+fn stale_migrations(dir: &Path, base: &str) -> Option<String> {
+    let journal = journal_of(dir)?;
+    let ours = fs::read_to_string(dir.join(&journal)).ok()?;
+    let theirs = git(&["show", &format!("{base}:{journal}")], dir);
+    older_migrations(&ours, theirs.is_ok.then_some(theirs.out.as_str())?)
+}
+
 pub fn command() -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
     if dir.is_empty() {
@@ -465,11 +510,24 @@ pub fn command() -> ExitCode {
     let turbo = turbo_of(&dir);
     if turbo.is_none() && breadboard_core::config::of(&dir).config.check.turbo {
         fail("turbo isn't installed here: pnpm install first")
-    }
-    let develop = breadboard_core::git::base(&dir);
-    let base = git(&["merge-base", &develop, "HEAD"], &dir).text().to_string();
+    };
+    let against = breadboard_core::git::base_of(&dir);
+    let base = git(&["merge-base", &against.remote, "HEAD"], &dir).text().to_string();
     if base.is_empty() {
-        fail(&format!("no merge base with {develop}: git fetch origin first"));
+        fail(&format!(
+            "no merge base with {}: git fetch origin first",
+            against.remote
+        ));
+    }
+    // develop's, and for an orchestration's task its epic's: what the checkout of the epic holds (#351).
+    let epic =
+        super::epic::Epic::of_task(&dir).map(|epic| git(&["rev-parse", "HEAD"], &epic.checkout).text().to_string());
+    for base in std::iter::once(breadboard_core::git::Base::of(&breadboard_core::git::branch(&dir)).remote)
+        .chain(epic.filter(|head| !head.is_empty()))
+    {
+        if let Some(refusal) = stale_migrations(&dir, &base) {
+            fail(&refusal);
+        }
     }
     super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
@@ -493,17 +551,19 @@ pub fn command() -> ExitCode {
             }),
         );
         outln!(
-            "\n✓ nothing to check: the branch changes no package against develop ({}); {} may be pushed\n",
+            "\n✓ nothing to check: the branch changes no package against {} ({}); {} may be pushed\n",
+            against.local,
             short(&base),
             short(&sha)
         );
         return ExitCode::SUCCESS;
     }
     step(&format!(
-        "{} of {} package{}, changed against develop ({}) or depending on one:",
+        "{} of {} package{}, changed against {} ({}) or depending on one:",
         scope.tasks.join(", "),
         planned.len(),
         if planned.len() == 1 { "" } else { "s" },
+        against.local,
         short(&base)
     ));
     for (package, tasks) in &planned {
@@ -588,6 +648,32 @@ pub fn command() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_a_migration_older_than_the_base_s_newest() {
+        let journal = |entries: &[(&str, i64)]| {
+            let entries: Vec<Value> = entries
+                .iter()
+                .map(|(tag, when)| json!({ "tag": tag, "when": when }))
+                .collect();
+            json!({ "entries": entries }).to_string()
+        };
+        let base = journal(&[("0000_a", 1), ("0001_epic", 5)]);
+        // Made after the base's newest: fine.
+        assert_eq!(
+            older_migrations(&journal(&[("0000_a", 1), ("0001_mine", 6)]), &base),
+            None
+        );
+        // Made before it, on a base that didn't have it yet: drizzle would skip it.
+        assert_eq!(
+            older_migrations(&journal(&[("0000_a", 1), ("0001_epic", 5), ("0002_mine", 4)]), &base).as_deref(),
+            Some(
+                "the migration 0002_mine is older than 0001_epic of the base, drizzle would skip it once merged: delete it, merge the base in and run pnpm pg:generate again (skill db-migration)"
+            )
+        );
+        // No journal on the base, or none here: nothing to say.
+        assert_eq!(older_migrations(&base, "not json"), None);
+    }
 
     #[test]
     fn reads_what_failed() {

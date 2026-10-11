@@ -25,6 +25,11 @@ pub fn brief_of(
             "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
         ),
     };
+    // One issue, one MR, into its base (#349).
+    let base = breadboard_core::git::base_of(&issue.dir).local;
+    let worktree = format!(
+        "{worktree}\nIts base is `{base}`: merge it in, its MR goes into it. That MR handles exactly this one issue (`Closes #{number}`, no other)."
+    );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
         None => format!(
@@ -56,7 +61,8 @@ You work on issue #{number} of {repo}, started by the orchestration `{name}` (he
    A change requested for your MR (by the user or the orchestrator): `{run} wt:action change "<what>"` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
    Your MR's pipeline failed: the overview types `[overview] the pipeline of !N failed: job …, <url>: …` into this tab by itself. Read the job's log (the url, or `glab ci trace <job id>`), fix what is your MR's doing and push. When the line says {branch_name} fails the same job, it isn't yours: say so in the MR (`glab mr note`) and go on, don't chase it.
    Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run `{run} wt:wait !N … --then "<what next>"` with `run_in_background` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline; MERGE REQUESTS shows the boxes: no note, no status message.
+3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline, under its title the problem from your issue's Goal or Bug and what you are on now; MERGE REQUESTS shows the boxes: no status message.
+   At every stage, `{run} wt:action note "<one line>"`: what you are on, in plain words for the user (`cause found: …`, `fix pushed, waiting for the pipeline`, `waits for !N`). Your node shows the newer of it and the first line of your last answer.
    `SendMessage` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
    - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its `decide` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;
@@ -100,6 +106,7 @@ mod tests {
         assert!(brief.starts_with("# #12 a title\n\nYou work on issue #12 of p, started by the orchestration `o` (herdr space `⇶ O`).\nYour worktree is `/r/p-12-a-title` on `feature/12-a-title`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run"));
         assert!(brief.contains("\n1. Read the issue: `glab issue view 12 --comments`, then"));
         assert!(brief.contains("Before that, `ListAgents` finds it (it works in `/r/p`)."));
+        assert!(brief.contains("\n   At every stage, `breadboard wt:action note \"<one line>\"`: what you are on"));
         assert!(brief.ends_with("read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
     }
 

@@ -27,6 +27,8 @@ const KEPT = [
   /^herdr\/herdr-plugin\.toml$/,
   /^herdr\/keys\.toml$/,
   /^src\/generic\.test\.mjs$/,
+  // The epic and task stacks of #351 keep vita's databases and roles until #365.
+  /^crates\/breadboard\/src\/cli\/setup\/epic\.rs$/,
 ];
 
 /** The lines of a file the check reads: a Rust file's up to its tests. */

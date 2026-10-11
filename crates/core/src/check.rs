@@ -122,7 +122,7 @@ pub fn check_of(dir: &Path) -> CheckState {
         }
         git::count(dir, &format!("{sha}..HEAD"))
     };
-    let ahead = git::count(dir, &format!("{}..HEAD", git::base(dir))).unwrap_or(0);
+    let ahead = git::count(dir, &format!("{}..HEAD", git::base_of(dir).remote)).unwrap_or(0);
     check_state_of(&read_check(dir), &head, tree.as_deref(), since, ahead, is_alive)
 }
 

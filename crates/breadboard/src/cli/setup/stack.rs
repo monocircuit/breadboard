@@ -3,6 +3,7 @@
 //! one of a port, a feature or the checkout you are in; the summary wt:new
 //! and wt:stack print.
 
+use super::epic::{self, Epic};
 use super::herdr;
 use super::proc::{self, Args, How, fail, outln, step};
 use super::repo;
@@ -76,9 +77,10 @@ fn move_port(value: &str, port: u16, to: u16) -> String {
     out
 }
 
-/// The smallest offset whose ports are free and that no worktree's (stopped) stack claims.
+/// The smallest offset whose ports are free and that no checkout's (stopped)
+/// stack claims: the worktrees' and the orchestrations' epic stacks.
 fn free_offset(stack: &Stack) -> u16 {
-    let claimed: Vec<u16> = repo::worktrees()
+    let claimed: Vec<u16> = breadboard_core::git::all_worktrees(&repo::main_dir())
         .iter()
         .map(|tree| repo::offset_of(&tree.dir))
         .collect();
@@ -124,31 +126,50 @@ fn short_text(stack: &Stack, offset: u16) -> String {
         .join(", ")
 }
 
+/// The repo's stack, refused without one.
+fn stack_or_fail() -> Stack {
+    repo::stack().unwrap_or_else(|| fail("the repo has no stack: breadboard.toml has no [stack]"))
+}
+
 /// Moves a worktree from the shared stack to an own one and sets it up. One
 /// that has its own already is set up again on it: a setup that failed is
 /// finished by running `wt:stack` once more.
 pub fn create_stack(dir: &Path, feature: &str) -> u16 {
-    let Some(stack) = repo::stack() else {
-        fail("the repo has no stack: breadboard.toml has no [stack]")
-    };
+    let stack = stack_or_fail();
     let existing = repo::offset_of(dir);
     if existing != 0 {
         step(&format!(
             "own stack on offset {existing} already: {}, set up again",
             ports_text(&stack, existing)
         ));
-        dev_setup(&stack, dir);
+        dev_setup(dir);
         return existing;
     }
+    let offset = reserve_stack(dir, feature);
+    dev_setup(dir);
+    offset
+}
+
+/// A checkout's own stack written to its env file, nothing started: the
+/// main checkout's with the ports moved and a compose project of its own.
+pub fn reserve_stack(dir: &Path, feature: &str) -> u16 {
+    let stack = stack_or_fail();
     let source = repo::env_file_of(&repo::main_dir());
-    let target = repo::env_file_of(dir);
     let Ok(text) = fs::read_to_string(&source) else {
         fail(&format!(
             "{} is missing, set up the main checkout first",
             source.display()
         ))
     };
-    if fs::read_to_string(&target).is_ok_and(|current| current != text) {
+    reserve_with(dir, &text, |offset| stack_env(&stack, &text, feature, offset))
+}
+
+/// A free offset taken by writing `env(offset)` as the env file of `dir`,
+/// which has none or the main checkout's (`source`).
+pub fn reserve_with(dir: &Path, source: &str, env: impl Fn(u16) -> String) -> u16 {
+    let stack = stack_or_fail();
+    let target = repo::env_file_of(dir);
+    if fs::read_to_string(&target).is_ok_and(|current| current != source) {
         fail(&format!(
             "{} differs from the one of the main checkout and is no stack's, move it away first",
             target.display()
@@ -159,18 +180,18 @@ pub fn create_stack(dir: &Path, feature: &str) -> u16 {
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Err(error) = fs::write(&target, stack_env(&stack, &text, feature, offset)) {
+    if let Err(error) = fs::write(&target, env(offset)) {
         fail(&format!("couldn't write {}: {error}", target.display()));
     }
-    dev_setup(&stack, dir);
     offset
 }
 
 /// The stack's setup (`[stack.setup]`: containers, migrations, seed), else
 /// compose's `up -d`, in its folder. It may fail; the hint says how to finish it.
-fn dev_setup(stack: &Stack, dir: &Path) {
+pub fn dev_setup(dir: &Path) {
+    let stack = stack_or_fail();
     let compose = || {
-        let mut args = breadboard_core::stack::compose_args(stack, &["up", "-d"]);
+        let mut args = breadboard_core::stack::compose_args(&stack, &["up", "-d"]);
         args.insert(0, "docker".into());
         args.join(" ")
     };
@@ -218,6 +239,8 @@ pub struct Summary<'a> {
     /// origin refused the claim: the line says so, never `pushed` (round 7;
     /// today's said `pushed` under its own `! origin refused the branch`).
     pub is_unpushed: bool,
+    /// A task stack (#351): the port of its epic's database; it starts on `stack:up`.
+    pub epic_port: Option<u32>,
 }
 
 impl Default for Summary<'_> {
@@ -234,6 +257,7 @@ impl Default for Summary<'_> {
             is_stack_only: false,
             is_stackless: false,
             is_unpushed: false,
+            epic_port: None,
         }
     }
 }
@@ -257,7 +281,10 @@ pub fn summary_text(
         is_stack_only,
         is_stackless,
         is_unpushed,
+        epic_port,
     } = summary;
+    // The worktree's base: its epic's, else the repo's default branch (breadboard.toml).
+    let from = breadboard_core::record::base_in(dir).map_or_else(|| repo.base(), |base| format!("origin/{base}"));
     let dir = dir.display();
     let claim = if *is_unpushed {
         format!("{branch} not pushed (git push -u origin {branch})")
@@ -266,9 +293,18 @@ pub fn summary_text(
     };
     let port = stack.map_or(0, |stack| u32::from(stack.app.port)) + u32::from(*offset);
     let short = stack.map(|stack| short_text(stack, *offset)).unwrap_or_default();
+    // A task stack (#351): its database lies on its epic's, the first named service.
+    let database = stack
+        .and_then(|stack| stack.services.iter().find(|service| service.label.is_some()))
+        .map(|service| service.label().to_string())
+        .unwrap_or_else(|| "database".into());
+    let task = epic_port.filter(|_| *offset > 0);
+    let up = repo.command("stack:up");
     let herdr = tab.as_ref().map(|tab| format!(", herdr: {tab}")).unwrap_or_default();
     if let Some(origin) = origin {
-        let own = if *offset > 0 {
+        let own = if let Some(epic) = task {
+            format!(", task stack +{offset} on the epic's {database} {epic} ({up} starts it)")
+        } else if *offset > 0 {
             format!(", own stack +{offset}")
         } else {
             String::new()
@@ -293,6 +329,9 @@ pub fn summary_text(
         ));
     }
     if is_agent && *is_stack_only {
+        if let Some(epic) = task {
+            return format!("\n✓ task stack +{offset} ready: app {port}, {database} {epic}{herdr}\n");
+        }
         return format!("\n✓ own stack +{offset} ready: {short}{herdr}\n");
     }
     if is_agent {
@@ -300,7 +339,9 @@ pub fn summary_text(
             Some(line) => format!("ExitWorktree(action: \"keep\"), then EnterWorktree(path: \"{dir}\")\n  {line}"),
             None => format!("EnterWorktree(path: \"{dir}\")"),
         };
-        let own = if *offset > 0 {
+        let own = if let Some(epic) = task {
+            format!("\n  task stack +{offset}: app {port}, {database} {epic} (the epic's), {up} starts it")
+        } else if *offset > 0 {
             format!("\n  own stack +{offset}: {short}")
         } else {
             String::new()
@@ -317,6 +358,12 @@ pub fn summary_text(
         "none: breadboard.toml has no [stack]".to_string()
     } else if *is_stackless {
         format!("none: the main checkout has no {env} ({wt_stack} once it has)")
+    } else if let Some(epic) = task {
+        let others: Vec<String> = stack
+            .map(|stack| named(stack, *offset).into_iter().skip(1).collect())
+            .unwrap_or_default();
+        let others: String = others.iter().map(|named| format!(", {named}")).collect();
+        format!("task: {database} {epic} (the epic's){others}, started by {up}")
     } else if *offset > 0 {
         format!(
             "own: {}",
@@ -358,7 +405,7 @@ pub fn summary_text(
     };
     format!(
         "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from {}{unpushed})\n  stack      {stack_line}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd{app}{sweep}\n",
-        repo.base()
+        from
     )
 }
 
@@ -397,8 +444,27 @@ pub fn wt_stack() -> ExitCode {
         fail("run it inside a worktree, the main checkout has the default stack");
     }
     super::heal_plugin();
+    if let Some(epic) = Epic::at(top) {
+        epic::ensure_epic(&epic);
+        let offset = repo::offset_of(top);
+        outln!(
+            "\n✓ epic stack of {} ready: {}\n",
+            epic.name,
+            ports_text(&stack_or_fail(), offset)
+        );
+        return ExitCode::SUCCESS;
+    }
     let feature = repo::feature_of(top);
-    let offset = create_stack(top, &feature);
+    let offset = match task_epic(top) {
+        Some(epic) => {
+            if repo::offset_of(top) == 0 {
+                epic::reserve_task(top, &feature, &epic);
+            }
+            epic::task_up(top, &feature, &epic);
+            repo::offset_of(top)
+        }
+        None => create_stack(top, &feature),
+    };
     let changed = if herdr::is_in_herdr() {
         let space = herdr::worktree_space(top, false);
         herdr::sync_stack_tabs(top, space)
@@ -413,9 +479,26 @@ pub fn wt_stack() -> ExitCode {
         offset,
         tab: (!changed.is_empty()).then(|| format!("stack tabs {}", changed.join(" "))),
         is_stack_only: true,
+        epic_port: epic::epic_port_of(top),
         ..Summary::default()
     });
     ExitCode::SUCCESS
+}
+
+/// The epic a worktree's stack runs on: its stack is a task stack, or it has
+/// none yet and an orchestration with a checkout started it. A worktree with
+/// a full own stack keeps it.
+pub fn task_epic(dir: &Path) -> Option<Epic> {
+    match epic::epic_of_stack(dir) {
+        Some(name) => Some(Epic::named(&name).unwrap_or_else(|| {
+            fail(&format!(
+                "the stack of {} is a task stack of the epic {name}, which has no checkout any more",
+                dir.display()
+            ))
+        })),
+        None if repo::offset_of(dir) == 0 => Epic::of_task(dir),
+        None => None,
+    }
 }
 
 const ACTIONS: [&str; 4] = ["up", "down", "reset", "ps"];
@@ -443,13 +526,14 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
         repo::worktree_on_port(number)
             .unwrap_or_else(|| fail(&format!("no worktree has a stack on port {port} (pnpm wt:list)")))
     } else if let Some(name) = &name {
-        repo::worktrees()
+        breadboard_core::git::all_worktrees(&main)
             .into_iter()
             .find(|tree| tree.dir == repo::dir_of(name) || repo::base_of(&tree.dir) == *name)
             .unwrap_or_else(|| fail(&format!("{name} is not a worktree (pnpm wt:list)")))
     } else {
         let here = repo::cwd();
-        let all = repo::worktrees();
+        // The orchestrations' checkouts too: one of them lies inside the main checkout.
+        let all = breadboard_core::git::all_worktrees(&main);
         let found = all.iter().rev().find(|tree| repo::is_inside(&here, &tree.dir)).cloned();
         found
             .or_else(|| all.into_iter().next())
@@ -483,7 +567,7 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
         all.insert(0, "docker".into());
         all.join(" ")
     };
-    let run = match action {
+    let run = |action: &str| match action {
         "ps" => compose(&["ps"]),
         "up" => stack.up.clone().unwrap_or_else(|| compose(&["up", "-d", "--wait"])),
         "down" => stack.down.clone().unwrap_or_else(|| compose(&["down"])),
@@ -492,7 +576,21 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
             .clone()
             .unwrap_or_else(|| format!("{} && {}", compose(&["down", "-v"]), compose(&["up", "-d", "--wait"]))),
     };
-    proc::run("sh", &["-c", &run], how);
+    // A task stack (#351) starts on its epic's database, an epic's checkout brings the epic's up.
+    let feature = repo::feature_of(&dir);
+    let task = epic::epic_of_stack(&dir).map(|_| task_epic(&dir).unwrap_or_else(|| fail("no epic")));
+    match (action, &task, Epic::at(&dir)) {
+        ("up", Some(epic), _) => epic::task_up(&dir, &feature, epic),
+        ("reset", Some(epic), _) => {
+            proc::run("sh", &["-c", &compose(&["down", "--volumes"])], how);
+            epic::drop_task(&feature, &epic.name);
+            epic::task_up(&dir, &feature, epic);
+        }
+        ("up", None, Some(epic)) => epic::ensure_epic(&epic),
+        _ => {
+            proc::run("sh", &["-c", &run(action)], how);
+        }
+    }
     if herdr::is_in_herdr() && action != "ps" {
         let changed = herdr::sync_stack_tabs(&dir, None);
         if !changed.is_empty() {

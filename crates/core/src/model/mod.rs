@@ -5,6 +5,7 @@
 
 pub mod agent_state;
 pub mod auto_actions;
+pub mod boxes;
 pub mod change;
 pub mod clean_up;
 pub mod develop;
@@ -148,6 +149,8 @@ pub struct Tree {
     pub branch: String,
     /// The orchestration that started it.
     pub origin: Option<Origin>,
+    /// The branch it is based on (#349): develop, or its orchestration's epic.
+    pub base: crate::git::Base,
     /// The cwd of the overview is in it.
     pub is_here: bool,
     pub is_main: bool,
@@ -171,13 +174,15 @@ pub struct Tree {
     pub docker_at: i64,
     /// Files changed, new or deleted.
     pub changed: usize,
-    /// Commits develop doesn't have.
+    /// Commits its base doesn't have.
     pub ahead: u64,
     /// Whether wt:check passed on its HEAD (#298).
     pub checked: CheckState,
     // What an orchestration's read adds (view.mjs `readView`).
     /// The conversation bound to its space.
     pub claude: Option<Claude>,
+    /// What its agent said it does (`pnpm wt:action note`, #341).
+    pub note: Option<crate::said::Note>,
     /// claudes that stand in it without being its agent (#252).
     pub left: Vec<Running>,
     pub actions: Vec<Action>,
@@ -185,10 +190,10 @@ pub struct Tree {
     pub answered: Vec<Action>,
     /// What its work touches, for the merge order.
     pub files: BTreeSet<String>,
-    /// Of `files`, the ones develop changed too since the merge base (#332).
-    pub on_develop: Vec<String>,
-    /// The files a `git merge origin/develop` would stop at (#332, DEVELOP's
-    /// `git merge-tree`), asked only where `on_develop` has any: empty, it
+    /// Of `files`, the ones its base changed too since the merge base (#332).
+    pub on_base: Vec<String>,
+    /// The files a `git merge` of its base would stop at (#332, DEVELOP's
+    /// `git merge-tree`), asked only where `on_base` has any: empty, it
     /// merges cleanly; None where git can't tell or nothing was asked.
     pub conflicts: Option<Vec<String>>,
     /// The migrations its database lacks (#332, STACK's line): an

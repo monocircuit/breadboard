@@ -11,6 +11,8 @@ pub struct EverythingLocal {
     pub trees: Vec<Tree>,
     /// docker's projects by name → status, None when docker doesn't answer.
     pub projects: Option<BTreeMap<String, String>>,
+    /// The compose projects of the orchestrations' epic stacks (#351): no orphans.
+    pub epics: Vec<String>,
 }
 
 /// A row of WORKTREES: the worktree and its open MR.
@@ -74,7 +76,12 @@ pub fn everything_of(local: &EverythingLocal, remote: Option<EverythingRemote>) 
             })
             .collect()
     });
-    let known: Vec<&str> = local.trees.iter().map(|tree| tree.project.as_str()).collect();
+    let known: Vec<&str> = local
+        .trees
+        .iter()
+        .map(|tree| tree.project.as_str())
+        .chain(local.epics.iter().map(String::as_str))
+        .collect();
     // The stacks of the repo's project no worktree claims: `<project>`, `<project>-<feature>`.
     let shared = local
         .trees
@@ -133,9 +140,11 @@ mod tests {
                 [
                     ("vita".to_string(), "running(5)".to_string()),
                     ("vita-7".to_string(), "exited(3)".to_string()),
+                    ("vita-epic-b".to_string(), "running(3)".to_string()),
                 ]
                 .into(),
             ),
+            epics: vec!["vita-epic-b".into()],
         };
         let remote = EverythingRemote {
             mrs: vec![ListedMr {

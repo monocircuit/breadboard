@@ -6,7 +6,7 @@ use crate::actions::{actions_file, actions_of, answered_of, change_of};
 use crate::check::check_of;
 use crate::conversations::{bound_session, context_share_of, left_in, pending_of_file, read_claude, running_claudes};
 use crate::git::{
-    self, Worktree, ahead_of_develop, behind_develop, branch_files, changed_count, feature_of, is_inside, own_commits,
+    self, Worktree, ahead_of_base, behind_base, branch_files, changed_count, feature_of, is_inside, own_commits,
     push_state, work_files,
 };
 use crate::herdr;
@@ -444,6 +444,7 @@ pub fn tree_of(
         },
         branch: worktree.branch.clone().unwrap_or_else(|| "(detached)".into()),
         origin: if is_main { None } else { origin_of(dir) },
+        base: git::base_of(dir),
         is_here: is_inside(here, dir),
         is_main,
         has_env: env.is_some(),
@@ -455,7 +456,7 @@ pub fn tree_of(
         offset,
         has_own_port,
         changed: changed_count(dir),
-        ahead: ahead_of_develop(dir),
+        ahead: ahead_of_base(dir),
         checked: check_of(dir),
         ..Default::default()
     }
@@ -468,18 +469,19 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     let dir = tree.dir.clone();
     let file = actions_file(&dir);
     tree.claude = read_claude(&dir);
+    tree.note = crate::said::note_of(&dir);
     tree.left = left_in(&dir, claudes, bound_session(&dir).as_deref());
     tree.actions = actions_of(&file);
     tree.answered = answered_of(&file);
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
-    tree.on_develop = git::on_develop(&dir, &tree.files);
-    // Whether a merge of develop would conflict (#332): only where both changed a file, else it can't.
-    tree.conflicts = (!tree.on_develop.is_empty())
+    tree.on_base = git::on_base(&dir, &tree.files);
+    // Whether a merge of its base would conflict (#332): only where both changed a file, else it can't.
+    tree.conflicts = (!tree.on_base.is_empty())
         .then(|| crate::model::develop::conflicts_of(&dir))
         .flatten();
     tree.branch_files = branch_files(&dir);
-    tree.behind = behind_develop(&dir);
+    tree.behind = behind_base(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
     tree.wait = wait_of(&dir);
     tree.merge_turn = crate::model::merge_turn::turn_record_of(&dir);

@@ -111,9 +111,40 @@ pub fn origin_of(dir: &Path) -> Option<Origin> {
     })
 }
 
-/// Records who started a worktree, as `JSON.stringify(origin)` and a newline.
+/// Records who started a worktree, as `JSON.stringify(origin)` and a newline;
+/// a base recorded before stays.
 pub fn write_origin(dir: &Path, origin: &Origin) -> io::Result<()> {
-    json::write_compact(&origin_file(dir), &json!({ "name": origin.name, "slot": origin.slot }))
+    let mut value = json!({ "name": origin.name, "slot": origin.slot });
+    if let Some(base) = base_in(dir) {
+        value["base"] = Value::from(base);
+    }
+    json::write_compact(&origin_file(dir), &value)
+}
+
+/// The branch a worktree is based on, `base` of its `.claude/origin` (#349):
+/// None without one, which means develop.
+pub fn base_in(dir: &Path) -> Option<String> {
+    let value = json::read(&origin_file(dir))?;
+    str_of(&value, "base").filter(|base| is_branch(base)).map(String::from)
+}
+
+/// Records the base of a worktree in its `.claude/origin`, next to its
+/// orchestration; develop is the default and leaves the file as it was.
+pub fn write_base(dir: &Path, base: &str) -> io::Result<()> {
+    if base == crate::git::branch(dir) {
+        return Ok(());
+    }
+    let mut value = json::read_object(&origin_file(dir));
+    value.insert("base".into(), Value::from(base));
+    json::write_compact(&origin_file(dir), &Value::Object(value))
+}
+
+/// A branch name a base may have: `develop`, `epic/12-name`; nothing git would
+/// read as an option or a range.
+pub fn is_branch(name: &str) -> bool {
+    static BRANCH: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$").unwrap());
+    BRANCH.is_match(name) && !name.contains("..") && !name.ends_with(".lock")
 }
 
 /// Whether the worktree `dir` belongs to an orchestration that still has its
@@ -258,6 +289,8 @@ pub struct Worker {
     /// The person's name it is shown by (#292): `Mira Albrecht`.
     pub display_name: Option<String>,
     pub issues: Vec<i64>,
+    /// The MRs it got merged (#345), as its freeings recorded them.
+    pub mrs: Vec<i64>,
     pub files: Vec<String>,
     /// Its name before the last handover (#251), and when it was renamed.
     pub was: Option<String>,
@@ -309,6 +342,7 @@ impl Worker {
             name: str_of(value, "name").map(String::from),
             display_name: str_of(value, "displayName").map(String::from),
             issues: ints_of(value, "issues"),
+            mrs: ints_of(value, "mrs"),
             files: strs_of(value, "files"),
             was: str_of(value, "was").map(String::from),
             renamed: str_of(value, "renamed").map(String::from),
@@ -350,6 +384,8 @@ pub struct Record {
     pub chat: Option<Chat>,
     pub brief: Option<String>,
     pub peer: Option<String>,
+    /// The branch its worktrees are based on (#349): an epic, None for develop.
+    pub base: Option<String>,
 }
 
 static SESSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f-]{36}$").unwrap());
@@ -418,6 +454,9 @@ impl Record {
             chat,
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
+            base: str_of(&raw, "base")
+                .filter(|base| is_branch(base) && *base != crate::git::default_branch())
+                .map(String::from),
             raw,
         })
     }

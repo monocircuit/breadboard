@@ -5,13 +5,16 @@
 //! one the template is put down (its Tests section filled from the branch,
 //! #302) and nothing is sent. `--update` sends the description again, the
 //! same body, so a later one can't drop the `Closes #<n>` of the work item.
+//! One MR handles exactly one issue (#349): a description that closes
+//! another is refused. It merges into the worktree's base: develop, or the
+//! epic of its orchestration.
 
 mod template;
 
 use super::boxes::box_report;
 use super::common::{Argv, Here, Outcome, Takes, help, number_of, plural, say, temp_dir};
 use super::glab;
-use breadboard_core::git::{git, issue_of_branch};
+use breadboard_core::git::{base_of, git, issue_of_branch};
 use regex::Regex;
 use serde_json::Value;
 use std::fs;
@@ -22,7 +25,8 @@ use std::sync::LazyLock;
 const USAGE: &str = "usage: pnpm wt:mr [<issue>] [--update] [--dry-run] [--description-file <f>]";
 const ABOUT: &str = "pnpm wt:mr opens the draft merge request of this worktree: the title from the last commit,
 the description from .claude/mr-description.md (put down from the template when there is none),
-Closes #<issue>, the issue's labels and milestone. It installs the push guard (#184) too.
+Closes #<issue>, the issue's labels and milestone, into the worktree's base (develop or its epic).
+One merge request handles exactly one issue. It installs the push guard (#184) too.
 
   <issue>                   the work item, when the branch name carries none (34-…)
   --update                  send the description of the open MR again
@@ -42,6 +46,42 @@ const NO_CHANGELOG: &str = "no-changelog";
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #(\d+)").unwrap());
 static HAS_CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #\d").unwrap());
 static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$").unwrap());
+/// GitLab's closing pattern: a keyword, then the issues it closes (`#1, #2 and #3`).
+static CLOSING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:clos(?:e|es|ed|ing)|fix(?:|es|ed|ing)|resolv(?:e|es|ed|ing)|implement(?:s|ed|ing)?)\b:?\s+((?:[\w./-]*#\d+(?:\s*,\s*|\s+and\s+|,?\s+and\s+)?)+)").unwrap()
+});
+static ISSUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#(\d+)").unwrap());
+
+/// The issues a description closes when its MR is merged, as GitLab reads it.
+fn closed_by(body: &str) -> Vec<u64> {
+    let mut numbers: Vec<u64> = CLOSING
+        .captures_iter(body)
+        .flat_map(|found| {
+            ISSUE
+                .captures_iter(&found[1])
+                .filter_map(|issue| issue[1].parse().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+}
+
+/// Why `body` is no MR of the one issue `number` (#349), None when it is.
+fn second_issue(body: &str, number: &str) -> Option<String> {
+    let others: Vec<String> = closed_by(body)
+        .into_iter()
+        .filter(|closed| closed.to_string() != number)
+        .map(|closed| format!("#{closed}"))
+        .collect();
+    (!others.is_empty()).then(|| {
+        format!(
+            "the description closes {} besides #{number}: one merge request handles exactly one issue. Another issue gets its own branch and MR (pnpm wt:new <n>-<feature>); to mention one, write Refs #<n>",
+            others.join(", ")
+        )
+    })
+}
 
 /// The push guard (#184, #298) wt:new and wt:mr put into the shared hooks
 /// folder: the binary's shim (`packages/breadboard/hooks/pre-push`), which
@@ -157,8 +197,8 @@ pub fn run(argv: &Argv) -> Outcome {
         }
     }
     let branch = here.branch();
-    if branch.is_empty() || branch == "develop" || branch == "main" || branch == breadboard_core::git::branch(&here.cwd)
-    {
+    let base = base_of(top);
+    if branch.is_empty() || branch == "develop" || branch == "main" || branch == base.local {
         return Err(format!(
             "{} gets no merge request",
             if branch.is_empty() { "a detached HEAD" } else { &branch }
@@ -228,6 +268,12 @@ pub fn run(argv: &Argv) -> Outcome {
     let Some(number) = number.filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) else {
         return Err("a merge request needs its work item: pnpm wt:mr <issue>, or a worktree named after the issue (34-…). No issue yet: glab issue create".into());
     };
+    // The branch is the claim on its issue: an MR of it is of that one (#349).
+    if let Some(claimed) = issue_of_branch(&branch).filter(|claimed| claimed.to_string() != number) {
+        return Err(format!(
+            "{branch} claims #{claimed}, not #{number}: one merge request handles exactly one issue, the one its branch claims. #{number} gets its own branch and MR (pnpm wt:new {number}-<feature>)"
+        ));
+    }
 
     // The labels and the milestone of the work item are those of its merge
     // request. Labels fall back to the kind of the branch; the milestone does not.
@@ -295,6 +341,9 @@ pub fn run(argv: &Argv) -> Outcome {
         ));
     }
     let body = body_of(&written, &number);
+    if let Some(why) = second_issue(&body, &number) {
+        return Err(format!("{}: {why}", here.shown(&given)));
+    }
     let title = git(top, &["log", "-1", "--format=%s"]).out().to_string();
 
     // The closed one stays closed: say that this is a new one, not it reopened.
@@ -376,14 +425,13 @@ pub fn run(argv: &Argv) -> Outcome {
     let description = format!("{body}\n");
     let draft = format!("Draft: {title}");
     let label = labels.join(",");
-    let target = breadboard_core::git::branch(top);
     let milestone_id = work
         .get("milestone")
         .map(|m| glab::shown(m.get("id")))
         .filter(|id| !id.is_empty());
     let mut fields = vec![
         glab::Field::Raw("source_branch", &branch),
-        glab::Field::Raw("target_branch", &target),
+        glab::Field::Raw("target_branch", &base.local),
         glab::Field::Raw("title", &draft),
         glab::Field::Text("description", &description),
         glab::Field::Raw("labels", &label),
@@ -454,6 +502,21 @@ mod tests {
         assert_eq!(body_of("Text\n\nRefs #\n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nRefs #12  \n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nCloses #3\n\n", "7"), "Text\nCloses #3");
+    }
+
+    #[test]
+    fn refuses_a_second_issue_in_one_merge_request() {
+        assert_eq!(closed_by("x\n\nCloses #349"), vec![349]);
+        assert_eq!(closed_by("Fixes #1, #2 and #3. Refs #4"), vec![1, 2, 3]);
+        assert_eq!(closed_by("resolves monocircuit/platform#7"), vec![7]);
+        assert_eq!(second_issue("x\n\nCloses #349", "349"), None);
+        assert_eq!(second_issue("Refs #350\n\nCloses #349", "349"), None);
+        assert!(
+            second_issue("Closes #349, #350", "349")
+                .unwrap()
+                .starts_with("the description closes #350 besides #349")
+        );
+        assert!(second_issue("Fixes #12\n\nCloses #349", "349").is_some());
     }
 
     #[test]

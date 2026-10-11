@@ -6,7 +6,9 @@
 
 use super::cache::Cache;
 use super::client::{Gitlab, GitlabError, Result};
-use super::{BranchRemote, Deploy, DeployPipeline, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, number_of};
+use super::{
+    BranchRemote, Deploy, DeployPipeline, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, boxes_of, number_of,
+};
 use crate::time::now_ms;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -42,7 +44,7 @@ const JOB_FIELDS: &str = "id name status webPath finishedAt";
 
 fn mr_fields() -> String {
     format!(
-        "iid title state draft webUrl sourceBranch mergedAt conflicts detailedMergeStatus diffHeadSha mergeCommitSha \
+        "iid title description state draft webUrl sourceBranch targetBranch mergedAt conflicts detailedMergeStatus diffHeadSha mergeCommitSha \
          headPipeline {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }}"
     )
 }
@@ -250,6 +252,8 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
             .and_then(|pipeline| pipeline_of(pipeline, &web)),
         deploy: None,
         branch: str_at(value, "sourceBranch").unwrap_or_default().to_string(),
+        target: str_at(value, "targetBranch").unwrap_or_default().to_string(),
+        boxes: boxes_of(str_at(value, "description").unwrap_or_default()),
     };
     // gitlab.com's GraphQL has no squash commit (#334): a squashed MR without
     // a merge commit gets it through REST, once a try waits for its deploy.

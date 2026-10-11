@@ -8,7 +8,7 @@
 
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::glab;
-use breadboard_core::git::git;
+use breadboard_core::git::{Base, base_of, git};
 use breadboard_core::json::{self, int_of, ints_of, str_of};
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Number, Value};
@@ -212,15 +212,15 @@ fn verdict_of(mrs: &[i64], until: i64, found: &[Facts], now: i64, conflicts_sinc
 }
 
 /// The line the agent goes on with (wait.mjs `lineOf`). `behind`: how many
-/// commits of develop the worktree lacks, None unknown.
-fn line_of(parsed: &Parsed, verdict: &Verdict, behind: Option<u64>) -> String {
+/// commits of its base (`develop`, an epic) the worktree lacks, None unknown.
+fn line_of(parsed: &Parsed, verdict: &Verdict, base: &str, behind: Option<u64>) -> String {
     let all = list_of(&parsed.mrs);
     match verdict {
         Verdict::Merged => {
             let merge = match behind {
-                Some(0) => "develop is in already".to_string(),
-                Some(behind) => format!("merge develop in ({behind} behind)"),
-                None => "merge develop in".to_string(),
+                Some(0) => format!("{base} is in already"),
+                Some(behind) => format!("merge {base} in ({behind} behind)"),
+                None => format!("merge {base} in"),
             };
             let then = parsed
                 .then
@@ -236,7 +236,7 @@ fn line_of(parsed: &Parsed, verdict: &Verdict, behind: Option<u64>) -> String {
             "!{mr} was closed without a merge: the wait for {all} ends, find out what replaces it (glab mr view {mr}) before you go on"
         ),
         Verdict::Conflicts(mr) => format!(
-            "!{mr} has had conflicts with develop for {} min: the wait for {all} ends, tell the orchestrator (SendMessage) instead of waiting on",
+            "!{mr} has had conflicts with {base} for {} min: the wait for {all} ends, tell the orchestrator (SendMessage) instead of waiting on",
             CONFLICT_MS / 60_000
         ),
         Verdict::Timeout(open) => format!(
@@ -270,17 +270,10 @@ fn hours_json(hours: f64) -> Value {
     }
 }
 
-/// How many commits of develop the worktree lacks, fetched first; None when git can't say.
-fn behind_of(dir: &Path) -> Option<u64> {
-    git(dir, &["fetch", "--quiet", "origin", &breadboard_core::git::branch(dir)]);
-    let count = git(
-        dir,
-        &[
-            "rev-list",
-            "--count",
-            &format!("HEAD..{}", breadboard_core::git::base(dir)),
-        ],
-    );
+/// How many commits of its base the worktree lacks, fetched first; None when git can't say.
+fn behind_of(dir: &Path, base: &Base) -> Option<u64> {
+    git(dir, &["fetch", "--quiet", "origin", &base.local]);
+    let count = git(dir, &["rev-list", "--count", &format!("HEAD..{}", base.remote)]);
     if count.is_ok { count.out().parse().ok() } else { None }
 }
 
@@ -393,6 +386,7 @@ pub fn run(argv: &Argv) -> Outcome {
     wait.insert("until".into(), Value::String(to_iso(until)));
     wait.insert("pid".into(), Value::from(std::process::id()));
     let file = wait_file(dir);
+    let base = base_of(dir);
     json::write_pretty(&file, &Value::Object(wait))
         .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
     say(&format!("▸ {}, asking GitLab every minute", waits_text(&parsed.mrs)));
@@ -429,11 +423,11 @@ pub fn run(argv: &Argv) -> Outcome {
         let verdict = verdict_of(&parsed.mrs, until, &found, now_ms(), &mut conflicts_since);
         if verdict != Verdict::Waiting {
             let behind = if verdict == Verdict::Merged {
-                behind_of(dir)
+                behind_of(dir, &base)
             } else {
                 None
             };
-            let line = line_of(&parsed, &verdict, behind);
+            let line = line_of(&parsed, &verdict, &base.local, behind);
             if is_ours(dir) {
                 clear_wait(dir);
             }
@@ -565,25 +559,27 @@ mod tests {
     fn ends_with_the_line_to_go_on_with() {
         let parsed = parse_wait(&args(&["!313", "!315", "--then", "go on"])).unwrap();
         assert_eq!(
-            line_of(&parsed, &Verdict::Merged, Some(3)),
+            line_of(&parsed, &Verdict::Merged, "develop", Some(3)),
             "!313 and !315 are merged: merge develop in (3 behind), then go on"
         );
         let one = parse_wait(&args(&["!313"])).unwrap();
         assert_eq!(
-            line_of(&one, &Verdict::Merged, Some(0)),
+            line_of(&one, &Verdict::Merged, "develop", Some(0)),
             "!313 is merged: develop is in already"
         );
         assert_eq!(
-            line_of(&one, &Verdict::Merged, None),
+            line_of(&one, &Verdict::Merged, "develop", None),
             "!313 is merged: merge develop in"
         );
         let short = parse_wait(&args(&["!316", "--hours", "0.0001"])).unwrap();
         assert_eq!(
-            line_of(&short, &Verdict::Timeout(vec![316]), None),
+            line_of(&short, &Verdict::Timeout(vec![316]), "develop", None),
             "waited 0.0001 h for !316, !316 not merged yet: the wait ends, tell the orchestrator or wait again (pnpm wt:wait)"
         );
         assert_eq!(
-            line_of(&one, &Verdict::Timeout(vec![313]), None).split(" h ").next(),
+            line_of(&one, &Verdict::Timeout(vec![313]), "develop", None)
+                .split(" h ")
+                .next(),
             Some("waited 8")
         );
     }

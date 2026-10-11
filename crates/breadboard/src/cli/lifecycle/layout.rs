@@ -217,7 +217,12 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
     for name in orchestrations {
-        orchestrator_space(repo, &name, should_resume);
+        let workspace = orchestrator_space(repo, &name);
+        // Its epic stack's tabs (#351), in the orchestration's space.
+        let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
+        if !changed.is_empty() {
+            report.push(format!("{}: {}", repo.orchestrator_label(&name), changed.join(" ")));
+        }
         if let Some(resumed) = should_resume.then(|| restore_chat(repo, &name)).flatten() {
             report.push(format!("{}: {resumed}", repo.orchestrator_label(&name)));
         }
@@ -289,7 +294,17 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
         super::proc::output("docker", &all, &vita, None)
     };
-    let services: Vec<String> = compose(&["config", "--services"]).lines().map(String::from).collect();
+    // A service the env file scales to nothing (`<SERVICE>_SCALE=0`: a task stack's
+    // Postgres, #351) has no container: no tab follows one.
+    let env = breadboard_core::stack::env_of(dir).unwrap_or_default();
+    let services: Vec<String> = compose(&["config", "--services"])
+        .lines()
+        .filter(|service| {
+            let scale = format!("{}_SCALE", service.to_uppercase().replace('-', "_"));
+            env.get(&scale).is_none_or(|value| value.trim() != "0")
+        })
+        .map(String::from)
+        .collect();
     let is_up = !compose(&["ps", "--status", "running", "-q"]).out().is_empty();
     let tabs = herdr::tabs_of(workspace);
     let mut changed = Vec::new();

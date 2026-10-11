@@ -81,9 +81,11 @@ every agent has its address.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
-An agent reports nothing: its node in WORKTREES shows herdr's state of it
-and what it waits for, with commits, MR and pipeline; boxes show in MERGE
-REQUESTS. The brief asks for `SendMessage`
+An agent reports nothing to the chat: its node in WORKTREES shows herdr's
+state of it and what it waits for, with commits, MR and pipeline, the
+problem it works on and what it is on now (its `{{run}} wt:action note "<one
+line>"`, asked for at every stage, or its last answer's first line); boxes
+show in MERGE REQUESTS. The brief asks for `SendMessage`
 only for:
 
 - its plan, when it differs from the issue;
@@ -194,7 +196,7 @@ one included) and how many of their MRs are merged; below that its issue,
 MR, work, whether its HEAD passed `{{run}} wt:check` (`✓ tested <sha>`,
 `untested: N commits`, `checking…`, `✗ tests failed: <package> (<tests>)`,
 #298: an untested commit can't be pushed), its agent (`agent <name>` when it
-isn't the worktree's, after a handover) and its context, `change requested: <what>` and `N commits not pushed`; an issue that got no worktree says why; "done and removed" lists the
+isn't the worktree's, after a handover) and its context, `change requested: <what>` and `N commits not pushed`; then its title and, in plain words (#341), `problem`: the first sentences of its issue's `## Goal` (or `## Bug`), and `now`: its agent's latest note (`.claude/note.json`), or `said`: the first line of its last answer when that is newer, with how long ago; a node without either shows only what it has; an issue that got no worktree says why; "done and removed" lists the
 gone ones with their times (`wt:remove` notes `removedAt` and `mergedAt` in the
 record), folded into one line when long. MERGE REQUESTS, theirs in the merge
 order with draft / ready / merged and the pipeline; an open one's second line
@@ -343,17 +345,18 @@ worktree keeps its space until its clean-up. `--to` takes the old name too.
 Refused while the agent works or waits for an answer, or above `--limit`
 (50 %) of its context.
 
-**A merged agent stays free** (#289): before the clean-up of its worktree
-the live overview restarts it in a tab `free <agent>` of `⇶ <name>`,
-standing in the orchestration's checkout (#335), the record's `workers`
-keeps it (`free: { at, from, mr }`, the files it knows), its binding goes
-with the worktree's and its first prompt is `[overview] !N merged, your
-worktree is removed: you are free, …`: it waits in the
-orchestration's checkout, spending nothing. The removal waits until it
-left (`wt:remove` and `wt:prune` refuse a worktree an unbound claude still
-stands in). Above `--limit` (50 %) of its context it isn't freed and goes
-with the worktree. A herdr restart resumes a free agent in its tab; two
-clicks in AGENTS dismiss it (its tab closes, the conversation stays in `/resume`).
+**A merged agent stays free** (#289), without a tab (#345): before the
+clean-up of its worktree the live overview types its last line, `[overview]
+!N merged, your worktree goes: you are free. Your claude ends now, …`, waits
+for its answer, ends its claude (waited for) and closes its tab: nothing of
+it runs. The record's `workers` keeps it by its conversation's id (`free: {
+at, from, mr }`, `mrs`, the files it knows, its name and issues), its
+binding goes with the worktree's, and the worktree goes once its claude
+ended. A herdr restart changes nothing, there is no tab to restore. Its next
+issue resumes it (`claude --resume <id> --name <feature> '<line>'`) in the
+new worktree's tab, the path of every handover; never two claudes on one
+id. Above `--limit` (50 %) of its context it isn't freed and goes with the
+worktree. While the record keeps a free agent, the space `⇶ <name>` stays.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
@@ -408,9 +411,14 @@ waits for).
 AGENTS, below WORKTREES while there is one, lists the free agents (#289,
 `core/src/model/free_agents.rs`): their state in #288's words and colours
 (`free`, `at work` while it takes its line, `asks you`), their context, the
-worktree and MR they came from and how many issues they did
-(`free Mira Albrecht agent-a  18 % · from 7-thing (!31) · 2 issues`). Two clicks on a row
-dismiss one: its tab closes, the record forgets it as free.
+worktree and MR they came from and how many issues they did, and their
+conversation's id, short (#345: `free  Mira Albrecht  agent-a  0f3c2a91
+✕ dismiss`, `18 % · from 7-thing (!31) · 2 issues` under it). A click on
+the id copies `claude --resume <the whole id>` (wl-copy, xclip or xsel; the
+log shows the command either way), to resume or look into it by hand; a
+handover ends such a claude before it resumes the conversation. Two clicks
+on a row dismiss one: the record forgets it as free (a tab resumed by hand
+closes), the conversation stays in `/resume`.
 
 Every agent has a person's name (#292), the one the overview shows it by
 while it moves from issue to issue: picked from its conversation id on its
@@ -475,4 +483,4 @@ changelog stays; the log names where it is.
 the same check; from inside the space it runs in the background
 (`$TMPDIR/orchestration-end-<name>.log`). Without either, the space closes by
 itself once its last worktree is gone and nothing runs in it but its
-overview: a free agent keeps it open until the end.
+overview, and no free agent is in its record: a free agent keeps it open until the end.
