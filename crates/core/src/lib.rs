@@ -14,6 +14,7 @@ pub mod main_update;
 pub mod model;
 pub mod reader;
 pub mod record;
+pub mod said;
 pub mod setups;
 pub mod time;
 pub mod wait;

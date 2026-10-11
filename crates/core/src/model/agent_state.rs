@@ -185,6 +185,7 @@ mod tests {
             prompt: None,
             prompt_at: None,
             answer: Some(answer.into()),
+            answer_at: None,
             transcript: PathBuf::new(),
             cwd: PathBuf::new(),
             model: None,
