@@ -50,10 +50,14 @@ fn mr_of(value: &Value) -> (Mr, Option<String>) {
         deploy: None,
         branch: str_at(value, "source_branch").unwrap_or_default().to_string(),
     };
-    let merge_sha = str_at(value, "merge_commit_sha")
+    (mr, merge_sha_of(value))
+}
+
+/// The commit a merged MR of REST put on develop: its merge commit, else its squash commit.
+pub(super) fn merge_sha_of(value: &Value) -> Option<String> {
+    str_at(value, "merge_commit_sha")
         .or_else(|| str_at(value, "squash_commit_sha"))
-        .map(String::from);
-    (mr, merge_sha)
+        .map(String::from)
 }
 
 fn jobs_of(listed: Vec<Value>) -> Vec<Job> {

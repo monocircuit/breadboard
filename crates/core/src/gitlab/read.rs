@@ -42,7 +42,7 @@ const JOB_FIELDS: &str = "id name status webPath finishedAt";
 
 fn mr_fields() -> String {
     format!(
-        "iid title state draft webUrl sourceBranch mergedAt conflicts detailedMergeStatus diffHeadSha mergeCommitSha squashCommitSha \
+        "iid title state draft webUrl sourceBranch mergedAt conflicts detailedMergeStatus diffHeadSha mergeCommitSha \
          headPipeline {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }}"
     )
 }
@@ -141,9 +141,9 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
         deploy: None,
         branch: str_at(value, "sourceBranch").unwrap_or_default().to_string(),
     };
-    let merge_sha = str_at(value, "mergeCommitSha")
-        .or_else(|| str_at(value, "squashCommitSha"))
-        .map(String::from);
+    // gitlab.com's GraphQL has no squash commit (#334): a squashed MR without
+    // a merge commit gets it through REST, once a try waits for its deploy.
+    let merge_sha = str_at(value, "mergeCommitSha").map(String::from);
     (mr, merge_sha)
 }
 
@@ -253,6 +253,29 @@ pub(super) async fn settle_jobs(
 pub struct Final {
     pub mr: Mr,
     pub merge_sha: Option<String>,
+}
+
+/// The commit a merged MR put on develop: GraphQL's merge commit, else REST's
+/// (`merge_commit_sha`, then `squash_commit_sha`), kept in the cache once found.
+async fn merge_sha_of(gitlab: &Gitlab, cache: &mut Cache, known: Final) -> Option<String> {
+    if known.merge_sha.is_some() {
+        return known.merge_sha;
+    }
+    let value = gitlab
+        .get_json(&format!("merge_requests/{}", known.mr.iid))
+        .await
+        .ok()?;
+    let merge_sha = super::rest::merge_sha_of(&value)?;
+    let iid = known.mr.iid.to_string();
+    cache.set(
+        "mrs",
+        &iid,
+        &Final {
+            merge_sha: Some(merge_sha.clone()),
+            ..known
+        },
+    );
+    Some(merge_sha)
 }
 
 fn deploy_from(value: &Value, web: &str) -> Deploy {
@@ -566,7 +589,10 @@ pub async fn read_orchestration(
     gitlab.phase(Some("deploys"));
     for branch in &ask.deploys {
         let Some(known) = final_of(cache, branch) else { continue };
-        let Some(sha) = known.merge_sha.filter(|_| known.mr.is_merged()) else {
+        if !known.mr.is_merged() {
+            continue;
+        }
+        let Some(sha) = merge_sha_of(gitlab, cache, known).await else {
             continue;
         };
         let deploy = deploy_of(gitlab, cache, &sha, &web, now_ms()).await.ok();
@@ -926,7 +952,7 @@ mod tests {
         "iid": "303", "title": "Draft: feat(breadboard): every drawn button works", "state": "opened", "draft": true,
         "webUrl": "https://gitlab.com/monocircuit/platform/-/merge_requests/303", "sourceBranch": "feature/303-buttons",
         "mergedAt": null, "conflicts": false, "detailedMergeStatus": "MERGEABLE", "diffHeadSha": "abc",
-        "mergeCommitSha": null, "squashCommitSha": null,
+        "mergeCommitSha": null,
         "headPipeline": { "id": "gid://gitlab/Ci::Pipeline/2072", "iid": "9", "status": "FAILED",
           "path": "/monocircuit/platform/-/pipelines/2072", "sha": "abc", "ref": "feature/303-buttons",
           "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-01T10:05:00Z", "finishedAt": "2026-10-01T10:05:00Z",
