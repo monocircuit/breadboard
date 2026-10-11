@@ -9,19 +9,18 @@
 //! overview does it once the MRs are merged (#227).
 
 mod brief;
+pub mod restart;
 
 use super::args::{Args, Takes};
-use super::claude::{bound_session, claude_dir, context_share_of, session_file};
+use super::claude::{bound_session, context_share_of, session_file};
 use super::gitlab;
-use super::herdr::{self, call, did, id_at, s};
+use super::herdr;
 use super::layout::spaces::space_of;
-use super::layout::tabs::{EDITOR, OVERVIEW, ROOT, drop_duplicates, keep_order};
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
-use breadboard_core::lock::is_alive;
 use breadboard_core::record::{self, is_name, origin_of};
 use breadboard_core::setups::{Claim, claim_setup, setup_text};
 use breadboard_core::time::{now_ms, to_iso};
@@ -33,7 +32,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
 const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]";
@@ -431,17 +430,13 @@ pub fn refusal_of(pane: Option<&Value>, share: Option<f64>, limit: f64) -> Optio
     ))
 }
 
-/// The line an agent gets its next issue with; its new name comes with it (#251).
+/// The first prompt of an agent resumed in the worktree of its next issue;
+/// its new name comes with it (#251, #335).
 pub fn next_issue_line(number: i64, feature: &str, dir: &Path) -> String {
     format!(
-        "[overview] next issue #{number}, your name is {feature} now: EnterWorktree(path: \"{}\"), then read .claude/brief.md",
+        "[overview] next issue #{number}, your name is {feature} now: your conversation runs again in its worktree {}, read .claude/brief.md",
         text(dir)
     )
-}
-
-/// The line typed before it: Claude Code's own name of the conversation.
-pub fn rename_line(feature: &str) -> String {
-    format!("/rename {feature}")
 }
 
 /// The record of `name` as its file has it, for writes that keep the rest.
@@ -580,11 +575,10 @@ fn record_failure(repo: &Repo, name: &str, id: &str, number: i64, reason: &str) 
 }
 
 /// The record learns that `worker` works on `number` in `dir` now, under its
-/// feature's name; `renamed` (when) only once its `/rename` took (#313).
-fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue, has_rename_taken: bool) {
+/// feature's name; `renamed` (when) is tell.rs's, once its `/rename` took (#313).
+fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue) {
     let raw = raw_record(repo, name);
     let known = worker_entry(&raw, &worker.id);
-    let at = to_iso(now_ms());
     let is_renamed = issue.feature != worker.name;
     let mut files: Vec<String> = json::strs_of(&known, "files");
     if !worker.is_free {
@@ -600,11 +594,7 @@ fn record_handover(repo: &Repo, name: &str, worker: &Worker, issue: &Issue, has_
         .filter(|n| *n != issue.number)
         .collect();
     issues.push(issue.number);
-    let renamed = if is_renamed && has_rename_taken {
-        json!(at)
-    } else {
-        known.get("renamed").cloned().unwrap_or(Value::Null)
-    };
+    let renamed = known.get("renamed").cloned().unwrap_or(Value::Null);
     let was = if is_renamed {
         json!(worker.name)
     } else {
@@ -752,147 +742,6 @@ fn with_entry(mut issues: Vec<Value>, entry: Value) -> Vec<Value> {
         None => issues.push(entry),
     }
     issues
-}
-
-/// How long a `/rename` gets to show in the agent's session before it is
-/// typed again, and once more (#313).
-const RENAME_WAIT: Duration = Duration::from_secs(10);
-
-/// What the session of the conversation `id` is named now: Some(name) from
-/// its file in `~/.claude/sessions`, None when no running claude has it.
-fn session_name(id: &str) -> Option<String> {
-    let entries = fs::read_dir(claude_dir().join("sessions")).ok()?;
-    entries
-        .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".json"))
-        .find_map(|entry| {
-            let session = json::read(&entry.path())?;
-            let is_it = str_of(&session, "sessionId") == Some(id) && int_of(&session, "pid").is_some_and(is_alive);
-            is_it.then(|| str_of(&session, "name").unwrap_or_default().to_string())
-        })
-}
-
-/// Whether a `/rename` took.
-#[derive(Debug, PartialEq)]
-pub enum Renamed {
-    Yes,
-    /// No running claude shows its session: it can't be checked.
-    Unknown,
-    /// Still named so after the wait.
-    No(String),
-}
-
-/// Waits until the session's name reads `feature` (#313).
-pub fn wait_renamed(feature: &str, wait: Duration, name_now: impl Fn() -> Option<String>) -> Renamed {
-    let started = Instant::now();
-    loop {
-        match name_now() {
-            Some(name) if name == feature => return Renamed::Yes,
-            // No running claude shows the conversation: nothing to wait for.
-            None => return Renamed::Unknown,
-            Some(name) if started.elapsed() >= wait => return Renamed::No(name),
-            Some(_) => std::thread::sleep(Duration::from_millis(200)),
-        }
-    }
-}
-
-/// The step said while a `/rename` is waited for: the longest it can take,
-/// as every other wait says it.
-fn rename_wait_line(rename: &str) -> String {
-    format!(
-        "{rename} typed, waiting for its session to show the name, at most {} s",
-        2 * RENAME_WAIT.as_secs()
-    )
-}
-
-/// Whether and how the agent was told.
-#[derive(Debug, PartialEq)]
-enum Told {
-    Yes,
-    /// herdr took no line.
-    No,
-    /// Its `/rename` never showed: the next-issue line was not typed (#313).
-    NotRenamed(String),
-}
-
-/// Renames the agent in pane `pane` and gives it its next issue: `/rename`
-/// first, typed again when its session doesn't show the name, the pane's
-/// label, then the line, only once the rename is done (#313).
-fn tell(pane: &str, worker: &Worker, issue: &Issue) -> Told {
-    let rename = rename_line(&issue.feature);
-    if !did(&["agent", "prompt", pane, &rename]) {
-        return Told::No;
-    }
-    let name_now = || session_name(&worker.id);
-    // Said at once, with how long: the wait may take its whole 2 × RENAME_WAIT.
-    if name_now().is_some_and(|now| now != issue.feature) {
-        step(&rename_wait_line(&rename));
-    }
-    let mut renamed = wait_renamed(&issue.feature, RENAME_WAIT, name_now);
-    if let Renamed::No(now) = &renamed {
-        step(&format!(
-            "its session still shows {}: {rename} typed again",
-            if now.is_empty() { "no name" } else { now }
-        ));
-        did(&["agent", "prompt", pane, &rename]);
-        renamed = wait_renamed(&issue.feature, RENAME_WAIT, name_now);
-    }
-    match renamed {
-        Renamed::No(now) => return Told::NotRenamed(now),
-        // Without a session file to read it can't be checked: the line follows at once, as today's did.
-        Renamed::Unknown | Renamed::Yes => {}
-    }
-    did(&["pane", "rename", pane, &issue.feature]);
-    if did(&[
-        "agent",
-        "prompt",
-        pane,
-        &next_issue_line(issue.number, &issue.feature, &issue.dir),
-    ]) {
-        Told::Yes
-    } else {
-        Told::No
-    }
-}
-
-/// The agent moves to the worktree of `issue` (made, its brief written): its
-/// pane into the worktree's space as the tab `<feature>`, the conversation
-/// bound to the new worktree instead of the old one, then renamed and told.
-fn move_worker(repo: &Repo, worker: &Worker, pane: &Value, issue: &Issue) -> (bool, Told) {
-    let feature = issue.feature.as_str();
-    let mut is_moved = false;
-    // A pane moved into another space gets a new id there; the old one takes no prompt (#222).
-    let mut target = s(pane, "pane_id").to_string();
-    if let Some(workspace) = space_of(repo, &issue.dir) {
-        let moved = call(&["pane", "move", &target, "--workspace", &workspace, "--new-tab"]);
-        if let Some(moved) = moved {
-            target = id_at(&moved, &["move_result", "pane", "pane_id"]).unwrap_or(target);
-            if let Some(created) = id_at(&moved, &["move_result", "created_tab", "tab_id"]) {
-                call(&["tab", "rename", &created, feature]);
-                drop_duplicates(&workspace, feature);
-                keep_order(&workspace, &[ROOT, OVERVIEW, feature, EDITOR]);
-                is_moved = true;
-            }
-        }
-    }
-    // The binding follows the conversation: a restart resumes it in its new space.
-    let _ = fs::write(session_file(&issue.dir), format!("{}\n", worker.id));
-    // A free agent's checkout is the orchestration's: no binding of its own there.
-    if !worker.is_free {
-        let _ = fs::remove_file(session_file(&worker.dir));
-    }
-    let mut told = tell(&target, worker, issue);
-    if told == Told::No {
-        // Without the new id in herdr's answer: the pane that runs the conversation now.
-        let now = pane_of_conversation(&worker.id)
-            .ok()
-            .flatten()
-            .map(|pane| s(&pane, "pane_id").to_string());
-        if let Some(now) = now.filter(|now| *now != target) {
-            told = tell(&now, worker, issue);
-        }
-    }
-    (is_moved, told)
 }
 
 /// What the command line gives a handover.
@@ -1252,94 +1101,115 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             undone(is_gone, &issue)
         ));
     }
-    let Some(pane) = pane else {
+    if pane.is_none() {
         return fail("herdr lost the agent's pane");
-    };
+    }
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
-    let (is_moved, told) = as_step(
-        &format!("herdr: {} into the space {}", worker.name, issue.feature),
-        || move_worker(repo, &worker, &pane, &issue),
+    let feature = issue.feature.as_str();
+    let line = next_issue_line(number, feature, &issue.dir);
+    // Ended where it runs, resumed in its worktree's tab: nothing is typed into a running claude (#335).
+    let restarted = as_step(
+        &format!("herdr: {} restarted in the space {feature}", worker.name),
+        || {
+            let Some(workspace) = space_waited(repo, &issue.dir) else {
+                return Err(restart::Failed::Before(format!(
+                    "herdr has no space {}",
+                    repo.space_label(&issue.dir)
+                )));
+            };
+            bind(&worker, &issue);
+            restart::restart(
+                &restart::Machine,
+                &restart::Restart {
+                    id: &worker.id,
+                    workspace: &workspace,
+                    label: feature,
+                    cwd: &issue.dir,
+                    name: feature,
+                    prompt: &line,
+                    from: pane.as_ref().map(|pane| herdr::s(pane, "pane_id")),
+                    ide: super::layout::nvim::ide_flag(&issue.dir),
+                },
+            )
+        },
     );
-    record_handover(repo, name, &worker, &issue, !matches!(told, Told::NotRenamed(_)));
+    if let Err(restart::Failed::Before(why)) = &restarted {
+        // The agent runs on where it was: its worktree goes again, the issue may be handed over anew.
+        unbind(&worker, &issue);
+        let why = format!("{} was not restarted in its worktree: {why}", worker.name);
+        let is_gone = undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
+        record_failure(repo, name, &worker.id, number, &why);
+        return fail(format!("{why}; {}{queued}", undone(is_gone, &issue)));
+    }
+    record_handover(repo, name, &worker, &issue);
     let _ = record::write_record(&repo.main, name, &[record_entry(&issue, None)]);
     claim.release();
     let is_announced = record::record_of(&repo.main, name)
         .is_some_and(|record| record.handovers.iter().any(|handover| handover.number == number));
-    let feature = issue.feature.as_str();
-    let typed = format!(
-        "    {}\n    {}",
-        rename_line(feature),
-        next_issue_line(number, feature, &issue.dir)
+    record_start(
+        repo,
+        name,
+        &worker.id,
+        number,
+        if is_announced { "announced" } else { "handover" },
+        share,
     );
-    if let Told::NotRenamed(_) = &told {
-        // Not counted as done (#313): no start in its history, no ✓.
-        record_failure(
-            repo,
-            name,
-            &worker.id,
-            number,
-            &format!("its /rename to {feature} did not take"),
-        );
-    } else {
-        record_start(
-            repo,
-            name,
-            &worker.id,
-            number,
-            if is_announced { "announced" } else { "handover" },
-            share,
-        );
-    }
     let _ = record::drop_handover(&repo.main, name, number);
-    step(&if is_moved {
-        format!("herdr: the tab of {} moved into the space {feature}", worker.name)
-    } else {
-        format!(
-            "herdr: the tab of {} stayed where it is (no space {feature})",
-            worker.name
-        )
-    });
     let renamed = if worker.name == feature {
         String::new()
     } else {
         format!(", renamed from {}", worker.name)
     };
-    match told {
-        Told::Yes => {
+    match restarted {
+        Ok(_) => {
             done(&format!(
-                "#{number} went to the agent {feature}{renamed}, told in its prompt{setup_note}; SendMessage(to: \"{feature}\")"
+                "#{number} went to the agent {feature}{renamed}: its conversation runs again in the tab {feature} of its space, the next-issue line its first prompt{setup_note}; SendMessage(to: \"{feature}\")"
             ));
             Ok(())
         }
-        Told::No => {
-            let why = if herdr::is_silent() {
-                format!("herdr did not answer in {} s", herdr::LIMIT.as_secs())
-            } else {
-                "herdr took no line".into()
-            };
-            done(&format!(
-                "#{number} {feature} is ready for {}{setup_note}, but {why}: type these into its tab",
-                worker.name
-            ));
-            println!("{typed}");
-            Ok(())
-        }
-        Told::NotRenamed(now) => {
-            // The lines to type above, the reason on the ✗ line alone: the overview
-            // shows a background command's last line as its failure (#313).
-            step(&format!(
-                "type these into the tab of {}, one after the other:",
-                worker.name
-            ));
-            println!("{typed}");
+        Err(restart::Failed::After { why, command }) => {
+            // Its claude ended and runs nowhere: the one shell line that resumes it, into a shell.
+            step(&format!("resume it from a shell of the space {feature}:"));
+            println!("    {command}");
             fail(format!(
-                "#{number} {feature} is ready for {}, but its /rename did not take (its session is still named {}): the next-issue line was not typed, its two lines are above",
-                worker.name,
-                if now.is_empty() { "nothing".into() } else { now }
+                "#{number} {feature} is {}'s, its claude ended, but {why}: its conversation runs nowhere until the line above runs in a shell",
+                worker.name
             ))
         }
+        Err(restart::Failed::Before(_)) => unreachable!("returned above"),
+    }
+}
+
+/// The space of `dir`, waited for a while: wt:new's layout may lag behind it.
+fn space_waited(repo: &Repo, dir: &Path) -> Option<String> {
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(space) = space_of(repo, dir) {
+            return Some(space);
+        }
+        if started.elapsed() >= Duration::from_secs(10) {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// [`bind`] undone: the conversation stays bound where it runs.
+fn unbind(worker: &Worker, issue: &Issue) {
+    let _ = fs::remove_file(session_file(&issue.dir));
+    if !worker.is_free {
+        let _ = fs::write(session_file(&worker.dir), format!("{}\n", worker.id));
+    }
+}
+
+/// The binding follows the conversation: a restart resumes it in its new
+/// worktree; a free agent's checkout is the orchestration's, no binding of its own there.
+fn bind(worker: &Worker, issue: &Issue) {
+    let _ = fs::write(session_file(&issue.dir), format!("{}\n", worker.id));
+    if !worker.is_free {
+        let _ = fs::remove_file(session_file(&worker.dir));
     }
 }
 
@@ -1602,23 +1472,6 @@ mod tests {
         assert_eq!(
             before_line(&[(3, Some("a".into())), (4, None)]).unwrap(),
             "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged."
-        );
-    }
-
-    #[test]
-    fn the_next_line_waits_for_the_rename() {
-        let names = std::cell::RefCell::new(vec![Some("old".to_string()), Some("old".into()), Some("7-x".into())]);
-        let now = || names.borrow_mut().remove(0);
-        assert_eq!(wait_renamed("7-x", Duration::from_secs(5), now), Renamed::Yes);
-        assert_eq!(
-            wait_renamed("7-x", Duration::ZERO, || Some("old".into())),
-            Renamed::No("old".into())
-        );
-        assert_eq!(wait_renamed("7-x", Duration::ZERO, || None), Renamed::Unknown);
-        // The step says how long it can take: typed twice, each waited for.
-        assert_eq!(
-            rename_wait_line("/rename 7-x"),
-            "/rename 7-x typed, waiting for its session to show the name, at most 20 s"
         );
     }
 
