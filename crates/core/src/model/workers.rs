@@ -718,8 +718,8 @@ mod tests {
 
     #[test]
     fn starts_fresh_agents_while_they_fit_and_hands_out_to_merged_ones() {
-        assert_eq!(fresh_of(&[1, 2, 3], 4 * GIB, 0).0, [1, 2]);
-        assert!(fresh_of(&[1], 4 * GIB, 3 * GIB).0.is_empty());
+        assert_eq!(fresh_of(&[1, 2, 3], 2 * GIB + GIB / 2, 0).0, [1, 2]);
+        assert!(fresh_of(&[1], 4 * GIB, 7 * GIB / 2).0.is_empty());
         let mut suggested = HashMap::new();
         for (number, name, is_merged) in [
             (1, "a", true),
@@ -963,7 +963,7 @@ mod tests {
         let remote = remote_of(vec![("32-a", None, vec![]), ("33-b", None, vec![])]);
         let facts = WorkerFacts {
             should_hand_out: true,
-            memory: 2 * GIB,
+            memory: 3 * GIB / 2,
             ..Default::default()
         };
         let found = worker_actions_of(&issues, Some(&remote), &HashMap::new(), &[], &facts);

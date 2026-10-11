@@ -9,7 +9,7 @@ use super::spawn::{self, Background, error_of};
 use super::{Effect, herdr};
 use crate::cli::lifecycle::handover::restart;
 use crate::tui::overview::Overview;
-use breadboard_core::git::{behind_develop, feature_of, work_files};
+use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
 use breadboard_core::herdr::{Agent, is_in_herdr};
 use breadboard_core::json;
@@ -770,8 +770,8 @@ fn deliver_wait(
         let mut conflicts = conflicts.lock().unwrap_or_else(|e| e.into_inner());
         verdict_of(wait, found, now_ms(), conflicts.entry(dir.to_path_buf()).or_default())
     };
-    let behind = (verdict == Verdict::Merged).then(|| behind_develop(dir));
-    let line = line_of(wait, &verdict, behind)?;
+    let behind = (verdict == Verdict::Merged).then(|| behind_base(dir));
+    let line = line_of(wait, &verdict, &base_of(dir).local, behind)?;
     // A new wt:wait may have started meanwhile.
     if wait_of(dir).and_then(|now| now.since) != wait.since || !herdr::deliver_to(main, dir, &line) {
         return None;

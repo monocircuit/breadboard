@@ -5,6 +5,7 @@
 //! section is derived on its own (#306): one that fails says so in its place.
 
 use super::auto_actions::{AutoFacts, Removal, Tell, auto_actions_of, conflicts_of, failed_pipelines_of};
+use super::boxes::{BoxSection, all_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
@@ -167,6 +168,11 @@ pub struct MrFacts {
     pub progress: Option<Progress>,
     /// Its place in the CI queue (#357) while its newest commit waits for a pipeline: its mark says it, a click runs it now.
     pub ci: Option<crate::ci::Place>,
+    /// Its issue's boxes one by one, then its own description's, as its fold
+    /// lists them (#346); none for a merged one.
+    pub boxes: Vec<BoxSection>,
+    /// The issue its bar counts the boxes of: the bar names it (#346).
+    pub issue: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -713,6 +719,16 @@ fn merge_requests_of(
             } else {
                 part.issue.as_ref().and_then(|found| progress_of(&found.boxes))
             },
+            boxes: match (&part.issue, is_merged) {
+                (Some(found), false) => {
+                    let (actions, answered) = tree
+                        .map(|tree| (&tree.actions[..], &tree.answered[..]))
+                        .unwrap_or((&[], &[]));
+                    all_sections_of(&found.boxes, Some((mr.iid, &mr.boxes[..])), actions, answered)
+                }
+                _ => Vec::new(),
+            },
+            issue: issue.number,
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)

@@ -140,6 +140,9 @@ fn end_orchestration(name: &str) -> Result<Vec<String>, String> {
     }
     let _ = fs::remove_dir_all(setups_dir(name));
     if orchestrator_checkouts().contains(&repo::lifecycle().checkout_of(name)) {
+        if let Some(line) = crate::cli::setup::epic::end_epic(name) {
+            done.push(line);
+        }
         done.push(remove_orchestrator_checkout(name).unwrap_or_else(|| format!("removed the checkout of {label}")));
     }
     let changelog = record::changelog_file(&main, name);

@@ -264,7 +264,7 @@ fn actions(demo: &Demo, scene: &mut Scene<Action>) {
 }
 
 fn worktrees(demo: &Demo, scene: &mut Scene<Action>) {
-    scene.note("6 wait for GitLab · 42 removed · 7.6 GB free (shared stack below 1.5 GB)");
+    scene.note("6 wait for GitLab · 42 removed · 7.6 GB free (shared stack below 1.0 GB)");
     for (i, (issue, slug, title)) in ISSUES.iter().enumerate() {
         scene.block(Action::Open(format!("#{issue}")), |scene| {
             scene.indent(0);
