@@ -127,11 +127,19 @@ pub fn row_blockers_of(
             String::new()
         };
         add(
-            format!("conflicts with develop{behind}: merge develop in"),
+            format!(
+                "conflicts with {target}{behind}: merge {target} in",
+                target = mr.target()
+            ),
             "agent",
             true,
         );
-    } else if let Some(text) = merge_status_text(mr.merge_status.as_deref(), mr.is_draft, status != Some("success")) {
+    } else if let Some(text) = merge_status_text(
+        mr.merge_status.as_deref(),
+        mr.is_draft,
+        status != Some("success"),
+        mr.target(),
+    ) {
         let who = if text == "GitLab is checking" { "GitLab" } else { "you" };
         add(text, who, false);
     }

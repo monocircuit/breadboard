@@ -17,7 +17,12 @@ const NAMED_BOXES: usize = 2;
 
 /// GitLab's `detailed_merge_status` in words, for what a blocker doesn't say
 /// already (the draft, the pipeline); None for `mergeable`.
-pub fn merge_status_text(status: Option<&str>, is_draft: bool, is_pipeline_blocked: bool) -> Option<String> {
+pub fn merge_status_text(
+    status: Option<&str>,
+    is_draft: bool,
+    is_pipeline_blocked: bool,
+    target: &str,
+) -> Option<String> {
     let status = status.filter(|status| !status.is_empty() && *status != "mergeable")?;
     if ["checking", "unchecked", "preparing", "approvals_syncing"].contains(&status) {
         return Some("GitLab is checking".into());
@@ -30,9 +35,9 @@ pub fn merge_status_text(status: Option<&str>, is_draft: bool, is_pipeline_block
     }
     Some(
         match status {
-            "conflict" => "conflicts with develop",
+            "conflict" => return Some(format!("conflicts with {target}")),
+            "need_rebase" => return Some(format!("needs a rebase onto {target}")),
             "discussions_not_resolved" => "open discussions",
-            "need_rebase" => "needs a rebase onto develop",
             "not_approved" => "needs an approval",
             "blocked_status" => "blocked by another MR",
             "not_open" => "not open",
@@ -185,8 +190,13 @@ pub fn blockers_of(
         blockers.push(format!("pipeline {}", status.unwrap_or("not there yet")));
     }
     if mr.has_conflicts {
-        blockers.push("conflicts with develop".into());
-    } else if let Some(text) = merge_status_text(mr.merge_status.as_deref(), mr.is_draft, is_pipeline_blocked) {
+        blockers.push(format!("conflicts with {}", mr.target()));
+    } else if let Some(text) = merge_status_text(
+        mr.merge_status.as_deref(),
+        mr.is_draft,
+        is_pipeline_blocked,
+        mr.target(),
+    ) {
         blockers.push(text);
     }
     blockers
@@ -445,15 +455,15 @@ mod tests {
 
     #[test]
     fn merge_status_leaves_out_what_another_blocker_says() {
-        assert_eq!(merge_status_text(Some("mergeable"), false, false), None);
-        assert_eq!(merge_status_text(Some("draft_status"), true, false), None);
-        assert_eq!(merge_status_text(Some("ci_must_pass"), false, true), None);
+        assert_eq!(merge_status_text(Some("mergeable"), false, false, "develop"), None);
+        assert_eq!(merge_status_text(Some("draft_status"), true, false, "develop"), None);
+        assert_eq!(merge_status_text(Some("ci_must_pass"), false, true, "develop"), None);
         assert_eq!(
-            merge_status_text(Some("need_rebase"), false, false).as_deref(),
+            merge_status_text(Some("need_rebase"), false, false, "develop").as_deref(),
             Some("needs a rebase onto develop")
         );
         assert_eq!(
-            merge_status_text(Some("some_new_thing"), false, false).as_deref(),
+            merge_status_text(Some("some_new_thing"), false, false, "develop").as_deref(),
             Some("GitLab: some new thing")
         );
     }

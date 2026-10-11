@@ -351,11 +351,12 @@ impl LocalReader {
                     .iter()
                     .map(|name| own.join(name)),
             );
-            files.git.extend(
-                ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
-                    .iter()
-                    .map(|name| common.join(name)),
-            );
+            files
+                .git
+                .extend(["packed-refs", "FETCH_HEAD"].iter().map(|name| common.join(name)));
+            files
+                .git
+                .push(common.join("refs/remotes").join(&git::base_of(dir).remote));
             files.git.push(common.join("refs/remotes/origin").join(branch));
             files.git.push(common.join("refs/heads").join(branch));
         }
@@ -900,31 +901,29 @@ impl RemoteReader {
 }
 
 /// The open MRs `dir` builds on (`waiting_for`), its git answers kept while
-/// the refs they read hold (HEAD, develop's and each MR branch's): the model
+/// the refs they read hold (HEAD, its base's and each MR branch's): the model
 /// is built again on every read and GitLab answer, git asked only when one moved.
 fn waiting_of(dir: &Path, branch: &str, open: &[OpenMr]) -> Vec<Waiting> {
     /// The git dirs of each worktree and its answers, by dir.
     type Held = (HashMap<PathBuf, Option<(PathBuf, PathBuf)>>, Memos);
     static HELD: std::sync::LazyLock<Mutex<Held>> = std::sync::LazyLock::new(Mutex::default);
+    let base = git::base_of(dir).remote;
     let memo = {
         let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (dirs, memos) = &mut *held;
         let Some((own, common)) = dirs.entry(dir.to_path_buf()).or_insert_with(|| git_dirs(dir)).clone() else {
-            return waiting_for(dir, Some(branch), open, "origin/develop");
+            return waiting_for(dir, Some(branch), open, &base);
         };
         let mut files: Vec<PathBuf> = ["HEAD", "logs/HEAD"].iter().map(|name| own.join(name)).collect();
-        files.extend(
-            ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
-                .iter()
-                .map(|name| common.join(name)),
-        );
+        files.extend(["packed-refs", "FETCH_HEAD"].iter().map(|name| common.join(name)));
+        files.push(common.join("refs/remotes").join(&base));
         files.extend(
             open.iter()
                 .map(|mr| common.join("refs/remotes/origin").join(&mr.branch)),
         );
         memos.of(dir, stamp_of(&files))
     };
-    git::remembered(&memo, || waiting_for(dir, Some(branch), open, "origin/develop"))
+    git::remembered(&memo, || waiting_for(dir, Some(branch), open, &base))
 }
 
 /// The model of a view from what was read; `remote` None until GitLab answers.

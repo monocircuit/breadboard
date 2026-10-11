@@ -49,6 +49,7 @@ fn mr_of(value: &Value) -> (Mr, Option<String>) {
         pipeline: value.get("head_pipeline").and_then(pipeline_of),
         deploy: None,
         branch: str_at(value, "source_branch").unwrap_or_default().to_string(),
+        target: str_at(value, "target_branch").unwrap_or_default().to_string(),
     };
     (mr, merge_sha_of(value))
 }

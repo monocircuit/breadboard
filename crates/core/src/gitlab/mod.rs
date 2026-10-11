@@ -87,6 +87,10 @@ pub struct Mr {
     /// Its source branch; not in Node's shape, which ignores it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// The branch it merges into (#349): develop, or an epic; empty when
+    /// GitLab didn't say, which means develop.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
 }
 
 impl Mr {
@@ -99,6 +103,14 @@ impl Mr {
     }
     pub fn is_open(&self) -> bool {
         self.state == "opened"
+    }
+    /// The branch it merges into: develop unless GitLab names another.
+    pub fn target(&self) -> &str {
+        if self.target.is_empty() {
+            crate::git::DEVELOP
+        } else {
+            &self.target
+        }
     }
     pub fn is_merged(&self) -> bool {
         self.state == "merged"

@@ -393,9 +393,13 @@ pub fn command() -> ExitCode {
     let Some(turbo) = turbo_of(&dir) else {
         fail("turbo isn't installed here: pnpm install first")
     };
-    let base = git(&["merge-base", "origin/develop", "HEAD"], &dir).text().to_string();
+    let against = breadboard_core::git::base_of(&dir);
+    let base = git(&["merge-base", &against.remote, "HEAD"], &dir).text().to_string();
     if base.is_empty() {
-        fail("no merge base with origin/develop: git fetch origin first");
+        fail(&format!(
+            "no merge base with {}: git fetch origin first",
+            against.remote
+        ));
     }
     super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
@@ -416,17 +420,19 @@ pub fn command() -> ExitCode {
             }),
         );
         outln!(
-            "\n✓ nothing to check: the branch changes no package against develop ({}); {} may be pushed\n",
+            "\n✓ nothing to check: the branch changes no package against {} ({}); {} may be pushed\n",
+            against.local,
             short(&base),
             short(&sha)
         );
         return ExitCode::SUCCESS;
     }
     step(&format!(
-        "{} of {} package{}, changed against develop ({}) or depending on one:",
+        "{} of {} package{}, changed against {} ({}) or depending on one:",
         scope.tasks.join(", "),
         planned.len(),
         if planned.len() == 1 { "" } else { "s" },
+        against.local,
         short(&base)
     ));
     for (package, tasks) in &planned {

@@ -38,7 +38,12 @@ fn shape_of(command: &str) -> Option<Shape> {
         usage: usage.to_string(),
     };
     Some(match command {
-        "wt:new" => shape(&["--shared", "--fix", "--origin"], &["--origin"], Some(1), new::USAGE),
+        "wt:new" => shape(
+            &["--shared", "--fix", "--origin", "--base"],
+            &["--origin", "--base"],
+            Some(1),
+            new::USAGE,
+        ),
         "wt:orchestrate" => shape(
             &[
                 "--title",

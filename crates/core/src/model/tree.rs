@@ -658,7 +658,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let develop = issues[index]
             .tree
             .as_ref()
-            .map(|tree| tree.on_develop.clone())
+            .map(|tree| tree.on_base.clone())
             .unwrap_or_default();
         let develop = (!develop.is_empty()).then(|| Overlap {
             name: "develop".into(),
@@ -1229,7 +1229,7 @@ mod tests {
                 ahead: 1,
                 behind: 3,
                 files: files.iter().map(|file| file.to_string()).collect(),
-                on_develop: on_develop.iter().map(|file| file.to_string()).collect(),
+                on_base: on_develop.iter().map(|file| file.to_string()).collect(),
                 has_env: true,
                 has_own_port: true,
                 offset: number,

@@ -235,14 +235,14 @@ pub fn diff_of(scene: &mut Scene<Act>, diff: &Diff, dir: &Path, shown: Option<&S
     } else {
         table(scene, diff, &place);
     }
-    if !diff.with_develop.is_empty() || !diff.with_worktrees.is_empty() {
+    if !diff.with_base.is_empty() || !diff.with_worktrees.is_empty() {
         scene.blank();
     }
-    if !diff.with_develop.is_empty() {
+    if !diff.with_base.is_empty() {
         collision(
             scene,
             vec![look::span("also changed on develop:", Style::new())],
-            &diff.with_develop,
+            &diff.with_base,
             Some("merge develop in while it is small"),
             "develop",
             &place,
