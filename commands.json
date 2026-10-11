@@ -82,11 +82,11 @@
     "tokens": "write tokens.css and theme.css from src/tokens/tokens.ts"
   },
   "packages/breadboard": {
-    "lint": "ESLint of what stays JavaScript, cargo fmt and clippy",
-    "lint:rs": "cargo fmt --check and clippy -D warnings of the Rust breadboard",
-    "test": "node --test (the nvim Lua in a headless nvim) and cargo test",
-    "test:rs": "cargo test of the Rust breadboard",
-    "build:rs": "the breadboard binary, release (target/release/breadboard)"
+    "lint": "ESLint of what stays JavaScript",
+    "lint:rs": "cargo fmt --check and clippy -D warnings of the Rust breadboard, in the clone's shared target/, niced on half the cores",
+    "test": "node --test (the nvim Lua in a headless nvim)",
+    "test:rs": "cargo test of the Rust breadboard, in the clone's shared target/, niced on half the cores",
+    "build:rs": "the breadboard binary of HEAD (target/release/breadboard): the store's copy, else built in the shared target/"
   },
   "packages/breadboard-gauntlet": {
     "snap": "a screenshot (text, PNG) of any TUI in a pty, in a gauntlet world: for the rewrite's critics",

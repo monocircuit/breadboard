@@ -5,11 +5,11 @@
   "type": "module",
   "description": "The dev workflow of the repo: worktrees, stacks, the overview, the herdr plugin, the Chromium extension",
   "scripts": {
-    "lint": "eslint . && pnpm lint:rs",
-    "lint:rs": "cargo fmt --check && cargo clippy --all-targets --quiet -- -D warnings",
-    "test": "node --test && pnpm test:rs",
-    "test:rs": "cargo test --quiet",
-    "build:rs": "cargo build --release --quiet"
+    "lint": "eslint .",
+    "lint:rs": "sh herdr/cargo.sh fmt --check && sh herdr/cargo.sh clippy --all-targets --quiet -- -D warnings",
+    "test": "node --test",
+    "test:rs": "sh herdr/cargo.sh test --quiet",
+    "build:rs": "sh herdr/breadboard.sh --built"
   },
   "devDependencies": {
     "@monocircuit/eslint-config": "workspace:*",
