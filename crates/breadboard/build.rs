@@ -28,7 +28,7 @@ fn main() {
     // stored under. Empty for every other build.
     println!("cargo:rerun-if-env-changed=BREADBOARD_SOURCE_KEY");
     println!(
-        "cargo:rustc-env=BREADBOARD_SOURCE_KEY={}",
+        "cargo:rustc-env=BREADBOARD_SOURCE_KEY_MARK=breadboard-source-key:{}",
         std::env::var("BREADBOARD_SOURCE_KEY").unwrap_or_default()
     );
 }

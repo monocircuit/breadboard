@@ -52,8 +52,19 @@ fi
 # older files count as built, and the binary, clippy's verdict and the tests
 # are the other worktree's (#339). So a checkout that takes over the target/
 # from another cleans the workspace's own crates first, the dependencies stay.
+# Another: the record names another checkout, or a cargo that doesn't keep
+# the record (a branch's older cargo.sh, a plain cargo) built after this
+# one's last run: a fingerprint newer than the record.
 from="$CARGO_TARGET_DIR/.breadboard-from"
-if [ "${1-}" != fmt ] && [ "$(cat "$from" 2>/dev/null)" != "$package" ]; then
+is_mine() {
+  [ "$(cat "$from" 2>/dev/null)" = "$package" ] || return 1
+  for prints in "$CARGO_TARGET_DIR"/*/.fingerprint; do
+    [ -d "$prints" ] || continue
+    [ -z "$(find "$prints" -maxdepth 1 -newer "$from" -print 2>/dev/null | head -n 1)" ] || return 1
+  done
+  return 0
+}
+if [ "${1-}" != fmt ] && ! is_mine; then
   members=$(sed -n 's/^name = "\(.*\)"$/\1/p' "$package"/crates/*/Cargo.toml 2>/dev/null)
   if [ -n "$members" ]; then
     specs=
@@ -66,7 +77,12 @@ if [ "${1-}" != fmt ] && [ "$(cat "$from" 2>/dev/null)" != "$package" ]; then
   mkdir -p "$CARGO_TARGET_DIR" && printf '%s\n' "$package" >"$from"
 fi
 
-if command -v nice >/dev/null 2>&1; then
-  exec nice -n 10 cargo "$@"
-fi
-exec cargo "$@"
+niced=
+command -v nice >/dev/null 2>&1 && niced="nice -n 10"
+[ "${1-}" = fmt ] && exec $niced cargo "$@"
+$niced cargo "$@"
+ran=$?
+# Written after the run: what it built is older than the record, what
+# another cargo builds next is newer.
+printf '%s\n' "$package" >"$from"
+exit $ran

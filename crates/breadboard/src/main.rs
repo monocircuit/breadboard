@@ -9,10 +9,14 @@ mod tui;
 use std::process::ExitCode;
 
 /// The key of the sources this binary was built from (#339), as the launcher
-/// passed it to the build: `breadboard-source-key:<key>`, empty after the
-/// colon for a build of anything else. The launcher finds it in the file
-/// (grep) before it stores or uses a copy, without running the copy.
-const SOURCE_KEY: &str = concat!("breadboard-source-key:", env!("BREADBOARD_SOURCE_KEY"));
+/// passed it to the build (build.rs): empty for a build of anything else,
+/// and when a build script's output from before carries none. The marker
+/// `breadboard-source-key:<key>` sits in the file as one string; the launcher
+/// finds it (grep) before it stores or uses a copy, without running the copy.
+const SOURCE_KEY: &str = match option_env!("BREADBOARD_SOURCE_KEY_MARK") {
+    Some(mark) => mark,
+    None => "breadboard-source-key:",
+};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -21,7 +25,7 @@ fn main() -> ExitCode {
     };
     match command.as_str() {
         "--source-key" => {
-            println!("{}", &SOURCE_KEY["breadboard-source-key:".len()..]);
+            println!("{}", SOURCE_KEY.trim_start_matches("breadboard-source-key:"));
             ExitCode::SUCCESS
         }
         "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),

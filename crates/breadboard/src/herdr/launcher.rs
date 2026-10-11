@@ -91,7 +91,7 @@ chmod +x "$target/release/breadboard"
             fs::create_dir_all(&tools).unwrap();
             for tool in [
                 "sh", "git", "cat", "mkdir", "rm", "setsid", "chmod", "cp", "mv", "ls", "tail", "sleep", "nice",
-                "getconf", "flock", "grep", "sed",
+                "getconf", "flock", "grep", "sed", "find", "head",
             ] {
                 if let Some(found) = ["/usr/bin", "/bin"]
                     .iter()
@@ -532,6 +532,49 @@ chmod +x "$target/release/breadboard"
         );
         assert!(cargo_in(&checkout, &other, &["test"]).status.success());
         assert_eq!(cleans().len(), 4);
+        // A cargo that keeps no record (a branch's older cargo.sh, a plain
+        // cargo) built after this checkout's last run: cleaned again.
+        let prints = checkout.root.join("repo/.git/breadboard/target/debug/.fingerprint");
+        fs::create_dir_all(&prints).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(prints.join("breadboard-core-123"), "").unwrap();
+        assert!(cargo_in(&checkout, &other, &["test"]).status.success());
+        assert_eq!(cleans().len(), 6);
+        assert!(cargo_in(&checkout, &other, &["test"]).status.success());
+        assert_eq!(cleans().len(), 6);
+    }
+
+    // #339, #341's case: the launcher's own release build takes the same
+    // lock-and-clean as lint:rs and test:rs. A worktree that builds after
+    // another checkout's build cleans the workspace crates first, so it never
+    // links the other checkout's core (newer by mtime: "no field `problem`").
+    #[test]
+    fn the_launchers_release_build_cleans_after_another_checkouts_build() {
+        let checkout = Checkout::new("launcher-takeover");
+        let cleans = || {
+            fs::read_to_string(checkout.root.join("cargo.log.clean"))
+                .map(|log| log.lines().map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        let first = cleans().len();
+        let other = worktree(&checkout, "feature/8-core");
+        fs::write(other.join("crates/core/lib.rs"), "problem\n").unwrap();
+        git_in(&checkout, &other, &["commit", "--quiet", "-am", "core"]);
+        let built = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS_SOURCE", "1")]);
+        assert_eq!(out(&built), "problem x");
+        let after = cleans();
+        assert_eq!(after.len(), first + 2, "{after:?}");
+        assert!(
+            after[first + 1].starts_with("clean --quiet --release -p core-x")
+                && after[first + 1].ends_with(&format!("from {}", other.display())),
+            "{after:?}"
+        );
+        // The main checkout builds its own sources again: cleaned again, its own binary.
+        checkout.change("crates/core/lib.rs");
+        let back = checkout.run(&["x"], true, &[("CARGO_SAYS_SOURCE", "1")]);
+        assert_eq!(out(&back), "1\n1 x");
+        assert_eq!(cleans().len(), first + 4);
     }
 
     // #336: the target/ a worktree compiled in before is removed once; the
