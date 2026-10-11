@@ -1065,9 +1065,10 @@ fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Opt
     let line = line_of(&answered);
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
+    let is_queued = matches!(to, Some(Target::Dir(_))) && runs::is_headless(&main);
     app.actor.queue(move || {
         if let Some(to) = &to {
-            if is_draft {
+            if is_draft && !is_queued {
                 focus_agent(&main, to);
             }
             let _ = deliver_answers(&main, &file, to);
@@ -1076,6 +1077,7 @@ fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Opt
         let is_in = left.is_none();
         let waits = match left {
             Some(left) => waits_of(&file, left.waits),
+            None if is_queued => QUEUED.into(),
             None if is_draft => DRAFT_WRITTEN.into(),
             None => TYPED_IN.into(),
         };
@@ -1184,6 +1186,11 @@ fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
 /// A draft is written, not submitted. A pane at a question gets nothing: the
 /// drafts say why they wait. The ones that got in.
 fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
+    if let Target::Dir(dir) = to
+        && runs::is_headless(main)
+    {
+        return queue_answers(main, file, dir);
+    }
     let pane = herdr::agent_pane_of(main, to);
     locked(&TRIED).insert(file.to_path_buf(), pane.as_ref().and_then(|pane| pane.status.clone()));
     let answered: Vec<Action> = stored::actions_of(file)
@@ -1225,6 +1232,33 @@ fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
     delivered
 }
 
+/// The answers of `file` queued for the next run of the headless agent in
+/// `dir` (#359): no pane to wait for, so no draft and no retry; a draft
+/// answered without its words (from a file, not the prompt) goes as it is.
+fn queue_answers(main: &Path, file: &Path, dir: &Path) -> Vec<Action> {
+    let answered: Vec<i64> = stored::actions_of(file)
+        .into_iter()
+        .filter(|action| action.answer.as_deref().is_some_and(|answer| !answer.is_empty()))
+        .map(|action| action.id)
+        .collect();
+    let mut delivered = Vec::new();
+    for id in answered {
+        let Ok(Some(action)) = stored::claim_answer(file, id) else {
+            continue;
+        };
+        let is_in = herdr::enqueue(main, dir, &stored::answer_line(&action));
+        let _ = if is_in {
+            stored::done_action(file, id).map(|_| ())
+        } else {
+            stored::release_answer(file, id)
+        };
+        if is_in {
+            delivered.push(action);
+        }
+    }
+    delivered
+}
+
 /// Where a delivered answer went, for its block and the log.
 fn went_to(action: &Action) -> &'static str {
     if stored::is_draft(action) {
@@ -1236,6 +1270,8 @@ fn went_to(action: &Action) -> &'static str {
 
 /// Where an answer went, on its block and in the log.
 const TYPED_IN: &str = "typed into its agent's pane";
+/// A headless agent's (#359): it reads it in its next run.
+const QUEUED: &str = "queued for its agent's next run";
 const DRAFT_WRITTEN: &str = "written into its agent's input: say what's wrong there and send it";
 
 /// After a read: answers that didn't get in are tried again on the actor's

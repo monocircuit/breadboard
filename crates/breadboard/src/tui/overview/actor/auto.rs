@@ -528,6 +528,17 @@ struct Free {
 impl Free {
     /// Ok(its name) when it moved, Err why not.
     fn run(&self) -> Result<String, String> {
+        // A headless agent (#359) has nothing to end or move: free is its
+        // record entry, and its next handover is the next run.
+        if !breadboard_core::runs::is_headless(&self.main) {
+            self.restart()?;
+        }
+        self.record();
+        Ok(self.agent.clone())
+    }
+
+    /// Ended in its worktree, resumed in the orchestration's checkout in a tab `free <agent>`.
+    fn restart(&self) -> Result<(), String> {
         let names = titles(&self.main);
         let workspace = breadboard_core::herdr::spaces()
             .into_iter()
@@ -560,6 +571,11 @@ impl Free {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// The free agent in the record (its session, files, where it came from), unbound from its worktree.
+    fn record(&self) {
         let mut files: Vec<String> = self.known.clone().unwrap_or_default();
         for file in work_files(&self.dir) {
             if !files.contains(&file) {
@@ -579,7 +595,6 @@ impl Free {
         );
         // Unbound: no restart resumes it in the worktree, and wt:remove waits until it left.
         let _ = std::fs::remove_file(breadboard_core::conversations::session_file(&self.dir));
-        Ok(self.agent.clone())
     }
 }
 

@@ -139,6 +139,9 @@ fn start_headless(main: &Path, dir: &Path, feature: &str, id: String) -> Agent {
         at: now_ms(),
     };
     let is_started = is_bound && runs::enqueue(main, event).is_ok();
+    if is_started {
+        crate::daemon::client::wake_runs(main);
+    }
     Agent {
         is_started,
         command: format!(
