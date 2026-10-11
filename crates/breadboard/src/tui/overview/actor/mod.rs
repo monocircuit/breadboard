@@ -101,6 +101,8 @@ pub struct Actor {
     /// The names the orchestration shows its agents by (#292), as of its last
     /// read: what the log says an agent was told or given goes by them.
     pub names: Names,
+    /// The prompt a headless agent's `broken` / `different` opened (#359).
+    pub prompt: Option<super::actions::Prompt>,
 }
 
 impl Actor {
@@ -124,6 +126,7 @@ impl Actor {
             sync: sync::Sync::default(),
             did: VecDeque::new(),
             names: Names::default(),
+            prompt: None,
         }
     }
 
