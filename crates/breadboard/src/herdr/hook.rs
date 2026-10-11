@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn the_pre_push_shim_runs_the_guard_of_the_branch_and_refuses_without_one() {
         assert!(
-            PRE_PUSH_SHIM.contains("monocircuit push guard (#184)"),
+            PRE_PUSH_SHIM.contains("breadboard push guard (#184)"),
             "the installers' marker"
         );
         let root = std::env::temp_dir().join(format!("pre-push-shim-{}", std::process::id()));

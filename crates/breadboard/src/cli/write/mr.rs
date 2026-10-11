@@ -50,7 +50,8 @@ static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$")
 /// refuses when there is none. Node's shim (`exec node …pre-push.mjs`,
 /// `exit 0` without one) is replaced where found: same marker (rule 8).
 pub const SHIM: &str = crate::herdr::hook::PRE_PUSH_SHIM;
-const MARKER: &str = "monocircuit push guard (#184)";
+/// What every version of the shim says of itself (before #342 it named the repo: `<repo> push guard (#184)`).
+const MARKER: &str = "push guard (#184)";
 
 /// Puts the hook into the hooks folder all worktrees share; one that isn't
 /// ours stays. The answer says what happened (push-guard.mjs `installPushGuard`).
@@ -492,6 +493,9 @@ mod tests {
         assert_eq!(fs::read_to_string(&hook).unwrap(), SHIM);
         assert_eq!(install_into(&hooks), "installed");
         fs::write(&hook, format!("{SHIM}# old\n")).unwrap();
+        assert_eq!(install_into(&hooks), "updated");
+        // The shim from before #342 named the repo: still ours, updated.
+        fs::write(&hook, "#!/bin/sh\n# platform push guard (#184)\nexit 1\n").unwrap();
         assert_eq!(install_into(&hooks), "updated");
         fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
         assert!(install_into(&hooks).ends_with("is someone else's hook, the push guard is not installed"));
