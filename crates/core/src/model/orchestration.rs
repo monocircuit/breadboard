@@ -10,7 +10,7 @@ use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
 use super::merge::{blockers_of, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
-use super::merge_turn::{MergeTurn, merge_verdict_of};
+use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, progress_of, row_blockers_of};
 use super::next::{IssueState, Next, NextMerge, next_of, nothing_text, stale_of, updated_plan, why_of};
 use super::order::{Go, Item, MergeOffer, Target, order_actions, place_in};
@@ -201,6 +201,9 @@ pub struct OrchestrationModel {
     pub holds: HashMap<PathBuf, String>,
     /// Why the plan is stale.
     pub stale: Vec<String>,
+    /// Each worktree's merge turn for herdr's sidebar, which can't find it
+    /// itself: the live overview writes them into the worktrees (#344).
+    pub turn_records: Vec<(PathBuf, TurnRecord)>,
 }
 
 /// An action of ACTIONS: a try opens its spot, a merge merges on two clicks.
@@ -228,6 +231,19 @@ fn turn_of<'a>(issue: &Entry, turns: &'a Turns) -> Option<&'a MergeTurn> {
 /// (#280), nor while it comes after another MR (#344).
 fn is_merge_offered(issue: &Entry, turns: &Turns) -> bool {
     turn_of(issue, turns) == Some(&MergeTurn::Offered)
+}
+
+/// The turns of the worktrees whose open MR has a pipeline, tied to its commit.
+fn turn_records_of(issues: &[Entry], remote: Option<&Remote>, turns: &Turns) -> Vec<(PathBuf, TurnRecord)> {
+    issues
+        .iter()
+        .filter_map(|issue| {
+            let tree = issue.tree.as_ref()?;
+            let sha = of(remote, issue).mr.as_ref()?.pipeline.as_ref()?.sha.clone()?;
+            let turn = turn_of(issue, turns)?.clone();
+            Some((tree.dir.clone(), TurnRecord { sha, turn }))
+        })
+        .collect()
 }
 
 /// The turns of the open MRs, from their row's reasons.
@@ -816,6 +832,7 @@ pub fn orchestration_of(
         tells: Vec::new(),
         holds: HashMap::new(),
         stale: Vec::new(),
+        turn_records: Vec::new(),
     };
     if issues.is_empty() {
         model.next = Ok(NextSection {
@@ -916,6 +933,7 @@ pub fn orchestration_of(
         }
     }
     let turns = turns_of(&issues, remote, &order, &done);
+    model.turn_records = turn_records_of(&issues, remote, &turns);
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &turns, &workers, state, now)
     });
@@ -1139,6 +1157,14 @@ mod tests {
     fn a_done_mr_behind_another_never_waits_for_you() {
         let (local, remote) = behind_another();
         let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        // herdr's sidebar gets the same turn, for the commit the pipeline ran on.
+        assert!(model.turn_records.contains(&(
+            PathBuf::from("/w/2-two"),
+            TurnRecord {
+                sha: "a".into(),
+                turn: MergeTurn::Waits(vec![11]),
+            }
+        )));
         let actions = model.actions.unwrap();
         assert!(
             !actions.actions.iter().any(|item| item.kind == "merge"),

@@ -123,6 +123,12 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     }
     if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
         tell(app, &model.tells, &local.agents);
+        // herdr's sidebar reads them: it knows neither the merge order nor the boxes (#344).
+        if is_remote {
+            for (dir, record) in &model.turn_records {
+                let _ = breadboard_core::model::merge_turn::write_turn_record(dir, record);
+            }
+        }
         if is_remote {
             deliver_waits(app, &local, remote);
         }
