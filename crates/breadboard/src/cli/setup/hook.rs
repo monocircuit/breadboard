@@ -199,7 +199,9 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
             (None, _) => Err("no merge base with origin/develop: git fetch origin".to_string()),
             (Some(_), None) => Err("turbo isn't installed here: pnpm install first".to_string()),
-            (Some(base), Some(turbo)) => check::plan_of(&turbo, dir, &format!("...[{base}...{sha}]")),
+            (Some(base), Some(turbo)) => {
+                check::scope_of(&turbo, dir, base, Some(sha)).and_then(|scope| check::plan_of(&turbo, dir, &scope))
+            }
         });
         let pushed = Pushed {
             branch,
