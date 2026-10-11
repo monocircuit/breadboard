@@ -32,18 +32,31 @@ mod tests {
     use std::time::{Duration, Instant};
 
     const LAUNCHER: &str = include_str!("../../../../herdr/breadboard.sh");
+    const CARGO_SH: &str = include_str!("../../../../herdr/cargo.sh");
 
     /// A cargo that "builds" a binary saying `<CARGO_SAYS or ran> <args>`
-    /// into `CARGO_TARGET_DIR` (else the package's target/), each call logged
-    /// with that dir; one that fails with `CARGO_FAIL` set. Only the tools the
-    /// launcher has (no dirname: a short PATH).
+    /// (with `CARGO_SAYS_SOURCE`: what the checkout's crates/core/lib.rs
+    /// says) into `CARGO_TARGET_DIR` (else the package's target/), carrying
+    /// `BREADBOARD_SOURCE_KEY` as the real build does; each call logged with
+    /// its jobs and that dir, a `clean` in `<log>.clean` only. One that fails
+    /// with `CARGO_FAIL` set, edits a source while it builds with
+    /// `CARGO_EDITS` (a file), takes a second with `CARGO_SLOW`. Only the
+    /// tools the launcher has (no dirname: a short PATH).
     const CARGO: &str = r#"#!/bin/sh
-echo "$* in ${CARGO_TARGET_DIR:-}" >>"$CARGO_LOG"
+if [ "$1" = clean ]; then
+  echo "$* in ${CARGO_TARGET_DIR:-} from $PWD" >>"$CARGO_LOG.clean"
+  exit 0
+fi
+echo "$* jobs=${CARGO_BUILD_JOBS:-} in ${CARGO_TARGET_DIR:-}" >>"$CARGO_LOG"
 [ -n "$CARGO_FAIL" ] && exit 101
 for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
+[ -n "$CARGO_SLOW" ] && sleep 1
+says=${CARGO_SAYS:-ran}
+[ -n "$CARGO_SAYS_SOURCE" ] && says=$(cat "$package/crates/core/lib.rs")
+[ -n "$CARGO_EDITS" ] && echo edited >>"$CARGO_EDITS"
 target=${CARGO_TARGET_DIR:-$package/target}
 mkdir -p "$target/release"
-printf '#!/bin/sh\necho "%s $*"\n' "${CARGO_SAYS:-ran}" >"$target/release/breadboard"
+printf '#!/bin/sh\necho "%s $*"\n# breadboard-source-key:%s\n' "$says" "${BREADBOARD_SOURCE_KEY:-}" >"$target/release/breadboard"
 chmod +x "$target/release/breadboard"
 "#;
 
@@ -61,9 +74,11 @@ chmod +x "$target/release/breadboard"
             let bin = root.join("bin");
             for (file, text) in [
                 ("herdr/breadboard.sh", LAUNCHER),
+                ("herdr/cargo.sh", CARGO_SH),
                 ("Cargo.toml", "[workspace]\n"),
                 ("Cargo.lock", ""),
                 ("crates/core/lib.rs", "1\n"),
+                ("crates/core/Cargo.toml", "[package]\nname = \"core-x\"\n"),
                 ("hooks/pre-push", "#!/bin/sh\n"),
                 ("docs/log.md", "1\n"),
             ] {
@@ -75,7 +90,8 @@ chmod +x "$target/release/breadboard"
             let tools = root.join("tools");
             fs::create_dir_all(&tools).unwrap();
             for tool in [
-                "sh", "git", "cat", "mkdir", "rm", "setsid", "chmod", "cp", "mv", "ls", "tail", "sleep",
+                "sh", "git", "cat", "mkdir", "rm", "setsid", "chmod", "cp", "mv", "ls", "tail", "sleep", "nice",
+                "getconf", "flock", "grep", "sed", "find", "head",
             ] {
                 if let Some(found) = ["/usr/bin", "/bin"]
                     .iter()
@@ -276,8 +292,8 @@ chmod +x "$target/release/breadboard"
         assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
         assert_eq!(checkout.builds(), 2);
         assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
-        // Uncommitted changes to the sources build in the package's own
-        // target/ and never enter the store under HEAD's key.
+        // Uncommitted changes to the sources build in the store's target/
+        // too (#336), but never enter the store under HEAD's key.
         fs::write(&lib, "3\n").unwrap();
         fs::remove_file(other.join("target/release/breadboard.source")).unwrap();
         let dirty = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS", "dirty")]);
@@ -287,11 +303,319 @@ chmod +x "$target/release/breadboard"
         assert!(
             calls
                 .trim_end()
-                .ends_with(&format!("in {}", other.join("target").display())),
+                .ends_with(&format!("in {}", store.join("target").display())),
             "{calls}"
         );
+        assert!(!other.join("target/release/deps").exists());
         assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
         assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
+    }
+
+    /// `sh herdr/cargo.sh <args>` of the package at `package`, as pnpm lint:rs runs it.
+    fn cargo_in(checkout: &Checkout, package: &Path, args: &[&str]) -> Output {
+        Command::new("sh")
+            .arg("herdr/cargo.sh")
+            .args(args)
+            .current_dir(package)
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:{}", checkout.bin.display(), checkout.root.join("tools").display()),
+            )
+            .env("HOME", &checkout.root)
+            .env("CARGO_LOG", checkout.root.join("cargo.log"))
+            .env("GIT_CEILING_DIRECTORIES", &checkout.root)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    // #336: clippy and test of every worktree compile in the store's
+    // target/, not in a target/ of their own (1.9 GB each), on half the cores.
+    #[test]
+    fn every_cargo_run_of_every_worktree_shares_the_stores_target() {
+        let checkout = Checkout::new("shared");
+        let store = checkout.root.join("repo/.git/breadboard/target");
+        let other = worktree(&checkout, "feature/2-vita");
+        for package in [&checkout.package, &other] {
+            for args in [&["clippy", "--all-targets"][..], &["test", "--quiet"][..]] {
+                let ran = cargo_in(&checkout, package, args);
+                assert!(ran.status.success(), "{}", err(&ran));
+            }
+        }
+        let cores: usize = String::from_utf8_lossy(
+            &Command::new("getconf")
+                .arg("_NPROCESSORS_ONLN")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .parse()
+        .unwrap();
+        let calls = fs::read_to_string(checkout.root.join("cargo.log")).unwrap();
+        assert_eq!(calls.lines().count(), 4, "{calls}");
+        for call in calls.lines() {
+            assert!(
+                call.ends_with(&format!("jobs={} in {}", (cores / 2).max(1), store.display())),
+                "{call}"
+            );
+        }
+        assert!(!checkout.package.join("target").exists());
+        assert!(!other.join("target").exists());
+    }
+
+    /// What the binaries of the store say, by key: `key → output of "x"`.
+    fn stored(checkout: &Checkout) -> Vec<(String, String)> {
+        let bin = checkout.root.join("repo/.git/breadboard/bin");
+        let mut found: Vec<(String, String)> = fs::read_dir(&bin)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| {
+                        let said = Command::new(entry.path().join("breadboard")).arg("x").output().unwrap();
+                        (entry.file_name().to_string_lossy().to_string(), out(&said))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort();
+        found
+    }
+
+    /// `git <args>` in the worktree whose package is `package`.
+    fn git_in(checkout: &Checkout, package: &Path, args: &[&str]) {
+        let done = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(package)
+            .env("GIT_CEILING_DIRECTORIES", &checkout.root)
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    }
+
+    // #339: a worktree's uncommitted edits are built for it alone; the store
+    // keeps HEAD's binary, and the next checkout at HEAD gets that one.
+    #[test]
+    fn a_dirty_worktree_doesnt_poison_the_store() {
+        let checkout = Checkout::new("dirty");
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        let clean = stored(&checkout);
+        assert_eq!(clean.len(), 1);
+        assert_eq!(clean[0].1, "ran x");
+        let other = worktree(&checkout, "feature/3-rust");
+        fs::write(other.join("crates/core/lib.rs"), "edited\n").unwrap();
+        let dirty = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS", "dirty")]);
+        assert_eq!(out(&dirty), "dirty x");
+        assert_eq!(stored(&checkout), clean);
+        let third = worktree(&checkout, "feature/4-vita");
+        let copied = run_in(&checkout, &third, &["x"], &[("CARGO_SAYS", "never")]);
+        assert_eq!(out(&copied), "ran x");
+        assert_eq!(checkout.builds(), 2);
+    }
+
+    // #339: sources that change while cargo builds are built, not stored
+    // under the key read before.
+    #[test]
+    fn sources_edited_during_the_build_are_not_stored() {
+        let checkout = Checkout::new("edited");
+        let lib = checkout.package.join("crates/core/lib.rs");
+        let built = checkout.run(&["x"], true, &[("CARGO_EDITS", lib.to_str().unwrap())]);
+        assert_eq!(out(&built), "ran x");
+        assert!(stored(&checkout).is_empty());
+    }
+
+    // #339: a stored copy that doesn't carry its key (stored before the
+    // check, or another build's) is removed, never run; a stamp from before
+    // the check is none, so every checkout takes a checked binary once.
+    #[test]
+    fn a_stored_copy_without_its_key_is_removed_and_built_again() {
+        let checkout = Checkout::new("poisoned");
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        let (key, _) = stored(&checkout).remove(0);
+        let kept = checkout.root.join(format!("repo/.git/breadboard/bin/{key}/breadboard"));
+        fs::write(&kept, "#!/bin/sh\necho \"poison $*\"\n").unwrap();
+        let other = worktree(&checkout, "feature/5-x");
+        let rebuilt = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS", "fresh")]);
+        assert_eq!(out(&rebuilt), "fresh x");
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(stored(&checkout), vec![(key.clone(), "fresh x".to_string())]);
+        // The main checkout's stamp from before #339: taken from the store again, no build.
+        let now = fs::read_to_string(checkout.binary().with_extension("source")).unwrap();
+        fs::write(checkout.binary().with_extension("source"), now.replace("#339\n", "")).unwrap();
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "fresh x");
+        assert_eq!(checkout.builds(), 2);
+    }
+
+    // #339: two worktrees with different sources building at once each get,
+    // and store, the binary of their own sources.
+    #[test]
+    fn two_concurrent_builds_of_different_sources_store_the_right_binaries() {
+        let checkout = Checkout::new("concurrent");
+        let sides: Vec<PathBuf> = ["a", "b"]
+            .iter()
+            .map(|side| {
+                let package = worktree(&checkout, &format!("feature/6-{side}"));
+                fs::write(package.join("crates/core/lib.rs"), format!("{side}\n")).unwrap();
+                git_in(&checkout, &package, &["commit", "--quiet", "-am", side]);
+                package
+            })
+            .collect();
+        let env = [("CARGO_SAYS_SOURCE", "1"), ("CARGO_SLOW", "1")];
+        let runs: Vec<_> = sides
+            .iter()
+            .map(|package| {
+                let checkout_root = checkout.root.clone();
+                let bin = checkout.bin.clone();
+                let package = package.clone();
+                std::thread::spawn(move || {
+                    Command::new("sh")
+                        .arg("breadboard.sh")
+                        .arg("x")
+                        .current_dir(package.join("herdr"))
+                        .env_clear()
+                        .env(
+                            "PATH",
+                            format!("{}:{}", bin.display(), checkout_root.join("tools").display()),
+                        )
+                        .env("HOME", &checkout_root)
+                        .env("CARGO_LOG", checkout_root.join("cargo.log"))
+                        .env("GIT_CEILING_DIRECTORIES", &checkout_root)
+                        .envs(env)
+                        .stdin(Stdio::null())
+                        .output()
+                        .unwrap()
+                })
+            })
+            .collect();
+        let said: Vec<String> = runs.into_iter().map(|run| out(&run.join().unwrap())).collect();
+        assert_eq!(said, vec!["a x", "b x"]);
+        let mut kept: Vec<String> = stored(&checkout).into_iter().map(|(_, said)| said).collect();
+        kept.sort();
+        assert_eq!(kept, vec!["a x", "b x"]);
+    }
+
+    // #339: cargo judges freshness by mtimes, its hash leaves out the
+    // worktree: a checkout that takes over the shared target/ cleans the
+    // workspace's own crates first, dev and release; the same one again doesn't.
+    #[test]
+    fn a_checkout_that_takes_over_the_target_cleans_the_workspace_crates() {
+        let checkout = Checkout::new("takeover");
+        let other = worktree(&checkout, "feature/7-x");
+        let cleans = || {
+            fs::read_to_string(checkout.root.join("cargo.log.clean"))
+                .map(|log| log.lines().map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert!(cargo_in(&checkout, &checkout.package, &["clippy"]).status.success());
+        assert_eq!(cleans().len(), 2);
+        assert!(cleans()[0].starts_with("clean --quiet -p core-x"), "{:?}", cleans());
+        assert!(
+            cleans()[1].starts_with("clean --quiet --release -p core-x"),
+            "{:?}",
+            cleans()
+        );
+        assert!(cargo_in(&checkout, &checkout.package, &["test"]).status.success());
+        assert!(
+            cargo_in(&checkout, &checkout.package, &["fmt", "--check"])
+                .status
+                .success()
+        );
+        assert_eq!(cleans().len(), 2);
+        assert!(cargo_in(&checkout, &other, &["clippy"]).status.success());
+        assert_eq!(cleans().len(), 4);
+        assert!(
+            cleans()[3].ends_with(&format!("from {}", other.display())),
+            "{:?}",
+            cleans()
+        );
+        assert!(cargo_in(&checkout, &other, &["test"]).status.success());
+        assert_eq!(cleans().len(), 4);
+        // A cargo that keeps no record (a branch's older cargo.sh, a plain
+        // cargo) built after this checkout's last run: cleaned again.
+        let prints = checkout.root.join("repo/.git/breadboard/target/debug/.fingerprint");
+        fs::create_dir_all(&prints).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        fs::write(prints.join("breadboard-core-123"), "").unwrap();
+        assert!(cargo_in(&checkout, &other, &["test"]).status.success());
+        assert_eq!(cleans().len(), 6);
+        assert!(cargo_in(&checkout, &other, &["test"]).status.success());
+        assert_eq!(cleans().len(), 6);
+    }
+
+    // #339, #341's case: the launcher's own release build takes the same
+    // lock-and-clean as lint:rs and test:rs. A worktree that builds after
+    // another checkout's build cleans the workspace crates first, so it never
+    // links the other checkout's core (newer by mtime: "no field `problem`").
+    #[test]
+    fn the_launchers_release_build_cleans_after_another_checkouts_build() {
+        let checkout = Checkout::new("launcher-takeover");
+        let cleans = || {
+            fs::read_to_string(checkout.root.join("cargo.log.clean"))
+                .map(|log| log.lines().map(String::from).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        let first = cleans().len();
+        let other = worktree(&checkout, "feature/8-core");
+        fs::write(other.join("crates/core/lib.rs"), "problem\n").unwrap();
+        git_in(&checkout, &other, &["commit", "--quiet", "-am", "core"]);
+        let built = run_in(&checkout, &other, &["x"], &[("CARGO_SAYS_SOURCE", "1")]);
+        assert_eq!(out(&built), "problem x");
+        let after = cleans();
+        assert_eq!(after.len(), first + 2, "{after:?}");
+        assert!(
+            after[first + 1].starts_with("clean --quiet --release -p core-x")
+                && after[first + 1].ends_with(&format!("from {}", other.display())),
+            "{after:?}"
+        );
+        // The main checkout builds its own sources again: cleaned again, its own binary.
+        checkout.change("crates/core/lib.rs");
+        let back = checkout.run(&["x"], true, &[("CARGO_SAYS_SOURCE", "1")]);
+        assert_eq!(out(&back), "1\n1 x");
+        assert_eq!(cleans().len(), first + 4);
+    }
+
+    // #336: the target/ a worktree compiled in before is removed once; the
+    // binary, its stamps and the build log stay. Not while a cargo holds it.
+    #[test]
+    fn a_worktrees_own_target_is_removed_once_unless_a_cargo_holds_it() {
+        let checkout = Checkout::new("reclaim");
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        let own = checkout.package.join("target");
+        for dir in ["debug/deps", "release/deps", "release/.fingerprint"] {
+            fs::create_dir_all(own.join(dir)).unwrap();
+        }
+        fs::write(own.join("debug/.cargo-lock"), "").unwrap();
+        fs::write(own.join("CACHEDIR.TAG"), "").unwrap();
+        fs::write(own.join("breadboard-build.log"), "").unwrap();
+        // A cargo holds it (cargo flocks .cargo-lock): left as it is.
+        let held = fs::File::open(own.join("debug/.cargo-lock")).unwrap();
+        held.lock().unwrap();
+        let busy = checkout.run(&["x"], true, &[]);
+        assert_eq!(out(&busy), "ran x");
+        assert!(own.join("debug/deps").exists());
+        drop(held);
+        // Free: removed, said once.
+        let freed = checkout.run(&["x"], true, &[]);
+        assert_eq!(out(&freed), "ran x");
+        assert!(
+            err(&freed).contains("removed this checkout's own cargo target/"),
+            "{}",
+            err(&freed)
+        );
+        for gone in ["debug", "release/deps", "release/.fingerprint", "CACHEDIR.TAG"] {
+            assert!(!own.join(gone).exists(), "{gone}");
+        }
+        for kept in [
+            "release/breadboard",
+            "release/breadboard.source",
+            "breadboard-build.log",
+        ] {
+            assert!(own.join(kept).exists(), "{kept}");
+        }
+        assert_eq!(err(&checkout.run(&["x"], true, &[])), "");
     }
 
     #[test]

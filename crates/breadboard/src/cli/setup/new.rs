@@ -253,7 +253,11 @@ pub fn command(args: &Args) -> ExitCode {
         sweep::stale_issue_count().unwrap_or(0)
     };
     let space = herdr::open_space(&feature, &dir, origin.as_ref(), stays.as_deref());
-    stack::open_app(&dir, offset);
+    // An orchestration's worktree opens no app tab (#337): nobody looks at it
+    // yet, and a tab that comes to the front then passes for another's page.
+    if origin.is_none() {
+        stack::open_app(&dir, offset);
+    }
     let left = previous.as_ref().map(hand_over);
     let stale = if origin.is_some() { 0 } else { sweep::prunable_count() };
     stack::summary(&Summary {

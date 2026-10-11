@@ -50,11 +50,34 @@ from: a few ms), else makes it first:
   worktree (the dependencies are built once; one build at a time), its
   progress on stderr, kept in the store for the others (the newest 8).
 
-Uncommitted changes to the crates build in the package's own `target/` and
-stay out of the store. So a `git pull` never leaves the code from before
-running, `wt:new` needs no `pnpm install`, and a worktree costs no cargo
-target of its own. Without cargo (https://rustup.rs) and without a build of
-those sources, the binary from before runs and says so.
+Uncommitted changes to the crates build in the store's `target/` too, but
+stay out of the store's `bin/`. So a `git pull` never leaves the code from
+before running, `wt:new` needs no `pnpm install`, and a worktree costs no
+cargo target of its own. Without cargo (https://rustup.rs) and without a build
+of those sources, the binary from before runs and says so.
+
+**Every cargo run goes through `herdr/cargo.sh`** (#336): the launcher's
+build and `lint:rs`, `test:rs`. It sets `CARGO_TARGET_DIR` to the store's
+`target/` (cargo locks it: a second run waits instead of compiling beside
+it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
+`cargo` in the package would compile everything again into a `target/` of
+its own (~2 GB): use the scripts. The launcher removes such a `target/` once
+(keeping the binary), unless a cargo holds it.
+
+**A stored copy is what its key says** (#339). cargo's hash of a workspace
+crate leaves out where the workspace is, and it judges freshness by mtimes:
+in a shared `target/`, a worktree's older files count as built after another
+worktree's build, and the binary (or clippy's verdict, the test binaries) is
+the other one's. So `cargo.sh` holds a `flock` on the target for the whole
+run and, when another checkout used it last (`.breadboard-from`), cleans the
+workspace's own crates first: switching worktrees recompiles breadboard and
+core, never the dependencies. The launcher reads the sources' key under the
+store's lock, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
+binary carries it (`breadboard --source-key`). It stores a build only when
+the sources were committed and unchanged across it and the file carries the
+key, and it uses a stored copy only when that copy carries its key (found with
+`grep`, never run); one that doesn't is removed. A stamp from before #339
+counts as none, so every checkout takes a checked binary once.
 
 ## The nvim tab
 
@@ -160,8 +183,17 @@ on a heading or `z` folds it, `Z` folds all):
 ## Checks
 
 ```sh
-pnpm --filter @monocircuit/breadboard lint   # ESLint of the JavaScript left, cargo fmt, clippy -D warnings
-pnpm --filter @monocircuit/breadboard test   # nvim's Lua in a headless nvim, cargo test (tests next to the code)
-pnpm --filter @monocircuit/breadboard build:rs
+pnpm --filter @monocircuit/breadboard lint      # ESLint of the JavaScript left
+pnpm --filter @monocircuit/breadboard lint:rs   # cargo fmt, clippy -D warnings
+pnpm --filter @monocircuit/breadboard test      # nvim's Lua in a headless nvim
+pnpm --filter @monocircuit/breadboard test:rs   # cargo test (tests next to the code)
+pnpm --filter @monocircuit/breadboard build:rs  # the binary of HEAD, through the launcher
 pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite against this checkout's binary
 ```
+
+`pnpm wt:check` runs `lint:rs` and `test:rs` only when the branch changes the
+Rust sources (`crates/`, `hooks/`, the Cargo files, `rustfmt.toml`), never
+because develop was merged in; CI (`check:breadboard-rs`) runs them on every
+MR that touches the package. Which packages it checks comes from turbo's
+`affectedPackages`, not from `...[<base>]`: the root depends on
+`@monocircuit/vita`, and turbo counts a change there as one of every package.

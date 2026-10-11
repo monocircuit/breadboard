@@ -321,6 +321,38 @@ mod tests {
         assert_eq!(try_spot(&with(None, None, None), None), "");
     }
 
+    #[test]
+    fn a_path_opens_on_the_app_of_its_own_worktree_query_and_fragment_whole() {
+        // #337: try #10 of #310 (offset 4) beside #336 (offset 5).
+        let url = "/v/ehrenamt?timeline=skia#pill";
+        assert_eq!(page_of(url, 4), "http://localhost:3004/v/ehrenamt?timeline=skia#pill");
+        assert_eq!(page_of(url, 5), "http://localhost:3005/v/ehrenamt?timeline=skia#pill");
+        assert_eq!(page_of("/?timeline=skia", 4), "http://localhost:3004/?timeline=skia");
+        assert_eq!(
+            page_of("http://localhost:3004/v/ehrenamt?timeline=skia", 5),
+            "http://localhost:3004/v/ehrenamt?timeline=skia"
+        );
+        let tree = |offset| Tree {
+            offset,
+            has_own_port: true,
+            has_env: true,
+            is_up: true,
+            ..Default::default()
+        };
+        let action = Action {
+            url: Some(url.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            try_spot(&action, Some(&tree(4))),
+            "opens :3004/v/ehrenamt?timeline=skia#pill"
+        );
+        assert_eq!(
+            try_spot(&action, Some(&tree(5))),
+            "opens :3005/v/ehrenamt?timeline=skia#pill"
+        );
+    }
+
     const MIN: i64 = 60_000;
     fn now() -> i64 {
         parse_iso("2026-09-30T12:00:00Z").unwrap()
