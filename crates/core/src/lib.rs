@@ -15,5 +15,6 @@ pub mod model;
 pub mod reader;
 pub mod record;
 pub mod setups;
+pub mod stack;
 pub mod time;
 pub mod wait;

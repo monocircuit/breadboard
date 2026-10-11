@@ -783,7 +783,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 is_shared: tree.is_some_and(|tree| tree.has_env && !tree.has_own_port),
                 app_port: tree
                     .filter(|tree| tree.has_env)
-                    .map(|tree| 3000 + if tree.has_own_port { tree.offset } else { 0 }),
+                    .map(|tree| tree.app_port + if tree.has_own_port { tree.offset } else { 0 }),
                 migrations_at: tree.map_or(0, |tree| tree.migrations_at),
                 docker_at: tree.map_or(0, |tree| tree.docker_at),
                 state,
@@ -1231,6 +1231,7 @@ mod tests {
                 files: files.iter().map(|file| file.to_string()).collect(),
                 on_develop: on_develop.iter().map(|file| file.to_string()).collect(),
                 has_env: true,
+                app_port: 3000,
                 has_own_port: true,
                 offset: number,
                 stack: Some("running(5)".into()),
@@ -1277,6 +1278,7 @@ mod tests {
     fn a_stack_says_its_states_in_words_and_never_down_while_docker_has_not_answered() {
         let own = |docker: Docker, stack: Option<&str>| Tree {
             has_env: true,
+            app_port: 3000,
             has_own_port: true,
             offset: 2,
             docker,

@@ -703,9 +703,12 @@ fn migrations_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
                 names.join(", ")
             );
             look::say(scene, &text, yellow);
-            let label = "▶ pnpm pg:migrate";
-            let rects = scene.atom_gap(vec![look::span(label, theme::tone(theme::Tone::Cyan))], 2);
-            button_on(scene, &rects, label, theme::Tone::Cyan, migrate);
+            let label = format!(
+                "▶ {}",
+                node.dir.as_deref().map_or_else(|| "migrate".into(), migrate_run)
+            );
+            let rects = scene.atom_gap(vec![look::span(&label, theme::tone(theme::Tone::Cyan))], 2);
+            button_on(scene, &rects, &label, theme::Tone::Cyan, migrate);
             if let Some(why) = run.and_then(|run| run.error.as_deref()) {
                 scene.atom_gap(vec![look::span(format!("✗ {why}"), look::style_of(&Paint::Red))], 2);
             }
@@ -750,6 +753,13 @@ fn link_atom(scene: &mut Scene<Act>, link: Span<'static>, after: &str, act: Opti
             action: act,
         },
     });
+}
+
+/// What applies a worktree's migrations (`[stack.migrations] run`), as its button says it.
+pub fn migrate_run(dir: &std::path::Path) -> String {
+    breadboard_core::stack::of(dir)
+        .and_then(|stack| stack.migrations)
+        .map_or_else(|| "migrate".into(), |migrations| migrations.run)
 }
 
 /// The name of develop among the collisions (core's tree).
@@ -1358,12 +1368,10 @@ mod tests {
         let lines = text(&scene);
         assert!(lines.contains(&"│     ⚠ the database doesn't answer: connection refused".to_string()));
         assert!(
-            lines.contains(
-                &"      ⚠ 4 migrations not applied: 0041_a, 0042_b, 0043_c +1 more  ▶ pnpm pg:migrate".to_string()
-            ),
+            lines.contains(&"      ⚠ 4 migrations not applied: 0041_a, 0042_b, 0043_c +1 more  ▶ migrate".to_string()),
             "{lines:#?}"
         );
-        assert!(buttons(&scene).contains(&("▶ pnpm pg:migrate".into(), Act::Migrate("/w/305-refresh".into()))));
+        assert!(buttons(&scene).contains(&("▶ migrate".into(), Act::Migrate("/w/305-refresh".into()))));
         // All applied: nothing to say.
         worktrees.tree.live[1].migrations = Some(Migrations::Pending {
             pending: vec![],

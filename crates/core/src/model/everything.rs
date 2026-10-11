@@ -37,11 +37,11 @@ pub struct EverythingModel {
 /// A checkout's app as a cell (render.mjs): `● :3002` up (its page linked),
 /// `○ :3002` down, `⇒ :3000` on the shared one, `—` without .env.local.
 pub fn app_cell(tree: &Tree) -> Span {
-    let port = 3000 + tree.offset;
+    let port = tree.app_port + tree.offset;
     if !tree.has_env {
         Span::dim("—")
     } else if !tree.has_own_port {
-        Span::dim("⇒ :3000")
+        Span::dim(format!("⇒ :{}", tree.app_port))
     } else if tree.is_up {
         Span {
             url: Some(format!("http://localhost:{port}")),
@@ -75,11 +75,20 @@ pub fn everything_of(local: &EverythingLocal, remote: Option<EverythingRemote>) 
             .collect()
     });
     let known: Vec<&str> = local.trees.iter().map(|tree| tree.project.as_str()).collect();
+    // The stacks of the repo's project no worktree claims: `<project>`, `<project>-<feature>`.
+    let shared = local
+        .trees
+        .iter()
+        .find(|tree| tree.is_main)
+        .map(|tree| tree.project.as_str());
+    let is_ours = |name: &str| {
+        shared.is_some_and(|shared| !shared.is_empty() && (name == shared || name.starts_with(&format!("{shared}-"))))
+    };
     let orphans = local
         .projects
         .iter()
         .flatten()
-        .filter(|(name, _)| name.starts_with("vita") && !known.contains(&name.as_str()))
+        .filter(|(name, _)| is_ours(name) && !known.contains(&name.as_str()))
         .map(|(name, status)| (name.clone(), status.clone()))
         .collect();
     let main = local.trees.iter().find(|tree| tree.is_main);
@@ -112,6 +121,7 @@ mod tests {
                 Tree {
                     is_main: true,
                     has_env: true,
+                    app_port: 3000,
                     has_own_port: true,
                     stack: Some("running(5)".into()),
                     ..tree("platform", "develop", "vita")
@@ -153,6 +163,7 @@ mod tests {
         assert_eq!(silent.trees.unwrap()[0].tree.docker, Docker::Silent);
         let own = Tree {
             has_env: true,
+            app_port: 3000,
             has_own_port: true,
             offset: 2,
             ..Default::default()
@@ -166,6 +177,7 @@ mod tests {
         assert_eq!(app_cell(&rows[1].tree).text, "—");
         let shared = Tree {
             has_env: true,
+            app_port: 3000,
             ..Default::default()
         };
         assert_eq!(app_cell(&shared).text, "⇒ :3000");

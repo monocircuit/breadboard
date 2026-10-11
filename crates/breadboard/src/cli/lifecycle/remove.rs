@@ -15,7 +15,7 @@ use super::proc::{
     Done, Fail, Wait, as_step, done, exe, fail, git, output_within, run_inherit, step, text, wait_within,
 };
 use super::prune::{has_own_commits, own_files};
-use super::repo::{Repo, VITA, compose_args, offset_of};
+use super::repo::{Repo, compose_args, offset_of, stack_dir};
 use crate::cli::typo::nearest;
 use breadboard_core::git::{is_inside, own_commits};
 use breadboard_core::json::str_of;
@@ -499,8 +499,9 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
 
     if offset_of(&dir) != 0 {
         step(&format!("stop the own stack of {feature} and delete its data"));
-        let args = compose_args(&["down", "-v"]);
-        if !run_inherit("docker", &args, &dir.join(VITA)) {
+        let args = compose_args(&dir, &["down", "-v"]).unwrap_or_default();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        if !run_inherit("docker", &args, &stack_dir(&dir)) {
             return fail(format!("docker {} failed", args.join(" ")));
         }
     }

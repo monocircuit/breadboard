@@ -233,14 +233,14 @@ pub fn try_state_of(
 }
 
 /// The app of a checkout whose stack has `offset`: `http://localhost:3002`.
-pub fn app_origin(offset: i64) -> String {
-    format!("http://localhost:{}", 3000 + offset)
+pub fn app_origin(port: i64) -> String {
+    format!("http://localhost:{port}")
 }
 
-/// The page an action names: a path on the worktree's app, anything else as it is.
-pub fn page_of(url: &str, offset: i64) -> String {
+/// The page an action names: a path on the worktree's app on `port`, anything else as it is.
+pub fn page_of(url: &str, port: i64) -> String {
     if url.starts_with('/') {
-        format!("{}{url}", app_origin(offset))
+        format!("{}{url}", app_origin(port))
     } else {
         url.to_string()
     }
@@ -271,8 +271,8 @@ pub fn try_spot(action: &Action, tree: Option<&Tree>) -> String {
     let Some(tree) = tree else {
         return format!("opens {}", short_page(url));
     };
-    let page = page_of(url, tree.offset);
-    let origin = app_origin(tree.offset);
+    let page = page_of(url, tree.app_port + tree.offset);
+    let origin = app_origin(tree.app_port + tree.offset);
     let is_on_app = page == origin || page.starts_with(&format!("{origin}/"));
     let will_start = tree.has_own_port && tree.has_env && !tree.is_up && is_on_app;
     format!(
@@ -308,6 +308,7 @@ mod tests {
             offset: 2,
             has_own_port: true,
             has_env: true,
+            app_port: 3000,
             ..Default::default()
         };
         assert_eq!(
@@ -325,17 +326,24 @@ mod tests {
     fn a_path_opens_on_the_app_of_its_own_worktree_query_and_fragment_whole() {
         // #337: try #10 of #310 (offset 4) beside #336 (offset 5).
         let url = "/v/ehrenamt?timeline=skia#pill";
-        assert_eq!(page_of(url, 4), "http://localhost:3004/v/ehrenamt?timeline=skia#pill");
-        assert_eq!(page_of(url, 5), "http://localhost:3005/v/ehrenamt?timeline=skia#pill");
-        assert_eq!(page_of("/?timeline=skia", 4), "http://localhost:3004/?timeline=skia");
         assert_eq!(
-            page_of("http://localhost:3004/v/ehrenamt?timeline=skia", 5),
+            page_of(url, 3004),
+            "http://localhost:3004/v/ehrenamt?timeline=skia#pill"
+        );
+        assert_eq!(
+            page_of(url, 3005),
+            "http://localhost:3005/v/ehrenamt?timeline=skia#pill"
+        );
+        assert_eq!(page_of("/?timeline=skia", 3004), "http://localhost:3004/?timeline=skia");
+        assert_eq!(
+            page_of("http://localhost:3004/v/ehrenamt?timeline=skia", 3005),
             "http://localhost:3004/v/ehrenamt?timeline=skia"
         );
         let tree = |offset| Tree {
             offset,
             has_own_port: true,
             has_env: true,
+            app_port: 3000,
             is_up: true,
             ..Default::default()
         };

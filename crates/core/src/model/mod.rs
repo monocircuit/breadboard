@@ -157,7 +157,9 @@ pub struct Tree {
     pub has_own_port: bool,
     /// Its app answers.
     pub is_up: bool,
-    /// Its compose project, `vita` for the shared one.
+    /// The app's port before the offset (breadboard.toml), 0 without a stack.
+    pub app_port: i64,
+    /// Its compose project, the shared one's (`[stack] project`) unless it has its own.
     pub project: String,
     /// docker's status of its project, None while it is down or unknown.
     pub stack: Option<String>,

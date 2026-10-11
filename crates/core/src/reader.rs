@@ -33,7 +33,7 @@ use crate::model::everything::{EverythingLocal, EverythingModel, everything_of};
 use crate::model::memory::free_memory;
 use crate::model::orchestration::{OrchestrationLocal, OrchestrationModel, ViewState, orchestration_of};
 use crate::model::waiting::{Waiting, waiting_for};
-use crate::model::worktree::{STORYBOOK_PORT, STUDIO_PORT, WorktreeLocal, WorktreeModel, worktree_of};
+use crate::model::worktree::{WorktreeLocal, WorktreeModel, worktree_of};
 use crate::model::{Docker, Tree, develop, diff};
 use crate::record::{self, record_of};
 use crate::setups::live_setups_of;
@@ -693,6 +693,7 @@ impl LocalReader {
                 .and_then(|pane| pane.status)
         });
         let offset = if tree.has_own_port { tree.offset } else { 0 };
+        let stack = crate::stack::of(dir);
         // git's facts of the view besides the tree, from the tree's memo while its key holds.
         let memo = memo_of(dir, self.known[dir].key);
         let (own_commits, own_diff, develop) = if is_main {
@@ -766,9 +767,13 @@ impl LocalReader {
             } else {
                 None
             },
-            is_app_up: is_port_taken(3000 + offset),
-            is_studio_up: is_port_taken(STUDIO_PORT + offset),
-            is_storybook_up: is_port_taken(STORYBOOK_PORT + offset),
+            is_app_up: tree.app_port > 0 && is_port_taken(tree.app_port + offset),
+            tools_up: stack
+                .iter()
+                .flat_map(|stack| &stack.tools)
+                .map(|tool| (tool.name.clone(), is_port_taken(i64::from(tool.port) + offset)))
+                .collect(),
+            stack,
             tree: Some(tree),
         }
     }

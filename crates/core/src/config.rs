@@ -308,20 +308,9 @@ impl Stack {
         all
     }
 
-    /// The port a worktree's offset is read back from: the first service's
-    /// with a variable, else the app's.
+    /// The port a worktree's offset is read back from: the lowest with a variable.
     pub fn offset_port(&self) -> Option<Port> {
-        let services = self.services.iter().map(|service| Port {
-            name: service.name.clone(),
-            port: service.port,
-            env: service.env.clone(),
-        });
-        let app = Port {
-            name: "app".into(),
-            port: self.app.port,
-            env: self.app.env.clone(),
-        };
-        services.chain(std::iter::once(app)).find(|port| port.env.is_some())
+        self.ports().into_iter().find(|port| port.env.is_some())
     }
 
     /// A service by its name.

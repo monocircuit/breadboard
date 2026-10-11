@@ -279,10 +279,10 @@ fn states_of(issues: &[Entry], remote: Option<&Remote>) -> HashMap<i64, IssueSta
         .collect()
 }
 
-/// The page of an action's url: a path on the app of the main checkout, anything else as it is.
-fn page_of(url: &str, offset: i64) -> String {
+/// The page of an action's url: a path on the app on `port`, anything else as it is.
+fn page_of(url: &str, port: i64) -> String {
     if url.starts_with('/') {
-        format!("http://localhost:{}{url}", 3000 + offset)
+        format!("http://localhost:{port}{url}")
     } else {
         url.to_string()
     }
@@ -298,6 +298,13 @@ fn actions_of(
     state: &ViewState,
     now: i64,
 ) -> ActionsSection {
+    // The orchestrator's pages are on the main checkout's app: its port is any worktree's (one config).
+    let main_port = local
+        .trees
+        .first()
+        .map(|tree| tree.app_port)
+        .or_else(|| crate::stack::app_port(&std::env::current_dir().unwrap_or_default()))
+        .unwrap_or(0);
     let merge = &order.numbers;
     let mut items: Vec<Item> = Vec::new();
     // The orchestrator's own (`wt:action --orchestration`); a merge it posted for an MR (`--mr !N`) is that MR's.
@@ -329,7 +336,7 @@ fn actions_of(
                     action: Some((file.clone(), action.id)),
                 },
                 (None, Some(url)) => Go::Show {
-                    url: page_of(url, 0),
+                    url: page_of(url, main_port),
                     dir: None,
                 },
                 (None, None) => Go::Nothing,

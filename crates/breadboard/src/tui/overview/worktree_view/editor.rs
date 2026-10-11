@@ -3,7 +3,7 @@
 //! `nvim` (`.claude/nvim.sock`, relative to the checkout: a socket's path
 //! holds at most 107 bytes), else the tab started on the file, then its space
 //! and tab in front. And the herdr tabs a click starts (tabs.mjs `ensureTab`):
-//! the editor's, Storybook's. The herdr writes are exactly Node's (rule 6).
+//! the editor's, a tool's. The herdr writes are exactly Node's (rule 6).
 
 use breadboard_core::git::git;
 use breadboard_core::herdr::{self, Tab};
@@ -228,18 +228,16 @@ pub fn ensure_tab(space: &str, label: &str, cwd: &Path, command: &str) -> bool {
     true
 }
 
-/// Storybook of the checkout in its tab `storybook` (layout.mjs `startStorybook`): false without a space.
-pub fn start_storybook(checkout: &Checkout, port: i64) -> bool {
+/// A tool of the stack (Storybook) in the tab of its name (layout.mjs `startStorybook`): false without a space.
+pub fn start_tool(checkout: &Checkout, tool: &breadboard_core::config::Tool, offset: u16) -> bool {
     let Some(space) = checkout.space() else {
         return false;
     };
-    let cwd = checkout.dir.join("packages/monolithium");
-    ensure_tab(
-        &space,
-        "storybook",
-        &cwd,
-        &format!("pnpm exec storybook dev -p {port} --ci"),
-    )
+    let cwd = match &tool.dir {
+        Some(dir) => checkout.dir.join(dir),
+        None => breadboard_core::stack::dir_of(checkout.dir),
+    };
+    ensure_tab(&space, &tool.name, &cwd, &tool.command(offset))
 }
 
 #[cfg(test)]

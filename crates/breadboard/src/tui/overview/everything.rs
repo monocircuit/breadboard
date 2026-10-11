@@ -204,11 +204,11 @@ fn app_cell(tree: &Tree) -> Vec<Span<'static>> {
     vec![if !tree.has_env {
         look::dim("—")
     } else if !tree.has_own_port {
-        look::dim("⇒ :3000")
+        look::dim(format!("⇒ :{}", tree.app_port))
     } else if tree.is_up {
-        look::span(format!("● :{}", 3000 + tree.offset), theme::tone(Tone::Green))
+        look::span(format!("● :{}", tree.app_port + tree.offset), theme::tone(Tone::Green))
     } else {
-        look::dim(format!("○ :{}", 3000 + tree.offset))
+        look::dim(format!("○ :{}", tree.app_port + tree.offset))
     }]
 }
 
@@ -457,7 +457,7 @@ fn work_line(scene: &mut Scene<Act>, detail: Option<Vec<Vec<Span<'static>>>>) {
 fn tree_click(row: &TreeRow, is_in_herdr: bool) -> Act {
     let tree = &row.tree;
     if !is_in_herdr && tree.is_up && tree.has_env {
-        let port = 3000 + if tree.has_own_port { tree.offset } else { 0 };
+        let port = tree.app_port + if tree.has_own_port { tree.offset } else { 0 };
         Act::Go(Go::Show {
             url: format!("http://localhost:{port}"),
             dir: Some(tree.dir.clone()),
@@ -1202,6 +1202,7 @@ mod tests {
     fn tree(name: &str, is_main: bool) -> Tree {
         Tree {
             dir: PathBuf::from(format!("/repo/{name}")),
+            app_port: 3000,
             name: name.into(),
             branch: if is_main {
                 "develop".into()

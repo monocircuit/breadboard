@@ -55,7 +55,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete => acts::delete(state, model, &main),
         Act::StartStack(dir) => acts::start_stack(state, &dir),
         Act::Migrate(dir) => acts::migrate(state, &dir),
-        Act::Storybook(_) => acts::start_storybook(state, model, &main),
+        Act::Tool(_, name) => acts::start_tool(state, model, &main, &name),
         Act::OpenFile { file, line, .. } => acts::open_file(state, model, &main, &file, line),
         Act::Hunks { file, at, is_whole } => acts::toggle_hunks(state, file, at, is_whole),
         _ => Flow::Same,
@@ -740,16 +740,24 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
         scene.indent(at);
     };
     for row in rows {
-        // Outside herdr there is no tab to start Storybook in: its row shows the command.
-        let start =
-            (row.name == "storybook" && !row.is_on && herdr::is_in_herdr()).then(|| Act::Storybook(dir.to_path_buf()));
+        // Outside herdr there is no tab to start a tool in: its row shows the command.
+        let start = row
+            .tool
+            .clone()
+            .filter(|_| !row.is_on && herdr::is_in_herdr())
+            .map(|name| Act::Tool(dir.to_path_buf(), name));
+        let started = state
+            .tool
+            .as_ref()
+            .filter(|(name, _)| *name == row.name)
+            .map(|(_, start)| start);
         let draw = |scene: &mut Scene<Act>| {
             if row.is_on {
                 scene.atom(vec![look::span("●", theme::tone(Tone::Green))]);
             } else {
                 scene.atom(vec![look::dim("○")]);
             }
-            scene.atom_gap(vec![look::span(row.name, Style::new())], 2);
+            scene.atom_gap(vec![look::span(&row.name, Style::new())], 2);
             scene.pad_to(url_at);
             scene.indent(url_at);
             if let Some(url) = row.url.as_ref().or(row.address.as_ref()) {
@@ -758,20 +766,20 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
             if start.is_some() || row.hint.is_some() {
                 to_hint(scene);
             }
-            match (&start, &state.storybook) {
-                (Some(start), Some(acts::Storybook::Starting)) => {
-                    scene.button("◐ starting storybook …", Tone::Yellow, start.clone());
+            match (&start, started) {
+                (Some(start), Some(acts::ToolStart::Starting)) => {
+                    scene.button(&format!("◐ starting {} …", row.name), Tone::Yellow, start.clone());
                     look::say(
                         scene,
-                        "its tab storybook, the row turns ● once it answers",
+                        &format!("its tab {}, the row turns ● once it answers", row.name),
                         theme::dim(),
                     );
                 }
-                (Some(start), Some(acts::Storybook::Failed(why))) => {
-                    scene.button("▶ start storybook", Tone::Cyan, start.clone());
+                (Some(start), Some(acts::ToolStart::Failed(why))) => {
+                    scene.button(&format!("▶ start {}", row.name), Tone::Cyan, start.clone());
                     look::say(scene, why, theme::tone(Tone::Red));
                 }
-                (Some(start), None) => scene.button("▶ start storybook", Tone::Cyan, start.clone()),
+                (Some(start), None) => scene.button(&format!("▶ start {}", row.name), Tone::Cyan, start.clone()),
                 (None, _) => {
                     if let Some(hint) = &row.hint {
                         look::say(scene, hint, theme::dim());
@@ -925,8 +933,9 @@ fn migrations_of(scene: &mut Scene<Act>, migrations: &Migrations, dir: &Path, st
                 scene.redraw_in(acts::WATCH);
             }
             started => {
-                scene.button("▶ pnpm pg:migrate", Tone::Cyan, migrate.clone());
-                if let Some(error) = started.and_then(|started| started.error("pg:migrate")) {
+                let run = super::worktrees::migrate_run(dir);
+                scene.button(&format!("▶ {run}"), Tone::Cyan, migrate.clone());
+                if let Some(error) = started.and_then(|started| started.error(&run)) {
                     say_gap(scene, &error, theme::tone(Tone::Red), 2);
                 }
             }

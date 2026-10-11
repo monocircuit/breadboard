@@ -21,7 +21,7 @@ use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
-use super::repo::{Repo, VITA, compose_args, env_file_of, offset_of};
+use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
 use breadboard_core::record::SPACE;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
 use serde_json::Value;
@@ -266,8 +266,6 @@ fn is_port_free(port: i64) -> bool {
 
 /// The tab of a checkout's app (`pnpm dev`) and drizzle studio's.
 const DEV: &str = "dev";
-const STUDIO: &str = "studio";
-const STUDIO_PORT: i64 = 4983;
 
 /// While the stack of `dir` runs, its space shows it: a tab per container
 /// following its logs, `dev` and `studio` while their port is free; when it
@@ -282,23 +280,35 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
     if !is_main && offset == 0 {
         return Vec::new();
     }
-    let vita = dir.join(VITA);
-    let compose = |args: &[&str]| super::proc::output("docker", &compose_args(args), &vita, None);
+    let Some(stack) = breadboard_core::stack::of(dir) else {
+        return Vec::new();
+    };
+    let vita = stack_dir(dir);
+    let compose = |args: &[&str]| {
+        let all = compose_args(dir, args).unwrap_or_default();
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        super::proc::output("docker", &all, &vita, None)
+    };
     let services: Vec<String> = compose(&["config", "--services"]).lines().map(String::from).collect();
     let is_up = !compose(&["ps", "--status", "running", "-q"]).out().is_empty();
     let tabs = herdr::tabs_of(workspace);
     let mut changed = Vec::new();
     if is_up {
-        let logs = "docker compose --env-file .env.local -f docker-compose.local.yml logs -f --tail 200";
+        let logs = format!(
+            "docker {}",
+            breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]).join(" ")
+        );
         let mut wanted: Vec<(String, String)> = services
             .iter()
             .map(|service| (service.clone(), format!("{logs} {service}")))
             .collect();
-        if is_port_free(3000 + offset) {
-            wanted.push((DEV.into(), "pnpm dev".into()));
+        if is_port_free(i64::from(stack.app.port) + offset) {
+            wanted.push((DEV.into(), stack.app.dev.clone()));
         }
-        if is_port_free(STUDIO_PORT + offset) {
-            wanted.push((STUDIO.into(), format!("pnpm pg:studio --port {}", STUDIO_PORT + offset)));
+        for tool in stack.tools.iter().filter(|tool| tool.is_with_stack) {
+            if is_port_free(i64::from(tool.port) + offset) {
+                wanted.push((tool.name.clone(), tool.command(u16::try_from(offset).unwrap_or(0))));
+            }
         }
         let mut empty = Vec::new();
         for (label, command) in wanted {
@@ -323,7 +333,18 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
         }
         return changed;
     }
-    let ours: BTreeSet<&str> = services.iter().map(String::as_str).chain([DEV, STUDIO]).collect();
+    let ours: BTreeSet<&str> = services
+        .iter()
+        .map(String::as_str)
+        .chain([DEV])
+        .chain(
+            stack
+                .tools
+                .iter()
+                .filter(|tool| tool.is_with_stack)
+                .map(|tool| tool.name.as_str()),
+        )
+        .collect();
     // The panes and the one running this are read only when there is a tab to close (a read per pane).
     if !tabs.iter().any(|tab| ours.contains(s(tab, "label"))) {
         return changed;
