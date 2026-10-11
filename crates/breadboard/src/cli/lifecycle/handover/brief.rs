@@ -19,7 +19,7 @@ pub fn brief_of(
     let (number, title, dir, branch) = (&issue.number, &issue.title, text(&issue.dir), &issue.branch);
     let worktree = match before {
         Some(_) => format!(
-            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim. You come from another worktree: `EnterWorktree(path: \"{dir}\")` once, if you don't stand in it yet; after that don't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
+            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim. You come from another worktree: before any work `git rev-parse --show-toplevel` prints `{dir}`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"{dir}\")`, once. After that don't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
         ),
         None => format!(
             "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
@@ -66,7 +66,7 @@ You work on issue #{number} of monocircuit/platform, started by the orchestratio
    - `pnpm wt:action look "<what>"` for anything else the user has to do.
    The user's click arrives typed into this tab as one line, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user, maybe with images: until it arrives, wait for it instead of guessing from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `pnpm wt:action --done <id>` (`--list` shows them). While you are working, leave none.
 5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as the first prompt of your conversation, resumed in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>, read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
+6. Your next issue may come as the first prompt of your conversation, resumed in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: "keep")`, then `EnterWorktree(path: "<dir>")`. Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
 {tail}"#
     )
 }
@@ -96,7 +96,7 @@ mod tests {
         assert!(brief.contains("\n1. Read the issue: `glab issue view 12 --comments`, then"));
         assert!(brief.contains("Before that, `ListAgents` finds it (it works in `/r/p`)."));
         assert!(brief.contains("\n   At every stage, `pnpm wt:action note \"<one line>\"`: what you are on"));
-        assert!(brief.ends_with("read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
+        assert!(brief.ends_with("Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
     }
 
     #[test]
@@ -110,7 +110,7 @@ mod tests {
             Some("You are a reused agent: x."),
             Path::new("/r/p"),
         );
-        assert!(brief.contains("You come from another worktree: `EnterWorktree(path: \"/r/p-12-a-title\")` once"));
+        assert!(brief.contains("You come from another worktree: before any work `git rev-parse --show-toplevel` prints `/r/p-12-a-title`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"/r/p-12-a-title\")`, once."));
         assert!(brief.contains("   The orchestrator is the session `s-1` (`ListAgents`).\n"));
         assert!(brief.ends_with(
             ".\n\n## Before this issue\n\nYou are a reused agent: x.\n\n## From the orchestrator\n\nmore\n"
