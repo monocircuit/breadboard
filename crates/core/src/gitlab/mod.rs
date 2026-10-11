@@ -87,6 +87,9 @@ pub struct Mr {
     /// Its source branch; not in Node's shape, which ignores it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// The boxes of its own description (its Tests), apart from its issue's (#346).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<IssueBox>,
 }
 
 impl Mr {

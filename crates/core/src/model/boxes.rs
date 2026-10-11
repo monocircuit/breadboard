@@ -58,6 +58,29 @@ pub fn sections_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) 
     sections
 }
 
+/// The sections of an issue's boxes, then the MR's own (its description's
+/// Tests, #346) apart, each of those headed `!iid · Tests`: both lists as
+/// GitLab shows them, neither mixed into the other.
+pub fn all_sections_of(
+    issue: &[IssueBox],
+    mr: Option<(i64, &[IssueBox])>,
+    actions: &[Action],
+    answered: &[Action],
+) -> Vec<BoxSection> {
+    let mut sections = sections_of(issue, actions, answered);
+    if let Some((iid, boxes)) = mr {
+        sections.extend(sections_of(boxes, actions, answered).into_iter().map(|section| {
+            let heading = if section.heading.is_empty() {
+                format!("!{iid}")
+            } else {
+                format!("!{iid} · {}", section.heading)
+            };
+            BoxSection { heading, ..section }
+        }));
+    }
+    sections
+}
+
 fn line_of(found: &IssueBox, actions: &[Action], answered: &[Action]) -> BoxLine {
     let (text, check) = match MARK.captures(&found.text) {
         Some(captures) => {
@@ -203,6 +226,22 @@ mod tests {
                 "Says (why) in the middle",
             ]
         );
+    }
+
+    #[test]
+    fn the_mrs_own_boxes_follow_the_issues_under_its_iid() {
+        let issue = [found("Scope", "the fold", false)];
+        let mr = [found("Tests", "pnpm wt:check passed", true)];
+        let headings: Vec<String> = all_sections_of(&issue, Some((334, &mr)), &[], &[])
+            .into_iter()
+            .map(|section| section.heading)
+            .collect();
+        assert_eq!(headings, ["Scope", "!334 · Tests"]);
+        let loose = [IssueBox {
+            heading: None,
+            ..found("", "a box", true)
+        }];
+        assert_eq!(all_sections_of(&[], Some((334, &loose)), &[], &[])[0].heading, "!334");
     }
 
     #[test]

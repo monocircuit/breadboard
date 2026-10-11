@@ -7,7 +7,7 @@
 
 use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
-use super::boxes::{BoxSection, sections_of};
+use super::boxes::{BoxSection, all_sections_of};
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
 use super::develop::Migrations;
@@ -798,7 +798,12 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
                 boxes: match (tree, found) {
-                    (Some(tree), Some(found)) => sections_of(&found.boxes, &tree.actions, &tree.answered),
+                    (Some(tree), Some(found)) => all_sections_of(
+                        &found.boxes,
+                        mr.map(|mr| (mr.iid, &mr.boxes[..])),
+                        &tree.actions,
+                        &tree.answered,
+                    ),
                     _ => Vec::new(),
                 },
                 go,
