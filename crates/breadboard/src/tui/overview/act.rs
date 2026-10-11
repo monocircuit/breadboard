@@ -77,13 +77,12 @@ pub enum Act {
     },
 }
 
-/// What folds: the removed worktrees, the queue, the merged MRs; in the
+/// What folds: WORK's done ones (`Removed`: merged and removed) and its queue; in the
 /// view of everything the open MRs and issues the pane cut; DONE's commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
     Queued,
-    Merged,
     Mrs,
     Issues,
     Done,
@@ -97,12 +96,10 @@ const DISMISS_ARM: Duration = Duration::from_millis(4000);
 pub fn act(app: &mut Overview, act: Act) -> Flow {
     match act {
         Act::Fold(fold) => {
-            let is_removed_folded = app.is_removed_folded();
             let folds = &mut app.folds;
             match fold {
-                Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
+                Fold::Removed => folds.is_done_folded = !folds.is_done_folded,
                 Fold::Queued => folds.is_queued_folded = !folds.is_queued_folded,
-                Fold::Merged => folds.is_merged_folded = !folds.is_merged_folded,
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,

@@ -506,7 +506,7 @@ pub fn command(args: &Args) -> ExitCode {
         outln!(
             "
   A folder claude has not seen asks to be trusted first: answer it in the agent's tab.
-  The overview's WORKTREES shows where each agent is: look there, don't ask and don't relay it.
+  The overview's WORK shows where each agent is: look there, don't ask and don't relay it.
   An agent messages you{peer_note} only for a decision, a changed plan or another agent's work.
   Say hello first, so it has your address:
 {}

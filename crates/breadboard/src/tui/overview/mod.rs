@@ -12,7 +12,8 @@
 //! (core's `model_of`) and the page from the model, one file per section:
 //!
 //! - orchestration: `header` (the chat row, GitLab's error), `next`,
-//!   `actions` (ACTIONS, UP NEXT), `worktrees`, `agents`, `merge_requests`,
+//!   `actions` (ACTIONS, UP NEXT), `work` (the worktrees and their MRs in
+//!   one, from the pieces of `worktrees` and `merge_requests`), `agents`,
 //!   `footer` (end orchestration, the hints);
 //! - one worktree: `worktree_view`; everything: `everything`.
 //!
@@ -31,6 +32,7 @@ mod look;
 mod merge_requests;
 mod next;
 mod overall;
+mod work;
 mod worktree_view;
 mod worktrees;
 
@@ -268,9 +270,9 @@ impl GitlabState {
 /// The user's folds, kept over redraws; None: the model's default.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Folds {
-    pub removed: Option<bool>,
+    /// WORK's done ones (#347: the merged MRs and the removed worktrees), shown until folded.
+    pub is_done_folded: bool,
     pub is_queued_folded: bool,
-    pub is_merged_folded: bool,
     /// The view of everything: every open MR, every issue, past what fits the pane.
     pub is_every_mr_shown: bool,
     pub is_every_issue_shown: bool,
@@ -352,17 +354,6 @@ impl Overview {
         }
     }
 
-    /// Whether "done and removed" is folded by the model's default (past FOLD_OVER).
-    fn is_removed_folded(&self) -> bool {
-        match &self.model {
-            Some(Model::Orchestration(model)) => model
-                .worktrees
-                .as_ref()
-                .is_ok_and(|worktrees| worktrees.is_removed_folded),
-            _ => false,
-        }
-    }
-
     /// The model again from what was read; a panic keeps the last one and says why.
     fn rebuild(&mut self) {
         let Some(local) = &self.local else { return };
@@ -408,9 +399,8 @@ impl App for Overview {
                 }
                 next::build(page, model, &ctx);
                 actions::build(page, model, &ctx);
-                worktrees::build(page, model, &ctx);
+                work::build(page, model, &ctx);
                 agents::build(page, model, &ctx);
-                merge_requests::build(page, model, &ctx);
                 footer::build(page, model, &ctx);
                 actor::view::done(page, &ctx);
             }
