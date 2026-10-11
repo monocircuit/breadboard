@@ -51,7 +51,7 @@ static MAIN: OnceLock<PathBuf> = OnceLock::new();
 /// where the binary lies: a binary of one checkout run outside any would act
 /// on that checkout (fetch, worktree add, push its claim).
 pub fn main_dir() -> PathBuf {
-    find_main().unwrap_or_else(|| fail("not inside a git repo: run it in a checkout of the repo"))
+    find_main().unwrap_or_else(|| fail("not inside the repo: run it in a checkout of the repo"))
 }
 
 /// The main checkout, None outside any repo (for what only helps inside one).

@@ -105,7 +105,7 @@ impl Session {
         let init = std::env::var_os("INIT_CWD").map(PathBuf::from);
         let main = git::main_dir(&cwd)
             .or_else(|| init.as_deref().and_then(git::main_dir))
-            .ok_or("not inside the repo: run it in a checkout of monocircuit/platform")?;
+            .ok_or("not inside the repo: run it in a checkout of the repo")?;
         let top = git::git(&cwd, &["rev-parse", "--show-toplevel"]);
         let here = top.is_ok.then(|| PathBuf::from(top.out()));
         let plugin_dir = [Some(main.as_path()), here.as_deref()]
