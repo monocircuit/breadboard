@@ -671,7 +671,12 @@ fn merge_requests_of(
                 .and_then(crate::time::parse_iso)
                 .map(|at| merged_when(at, now))
                 .unwrap_or_default();
-            Some(Span::dim(format!("merged {when}").trim_end().to_string()))
+            let word = if crate::epic::is_in_epic(mr, part.issue.as_ref()) {
+                "in epic"
+            } else {
+                "merged"
+            };
+            Some(Span::dim(format!("{word} {when}").trim_end().to_string()))
         } else if reasons.is_empty() {
             Some(Span::new("ready to merge", super::Paint::Green))
         } else {

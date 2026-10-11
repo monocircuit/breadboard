@@ -3,6 +3,7 @@
 //! goes to develop by the user's two clicks. `<n>` is the epic of the
 //! issues' milestone (`breadboard · Epic 15: …` → 15): epics are milestones.
 
+use crate::gitlab::{Issue, Mr};
 use crate::json::str_of;
 use crate::model::order::Item;
 use serde_json::Value;
@@ -56,6 +57,12 @@ pub fn epic_of(record: &Value) -> Option<String> {
         .and_then(|epic| str_of(epic, "branch"))
         .filter(|branch| is_epic(branch))
         .map(String::from)
+}
+
+/// Whether a task's MR is in its epic but not yet in develop (#350): merged
+/// into an epic, its issue still open (the milestone MR closes it).
+pub fn is_in_epic(mr: &Mr, issue: Option<&Issue>) -> bool {
+    mr.is_merged() && is_epic(mr.target()) && issue.is_none_or(|issue| issue.state != "closed")
 }
 
 /// The merge the overview runs by itself now (#350): the first in ACTIONS
@@ -128,6 +135,27 @@ mod tests {
             auto_merge_of(&items, |_: &str| None, never).is_none(),
             "no MR read: nothing"
         );
+    }
+
+    #[test]
+    fn a_task_merged_into_its_epic_is_in_epic_until_its_issue_closes() {
+        let mr = |state: &str, target: &str| Mr {
+            state: state.into(),
+            target: target.into(),
+            ..Mr::default()
+        };
+        let issue = |state: &str| Issue {
+            state: state.into(),
+            ..Issue::default()
+        };
+        assert!(is_in_epic(&mr("merged", "epic/15-b"), None));
+        assert!(is_in_epic(&mr("merged", "epic/15-b"), Some(&issue("opened"))));
+        assert!(
+            !is_in_epic(&mr("merged", "epic/15-b"), Some(&issue("closed"))),
+            "the milestone MR landed"
+        );
+        assert!(!is_in_epic(&mr("merged", "develop"), None));
+        assert!(!is_in_epic(&mr("opened", "epic/15-b"), None));
     }
 
     #[test]
