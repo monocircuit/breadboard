@@ -159,7 +159,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 1) { nodes { id status sha ref } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 3) { nodes { id status sha ref } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
@@ -175,11 +175,18 @@ pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
                 .filter_map(|label| str_at(label, "title").map(String::from))
                 .collect(),
             sha: str_at(node, "diffHeadSha").map(String::from),
-            // Its newest pipeline, of any commit: after a push that skipped CI
+            // Its newest MR pipeline, of any commit: after a push that skipped CI
             // GitLab's head pipeline is none, and a red one before it matters.
+            // A branch's (the `skipped` one a push with ci.skip leaves) isn't one.
             pipeline: nodes(node, "pipelines")
-                .first()
-                .and_then(|pipeline| pipeline_of(pipeline, "")),
+                .iter()
+                .filter_map(|pipeline| pipeline_of(pipeline, ""))
+                .find(|pipeline| {
+                    pipeline
+                        .reference
+                        .as_deref()
+                        .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+                }),
         })
         .collect()
 }
@@ -1063,7 +1070,9 @@ mod tests {
             r#"{ "mergeRequests": { "nodes": [ { "iid": "349", "draft": true,
               "sourceBranch": "feature/357-x", "targetBranch": "develop", "diffHeadSha": "0359",
               "labels": { "nodes": [ { "title": "enhancement" } ] },
-              "pipelines": { "nodes": [ { "id": "gid://gitlab/Ci::Pipeline/2936237215", "status": "PENDING",
+              "pipelines": { "nodes": [ { "id": "gid://gitlab/Ci::Pipeline/2936237216", "status": "SKIPPED",
+                "sha": "0359", "ref": "feature/357-x" },
+                { "id": "gid://gitlab/Ci::Pipeline/2936237215", "status": "PENDING",
                 "sha": "0359", "ref": "refs/merge-requests/349/head" } ] } } ] } }"#,
         )
         .unwrap();

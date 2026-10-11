@@ -704,9 +704,9 @@ fn merge_requests_of(
 }
 
 /// What the CI queue takes of an orchestration (#357): its open MRs in the
-/// merge order, those whose agent posted the merge, those with a try
-/// answered lately.
-fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, now: i64) -> crate::ci::Published {
+/// merge order and each one's bar, its boxes (those after the deploy left
+/// out) and whether `wt:check` passed at its HEAD.
+fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> crate::ci::Published {
     let open_iid = |issue: &Entry| of(remote, issue).mr.as_ref().filter(|mr| mr.is_open()).map(|mr| mr.iid);
     let order_iids = order
         .open
@@ -719,35 +719,39 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
                 .find_map(open_iid)
         })
         .collect();
-    let with = |is_it: &dyn Fn(&Entry) -> bool| -> Vec<i64> {
-        issues
-            .iter()
-            .filter(|issue| is_it(issue))
-            .filter_map(open_iid)
-            .collect()
-    };
-    let merges = with(&|issue: &Entry| {
-        issue
-            .tree
-            .as_ref()
-            .is_some_and(|tree| tree.actions.iter().any(|action| action.kind == "merge"))
-    });
-    let tries = with(&|issue: &Entry| {
-        issue.tree.as_ref().is_some_and(|tree| {
-            tree.actions.iter().chain(&tree.answered).any(|action| {
-                action.is_try()
-                    && action
-                        .answered_at
-                        .as_deref()
-                        .and_then(crate::time::parse_iso)
-                        .is_some_and(|at| now - at < crate::ci::ANSWERED_HOLDS_MS)
-            })
+    let bars = issues
+        .iter()
+        .filter_map(|issue| {
+            let iid = open_iid(issue)?;
+            let boxes: Vec<_> = of(remote, issue)
+                .issue
+                .as_ref()
+                .map(|found| {
+                    found
+                        .boxes
+                        .iter()
+                        .filter(|found| !super::merge::is_after_deploy(found))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Without its worktree no one can check it here: its boxes say it.
+            let is_checked = issue
+                .tree
+                .as_ref()
+                .is_none_or(|tree| matches!(tree.checked, crate::check::CheckState::Tested { .. }));
+            Some((
+                iid,
+                crate::ci::Bar {
+                    ticked: boxes.iter().filter(|found| found.is_ticked).count(),
+                    total: boxes.len(),
+                    is_checked,
+                },
+            ))
         })
-    });
+        .collect();
     crate::ci::Published {
         order: order_iids,
-        merges,
-        tries,
+        bars,
     }
 }
 
@@ -900,7 +904,7 @@ pub fn orchestration_of(
     })
     .unwrap_or_default();
     if remote.is_some() {
-        model.ci_published = Some(ci_published_of(&issues, remote, &order, now));
+        model.ci_published = Some(ci_published_of(&issues, remote, &order));
     }
     // Conflicts and failed pipelines reach their agents by themselves, from the one live overview.
     if let Some(remote) = remote.filter(|_| state.is_deliverer) {

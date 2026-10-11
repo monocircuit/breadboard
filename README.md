@@ -200,15 +200,19 @@ breadboard decides which pipelines exist at all:
   per look, for the MR's newest commit, while a slot is free and no pipeline
   waits for the runner. An older pipeline of that MR still running is
   cancelled; one into `main`, of develop or of a tag never is.
-- **The order**: a click on the row (run now), a hotfix or anything into
-  `main`, ready MRs in the merge order (each orchestration's acting overview
-  writes it to `.claude/ci/order-<name>.json`), drafts whose agent posted the
-  merge or whose try was answered in the last 30 min, drafts with a fix after
-  a red run. Then drafts at work, but only while no other pipeline runs. A
-  pipeline that a person cancelled, or GitLab skipped, for the newest commit
-  stays that way until a click.
+- **No pipeline before the bar is full** (the user's rule): an
+  orchestration's MR gets one only once every box of its issue is ticked
+  (after-deploy ones excepted) and `wt:check` passed at its HEAD; its
+  acting overview writes both, with the merge order, to
+  `.claude/ci/order-<name>.json`. Then the agent marks it ready and posts
+  the merge after the pipeline is green.
+- **The order**: a click on the row (run now, also before the bar is full),
+  a hotfix or anything into `main`, the MRs with a full bar in the merge
+  order, fixes after a red run; an MR of no orchestration counts as full,
+  its drafts only while no other pipeline runs. A pipeline that a person cancelled, or that GitLab
+  skipped, for the newest commit stays that way until a click.
 - **The overview** shows a waiting MR's place instead of its pipeline mark,
-  e.g. `CI: next (2nd) ▸` or `CI: held, after !339 ▸`; a click on it moves the MR to the front
+  e.g. `CI: next (2nd) ▸`, `CI: after the boxes (3/7) ▸` or `CI: after wt:check ▸`; a click on it moves the MR to the front
   (`.claude/ci/run-now.json`). The band shows the runner's load:
   `CI 3/4 slots · 2 queued`. The queue's state is
   `.claude/ci/queue.json`.

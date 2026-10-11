@@ -6,7 +6,7 @@
 //!
 //! The files of `<main>/.claude/ci/`, each written whole by one side:
 //! - `order-<orchestration>.json` (`Published`): an orchestration's merge
-//!   order, posted merges and answered tries, by its acting overview;
+//!   order and each MR's bar (its boxes, its wt:check), by its acting overview;
 //! - `run-now.json` (`RunNow`): the MRs a click moved to the front;
 //! - `queue.json` (`Queue`): where each MR stands, by the scheduler, for the rows.
 
@@ -21,8 +21,6 @@ pub const SKIP_OPTION: &str = "ci.skip";
 pub const MODE_KEY: &str = "breadboard.ci";
 /// How long a pipeline asked for counts as on its way: GitLab's head pipeline may lag.
 pub const STARTED_HOLDS_MS: i64 = 5 * 60_000;
-/// How long a try answered keeps its MR up front.
-pub const ANSWERED_HOLDS_MS: i64 = 30 * 60_000;
 /// How old a queue may be before the rows stop showing it: no scheduler runs.
 pub const QUEUE_STALE_MS: i64 = 60_000;
 /// Runner slots assumed when its config can't be read.
@@ -120,16 +118,32 @@ pub fn queue_file(main: &Path) -> PathBuf {
     dir_of(main).join("queue.json")
 }
 
+/// Where an MR's work stands (#357, the user's rule: no pipeline before the
+/// bar is full): its issue's boxes, those after the deploy left out, and
+/// whether `wt:check` passed at its HEAD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bar {
+    pub ticked: usize,
+    pub total: usize,
+    pub is_checked: bool,
+}
+
+impl Bar {
+    /// Every box ticked and checked: its pipeline may start.
+    pub fn is_full(&self) -> bool {
+        self.ticked >= self.total && self.is_checked
+    }
+}
+
 /// What an orchestration's acting overview publishes on each read.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Published {
     /// The open MRs (iids) in the merge order.
     pub order: Vec<i64>,
-    /// MRs whose agent posted its merge.
-    pub merges: Vec<i64>,
-    /// MRs with a try answered within ANSWERED_HOLDS_MS.
-    pub tries: Vec<i64>,
+    /// Each open MR's bar, by iid.
+    pub bars: BTreeMap<i64, Bar>,
 }
 
 /// The MRs a click moved to the front: iid → when (ms).
@@ -151,12 +165,14 @@ pub enum Place {
     Next { at: usize },
     /// A draft at work: it starts once the slots are idle; `after` the MR ahead.
     Held { after: Option<i64> },
+    /// Its bar isn't full: no pipeline before it is (a click starts one anyway).
+    Boxes(Bar),
 }
 
 impl Place {
     /// Waiting for its pipeline: next or held.
     pub fn is_waiting(&self) -> bool {
-        matches!(self, Place::Next { .. } | Place::Held { .. })
+        matches!(self, Place::Next { .. } | Place::Held { .. } | Place::Boxes(_))
     }
 
     /// `CI: running`, `CI: next (2nd)`, `CI: held, after !339`.
@@ -168,6 +184,10 @@ impl Place {
             Place::Next { at } => format!("CI: next ({})", ordinal(*at)),
             Place::Held { after: Some(iid) } => format!("CI: held, after !{iid}"),
             Place::Held { after: None } => "CI: held till a slot is idle".into(),
+            Place::Boxes(bar) if bar.ticked < bar.total => {
+                format!("CI: after the boxes ({}/{})", bar.ticked, bar.total)
+            }
+            Place::Boxes(_) => "CI: after wt:check".into(),
         }
     }
 }
@@ -384,9 +404,7 @@ pub enum Class {
     Hotfix,
     /// Ready: in the merge order, then the others oldest first.
     Ready,
-    /// A draft whose agent posted its merge or whose try was answered.
-    Answered,
-    /// A draft whose last pipeline failed and that has a fix pushed.
+    /// Its last pipeline failed and it has a fix pushed.
     Fix,
     /// A draft at work: only when the slots are idle.
     Idle,
@@ -397,8 +415,8 @@ pub enum Class {
 pub struct Ranks {
     /// Each orchestration's merge order.
     pub orders: Vec<Vec<i64>>,
-    pub merges: HashSet<i64>,
-    pub tries: HashSet<i64>,
+    /// The bars of the orchestrations' MRs; an MR of none has no bar to wait for.
+    pub bars: HashMap<i64, Bar>,
     pub run_now: BTreeMap<i64, i64>,
 }
 
@@ -406,8 +424,7 @@ impl Ranks {
     pub fn of(published: &[Published], run_now: &RunNow) -> Ranks {
         Ranks {
             orders: published.iter().map(|one| one.order.clone()).collect(),
-            merges: published.iter().flat_map(|one| one.merges.iter().copied()).collect(),
-            tries: published.iter().flat_map(|one| one.tries.iter().copied()).collect(),
+            bars: published.iter().flat_map(|one| one.bars.clone()).collect(),
             run_now: run_now.at.clone(),
         }
     }
@@ -421,23 +438,31 @@ impl Ranks {
     }
 }
 
-pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Class {
+/// Its class; None while its bar isn't full (no click asked for it).
+pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
     if ranks.run_now.contains_key(&mr.iid) {
-        Class::RunNow
-    } else if mr.is_into_main()
-        || mr.source.starts_with("hotfix/")
-        || mr.labels.iter().any(|label| label.eq_ignore_ascii_case("hotfix"))
-    {
-        Class::Hotfix
-    } else if !mr.is_draft {
-        Class::Ready
-    } else if ranks.merges.contains(&mr.iid) || ranks.tries.contains(&mr.iid) {
-        Class::Answered
-    } else if mr.pipeline_status() == Some("failed") && !mr.is_head_current() {
-        Class::Fix
-    } else {
-        Class::Idle
+        return Some(Class::RunNow);
     }
+    let bar = ranks.bars.get(&mr.iid);
+    if bar.is_some_and(|bar| !bar.is_full()) {
+        return None;
+    }
+    let is_fix = mr.pipeline_status() == Some("failed") && !mr.is_head_current();
+    Some(
+        if mr.is_into_main()
+            || mr.source.starts_with("hotfix/")
+            || mr.labels.iter().any(|label| label.eq_ignore_ascii_case("hotfix"))
+        {
+            Class::Hotfix
+        } else if is_fix {
+            Class::Fix
+        } else if bar.is_some() || !mr.is_draft {
+            // An orchestration's MR with its bar full is marked ready only after its green pipeline.
+            Class::Ready
+        } else {
+            Class::Idle
+        },
+    )
 }
 
 /// A pipeline to create, and the superseded one of the same MR to cancel first.
@@ -512,20 +537,25 @@ pub fn decide(
             places.insert(mr.iid, place);
         }
     }
-    let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = mrs
-        .iter()
-        .filter(|mr| wants_pipeline(mr, ranks, started, now))
-        .map(|mr| {
-            let class = class_of(mr, ranks);
-            let key = match class {
+    let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
+    for mr in mrs.iter().filter(|mr| wants_pipeline(mr, ranks, started, now)) {
+        match class_of(mr, ranks) {
+            Some(class) => waiting.push((class, key_of(class, mr, ranks), mr)),
+            None => {
+                places.insert(mr.iid, Place::Boxes(ranks.bars[&mr.iid]));
+            }
+        }
+    }
+    fn key_of(class: Class, mr: &OpenMr, ranks: &Ranks) -> (usize, i64, i64) {
+        {
+            match class {
                 // The latest click first.
                 Class::RunNow => (0, -ranks.run_now.get(&mr.iid).copied().unwrap_or(0), mr.iid),
-                Class::Ready => (ranks.place_in_order(mr.iid).unwrap_or(usize::MAX), 0, mr.iid),
+                Class::Ready | Class::Fix => (ranks.place_in_order(mr.iid).unwrap_or(usize::MAX), 0, mr.iid),
                 _ => (0, 0, mr.iid),
-            };
-            (class, key, mr)
-        })
-        .collect();
+            }
+        }
+    }
     waiting.sort_by_key(|a| (a.0, a.1));
     let mut ahead: Option<i64> = None;
     for (at, (class, _, mr)) in waiting.iter().enumerate() {
@@ -657,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn ranks_run_now_then_hotfix_then_ready_then_answered_then_fix_then_idle() {
+    fn ranks_run_now_then_hotfix_then_ready_then_fix_then_idle() {
         let mut hotfix = mr(5, "h", None);
         hotfix.target = "main".into();
         let mrs = [
@@ -669,17 +699,52 @@ mod tests {
             draft(6, "n", None),
         ];
         let mut ranks = order(&[4]);
-        ranks.tries.insert(3);
+        // An orchestration's draft whose boxes are open: no pipeline yet.
+        ranks.bars.insert(
+            3,
+            Bar {
+                ticked: 2,
+                total: 5,
+                is_checked: true,
+            },
+        );
         ranks.run_now.insert(6, NOW - 1000);
         let decision = decide_now(&mrs, &ranks, slots(1, 0));
         let at = |iid: i64| match decision.places[&iid] {
             Place::Next { at } => at,
             _ => usize::MAX,
         };
-        assert_eq!([at(6), at(5), at(4), at(3), at(2)], [1, 2, 3, 4, 5]);
+        assert_eq!([at(6), at(5), at(4), at(2)], [1, 2, 3, 4]);
+        assert_eq!(decision.places[&3].text(), "CI: after the boxes (2/5)");
         assert_eq!(decision.places[&1], Place::Held { after: Some(2) });
         assert_eq!(decision.places[&1].text(), "CI: held, after !2");
         assert_eq!(decision.start.unwrap().iid, 6);
+    }
+
+    #[test]
+    fn starts_no_pipeline_before_the_bar_is_full_but_on_a_click() {
+        // #357, 2026-10-11: !349 (0/11) and !351 (0/8) took the runner while !341 (7/7) waited.
+        let mrs = [draft(349, "a", None), draft(351, "b", None), draft(341, "c", None)];
+        let mut ranks = order(&[349, 351, 341]);
+        let bar = |ticked, total, is_checked| Bar {
+            ticked,
+            total,
+            is_checked,
+        };
+        ranks.bars.insert(349, bar(0, 11, true));
+        ranks.bars.insert(351, bar(8, 8, false));
+        ranks.bars.insert(341, bar(7, 7, true));
+        let decision = decide_now(&mrs, &ranks, slots(4, 0));
+        assert_eq!(decision.start.as_ref().map(|start| start.iid), Some(341));
+        assert_eq!(decision.places[&341], Place::Next { at: 1 });
+        assert_eq!(decision.places[&349].text(), "CI: after the boxes (0/11)");
+        assert_eq!(decision.places[&351].text(), "CI: after wt:check");
+        // With 341 running, the others still wait for their bars, whatever the free slots.
+        let mrs = [draft(349, "a", None), draft(341, "c", pipeline(1, "running", "c", 341))];
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 1)).start, None);
+        // A click starts one early.
+        ranks.run_now.insert(349, NOW);
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 1)).start.unwrap().iid, 349);
     }
 
     #[test]
@@ -829,8 +894,14 @@ mod tests {
         let scratch = std::env::temp_dir().join(format!("ci-queue-test-{}", std::process::id()));
         let published = Published {
             order: vec![3, 1],
-            merges: vec![1],
-            tries: vec![],
+            bars: BTreeMap::from([(
+                3,
+                Bar {
+                    ticked: 1,
+                    total: 2,
+                    is_checked: true,
+                },
+            )]),
         };
         write_whole(&order_file(&scratch, "breadboard"), &published).unwrap();
         write_whole(&order_file(&scratch, "vita"), &Published::default()).unwrap();
