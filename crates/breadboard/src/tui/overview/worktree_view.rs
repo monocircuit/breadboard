@@ -307,7 +307,7 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
             match &remote.mr {
                 Some(mr) => row(scene, "mr", Some(Act::Open(mr.url.clone())), |scene| {
                     let mut head = vec![look::span(format!("!{}", mr.iid), Style::new())];
-                    head.extend(look::spans(&[mr_state(mr)]));
+                    head.extend(look::spans(&[mr_state(mr, remote.issue.as_ref())]));
                     scene.atom(head);
                     scene.atom(look::spans(&[pipeline_mark(mr.pipeline.as_ref())]));
                     scene.atom_gap(vec![look::dim(&mr.url)], 2);

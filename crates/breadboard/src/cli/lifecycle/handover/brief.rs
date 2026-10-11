@@ -97,6 +97,7 @@ mod tests {
             dir: PathBuf::from("/r/p-12-a-title"),
             why: None,
             branch: "feature/12-a-title".into(),
+            milestone: None,
         }
     }
 

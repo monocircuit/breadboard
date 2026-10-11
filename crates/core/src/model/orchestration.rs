@@ -88,6 +88,8 @@ pub struct OrchestrationLocal {
     pub setups: Vec<Setup>,
     /// The test instance's origin (`VITA_TEST_ORIGIN`).
     pub test_origin: Option<String>,
+    /// Its epic branch (#350), None for one that works on develop.
+    pub epic: Option<super::epic_row::EpicLocal>,
 }
 
 /// What the writing side keeps between frames: the removals, starts and
@@ -210,6 +212,8 @@ pub struct OrchestrationModel {
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
     /// itself: the live overview writes them into the worktrees (#344).
     pub turn_records: Vec<(PathBuf, TurnRecord)>,
+    /// The epic's head row (#350), None for one that works on develop.
+    pub epic: Option<Vec<Vec<Span>>>,
 }
 
 /// An action of ACTIONS: a try opens its spot, a merge merges on two clicks.
@@ -678,7 +682,12 @@ fn merge_requests_of(
                 .and_then(crate::time::parse_iso)
                 .map(|at| merged_when(at, now))
                 .unwrap_or_default();
-            Some(Span::dim(format!("merged {when}").trim_end().to_string()))
+            let word = if crate::epic::is_in_epic(mr, part.issue.as_ref()) {
+                "in epic"
+            } else {
+                "merged"
+            };
+            Some(Span::dim(format!("{word} {when}").trim_end().to_string()))
         } else if reasons.is_empty() {
             Some(Span::new("ready to merge", super::Paint::Green))
         } else {
@@ -856,6 +865,7 @@ pub fn orchestration_of(
         holds: HashMap::new(),
         stale: Vec::new(),
         turn_records: Vec::new(),
+        epic: super::epic_row::epic_row_of(local, remote),
     };
     if issues.is_empty() {
         model.next = Ok(NextSection {

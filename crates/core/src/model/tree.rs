@@ -160,8 +160,11 @@ pub fn pipeline_mark(pipeline: Option<&Pipeline>) -> Span {
     }
 }
 
-/// Where an MR stands: ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
-pub fn mr_state(mr: &Mr) -> Span {
+/// Where an MR stands: ` in epic` (#350), ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
+pub fn mr_state(mr: &Mr, issue: Option<&Issue>) -> Span {
+    if crate::epic::is_in_epic(mr, issue) {
+        return Span::new(" in epic", Paint::Cyan);
+    }
     match mr.state.as_str() {
         "merged" => Span::new(" merged", Paint::Cyan),
         "closed" => Span::new(" closed", Paint::Dim),
@@ -498,7 +501,7 @@ fn facts_of(
             .map(|at| vec![Span::dim(format!("merged {}", clock(at, now)))])
             .unwrap_or_default(),
         Some(mr) => {
-            let mut fact = vec![Span::link(format!("!{}", mr.iid), Some(&mr.url)), mr_state(mr)];
+            let mut fact = vec![Span::link(format!("!{}", mr.iid), Some(&mr.url)), mr_state(mr, found)];
             if mr.is_open() {
                 fact.push(Span::plain(" "));
                 fact.push(pipeline_mark(mr.pipeline.as_ref()));

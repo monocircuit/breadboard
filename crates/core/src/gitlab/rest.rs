@@ -291,6 +291,8 @@ pub async fn read_orchestration(
         of,
         awaited,
         develop,
+        // The epic's row waits for GraphQL (#350): REST is the fallback only.
+        epic: None,
         at: now_ms(),
     })
 }
