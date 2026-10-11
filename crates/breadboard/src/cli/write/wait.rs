@@ -4,12 +4,14 @@
 //! Code wakes the agent when a background command exits). It ends early when
 //! one is closed, stays in conflict, or the limit passes. The wait is
 //! recorded in `.claude/wait.json` for the overview, which delivers the line
-//! itself when this command is gone.
+//! itself when this command is gone. A headless agent's (#359) wait returns
+//! at once: the overview queues the line as its next run.
 
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::glab;
 use breadboard_core::git::git;
 use breadboard_core::json::{self, int_of, ints_of, str_of};
+use breadboard_core::runs;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Number, Value};
 use std::collections::HashMap;
@@ -384,10 +386,22 @@ pub fn run(argv: &Argv) -> Outcome {
     wait.insert("hours".into(), hours_json(parsed.hours));
     wait.insert("since".into(), Value::String(to_iso(since)));
     wait.insert("until".into(), Value::String(to_iso(until)));
-    wait.insert("pid".into(), Value::from(std::process::id()));
+    // A headless agent (#359) is no process to wake: the wait is recorded
+    // without a command, and the overview queues its line as a run.
+    let is_headless = here.main.as_deref().is_some_and(runs::is_headless);
+    if !is_headless {
+        wait.insert("pid".into(), Value::from(std::process::id()));
+    }
     let file = wait_file(dir);
     json::write_pretty(&file, &Value::Object(wait))
         .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
+    if is_headless {
+        say(&format!(
+            "▸ {}: the overview wakes you with its line when it ends; stop now",
+            waits_text(&parsed.mrs)
+        ));
+        return Ok(ExitCode::SUCCESS);
+    }
     say(&format!("▸ {}, asking GitLab every minute", waits_text(&parsed.mrs)));
 
     let mut conflicts_since = HashMap::new();

@@ -8,8 +8,8 @@ use crate::cli::setup::conversations::session_file;
 use crate::cli::setup::herdr;
 use crate::cli::setup::proc::{self, quote};
 use crate::cli::setup::repo;
-use breadboard_core::record;
 use breadboard_core::time::now_ms;
+use breadboard_core::{record, runs};
 use serde_json::{Map, Value};
 use std::fs;
 use std::io::Read;
@@ -100,6 +100,10 @@ pub fn start_agent(dir: &Path, brief: &str) -> Agent {
     let feature = repo::feature_of(dir);
     let _ = record::write_brief(dir, brief);
     let id = new_session_id();
+    let main = repo::main_dir();
+    if runs::is_headless(&main) {
+        return start_headless(&main, dir, &feature, id);
+    }
     let command = format!(
         "cd {} && claude --session-id {id} --name {feature}{} {}",
         quote(&dir.to_string_lossy()),
@@ -119,6 +123,30 @@ pub fn start_agent(dir: &Path, brief: &str) -> Agent {
     Agent {
         is_started,
         command,
+        id,
+    }
+}
+
+/// A headless agent (#359): bound first, then its brief queued as the first
+/// run of a new session (`--session-id`, no transcript yet); no tab.
+fn start_headless(main: &Path, dir: &Path, feature: &str, id: String) -> Agent {
+    let is_bound = fs::write(session_file(dir), format!("{id}\n")).is_ok();
+    let event = runs::Event {
+        session: id.clone(),
+        dir: dir.to_path_buf(),
+        name: feature.to_string(),
+        line: BRIEF_PROMPT.to_string(),
+        at: now_ms(),
+    };
+    let is_started = is_bound && runs::enqueue(main, event).is_ok();
+    Agent {
+        is_started,
+        command: format!(
+            "{} runs tell {} {}",
+            quote(&crate::cli::lifecycle::proc::exe()),
+            quote(&dir.to_string_lossy()),
+            quote(BRIEF_PROMPT)
+        ),
         id,
     }
 }
