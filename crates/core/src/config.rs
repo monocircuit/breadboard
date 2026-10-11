@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 /// The file, at the root of the main checkout.
 pub const FILE: &str = "breadboard.toml";
@@ -443,7 +443,8 @@ impl Config {
         }
         for (at, test) in self.mr.tests.iter().enumerate() {
             for path in &test.paths {
-                if let Err(error) = regex::Regex::new(path) {
+                // Parsed, not compiled: a compile of each was a sixth of every start's work (#342).
+                if let Err(error) = regex_syntax::Parser::new().parse(path) {
                     return bad(
                         &format!("mr.tests[{at}].paths"),
                         &format!("{path:?} is no regular expression ({error})"),
@@ -553,11 +554,23 @@ impl Loaded {
     }
 }
 
+/// `Config::parse` of a text, once per text: every worktree has its copy of
+/// the file, mostly the same, and a parse of each was a share of every
+/// overview's start (#342).
+fn parsed(text: &str) -> Result<Config, String> {
+    static PARSED: LazyLock<Mutex<HashMap<String, Result<Config, String>>>> = LazyLock::new(Mutex::default);
+    let mut known = PARSED.lock().unwrap_or_else(|e| e.into_inner());
+    known
+        .entry(text.to_string())
+        .or_insert_with(|| Config::parse(text))
+        .clone()
+}
+
 /// Reads `<main>/breadboard.toml`, the defaults without one.
 pub fn load(main: &Path) -> Loaded {
     let file = main.join(FILE);
     let (config, error) = match std::fs::read_to_string(&file) {
-        Ok(text) => match Config::parse(&text) {
+        Ok(text) => match parsed(&text) {
             Ok(config) => (config, None),
             Err(error) => (Config::default(), Some(format!("{}: {error}", file.display()))),
         },
@@ -587,11 +600,22 @@ fn origin_head(main: &Path) -> Option<String> {
         .map(String::from)
 }
 
-/// The configs read, by main checkout, with the file's time then.
-type Cache = HashMap<PathBuf, (Option<SystemTime>, Arc<Loaded>)>;
+/// How long a file's answer holds before it is looked at again: the readers
+/// ask for the config of every worktree many times a frame, a stat each was
+/// a sixth of the overview's first frame (#342). A changed file shows within it.
+const LOOK_AGAIN: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(1)
+};
+
+/// The configs read, by the checkout they are in: the file's time then, when it was looked at.
+type Cache = HashMap<PathBuf, (Option<SystemTime>, Instant, Arc<Loaded>)>;
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-/// The checkout and the main checkout of a directory asked before.
-static MAINS: LazyLock<Mutex<HashMap<PathBuf, (PathBuf, PathBuf)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// A directory asked before: its checkout, the main checkout, whether the
+/// checkout has a file of its own and when that was looked at.
+type Mains = HashMap<PathBuf, (PathBuf, PathBuf, bool, Instant)>;
+static MAINS: LazyLock<Mutex<Mains>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn mtime(main: &Path) -> Option<SystemTime> {
     std::fs::metadata(main.join(FILE)).and_then(|meta| meta.modified()).ok()
@@ -604,17 +628,23 @@ pub fn of_main(main: &Path) -> Arc<Loaded> {
 
 /// The config in the checkout `root` of the repo whose main checkout is `main`.
 fn of_root(root: &Path, main: &Path) -> Arc<Loaded> {
-    let time = mtime(root);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((was, loaded)) = cache.get(root)
+    if let Some((_, at, loaded)) = cache.get(root)
+        && at.elapsed() < LOOK_AGAIN
+    {
+        return Arc::clone(loaded);
+    }
+    let time = mtime(root);
+    if let Some((was, at, loaded)) = cache.get_mut(root)
         && *was == time
     {
+        *at = Instant::now();
         return Arc::clone(loaded);
     }
     let mut loaded = load(root);
     loaded.main = main.to_path_buf();
     let loaded = Arc::new(loaded);
-    cache.insert(root.to_path_buf(), (time, Arc::clone(&loaded)));
+    cache.insert(root.to_path_buf(), (time, Instant::now(), Arc::clone(&loaded)));
     loaded
 }
 
@@ -624,20 +654,28 @@ fn of_root(root: &Path, main: &Path) -> Arc<Loaded> {
 /// a main checkout.
 pub fn of(dir: &Path) -> Arc<Loaded> {
     let known = MAINS.lock().unwrap_or_else(|e| e.into_inner()).get(dir).cloned();
-    let (top, main) = known.unwrap_or_else(|| {
-        let top = dir
-            .ancestors()
-            .find(|at| at.join(".git").exists())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| dir.to_path_buf());
-        let main = main_of(dir).unwrap_or_else(|| dir.to_path_buf());
-        MAINS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(dir.to_path_buf(), (top.clone(), main.clone()));
-        (top, main)
-    });
-    if top != main && top.join(FILE).is_file() {
+    let (top, main, is_own) = match known {
+        Some((top, main, is_own, at)) if at.elapsed() < LOOK_AGAIN => (top, main, is_own),
+        known => {
+            let (top, main) = match known {
+                Some((top, main, ..)) => (top, main),
+                None => (
+                    dir.ancestors()
+                        .find(|at| at.join(".git").exists())
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| dir.to_path_buf()),
+                    main_of(dir).unwrap_or_else(|| dir.to_path_buf()),
+                ),
+            };
+            let is_own = top != main && top.join(FILE).is_file();
+            MAINS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(dir.to_path_buf(), (top.clone(), main.clone(), is_own, Instant::now()));
+            (top, main, is_own)
+        }
+    };
+    if is_own {
         return of_root(&top, &main);
     }
     of_main(&main)

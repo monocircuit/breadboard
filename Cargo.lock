@@ -149,6 +149,7 @@ dependencies = [
  "anyhow",
  "libc",
  "regex",
+ "regex-syntax",
  "reqwest",
  "serde",
  "serde_json",
