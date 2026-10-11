@@ -16,6 +16,7 @@ use crate::tui::theme;
 use breadboard_core::model::develop::Migrations;
 use breadboard_core::model::tree::{AgentLine, Node};
 use breadboard_core::model::{self, Paint, counted};
+use breadboard_core::time::ago;
 use ratatui::layout::Rect;
 use ratatui::text::Span;
 
@@ -267,6 +268,37 @@ pub(super) fn body(scene: &mut Scene<Act>, node: &Node, cells: &Cells, mine: Opt
         scene.end_line();
     }
 }
+
+/// What the node says of its work in plain words (#341), each wrapped under
+/// its text: `problem` from its issue, then `now` (its agent's note) or
+/// `said` (the first line of its last answer) with how long ago.
+pub(super) fn said_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    if !node.has_tree {
+        return;
+    }
+    let mut labeled = |label: &str, text: &str, age: Option<String>| {
+        scene.atom(vec![look::dim(label)]);
+        scene.pad_to(SAID_AT);
+        scene.indent(SAID_AT);
+        look::say(scene, text, ratatui::style::Style::new());
+        // The age one atom: `5 min ago` never splits over two lines.
+        if let Some(age) = age {
+            look::say(scene, &format!("·\u{a0}{}", age.replace(' ', "\u{a0}")), theme::dim());
+        }
+        scene.indent(0);
+        scene.end_line();
+    };
+    if let Some(problem) = &node.problem {
+        labeled("problem", problem, None);
+    }
+    if let Some(now) = &node.now {
+        let label = if now.is_note { "now" } else { "said" };
+        labeled(label, &now.text, now.at.map(|at| ago(at, ctx.now)));
+    }
+}
+
+/// Where the text of `problem` and `now` starts, 1 after the label `problem`.
+const SAID_AT: u16 = 8;
 
 /// `● Mira Albrecht · 3 issues · 2 MRs merged` (#292): the dot in the colour
 /// of whom the agent waits for, its name, what it did in this orchestration.

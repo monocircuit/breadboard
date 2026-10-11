@@ -10,7 +10,8 @@
 //! where it stands at the right), the MR's title with its status at the
 //! right, the bar of its boxes (#294), what it lacks with who acts on it,
 //! the worktree's facts with who works in it (#292), where it collides
-//! (#332), its issue's title. A click anywhere goes to the worktree's space
+//! (#332), its issue's title, the problem it works on and what its agent
+//! is on now (#341). A click anywhere goes to the worktree's space
 //! (its MR, else its issue, where it has none), `!M` opens the MR, its mark
 //! the pipeline; hover lights the whole block (#296).
 
@@ -440,6 +441,7 @@ fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx
                     nodes::body(scene, node, &layout.cells, mine, ctx);
                     look::say(scene, &node.title, theme::dim());
                     scene.end_line();
+                    nodes::said_lines(scene, node, ctx);
                 }
                 None => {}
             }
@@ -532,6 +534,7 @@ mod tests {
     use breadboard_core::model::resolve::Conflict;
     use breadboard_core::model::tree::AgentLine;
     use breadboard_core::model::tree::{Lifecycle, TreeOf};
+    use breadboard_core::said::Now;
     use std::path::PathBuf;
 
     fn node(place: usize, name: &str, key: &'static str, has_tree: bool) -> Node {
@@ -575,6 +578,8 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
+            problem: None,
+            now: None,
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
             } else {
@@ -669,6 +674,51 @@ mod tests {
                 "   the title of #302",
             ]
         );
+    }
+
+    #[test]
+    fn a_block_says_its_problem_and_what_its_agent_does_now_wrapped_under_their_text() {
+        let mut worktrees = worktrees(0, 0);
+        let live = &mut worktrees.tree.live;
+        live[0].problem =
+            Some("The overview's node names the topic of its issue but not the problem it works on.".into());
+        live[0].now = Some(Now {
+            text: "cause found, fix pushed".into(),
+            at: Some(-4 * 60_000),
+            is_note: true,
+        });
+        // Without a note: the problem only.
+        live[1].problem = Some("wt:new hangs.".into());
+        let lines = text(&draw(&worktrees, Folds::default(), 56));
+        let at = lines
+            .iter()
+            .position(|line| line.ends_with("the title of #301"))
+            .unwrap();
+        assert_eq!(
+            lines[at..at + 4],
+            [
+                "   the title of #301",
+                "   problem The overview's node names the topic of its",
+                "           issue but not the problem it works on.",
+                "   now     cause found, fix pushed ·\u{a0}4\u{a0}min\u{a0}ago",
+            ]
+        );
+        let second = lines
+            .iter()
+            .position(|line| line.ends_with("the title of #302"))
+            .unwrap();
+        assert_eq!(
+            lines[second..second + 2],
+            ["   the title of #302", "   problem wt:new hangs."]
+        );
+        // The first line of the last answer, marked as said, without a time.
+        worktrees.tree.live[1].now = Some(Now {
+            text: "Pushed the fix.".into(),
+            at: None,
+            is_note: false,
+        });
+        let lines = text(&draw(&worktrees, Folds::default(), 56));
+        assert!(lines.contains(&"   said    Pushed the fix.".to_string()), "{lines:#?}");
     }
 
     #[test]
