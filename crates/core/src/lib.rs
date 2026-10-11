@@ -10,6 +10,7 @@ pub mod herdr;
 pub mod json;
 pub mod local;
 pub mod lock;
+pub mod main_update;
 pub mod model;
 pub mod reader;
 pub mod record;

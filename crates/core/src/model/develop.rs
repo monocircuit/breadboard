@@ -39,22 +39,26 @@ static TRAILER: LazyLock<Regex> =
 
 /// What came into develop since `dir` branched off (develop.mjs `developOf`).
 pub fn develop_of(dir: &Path) -> Develop {
+    let (merges, direct) = merges_in(dir, "HEAD..origin/develop");
+    let is_empty = merges.is_empty() && direct == 0;
+    Develop {
+        merges,
+        direct,
+        conflicts: if is_empty { Some(Vec::new()) } else { conflicts_of(dir) },
+    }
+}
+
+/// The merges on the first-parent line of `range` in `dir`, newest first,
+/// and how many commits came in without one (the main checkout's update, #348).
+pub fn merges_in(dir: &Path, range: &str) -> (Vec<Merged>, usize) {
     // Fields split by 0x1f, entries by 0x1e: a body has newlines.
-    let log = git(
-        dir,
-        &["log", "--first-parent", "--format=%s%x1f%b%x1e", "HEAD..origin/develop"],
-    )
-    .stdout;
-    let entries: Vec<&str> = log
-        .split('\u{1e}')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    let mut develop = Develop::default();
-    for entry in &entries {
+    let log = git(dir, &["log", "--first-parent", "--format=%s%x1f%b%x1e", range]).stdout;
+    let mut merges = Vec::new();
+    let mut direct = 0;
+    for entry in log.split('\u{1e}').map(str::trim).filter(|entry| !entry.is_empty()) {
         let (subject, body) = entry.split_once('\u{1f}').unwrap_or((entry, ""));
         let Some(branch) = MERGE.captures(subject).map(|found| found[1].to_string()) else {
-            develop.direct += 1;
+            direct += 1;
             continue;
         };
         let mr = MR.captures(body).and_then(|found| found[1].parse().ok());
@@ -64,14 +68,9 @@ pub fn develop_of(dir: &Path) -> Develop {
             .find(|line| !line.is_empty() && !TRAILER.is_match(line))
             .map(String::from)
             .unwrap_or_else(|| branch.clone());
-        develop.merges.push(Merged { mr, title, branch });
+        merges.push(Merged { mr, title, branch });
     }
-    develop.conflicts = if entries.is_empty() {
-        Some(Vec::new())
-    } else {
-        conflicts_of(dir)
-    };
-    develop
+    (merges, direct)
 }
 
 /// The files a `git merge origin/develop` in `dir` would stop at, empty when
