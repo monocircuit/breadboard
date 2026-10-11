@@ -4,6 +4,7 @@
 
 use super::change::is_change_open;
 use super::handovers::next_text;
+use super::merge_turn::{MergeTurn, waits_for_text};
 use super::{Tone, Tree, counted};
 use crate::conversations::question_of;
 use crate::gitlab::Mr;
@@ -45,7 +46,8 @@ pub struct NextIssue {
 
 /// What agentStateOf knows besides the worktree: its MR, herdr's state of the
 /// agent, the iids known merged (a wait names only the others), the announced
-/// handover, what the human's checks still lack (merge.rs `checks_of`).
+/// handover, what the human's checks still lack (merge.rs `checks_of`), its
+/// MR's merge turn (merge_turn.rs; None where the merge order isn't known).
 #[derive(Debug, Clone, Default)]
 pub struct Facts<'a> {
     pub mr: Option<&'a Mr>,
@@ -53,11 +55,21 @@ pub struct Facts<'a> {
     pub merged: Option<&'a HashSet<i64>>,
     pub handover: Option<&'a NextIssue>,
     pub checks: &'a [String],
+    pub turn: Option<&'a MergeTurn>,
 }
 
+/// A done MR whose merge order isn't known here (herdr's sidebar without the
+/// orchestration's verdict): no merge is claimed for the user, as none may
+/// be offered (#344).
+pub const MERGE_TURN: &str = "done: waits for its merge turn";
+/// A green MR whose turn says it lacks something no check names (work
+/// boxes, conflicts, a change): its MR row says what.
+pub const NOT_READY: &str = "not ready to merge: its MR row says why";
+
 /// What an agent waits for, the first that holds: at work; asks you; waits
-/// for the pipeline; pipeline failed; waits for you (its open actions, a
-/// merge once its pipeline passed); checks open; waits for other MRs; the
+/// for the pipeline; pipeline failed; waits for you (its open actions, the
+/// merge while its turn offers it, #344); waits for the MRs its turn comes
+/// after; checks open; done without a known turn; waits for other MRs; the
 /// next issue announced; change requested; not pushed; free.
 pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
     let Facts {
@@ -66,6 +78,7 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         merged,
         handover,
         checks,
+        turn,
     } = facts;
     if *status == Some("working") {
         return state("working", "at work", Tone::Work);
@@ -93,7 +106,16 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         return state("failed", "pipeline failed", Tone::You);
     }
     let mut kinds: Vec<String> = Vec::new();
-    for action in tree.actions.iter().filter(|action| action.answer.is_none()) {
+    // A posted merge is the user's only while it is offered (ACTIONS shows it then).
+    let is_withheld = |action: &&crate::actions::Action| {
+        action.kind == "merge" && turn.is_some_and(|turn| *turn != MergeTurn::Offered)
+    };
+    for action in tree
+        .actions
+        .iter()
+        .filter(|action| action.answer.is_none())
+        .filter(|action| !is_withheld(action))
+    {
         let kind = if action.is_try() {
             format!("try #{}", action.id)
         } else {
@@ -104,11 +126,20 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         }
     }
     let is_green = is_open && pipeline == Some("success") && !is_change_open(Some(tree), *mr);
-    if is_green && checks.is_empty() && !kinds.iter().any(|kind| kind == "merge") {
+    // The merge from its turn alone, never from a green pipeline: it may come after another MR.
+    let is_offered = turn.is_some_and(|turn| *turn == MergeTurn::Offered);
+    if is_green && is_offered && !kinds.iter().any(|kind| kind == "merge") {
         kinds.push("merge".into());
     }
     if !kinds.is_empty() {
         return state("waits", format!("waits for you: {}", kinds.join(", ")), Tone::You);
+    }
+    if is_green && let Some(MergeTurn::Waits(iids)) = turn {
+        return state("waitsForMr", waits_for_text(iids), Tone::Gitlab);
+    }
+    if is_green && checks.is_empty() {
+        let text = if turn.is_none() { MERGE_TURN } else { NOT_READY };
+        return state("turn", text, Tone::Gitlab);
     }
     if is_green {
         return state("checks", format!("checks open: {}", checks.join(", ")), Tone::You);
@@ -182,12 +213,14 @@ mod tests {
             ..Default::default()
         }
     }
+    /// Its merge offered: what the overview of its orchestration finds for a done MR first in the order.
     fn at(tree: &Tree, mr: Option<&Mr>, status: &str) -> AgentState {
         agent_state_of(
             tree,
             &Facts {
                 mr,
                 status: Some(status),
+                turn: Some(&MergeTurn::Offered),
                 ..Default::default()
             },
         )
@@ -262,6 +295,44 @@ mod tests {
             .text,
             "waits for you: merge"
         );
+    }
+
+    #[test]
+    fn a_done_mr_behind_another_waits_for_it_never_for_you() {
+        // #344: !324 done, after !333 in the merge order: ACTIONS offers nothing.
+        let waits = MergeTurn::Waits(vec![333]);
+        let posted = Tree {
+            actions: vec![action(1, "merge", None)],
+            ..tree()
+        };
+        for tree in [tree(), posted] {
+            let found = agent_state_of(
+                &tree,
+                &Facts {
+                    mr: Some(&mr("success")),
+                    status: Some("idle"),
+                    turn: Some(&waits),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(found, state("waitsForMr", "waits for !333", Tone::Gitlab));
+        }
+    }
+
+    #[test]
+    fn claims_no_merge_without_a_turn() {
+        // herdr's sidebar doesn't know the merge order: a green pipeline alone offers nothing.
+        let facts = Facts {
+            mr: Some(&mr("success")),
+            status: Some("idle"),
+            ..Default::default()
+        };
+        assert_eq!(agent_state_of(&tree(), &facts), state("turn", MERGE_TURN, Tone::Gitlab));
+        let lacks = Facts {
+            turn: Some(&MergeTurn::Lacks),
+            ..facts.clone()
+        };
+        assert_eq!(agent_state_of(&tree(), &lacks).text, NOT_READY);
     }
 
     #[test]
@@ -468,6 +539,7 @@ mod tests {
         let facts = Facts {
             mr: Some(&mr("success")),
             status: Some("idle"),
+            turn: Some(&MergeTurn::Offered),
             ..Default::default()
         };
         assert_eq!(sidebar_line_of(&tree(), &facts), "waits for you: merge · !192");
