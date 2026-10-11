@@ -19,6 +19,7 @@ pub mod history;
 pub mod memory;
 pub mod merge;
 pub mod merge_order;
+pub mod merge_turn;
 pub mod mr_blockers;
 pub mod next;
 pub mod numbering;
@@ -204,6 +205,8 @@ pub struct Tree {
     /// Commits develop doesn't have by patch (`git cherry`).
     pub own_commits: usize,
     pub wait: Option<Wait>,
+    /// Its MR's merge turn as the orchestration's overview left it, for herdr's sidebar (#344).
+    pub merge_turn: Option<merge_turn::TurnRecord>,
     pub change: Option<Change>,
     /// The commit of `origin/<branch>`.
     pub pushed: Option<String>,
