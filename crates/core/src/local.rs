@@ -482,6 +482,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.behind = behind_develop(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
     tree.wait = wait_of(&dir);
+    tree.merge_turn = crate::model::merge_turn::turn_record_of(&dir);
     let push = push_state(&dir, Some(&tree.branch));
     tree.pushed = push.pushed;
     tree.unpushed = push.unpushed;

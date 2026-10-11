@@ -10,7 +10,7 @@ use super::{Actor, Effect, browser, herdr};
 use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of};
 use breadboard_core::git::feature_of;
-use breadboard_core::herdr::{is_in_herdr, tabs_of};
+use breadboard_core::herdr::{is_in_herdr, tabs_of_now};
 use breadboard_core::local::is_port_taken;
 use breadboard_core::model::try_state::{TryState, app_origin, page_of, short_page};
 use breadboard_core::model::{Paint, Span, Tree};
@@ -167,7 +167,9 @@ fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Result<String, &'sta
         return Err("not in herdr");
     }
     let workspace = herdr::space_of(main, dir).ok_or("no space of its worktree in herdr")?;
-    let tabs = tabs_of(&workspace);
+    // Asked here, never the shared answer: one from before the last click lacks the tab it
+    // opened, so each click opened one more and none came to the front (#344's try #2).
+    let tabs = tabs_of_now(&workspace);
     let old: Vec<_> = tabs.iter().filter(|tab| tab.label == TRY_TAB).collect();
     let file = dir.join(".claude").join("try-tab.json");
     let known = breadboard_core::json::read(&file);
@@ -215,7 +217,7 @@ fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Result<String, &'sta
             "replaced what ran in the tab try".to_string()
         }
     };
-    let tab = tabs_of(&workspace)
+    let tab = tabs_of_now(&workspace)
         .into_iter()
         .find(|tab| tab.label == TRY_TAB && !closed.contains(&tab.id))
         .ok_or("herdr shows no tab try in its space after opening it")?;

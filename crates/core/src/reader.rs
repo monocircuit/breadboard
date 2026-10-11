@@ -331,6 +331,7 @@ impl LocalReader {
             "wait.json",
             "origin",
             "checked.json",
+            "merge-turn.json",
             "herdr-session",
             "overview-sent.json",
         ]

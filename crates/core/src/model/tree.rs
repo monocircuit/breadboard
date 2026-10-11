@@ -17,6 +17,7 @@ use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
+use super::merge_turn::MergeTurn;
 use super::numbering::numbers_of;
 use super::order::Go;
 use super::workers::{Suggestion, TRIES_AGAIN};
@@ -65,6 +66,8 @@ pub struct LifeFacts<'a> {
     /// The automatic wt:remove of its worktree.
     pub removal: Option<&'a Removal>,
     pub merged: Option<&'a HashSet<i64>>,
+    /// Its MR's merge turn (merge_turn.rs): offered, waits for other MRs, lacks.
+    pub turn: Option<&'a MergeTurn>,
     pub setup: Option<&'a Setup>,
     pub handover: Option<&'a NextIssue>,
     pub checks: &'a [String],
@@ -117,6 +120,7 @@ pub fn lifecycle_of(issue: &Entry, facts: &LifeFacts) -> Lifecycle {
             merged: facts.merged,
             handover: facts.handover,
             checks: facts.checks,
+            turn: facts.turn,
         },
     );
     if key == "free" && tree.claude.is_none() && facts.status.is_none() {
@@ -374,6 +378,8 @@ pub struct TreeFacts<'a> {
     pub has_remote: bool,
     pub known: &'a Known,
     pub merged: Option<&'a HashSet<i64>>,
+    /// The open MRs' turns by issue, None before GitLab answered.
+    pub turns: Option<&'a super::orchestration::Turns>,
     pub setups: &'a [Setup],
     pub now: i64,
 }
@@ -713,6 +719,10 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                         .map(String::as_str),
                     removal: tree.and_then(|tree| facts.removals.and_then(|removals| removals.get(&tree.dir))),
                     merged: facts.merged,
+                    turn: issue
+                        .number
+                        .and_then(|number| facts.turns.and_then(|turns| turns.get(&number)))
+                        .map(|(_, turn)| turn),
                     setup: tree.and_then(|tree| {
                         facts
                             .setups
@@ -977,6 +987,7 @@ mod tests {
                 &LifeFacts {
                     mr: Some(&mr),
                     status: Some("idle"),
+                    turn: Some(&MergeTurn::Offered),
                     ..Default::default()
                 }
             )
@@ -1000,6 +1011,7 @@ mod tests {
             &LifeFacts {
                 mr: Some(&draft),
                 status: Some("idle"),
+                turn: Some(&MergeTurn::Offered),
                 ..Default::default()
             },
         );

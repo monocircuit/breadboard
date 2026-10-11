@@ -167,6 +167,12 @@ pub fn tabs_of(workspace: &str) -> Vec<Tab> {
     tabs_in(herdr(&["tab", "list", "--workspace", workspace]))
 }
 
+/// `tabs_of` asked of herdr by this process, never a shared answer: the read
+/// after opening a tab (the shared answer of up to a second ago lacks it).
+pub fn tabs_of_now(workspace: &str) -> Vec<Tab> {
+    tabs_in(herdr_here(&["tab", "list", "--workspace", workspace]))
+}
+
 /// The panes of a space.
 pub fn panes_of(workspace: &str) -> Vec<Pane> {
     panes_in(herdr(&["pane", "list", "--workspace", workspace]))
