@@ -96,9 +96,10 @@ pub fn is_inside(here: &Path, dir: &Path) -> bool {
     core_git::is_inside(here, dir)
 }
 
-/// Commits of `branch` that develop lacks by patch.
+/// Commits of `branch` that its base lacks by patch (`cwd` its worktree; the
+/// main checkout: every base lacks them, develop and each epic).
 pub fn has_own_commits(branch: &str, cwd: &Path) -> bool {
-    core_git::own_commits(cwd, branch) > 0
+    core_git::has_own_commits(cwd, branch)
 }
 
 /// The offset of a worktree's own stack, 0 for the shared one (the lifecycle group's reading).

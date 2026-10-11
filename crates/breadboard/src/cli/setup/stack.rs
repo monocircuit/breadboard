@@ -229,6 +229,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         is_unpushed,
         epic_port,
     } = summary;
+    let from = breadboard_core::git::base_of(dir).remote;
     let dir = dir.display();
     let claim = if *is_unpushed {
         format!("{branch} not pushed (git push -u origin {branch})")
@@ -328,7 +329,7 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         format!("cd {VITA} && pnpm dev{flag}   → http://localhost:{port}{only}")
     };
     format!(
-        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from origin/develop{unpushed})\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
+        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from {from}{unpushed})\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
     )
 }
 

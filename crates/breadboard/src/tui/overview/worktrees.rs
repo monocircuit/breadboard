@@ -593,14 +593,14 @@ const NAMED: usize = 3;
 fn collision_line(scene: &mut Scene<Act>, node: &Node) {
     let mut groups: Vec<(Vec<&str>, Vec<&String>)> = Vec::new();
     for overlap in &node.collides {
-        let is_develop = overlap.name == DEVELOP;
+        let is_develop = is_base(&overlap.name);
         let files = develop_files(node, overlap);
         if files.is_empty() {
             continue;
         }
         match groups
             .iter_mut()
-            .find(|(names, known)| !is_develop && names[0] != DEVELOP && *known == files)
+            .find(|(names, known)| !is_develop && !is_base(names[0]) && *known == files)
         {
             Some((names, _)) => names.push(&overlap.name),
             None => groups.push((vec![&overlap.name], files)),
@@ -625,12 +625,12 @@ fn collision_line(scene: &mut Scene<Act>, node: &Node) {
     let is_clean = node.conflicts.as_ref().is_some_and(Vec::is_empty);
     for (i, (names, files)) in groups.iter().enumerate() {
         for (at, name) in names.iter().enumerate() {
-            let mut atom = vec![if *name == DEVELOP {
+            let mut atom = vec![if is_base(name) {
                 look::bold(name)
             } else {
                 look::span(name, look::pink())
             }];
-            if *name == DEVELOP && is_clean {
+            if is_base(name) && is_clean {
                 atom.push(look::dim(", merges cleanly"));
             }
             atom.push(Span::raw(if at + 1 < names.len() { "," } else { ":" }));
@@ -663,7 +663,7 @@ fn develop_files<'a>(node: &Node, overlap: &'a model::diff::Overlap) -> Vec<&'a 
     overlap
         .files
         .iter()
-        .filter(|file| overlap.name != DEVELOP || !conflicts.contains(file))
+        .filter(|file| !is_base(&overlap.name) || !conflicts.contains(file))
         .collect()
 }
 
@@ -685,8 +685,14 @@ fn conflict_line(scene: &mut Scene<Act>, node: &Node) {
             line: None,
         })
     };
+    let base = node
+        .collides
+        .iter()
+        .map(|overlap| overlap.name.as_str())
+        .find(|name| is_base(name))
+        .unwrap_or(DEVELOP);
     scene.atom(vec![look::span(
-        "✗ a merge of develop conflicts in",
+        format!("✗ a merge of {base} conflicts in"),
         look::style_of(&Paint::Red),
     )]);
     let named = files.len().min(CONFLICTS_NAMED);
@@ -817,6 +823,12 @@ fn link_atom(scene: &mut Scene<Act>, link: Span<'static>, after: &str, act: Opti
 
 /// The name of develop among the collisions (core's tree).
 const DEVELOP: &str = "develop";
+
+/// Whether a collision is with the worktree's base, not another worktree:
+/// develop or a branch (`epic/12-x`); worktrees are named `#12` or kebab-case.
+fn is_base(name: &str) -> bool {
+    name == DEVELOP || name.contains('/')
+}
 
 /// The shortest end of `file`'s path no other of `all` ends in: `tree.mjs`,
 /// `web/src/index.ts` beside `core/src/index.ts`.
