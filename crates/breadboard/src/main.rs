@@ -8,12 +8,22 @@ mod tui;
 
 use std::process::ExitCode;
 
+/// The key of the sources this binary was built from (#339), as the launcher
+/// passed it to the build: `breadboard-source-key:<key>`, empty after the
+/// colon for a build of anything else. The launcher finds it in the file
+/// (grep) before it stores or uses a copy, without running the copy.
+const SOURCE_KEY: &str = concat!("breadboard-source-key:", env!("BREADBOARD_SOURCE_KEY"));
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
         return cli::bare();
     };
     match command.as_str() {
+        "--source-key" => {
+            println!("{}", &SOURCE_KEY["breadboard-source-key:".len()..]);
+            ExitCode::SUCCESS
+        }
         "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),
         // The overviews' one reader, started by the first of them (daemon/).
         "serve" => daemon::main(rest),
