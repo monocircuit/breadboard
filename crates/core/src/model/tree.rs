@@ -806,7 +806,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     now_of(
                         tree.note.as_ref(),
                         claude.and_then(|claude| claude.answer.as_deref()),
-                        claude.and_then(|claude| claude.at),
+                        claude.and_then(|claude| claude.answer_at.or(claude.at)),
                     )
                 }),
                 go,
