@@ -7,7 +7,8 @@
 use super::cache::Cache;
 use super::client::{Gitlab, GitlabError, Result};
 use super::{
-    BranchRemote, Deploy, DeployPipeline, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, boxes_of, number_of,
+    BranchRemote, Deploy, DeployPipeline, DevelopPipeline, EpicRemote, Issue, Job, Mr, Pipeline, Remote, boxes_of,
+    number_of,
 };
 use crate::time::now_ms;
 use regex::Regex;
@@ -74,11 +75,22 @@ const LINKS_QUERY: &str = "query($project: ID!, $iids: [String!]) { project(full
 /// develop, and where there are any the MRs of the open branches, the
 /// issues, the awaited MRs. GraphQL refuses a variable no field uses: each
 /// declared with its field.
-fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool) -> String {
+fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool, has_epic: bool) -> String {
     let mut decls = vec!["$project: ID!"];
     let mut parts = vec![format!(
         "develop: pipelines(ref: \"develop\", first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
     )];
+    if has_epic {
+        decls.push("$epic: String");
+        decls.push("$epics: [String!]");
+        parts.push(format!(
+            "epicPipelines: pipelines(ref: $epic, first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
+        ));
+        parts.push(format!(
+            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 1) {{ nodes {{ {} }} }}",
+            mr_fields()
+        ));
+    }
     if has_branches {
         decls.push("$branches: [String!]");
         parts.push(format!(
@@ -152,7 +164,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
         ("deploy", deploy_query()),
         ("later deploys", later_deploys_query()),
         ("links", LINKS_QUERY.into()),
-        ("orchestration", orchestration_query(true, true, true)),
+        ("orchestration", orchestration_query(true, true, true, true)),
         ("mrs page", mrs_page_query()),
         ("issues page", ISSUES_PAGE_QUERY.into()),
         ("worktree", worktree_query(true, true)),
@@ -507,6 +519,9 @@ pub struct Ask {
     pub awaited: Vec<i64>,
     /// Branches whose merged MR a try on the test instance waits for: their deployment is read.
     pub deploys: Vec<String>,
+    /// Its epic branch (#350): its pipeline and its MR into develop are read.
+    #[serde(default)]
+    pub epic: Option<String>,
 }
 
 /// The links GitLab has of the open issues `numbers`, in the shape real GitLab
@@ -532,6 +547,21 @@ async fn read_links(gitlab: &Gitlab, memory: &mut Memory, numbers: &[i64]) {
                 return;
             }
         }
+    }
+}
+
+/// A finished pipeline as an orchestration shows it: its jobs only when it failed.
+fn pipeline_remote(pipeline: &Value, web: &str) -> DevelopPipeline {
+    let status = lower(str_at(pipeline, "status"));
+    DevelopPipeline {
+        id: id_of(pipeline.get("id")),
+        jobs: if status == "failed" {
+            jobs_of(pipeline, web)
+        } else {
+            Vec::new()
+        },
+        status,
+        url: str_at(pipeline, "path").map(|path| format!("{web}{path}")),
     }
 }
 
@@ -593,9 +623,14 @@ pub async fn read_orchestration(
         !open_branches.is_empty(),
         !first_issues.is_empty(),
         !awaited_unknown.is_empty(),
+        ask.epic.is_some(),
     );
     let awaited_iids: Vec<String> = awaited_unknown.iter().map(i64::to_string).collect();
     let mut variables = json!({});
+    if let Some(epic) = &ask.epic {
+        variables["epic"] = json!(epic);
+        variables["epics"] = json!([epic]);
+    }
     for (name, values) in [
         ("branches", &open_branches),
         ("iids", &first_issues),
@@ -743,24 +778,20 @@ pub async fn read_orchestration(
         remote.issue = number_of(branch).and_then(|number| issues.get(&number).cloned());
     }
 
-    // develop's last finished pipeline, its jobs only when it failed.
-    let develop = nodes(&project, "develop")
-        .into_iter()
-        .find(|pipeline| FINISHED.contains(&lower(str_at(pipeline, "status")).as_str()))
-        .map(|pipeline| {
-            let status = lower(str_at(&pipeline, "status"));
-            DevelopPipeline {
-                id: id_of(pipeline.get("id")),
-                jobs: if status == "failed" {
-                    jobs_of(&pipeline, &web)
-                } else {
-                    Vec::new()
-                },
-                status,
-                url: str_at(&pipeline, "path").map(|path| format!("{web}{path}")),
-            }
-        });
-
+    // develop's last finished pipeline, its jobs only when it failed; the epic's the same way.
+    let last_finished = |key: &str| {
+        nodes(&project, key)
+            .into_iter()
+            .find(|pipeline| FINISHED.contains(&lower(str_at(pipeline, "status")).as_str()))
+    };
+    let epic = ask.epic.as_ref().map(|branch| {
+        Box::new(EpicRemote {
+            branch: branch.clone(),
+            pipeline: last_finished("epicPipelines").map(|pipeline| pipeline_remote(&pipeline, &web)),
+            mr: nodes(&project, "epicMrs").first().map(|node| mr_of(node).0),
+        })
+    });
+    let develop = last_finished("develop").map(|pipeline| pipeline_remote(&pipeline, &web));
     // The awaited MRs: from what was read, the cache, else the answer.
     let mut awaited = HashMap::new();
     let listed: HashMap<i64, String> = nodes(&project, "awaited")
@@ -788,6 +819,7 @@ pub async fn read_orchestration(
         of,
         awaited,
         develop,
+        epic,
         at: now_ms(),
     })
 }

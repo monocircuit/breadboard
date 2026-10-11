@@ -9,6 +9,7 @@ use super::spawn::{self, Background, error_of};
 use super::{Effect, herdr};
 use crate::cli::lifecycle::handover::restart;
 use crate::tui::overview::Overview;
+use breadboard_core::epic::auto_merge_of;
 use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
 use breadboard_core::herdr::{Agent, is_in_herdr};
@@ -59,6 +60,9 @@ pub struct Auto {
     seq: u64,
     /// What the CI queue was last told of this orchestration (#357).
     published: Option<breadboard_core::ci::Published>,
+    /// MRs into an epic merged by themselves, by iid: the head each was
+    /// tried at. One that failed waits for a new push (#350).
+    epic_tried: HashMap<i64, String>,
 }
 
 /// `key` remembered as sent in the worktree's `.claude/overview-sent.json`, newest 50.
@@ -138,6 +142,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         }
         if is_remote {
             deliver_waits(app, &local, remote);
+            is_changed |= merge_into_epic(app, &model, remote);
         }
         for order in &model.orders {
             is_changed |= run_order(app, &name, order);
@@ -164,6 +169,59 @@ fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
     if breadboard_core::ci::write_whole(&file, published).is_ok() {
         app.actor.auto.published = Some(published.clone());
     }
+}
+
+/// A task's MR into its epic merges by itself once its turn offers it
+/// (#350): the second click's merge, one at a time, never twice at one head;
+/// into develop or main it stays the user's two clicks.
+fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
+    if app
+        .actor
+        .merges
+        .of
+        .values()
+        .any(|merge| merge.phase == super::merge::Phase::Running)
+    {
+        return false;
+    }
+    let Ok(section) = model.actions.as_ref() else {
+        return false;
+    };
+    let items: Vec<Item> = section.actions.iter().chain(&section.up_next).cloned().collect();
+    let head_of = |iid: i64| {
+        remote
+            .of
+            .values()
+            .filter_map(|part| part.mr.as_ref())
+            .find(|mr| mr.iid == iid)
+            .and_then(|mr| mr.sha.clone())
+    };
+    let tried = &app.actor.auto.epic_tried;
+    let found = auto_merge_of(
+        &items,
+        |branch| remote.of(branch).mr.as_ref().map(|mr| mr.target().to_string()),
+        |iid| tried.get(&iid).is_some_and(|sha| Some(sha) == head_of(iid).as_ref()),
+    );
+    let Some((Go::Merge { branch, action }, Some(offer))) = found.map(|item| (item.go.clone(), item.merge.clone()))
+    else {
+        return false;
+    };
+    app.actor
+        .auto
+        .epic_tried
+        .insert(offer.iid, head_of(offer.iid).unwrap_or_default());
+    let target = remote
+        .of(&branch)
+        .mr
+        .as_ref()
+        .map(|mr| mr.target().to_string())
+        .unwrap_or_default();
+    app.actor.log(
+        Paint::Yellow,
+        format!("!{} is done: it merges into {target} by itself", offer.iid),
+    );
+    super::merge::start(app, &branch, &action, &offer);
+    true
 }
 
 /// The lines core's model tells (`tellConflicts`, `tellFailedPipelines`): each
