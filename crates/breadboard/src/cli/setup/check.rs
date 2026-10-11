@@ -620,7 +620,8 @@ pub fn command() -> ExitCode {
             failures_line(&failures, 5)
         };
         fail(&format!(
-            "wt:check failed after {duration} s: {what}\n  Fix it, commit, run pnpm wt:check again: the push waits for it.\n  Red on develop too: it is fixed once, in its own fix MR; wait for that with pnpm wt:wait !<mr>."
+            "wt:check failed after {duration} s: {what}\n  Fix it, commit, run {run} wt:check again: the push waits for it.\n  Red on develop too: it is fixed once, in its own fix MR; wait for that with {run} wt:wait !<mr>.",
+            run = breadboard_core::config::run_word()
         ));
     }
     if working_tree_of(&dir).as_deref() != Some(tree.as_str()) {

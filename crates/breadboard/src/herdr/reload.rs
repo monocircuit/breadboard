@@ -19,8 +19,7 @@ pub fn command(session: &Session, is_pulled: bool) -> Done {
     let targets = targets(session);
     if targets.is_empty() {
         return Err(format!(
-            "neither the session {SESSION} nor your herdr runs with the space {SPACE}: pnpm herdr, or pnpm herdr:install"
-        )
+            "neither the session {SESSION} nor your herdr runs with the space {SPACE}: {run} herdr, or {run} herdr:install", run = breadboard_core::config::run_word())
         .into());
     }
     // The pull can bring new workflow code, but this process runs the binary
@@ -245,7 +244,8 @@ fn reload(session: &Session, target: &Target, is_stale: bool) -> Result<(), Fail
 fn closing(name: &str, is_stale: bool) -> String {
     if is_stale {
         format!(
-            "! {name} runs the code from before the pull until pnpm build:rs in the main checkout and a reload (prefix+shift+l); conversations, nvim and servers kept running"
+            "! {name} runs the code from before the pull until {run} build:rs in the main checkout and a reload (prefix+shift+l); conversations, nvim and servers kept running",
+            run = breadboard_core::config::run_word()
         )
     } else {
         format!("✓ {name} runs the current workflow code; conversations, nvim and servers kept running")

@@ -136,7 +136,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
     let args = Args::new(args);
     if let Some(shape) = shape_of(command) {
         if wants_help(&args) {
-            outln!("{}", shape.usage);
+            outln!("{}", breadboard_core::config::in_repo(&shape.usage));
             return Some(ExitCode::SUCCESS);
         }
         refuse_misuse(&args, &shape);

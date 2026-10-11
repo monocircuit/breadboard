@@ -53,8 +53,9 @@ fn no_worktree(args: &[String]) -> Option<ExitCode> {
     let is_known = git::worktrees(&main).iter().any(|tree| git::is_inside(&dir, &tree.dir));
     (!is_known).then(|| {
         fail(&format!(
-            "{} is not a worktree of the repo: pnpm wt:list shows them",
-            dir.display()
+            "{} is not a worktree of the repo: {run} wt:list shows them",
+            dir.display(),
+            run = breadboard_core::config::run_word()
         ))
     })
 }

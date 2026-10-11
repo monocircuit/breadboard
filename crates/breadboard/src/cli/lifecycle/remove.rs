@@ -96,11 +96,18 @@ fn not_a_worktree(dir: &str, feature: &str, names: &[String]) -> String {
         .copied()
         .or_else(|| nearest(feature, &all));
     match meant {
-        Some(name) => format!("{dir} is not a worktree: did you mean {name}? (pnpm wt:remove {name})"),
-        None if all.is_empty() => format!("{dir} is not a worktree, and there is none (pnpm wt:list)"),
+        Some(name) => format!(
+            "{dir} is not a worktree: did you mean {name}? ({run} wt:remove {name})",
+            run = breadboard_core::config::run_word()
+        ),
+        None if all.is_empty() => format!(
+            "{dir} is not a worktree, and there is none ({run} wt:list)",
+            run = breadboard_core::config::run_word()
+        ),
         None => format!(
-            "{dir} is not a worktree (pnpm wt:list); the worktrees: {}",
-            all.join(", ")
+            "{dir} is not a worktree ({run} wt:list); the worktrees: {}",
+            all.join(", "),
+            run = breadboard_core::config::run_word()
         ),
     }
 }
@@ -202,11 +209,15 @@ fn not_in_base(branch: &str, own: usize, base: &str, mrs: Option<&[Value]>) -> S
             iid(mr)
         ),
         (_, None, Some(mr)) => format!(
-            "{branch} has {commits} not in {base}, its MR !{} is merged without them. An MR of their own (pnpm wt:mr), {keep}",
-            iid(mr)
+            "{branch} has {commits} not in {base}, its MR !{} is merged without them. An MR of their own ({run} wt:mr), {keep}",
+            iid(mr),
+            run = breadboard_core::config::run_word()
         ),
         (Some(_), None, None) => {
-            format!("{branch} has {commits} not in {base} and no MR. pnpm wt:mr, {keep}")
+            format!(
+                "{branch} has {commits} not in {base} and no MR. {run} wt:mr, {keep}",
+                run = breadboard_core::config::run_word()
+            )
         }
         (None, ..) => format!(
             "{branch} has {commits} not in {base} (GitLab did not answer which MR it has). Merge its MR first, {keep}"
@@ -303,7 +314,8 @@ fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
     step(&format!("add !{iid} to the changelog of {name}"));
     if let Err(error) = write_atomic(&file, &added) {
         step(&format!(
-            "the changelog of {name} could not be written: {error}; pnpm wt:orchestrate {name} --changelog tries again"
+            "the changelog of {name} could not be written: {error}; {run} wt:orchestrate {name} --changelog tries again",
+            run = breadboard_core::config::run_word()
         ));
     }
     true
@@ -311,7 +323,10 @@ fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
 
 /// The step that says an orchestration's changelog stays as it is.
 pub fn not_rewritten(name: &str, reason: &str) -> String {
-    format!("the changelog of {name} is not rewritten: {reason}; pnpm wt:orchestrate {name} --changelog tries again")
+    format!(
+        "the changelog of {name} is not rewritten: {reason}; {run} wt:orchestrate {name} --changelog tries again",
+        run = breadboard_core::config::run_word()
+    )
 }
 
 /// Why a changelog stays: GitLab gave nothing to rewrite it from.
@@ -403,7 +418,8 @@ impl Rewrite {
                 }
                 if let Err(error) = write_atomic(&self.file, before) {
                     step(&format!(
-                        "the changelog of {name} lost merges GitLab did not answer for, and could not be put back: {error}; pnpm wt:orchestrate {name} --changelog tries again"
+                        "the changelog of {name} lost merges GitLab did not answer for, and could not be put back: {error}; {run} wt:orchestrate {name} --changelog tries again",
+                        run = breadboard_core::config::run_word()
                     ));
                     return;
                 }
@@ -663,8 +679,9 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     });
     if herdr::is_silent() {
         step(&format!(
-            "herdr did not answer in {} s: the tabs of {feature} stay; pnpm wt:herdr tidies up once it answers",
-            herdr::LIMIT.as_secs()
+            "herdr did not answer in {} s: the tabs of {feature} stay; {run} wt:herdr tidies up once it answers",
+            herdr::LIMIT.as_secs(),
+            run = breadboard_core::config::run_word()
         ));
     }
     // The plugin may have been linked from the tree that just went (#230);

@@ -153,7 +153,10 @@ fn pane_of(pane: &str) -> ExitCode {
             "\n  {} is not in a worktree of the platform repo, so there is no stack to control.",
             from.as_deref().unwrap_or("this pane")
         );
-        println!("  Focus a tab of the repo, or use pnpm stack:{action} --port <p>.");
+        println!(
+            "  Focus a tab of the repo, or use {run} stack:{action} --port <p>.",
+            run = breadboard_core::config::run_word()
+        );
         wait_for_key();
         return ExitCode::FAILURE;
     }
@@ -181,7 +184,12 @@ fn pane_of(pane: &str) -> ExitCode {
 fn commands(dir: &Path) -> ExitCode {
     let list = match this(&["commands"], dir).stderr(Stdio::inherit()).output() {
         Ok(output) => output.stdout,
-        Err(error) => return refused(&format!("pnpm commands didn't run: {error}")),
+        Err(error) => {
+            return refused(&format!(
+                "{run} commands didn't run: {error}",
+                run = breadboard_core::config::run_word()
+            ));
+        }
     };
     let pager = Command::new("less")
         .args(["-R", "-X", "+g"])

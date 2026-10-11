@@ -46,11 +46,16 @@ fn tree(scene: &mut Scene<Act>, worktrees: &Worktrees, ctx: &Ctx) {
     let cells = Cells::of(&tree.live, scene.width(), ctx);
     // Why there is no app and no stack, or why a stack says `?`: said once, not on every node,
     // on a line of its own under the record (a title too long for the line loses its note).
+    let no_env = if breadboard_core::config::has_stack() {
+        format!(
+            "{} in any worktree: no stack, the app can't run there",
+            breadboard_core::config::env_missing()
+        )
+    } else {
+        "no stack: breadboard.toml has no [stack]".to_string()
+    };
     let why = if !cells.is_any_env && tree.live.iter().any(|node| node.has_tree) {
-        Some((
-            "no .env.local in any worktree: no stack, the app can't run there",
-            theme::dim(),
-        ))
+        Some((no_env.as_str(), theme::dim()))
     } else if tree.live.iter().any(|node| node.docker == Docker::Silent) {
         Some((
             "docker does not answer: the stacks are unknown",
@@ -354,7 +359,9 @@ fn stack_cell(node: &Node, ctx: &Ctx) -> (model::Span, Option<Act>) {
 
 /// A worktree's stack, `no .env.local` without one (boxes.mjs `stackCell`).
 fn stack_of(node: &Node) -> model::Span {
-    node.stack.clone().unwrap_or_else(|| model::Span::dim("no .env.local"))
+    node.stack
+        .clone()
+        .unwrap_or_else(|| model::Span::dim(breadboard_core::config::env_missing()))
 }
 
 /// A worktree's app, `—` without its .env.local (render.mjs).

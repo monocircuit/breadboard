@@ -75,8 +75,9 @@ fn painted(code: &str, text: &str, is_on: bool) -> String {
 /// (session.mjs `step`, tighter than the CLI's).
 pub fn step(message: &str) {
     println!(
-        "{} {message}",
-        painted("36", "▸", is_coloured(std::io::stdout().is_terminal()))
+        "{} {}",
+        painted("36", "▸", is_coloured(std::io::stdout().is_terminal())),
+        breadboard_core::config::in_repo(message)
     );
 }
 
@@ -93,7 +94,14 @@ pub fn finish(done: Done) -> ExitCode {
         Ok(code) => code,
         Err(Fail(reason)) => {
             let is_on = is_coloured(std::io::stderr().is_terminal());
-            eprintln!("\n{}", painted("1;31", &format!("✗ {reason}"), is_on));
+            eprintln!(
+                "\n{}",
+                painted(
+                    "1;31",
+                    &format!("✗ {}", breadboard_core::config::in_repo(&reason)),
+                    is_on
+                )
+            );
             ExitCode::FAILURE
         }
     }

@@ -466,6 +466,50 @@ impl Config {
     }
 }
 
+/// How a command is typed in the repo of the working directory: `pnpm`, `breadboard`.
+pub fn run_word() -> String {
+    here().config.repo.run.clone().unwrap_or_else(|| "breadboard".into())
+}
+
+/// What a checkout without a stack lacks, as a cell says it: `no .env.local`
+/// (`[stack] env_file`), or `no stack` where breadboard.toml has no `[stack]`.
+pub fn env_missing() -> String {
+    match &here().config.stack {
+        Some(stack) => format!("no {}", stack.env_file),
+        None => "no stack".into(),
+    }
+}
+
+/// Whether the repo of the working directory has a stack (`[stack]`).
+pub fn has_stack() -> bool {
+    here().config.stack.is_some()
+}
+
+/// `text` in the words of the repo of the working directory: its commands
+/// as it types them (`pnpm wt:new` → `breadboard wt:new` where breadboard.toml
+/// names no `[repo] run`) and its default branch for `develop`. For what is
+/// written once in the words of the repo breadboard is developed in: the
+/// usage and help texts, the lines said.
+pub fn in_repo(text: &str) -> String {
+    static COMMAND: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"\bpnpm ((?:wt|stack|changelog|herdr):|overview\b|herdr\b|commands\b|changelog\b|browser\b|init\b)",
+        )
+        .unwrap()
+    });
+    static DEVELOP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bdevelop\b").unwrap());
+    let loaded = here();
+    let run = loaded.config.repo.run.as_deref().unwrap_or("breadboard");
+    let mut text = std::borrow::Cow::Borrowed(text);
+    if run != "pnpm" {
+        text = std::borrow::Cow::Owned(COMMAND.replace_all(&text, format!("{run} $1").as_str()).into_owned());
+    }
+    if loaded.branch != "develop" {
+        text = std::borrow::Cow::Owned(DEVELOP.replace_all(&text, loaded.branch.as_str()).into_owned());
+    }
+    text.into_owned()
+}
+
 /// A repo's config with the branch resolved.
 #[derive(Debug, Clone)]
 pub struct Loaded {
@@ -712,6 +756,19 @@ mod tests {
     /// The monorepo's own file, None where only this package is (its public mirror).
     fn platform() -> Option<String> {
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../breadboard.toml")).ok()
+    }
+
+    #[test]
+    fn says_a_command_as_the_repo_types_it() {
+        // Here, in the repo breadboard is developed in, `pnpm` stays when its file names it.
+        let text = "usage: pnpm wt:new <f> · pnpm install · pnpm herdr:install, from develop";
+        if run_word() == "pnpm" && here().branch == "develop" {
+            assert_eq!(in_repo(text), text);
+        } else if run_word() == "breadboard" {
+            assert!(
+                in_repo(text).starts_with("usage: breadboard wt:new <f> · pnpm install · breadboard herdr:install")
+            );
+        }
     }
 
     #[test]

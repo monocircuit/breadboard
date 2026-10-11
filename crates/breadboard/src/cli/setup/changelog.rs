@@ -370,7 +370,8 @@ pub fn orchestration_command(name: &str, is_live: bool) -> ExitCode {
             text
         }
         Some(Rewritten::Unanswered(what, why)) => fail(&format!(
-            "{UNANSWERED} for {what} ({why}): {relative} stays as it was\n  pnpm wt:orchestrate {name} --changelog tries again"
+            "{UNANSWERED} for {what} ({why}): {relative} stays as it was\n  {run} wt:orchestrate {name} --changelog tries again",
+            run = breadboard_core::config::run_word()
         )),
         None if file.exists() => {
             step(&format!("{name} has no record any more: {relative} as it is"));
@@ -565,7 +566,8 @@ pub fn overall_text(
         format!("# {}: changelog", breadboard_core::record::SPACE),
         String::new(),
         format!(
-            "Merged into develop since {}, by product and package.",
+            "Merged into {} since {}, by product and package.",
+            breadboard_core::git::default_branch(),
             day_of(ms_of(since))
         ),
         String::new(),

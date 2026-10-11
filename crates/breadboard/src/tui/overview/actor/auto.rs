@@ -280,7 +280,7 @@ fn about_of(key: &str) -> String {
         format!("!{digits}")
     };
     if let Some(rest) = key.strip_prefix("conflicts:") {
-        format!("to merge develop in ({} conflicts with it)", iid(rest))
+        breadboard_core::config::in_repo(&format!("to merge develop in ({} conflicts with it)", iid(rest)))
     } else if let Some(rest) = key.strip_prefix("pipeline:") {
         format!("that the pipeline of {} failed", iid(rest))
     } else if key.starts_with("unpushed:") {
@@ -621,7 +621,10 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
     };
     app.state.removals.insert(dir.to_path_buf(), removal);
     let key = format!("remove:{feature}");
-    let command = format!("pnpm wt:remove {feature} --close-space");
+    let command = format!(
+        "{run} wt:remove {feature} --close-space",
+        run = breadboard_core::config::run_word()
+    );
     match started {
         Ok(()) => app
             .actor

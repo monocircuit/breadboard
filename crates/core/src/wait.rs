@@ -255,9 +255,10 @@ pub fn line_of(wait: &Wait, verdict: &Verdict, base: &str, behind: Option<u64>) 
         Verdict::Timeout(open) => {
             let hours = wait.hours.unwrap_or(DEFAULT_HOURS);
             format!(
-                "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again (pnpm wt:wait)",
+                "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again ({run} wt:wait)",
                 format_number(hours),
-                list_of(open)
+                list_of(open),
+                run = crate::config::run_word()
             )
         }
         Verdict::Waiting(_) => return None,
