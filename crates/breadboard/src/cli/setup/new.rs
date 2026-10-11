@@ -269,8 +269,9 @@ pub fn command(args: &Args) -> ExitCode {
     } else if let Some(epic) = Epic::of_task(&dir) {
         // An orchestration's task: its stack starts when needed (#351).
         step(&format!(
-            "task stack on the epic {}: its .env.local, started by pnpm stack:up",
-            epic.name
+            "task stack on the epic {}: its .env.local, started by {run} stack:up",
+            epic.name,
+            run = breadboard_core::config::run_word()
         ));
         epic::reserve_task(&dir, &feature, &epic)
     } else {

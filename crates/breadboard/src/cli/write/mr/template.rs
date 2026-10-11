@@ -202,14 +202,16 @@ fn check_line(passed: Option<(&Value, &str)>, packages: &[String]) -> Option<Str
             });
         let sha: String = sha.chars().take(8).collect();
         return Some(format!(
-            "- [x] `pnpm wt:check` passed on {sha}: {what}{}",
-            duration.unwrap_or_default()
+            "- [x] `{run} wt:check` passed on {sha}: {what}{}",
+            duration.unwrap_or_default(),
+            run = breadboard_core::config::run_word()
         ));
     }
     (!packages.is_empty()).then(|| {
         format!(
-            "- [ ] `pnpm wt:check`: lint / typecheck / test of {} and what depends on them",
-            packages.join(", ")
+            "- [ ] `{run} wt:check`: lint / typecheck / test of {} and what depends on them",
+            packages.join(", "),
+            run = breadboard_core::config::run_word()
         )
     })
 }
@@ -276,7 +278,8 @@ pub fn to_fill(here: &Here, top: &Path, number: &str) -> String {
         }
     }
     format!(
-        "a merge request needs a description written for this branch — the template is waiting in\n\n  {shown}\n\n  Fill every section (no empty bullets, no <!-- comments -->), then run pnpm wt:mr again."
+        "a merge request needs a description written for this branch — the template is waiting in\n\n  {shown}\n\n  Fill every section (no empty bullets, no <!-- comments -->), then run {run} wt:mr again.",
+        run = breadboard_core::config::run_word()
     )
 }
 

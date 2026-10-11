@@ -48,8 +48,9 @@ pub fn block_mark() -> String {
 }
 pub fn block_begin() -> String {
     format!(
-        "{}: written by pnpm herdr:install on every run, changes here are overwritten",
-        block_mark()
+        "{}: written by {run} herdr:install on every run, changes here are overwritten",
+        block_mark(),
+        run = breadboard_core::config::run_word()
     )
 }
 pub fn block_end() -> String {

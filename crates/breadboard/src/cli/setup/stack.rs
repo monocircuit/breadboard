@@ -39,7 +39,8 @@ pub fn stack_env(stack: &Stack, source: &str, feature: &str, offset: u16) -> Str
     }
     lines.push(String::new());
     lines.push(format!(
-        "# --- own dev stack of the worktree {feature}, written by breadboard (pnpm wt:new, wt:stack) ---"
+        "# --- own dev stack of the worktree {feature}, written by breadboard ({run} wt:new, wt:stack) ---",
+        run = breadboard_core::config::run_word()
     ));
     lines.push(format!(
         "{}={}-{feature}",
@@ -319,13 +320,15 @@ pub fn summary_text(
             ("worktrees", "branches")
         };
         sweep.push_str(&format!(
-            "\n  {stale} {trees}/{branches} of merged work left: pnpm wt:prune"
+            "\n  {stale} {trees}/{branches} of merged work left: {run} wt:prune",
+            run = breadboard_core::config::run_word()
         ));
     }
     if *silent > 0 {
         let issues = if *silent == 1 { "issue" } else { "issues" };
         sweep.push_str(&format!(
-            "\n  {silent} {issues} of merged work without a comment since the merge: pnpm wt:issues"
+            "\n  {silent} {issues} of merged work without a comment since the merge: {run} wt:issues",
+            run = breadboard_core::config::run_word()
         ));
     }
     if is_agent && *is_stack_only {
@@ -505,7 +508,11 @@ const ACTIONS: [&str; 4] = ["up", "down", "reset", "ps"];
 
 /// `pnpm stack:up|down|reset|ps [--port <port> | <feature>]`.
 pub fn control(action: &str, args: &Args) -> ExitCode {
-    let usage = format!("usage: pnpm stack:{} [--port <port> | <feature>]", ACTIONS.join("|"));
+    let usage = format!(
+        "usage: {run} stack:{} [--port <port> | <feature>]",
+        ACTIONS.join("|"),
+        run = breadboard_core::config::run_word()
+    );
     if !ACTIONS.contains(&action) {
         fail(&usage);
     }
@@ -523,13 +530,22 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
         else {
             fail(&format!("--port {port} is not a port"))
         };
-        repo::worktree_on_port(number)
-            .unwrap_or_else(|| fail(&format!("no worktree has a stack on port {port} (pnpm wt:list)")))
+        repo::worktree_on_port(number).unwrap_or_else(|| {
+            fail(&format!(
+                "no worktree has a stack on port {port} ({run} wt:list)",
+                run = breadboard_core::config::run_word()
+            ))
+        })
     } else if let Some(name) = &name {
         breadboard_core::git::all_worktrees(&main)
             .into_iter()
             .find(|tree| tree.dir == repo::dir_of(name) || repo::base_of(&tree.dir) == *name)
-            .unwrap_or_else(|| fail(&format!("{name} is not a worktree (pnpm wt:list)")))
+            .unwrap_or_else(|| {
+                fail(&format!(
+                    "{name} is not a worktree ({run} wt:list)",
+                    run = breadboard_core::config::run_word()
+                ))
+            })
     } else {
         let here = repo::cwd();
         // The orchestrations' checkouts too: one of them lies inside the main checkout.

@@ -68,11 +68,15 @@ impl Args {
     /// is refused with the usage. Node read the flags it knew and ran on.
     pub fn check(&self, takes: &Takes) -> Result<bool, Fail> {
         if self.words.iter().any(|word| word == "--help" || word == "-h") {
-            println!("{}\n\n{}", takes.about, takes.usage);
+            println!(
+                "{}\n\n{}",
+                breadboard_core::config::in_repo(takes.about),
+                breadboard_core::config::in_repo(takes.usage)
+            );
             return Ok(true);
         }
         match problem_of(&self.words, takes) {
-            Some(problem) => fail(format!("{problem}\n{}", takes.usage)),
+            Some(problem) => fail(format!("{problem}\n{}", breadboard_core::config::in_repo(takes.usage))),
             None => Ok(false),
         }
     }

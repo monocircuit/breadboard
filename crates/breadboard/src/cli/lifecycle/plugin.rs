@@ -55,9 +55,8 @@ fn check(main: &Path) -> Vec<String> {
         lines.push(match &current {
             Some(current) => relink(&old, current),
             None => format!(
-                "plugin {PLUGIN} is linked from {}, which is gone, and this checkout has no packages/breadboard/herdr to link instead: pnpm herdr:install in one that has",
-                shown(&old)
-            ),
+                "plugin {PLUGIN} is linked from {}, which is gone, and this checkout has no packages/breadboard/herdr to link instead: {run} herdr:install in one that has",
+                shown(&old), run = breadboard_core::config::run_word()),
         });
         gone.push(old);
     }
@@ -95,14 +94,15 @@ fn check(main: &Path) -> Vec<String> {
             let mine = outside_block(&was);
             let is_outside = stale.iter().any(|dir| mine.contains(&text(dir)));
             lines.push(format!(
-                "{} still names {}, which is gone: pnpm herdr:install writes the plugin's block again{}",
+                "{} still names {}, which is gone: {run} herdr:install writes the plugin's block again{}",
                 shown(&own),
                 list(&stale),
                 if is_outside {
                     format!("; a line of your own there needs {}", shown(&current))
                 } else {
                     String::new()
-                }
+                },
+                run = breadboard_core::config::run_word()
             ));
         }
     }

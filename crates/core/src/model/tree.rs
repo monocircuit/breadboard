@@ -196,7 +196,7 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
             let is_test = failures.iter().any(|failure| failure.task == "test");
             let what = failures_text(failures);
             let what = if what.is_empty() {
-                "see pnpm wt:check".to_string()
+                crate::config::in_repo("see pnpm wt:check")
             } else {
                 what
             };
@@ -677,7 +677,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let develop = tree.map(|tree| tree.on_base.clone()).unwrap_or_default();
         // Named after its base: develop, or its epic (#349).
         let develop = (!develop.is_empty()).then(|| Overlap {
-            name: tree.map_or_else(|| "develop".into(), |tree| tree.base.local.clone()),
+            name: tree.map_or_else(|| crate::git::default_branch().into(), |tree| tree.base.local.clone()),
             files: develop,
         });
         let others = works

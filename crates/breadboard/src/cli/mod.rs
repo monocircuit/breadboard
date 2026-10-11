@@ -46,8 +46,9 @@ pub fn files_dir(main: &std::path::Path) -> std::path::PathBuf {
 pub fn usage() -> String {
     let lines: Vec<String> = COMMANDS.iter().map(|group| format!("  {}", group.join("  "))).collect();
     format!(
-        "usage: breadboard <command> [args…]   (in the repo: pnpm <command> [args…])\n\n{}\n\n  what each does: pnpm commands",
-        lines.join("\n")
+        "usage: breadboard <command> [args…]   (in the repo: pnpm <command> [args…])\n\n{}\n\n  what each does: {run} commands",
+        lines.join("\n"),
+        run = breadboard_core::config::run_word()
     )
 }
 

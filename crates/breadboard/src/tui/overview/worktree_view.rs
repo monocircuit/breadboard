@@ -175,10 +175,17 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     }
     if !tree.has_env {
         page.section("STACK", |scene| {
-            scene.text(
-                "no .env.local: no stack, the app can't run here",
-                theme::tone(Tone::Yellow),
-            );
+            if breadboard_core::config::has_stack() {
+                scene.text(
+                    &format!(
+                        "{}: no stack, the app can't run here",
+                        breadboard_core::config::env_missing()
+                    ),
+                    theme::tone(Tone::Yellow),
+                );
+            } else {
+                scene.text("none: breadboard.toml has no [stack]", theme::dim());
+            }
         });
         return;
     }
@@ -189,7 +196,9 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     page.section("STACK", |scene| stack(scene, model, tree, ctx, state));
     page.section(Section::new("FOOTER").plain(), |scene| {
         scene.text(
-            "pnpm stack:up|down|reset · pnpm wt:mr --update · pnpm overview (everything)",
+            &breadboard_core::config::in_repo(
+                "pnpm stack:up|down|reset · pnpm wt:mr --update · pnpm overview (everything)",
+            ),
             theme::dim(),
         );
     });
@@ -245,13 +254,13 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
     if local.is_main {
         row(scene, "work", None, |scene| {
             if tree.ahead == 0 && tree.changed == 0 {
-                scene.text("clean, nothing ahead of develop", theme::dim());
+                scene.text(&format!("clean, nothing ahead of {}", tree.base.local), theme::dim());
                 return;
             }
             let mut parts = vec![];
             if tree.ahead > 0 {
                 parts.push(vec![look::span(
-                    format!("{} ahead of develop", tree.ahead),
+                    format!("{} ahead of {}", tree.ahead, tree.base.local),
                     Style::new(),
                 )]);
             }
@@ -304,7 +313,8 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
                     scene.atom_gap(vec![look::dim(&mr.url)], 2);
                 }),
                 None => row(scene, "mr", None, |scene| {
-                    let text = if local.is_main { "—" } else { "none yet: pnpm wt:mr" };
+                    let none = breadboard_core::config::in_repo("none yet: pnpm wt:mr");
+                    let text = if local.is_main { "—" } else { &none };
                     scene.text(text, theme::dim());
                 }),
             }
@@ -315,7 +325,12 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
             look::flow(scene, &look::spans(&[fact]));
             match &tree.checked {
                 CheckState::Failed { .. } | CheckState::Untested { .. } => {
-                    scene.atom_gap(vec![look::dim("pnpm wt:check before the push")], 2);
+                    scene.atom_gap(
+                        vec![look::dim(breadboard_core::config::in_repo(
+                            "pnpm wt:check before the push",
+                        ))],
+                        2,
+                    );
                 }
                 CheckState::Tested { packages, .. } => {
                     let packages = if packages.is_empty() {
@@ -362,7 +377,11 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
             }
             scene.button("✕ delete worktree", Tone::Red, Act::Delete);
             let hint = if ctx.is_once {
-                format!("pnpm wt:remove {}", tree.name)
+                format!(
+                    "{run} wt:remove {}",
+                    tree.name,
+                    run = breadboard_core::config::run_word()
+                )
             } else {
                 format!("nothing left in it: no changes, all of it in {}", tree.base.local)
             };
@@ -819,7 +838,8 @@ fn start_button(scene: &mut Scene<Act>, dir: &Path, ctx: &Ctx, state: &State) {
         }
         started => {
             scene.button("▶ start the stack", Tone::Cyan, start.clone());
-            let hint = if ctx.is_once { "pnpm stack:up" } else { "click or u" };
+            let up = breadboard_core::config::in_repo("pnpm stack:up");
+            let hint = if ctx.is_once { up.as_str() } else { "click or u" };
             look::say(scene, hint, theme::dim());
             // Set apart from the hint, as Node's two spaces.
             if let Some(error) = started.and_then(|started| started.error("stack:up")) {

@@ -981,7 +981,11 @@ fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::mod
     let branch = crate::epic::epic_of(&record?.raw)?;
     let behind = git::git(
         main,
-        &["rev-list", "--count", &format!("origin/{branch}..origin/develop")],
+        &[
+            "rev-list",
+            "--count",
+            &format!("origin/{branch}..{}", git::Base::of(&git::branch(main)).remote),
+        ],
     );
     Some(crate::model::epic_row::EpicLocal {
         behind: (behind.status == 0)

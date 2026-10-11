@@ -364,12 +364,18 @@ static NEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(## \[|\[[^\]]
 /// What is wrong with the version `changelog:<command>` got: missing, a
 /// `v` too many (the tag's, not the section's), or no X.Y.Z.
 fn version_refusal(version: &str, command: &str) -> String {
-    let usage = format!("pnpm changelog:{command} <X.Y.Z>");
+    let usage = format!(
+        "{run} changelog:{command} <X.Y.Z>",
+        run = breadboard_core::config::run_word()
+    );
     if version.is_empty() {
         return format!("the version is missing: {usage}");
     }
     match version.strip_prefix('v').filter(|plain| VERSION.is_match(plain)) {
-        Some(plain) => format!("{version} is the tag, the version is {plain}: pnpm changelog:{command} {plain}"),
+        Some(plain) => format!(
+            "{version} is the tag, the version is {plain}: {run} changelog:{command} {plain}",
+            run = breadboard_core::config::run_word()
+        ),
         None => format!("{version} is no X.Y.Z version: {usage}"),
     }
 }
@@ -792,7 +798,8 @@ fn check(root: &Path, args: &Args) {
     let (is_ok, reason) = verdict_of(&changed, &labels);
     if !is_ok {
         fail(&format!(
-            "{reason}. Add one (pnpm changelog:add \"<sentence>\", {FRAGMENTS}/README.md),\n  or label the MR {NO_CHANGELOG} when nobody would miss it in the changelog, then retry this job."
+            "{reason}. Add one ({run} changelog:add \"<sentence>\", {FRAGMENTS}/README.md),\n  or label the MR {NO_CHANGELOG} when nobody would miss it in the changelog, then retry this job.",
+            run = breadboard_core::config::run_word()
         ));
     }
     outln!("✓ {reason}");

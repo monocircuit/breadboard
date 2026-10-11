@@ -48,9 +48,10 @@ pub fn refusal_of(branch: &str, mrs: &[Value]) -> Option<String> {
     let text = format!(
         "✗ push refused: !{iid} of {branch} is {state}, so no merge request points at this branch any more (#184).
   The push would recreate {branch} on origin, and what it carries would reach no one.
-  New work goes on a new branch: file a follow-up issue and start it with pnpm wt:new <n>-<feature>.
+  New work goes on a new branch: file a follow-up issue and start it with {run} wt:new <n>-<feature>.
   {}",
-        str_of(last, "web_url").unwrap_or_default()
+        str_of(last, "web_url").unwrap_or_default(),
+        run = breadboard_core::config::run_word()
     );
     Some(text.trim_end().to_string())
 }
@@ -135,20 +136,23 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
             .unwrap_or_default();
         format!(
             "its last check failed: {}.
-  Fix it, commit, run pnpm wt:check again. Red on develop too: it is fixed once, in its own fix MR,
-  and you wait for that with pnpm wt:wait !<mr>.",
-            breadboard_core::check::failures_text(&failures)
+  Fix it, commit, run {run} wt:check again. Red on develop too: it is fixed once, in its own fix MR,
+  and you wait for that with {run} wt:wait !<mr>.",
+            breadboard_core::check::failures_text(&failures),
+            run = breadboard_core::config::run_word()
         )
     } else if let Some(Err(error)) = plan {
         format!(
             "which packages it changes can't be told ({error}).
-  Run pnpm install, then pnpm wt:check."
+  Run pnpm install, then {run} wt:check.",
+            run = breadboard_core::config::run_word()
         )
     } else if let Some(passed) = record.get("passed") {
         let checked: String = str_of(passed, "sha").unwrap_or_default().chars().take(8).collect();
         format!(
             "the last check that passed was of {checked}, not of this commit.
-  Run pnpm wt:check (it runs only what changed, a second run is quick)."
+  Run {run} wt:check (it runs only what changed, a second run is quick).",
+            run = breadboard_core::config::run_word()
         )
     } else {
         let packages = match plan {
@@ -161,7 +165,8 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         };
         format!(
             "no check of it ran in this worktree yet.
-  Run pnpm wt:check: lint, typecheck and test of {packages}."
+  Run {run} wt:check: lint, typecheck and test of {packages}.",
+            run = breadboard_core::config::run_word()
         )
     };
     Some(format!(

@@ -113,7 +113,9 @@ impl Gitlab {
     /// the text stays the same where the branch is `develop`.
     pub fn on_branch(&self, query: &str) -> String {
         let branch = serde_json::to_string(&self.branch()).unwrap_or_else(|_| "\"develop\"".into());
-        query.replace("ref: \"develop\"", &format!("ref: {branch}"))
+        query
+            .replace("ref: \"develop\"", &format!("ref: {branch}"))
+            .replace("targetBranches: [\"develop\"]", &format!("targetBranches: [{branch}]"))
     }
 
     /// Calls made so far by this client, tries included.

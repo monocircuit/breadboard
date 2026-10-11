@@ -324,7 +324,10 @@ fn end(app: &mut Overview) {
                 "end",
                 Paint::Yellow,
                 format!("ending ⇶ {name} …"),
-                Some(format!("pnpm wt:orchestrate {name} --end")),
+                Some(format!(
+                    "{run} wt:orchestrate {name} --end",
+                    run = breadboard_core::config::run_word()
+                )),
             );
         }
         Err(why) => {

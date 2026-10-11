@@ -32,8 +32,9 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         (_, View::Everything) => match remote {
             Some(RemoteOf::Everything(remote)) => {
                 format!(
-                    "{}\u{a0} develop {}",
+                    "{}\u{a0} {} {}",
                     ctx.main_name,
+                    breadboard_core::git::default_branch(),
                     pipeline_mark(remote.develop.as_ref()).text
                 )
             }

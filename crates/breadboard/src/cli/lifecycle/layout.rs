@@ -62,8 +62,9 @@ pub fn command(args: &Args) -> Done {
     let Some((main, report)) = exclusive(|| layout(&repo, true)) else {
         return fail(if herdr::is_silent() {
             format!(
-                "herdr did not answer in {} s: nothing was laid out; pnpm wt:herdr again once it answers",
-                herdr::LIMIT.as_secs()
+                "herdr did not answer in {} s: nothing was laid out; {run} wt:herdr again once it answers",
+                herdr::LIMIT.as_secs(),
+                run = breadboard_core::config::run_word()
             )
         } else {
             "herdr did not answer, is its server running? (herdr status)".into()

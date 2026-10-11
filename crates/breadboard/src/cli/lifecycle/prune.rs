@@ -298,7 +298,10 @@ pub fn command(args: &Args) -> Done {
             Some(why) => format!("kept, {why}"),
             None if is_dry => "would be removed".into(),
             None => {
-                step(&format!("pnpm wt:remove {name}"));
+                step(&format!(
+                    "{run} wt:remove {name}",
+                    run = breadboard_core::config::run_word()
+                ));
                 // A remove that fails is said on its line and the prune goes on: the
                 // others are independent (today's stopped the whole prune there).
                 match remove::remove(
