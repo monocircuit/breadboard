@@ -21,6 +21,143 @@ use std::thread;
 
 /// What wt:check runs, through turbo.
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
+/// breadboard's cargo checks (#336): only when the branch changes its Rust
+/// sources, never because develop was merged in or a package it depends on
+/// changed. They run through herdr/cargo.sh, in the clone's shared target/.
+const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
+/// The Rust sources of breadboard, as the launcher keys its builds on them.
+const RUST_SOURCES: [&str; 5] = [
+    "packages/breadboard/crates",
+    "packages/breadboard/hooks",
+    "packages/breadboard/Cargo.toml",
+    "packages/breadboard/Cargo.lock",
+    "packages/breadboard/rustfmt.toml",
+];
+
+/// What a check runs: turbo's tasks and the filters of the packages they run in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub tasks: Vec<String>,
+    pub filters: Vec<String>,
+}
+
+/// The `--filter`s of the packages a change affects, from turbo's
+/// `affectedPackages` and its package paths (`query`'s answer). Not turbo's
+/// `...[<base>]`: the root depends on `@monocircuit/vita` (#299), and turbo
+/// counts a change in a package the root depends on as a change of every
+/// package (`RootInternalDepChanged`), so any vita change ran breadboard's
+/// cargo checks (#336). Such a package counts as itself and the packages in
+/// its directory with their dependents; the root (`//`) is no package to check.
+pub fn filters_of(answer: &Value) -> Vec<String> {
+    let items = |path: &str| {
+        answer
+            .pointer(path)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let path_of = |name: &str| {
+        items("/data/packages/items")
+            .iter()
+            .find(|package| package.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(|package| package.get("path").and_then(Value::as_str).map(String::from))
+    };
+    let mut filters: Vec<String> = Vec::new();
+    let mut add = |filter: String| {
+        if !filters.contains(&filter) {
+            filters.push(filter);
+        }
+    };
+    for item in items("/data/affectedPackages/items") {
+        let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+        let reason = item.get("reason");
+        let kind = reason
+            .and_then(|reason| reason.get("__typename"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if kind == "RootInternalDepChanged" {
+            let dep = reason
+                .and_then(|reason| reason.get("rootInternalDep"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match path_of(dep) {
+                Some(path) if !path.is_empty() => {
+                    add(format!("{{./{path}}}"));
+                    add(format!("...{{./{path}/*}}"));
+                }
+                _ if !dep.is_empty() => add(dep.to_string()),
+                _ => {}
+            }
+        } else if !name.is_empty() && name != "//" {
+            add(name.to_string());
+        }
+    }
+    filters
+}
+
+/// The query of what changed between `base` and `head` (the working tree without one).
+fn affected_query(base: &str, head: Option<&str>) -> String {
+    let head = head.map(|head| format!(", head: \"{head}\"")).unwrap_or_default();
+    format!(
+        "query {{ affectedPackages(base: \"{base}\"{head}) {{ items {{ name reason {{ __typename ... on RootInternalDepChanged {{ rootInternalDep }} }} }} }} packages {{ items {{ name path }} }} }}"
+    )
+}
+
+/// Whether the change from `base` to `head` (the working tree, untracked
+/// files too, without one) touches breadboard's Rust sources.
+pub fn is_rust_changed(dir: &Path, base: &str, head: Option<&str>) -> bool {
+    let mut diff = vec!["diff", "--name-only", base];
+    if let Some(head) = head {
+        diff.push(head);
+    }
+    diff.push("--");
+    diff.extend(RUST_SOURCES);
+    if !git(&diff, dir).text().is_empty() {
+        return true;
+    }
+    if head.is_some() {
+        return false;
+    }
+    let mut untracked = vec!["ls-files", "--others", "--exclude-standard", "--"];
+    untracked.extend(RUST_SOURCES);
+    !git(&untracked, dir).text().is_empty()
+}
+
+/// What a check of the change from `base` to `head` runs (#336): the
+/// packages turbo says it affects, breadboard's cargo checks only with its
+/// Rust sources changed.
+pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Result<Scope, String> {
+    let output = Command::new(turbo)
+        .args(["query", &affected_query(base, head)])
+        .current_dir(dir)
+        .env("TURBO_TELEMETRY_DISABLED", "1")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("turbo can't tell which packages changed: {error}"))?;
+    let answer: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let why = stderr.trim().lines().last().unwrap_or_default().to_string();
+        format!(
+            "turbo can't tell which packages changed{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            }
+        )
+    })?;
+    if answer.get("errors").is_some_and(|errors| !errors.is_null()) {
+        return Err(format!("turbo can't tell which packages changed: {}", answer["errors"]));
+    }
+    let mut tasks: Vec<String> = TASKS.iter().map(|task| task.to_string()).collect();
+    if is_rust_changed(dir, base, head) {
+        tasks.extend(RUST_TASKS.iter().map(|task| task.to_string()));
+    }
+    Ok(Scope {
+        tasks,
+        filters: filters_of(&answer),
+    })
+}
 
 fn ci_only(package: &str) -> Option<&'static str> {
     (package == "@monocircuit/vita")
@@ -71,8 +208,9 @@ pub fn turbo_of(dir: &Path) -> Option<PathBuf> {
         .find(|file| file.exists())
 }
 
-/// The packages turbo would check, from its dry run as JSON: `(package, tasks)`, sorted.
-pub fn planned_of(dry_run: &Value) -> Vec<(String, Vec<String>)> {
+/// The packages turbo would check, from its dry run as JSON: `(package,
+/// tasks)` of the `tasks` asked for, sorted.
+pub fn planned_of(dry_run: &Value, tasks: &[String]) -> Vec<(String, Vec<String>)> {
     let mut planned: Vec<(String, Vec<String>)> = Vec::new();
     for task in dry_run
         .get("tasks")
@@ -83,7 +221,7 @@ pub fn planned_of(dry_run: &Value) -> Vec<(String, Vec<String>)> {
         let name = task.get("task").and_then(Value::as_str).unwrap_or_default();
         let package = task.get("package").and_then(Value::as_str).unwrap_or_default();
         let command = task.get("command").and_then(Value::as_str).unwrap_or_default();
-        if !TASKS.contains(&name) || package == "//" || command == "<NONEXISTENT>" {
+        if !tasks.iter().any(|task| task == name) || package == "//" || command == "<NONEXISTENT>" {
             continue;
         }
         match planned.iter_mut().find(|(known, _)| known == package) {
@@ -95,11 +233,21 @@ pub fn planned_of(dry_run: &Value) -> Vec<(String, Vec<String>)> {
     planned
 }
 
-/// What turbo would check for `filter`, or why it can't tell.
-pub fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+/// turbo's `run <tasks> --filter=…` of a scope.
+fn run_args(scope: &Scope) -> Vec<String> {
     let mut args: Vec<String> = vec!["run".into()];
-    args.extend(TASKS.iter().map(|task| task.to_string()));
-    args.extend([format!("--filter={filter}"), "--dry-run=json".into()]);
+    args.extend(scope.tasks.iter().cloned());
+    args.extend(scope.filters.iter().map(|filter| format!("--filter={filter}")));
+    args
+}
+
+/// What turbo would check of `scope`, or why it can't tell. Nothing affected: nothing.
+pub fn plan_of(turbo: &Path, dir: &Path, scope: &Scope) -> Result<Vec<(String, Vec<String>)>, String> {
+    if scope.filters.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = run_args(scope);
+    args.push("--dry-run=json".into());
     let output = Command::new(turbo)
         .args(&args)
         .current_dir(dir)
@@ -108,7 +256,7 @@ pub fn plan_of(turbo: &Path, dir: &Path, filter: &str) -> Result<Vec<(String, Ve
         .output()
         .map_err(|error| format!("turbo can't tell which packages changed: {error}"))?;
     match serde_json::from_slice::<Value>(&output.stdout) {
-        Ok(dry_run) => Ok(planned_of(&dry_run)),
+        Ok(dry_run) => Ok(planned_of(&dry_run, &scope.tasks)),
         Err(_) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -135,17 +283,26 @@ enum Ended {
     Unknown,
 }
 
-/// turbo, its output shown as it comes and kept.
+/// turbo, its output shown as it comes and kept. At low priority (#336):
+/// an agent's check never freezes the machine the others work on.
 fn run_turbo(turbo: &Path, args: &[String], dir: &Path) -> (Ended, String) {
-    use std::os::unix::process::ExitStatusExt;
-    let child = Command::new(turbo)
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let mut command = Command::new(turbo);
+    command
         .args(args)
         .current_dir(dir)
         .env("TURBO_TELEMETRY_DISABLED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn();
+        .stderr(Stdio::piped());
+    // SAFETY: nice(2) is async-signal-safe; its result (the new priority, or -1) doesn't matter.
+    unsafe {
+        command.pre_exec(|| {
+            libc::nice(10);
+            Ok(())
+        });
+    }
+    let child = command.spawn();
     let Ok(mut child) = child else {
         return (Ended::Unknown, String::new());
     };
@@ -245,8 +402,8 @@ pub fn command() -> ExitCode {
     let Some(tree) = working_tree_of(&dir) else {
         fail("couldn't read the working tree (git add -A in a copy of the index failed)")
     };
-    let filter = format!("...[{base}]");
-    let planned = plan_of(&turbo, &dir, &filter).unwrap_or_else(|error| fail(&error));
+    let scope = scope_of(&turbo, &dir, &base, None).unwrap_or_else(|error| fail(&error));
+    let planned = plan_of(&turbo, &dir, &scope).unwrap_or_else(|error| fail(&error));
     let started = now_ms();
     let packages: Vec<String> = planned.iter().map(|(package, _)| package.clone()).collect();
     let short = |text: &str| text.chars().take(8).collect::<String>();
@@ -267,7 +424,7 @@ pub fn command() -> ExitCode {
     }
     step(&format!(
         "{} of {} package{}, changed against develop ({}) or depending on one:",
-        TASKS.join(", "),
+        scope.tasks.join(", "),
         planned.len(),
         if planned.len() == 1 { "" } else { "s" },
         short(&base)
@@ -280,6 +437,11 @@ pub fn command() -> ExitCode {
             outln!("  ({why})");
         }
     }
+    if packages.iter().any(|package| package == "@monocircuit/breadboard")
+        && !scope.tasks.iter().any(|task| task.ends_with(":rs"))
+    {
+        outln!("  (breadboard's cargo checks: only when the branch changes its Rust sources, CI runs them anyway)");
+    }
     outln!();
     write_check(
         &dir,
@@ -289,10 +451,8 @@ pub fn command() -> ExitCode {
         *running = Some(dir.clone());
     }
     watch_signals();
-    let mut args: Vec<String> = vec!["run".into()];
-    args.extend(TASKS.iter().map(|task| task.to_string()));
+    let mut args = run_args(&scope);
     args.extend([
-        format!("--filter={filter}"),
         "--continue".into(),
         "--output-logs=errors-only".into(),
         "--log-order=grouped".into(),
@@ -399,12 +559,139 @@ mod tests {
             { "task": "lint", "package": "//", "command": "x" },
             { "task": "build", "package": "a", "command": "x" },
         ] });
+        let tasks: Vec<String> = TASKS.iter().map(|task| task.to_string()).collect();
         assert_eq!(
-            planned_of(&dry),
+            planned_of(&dry, &tasks),
             vec![
                 ("a".to_string(), vec!["lint".to_string()]),
                 ("b".to_string(), vec!["test".to_string()])
             ]
         );
+    }
+
+    /// turbo's answer to `affected_query`: `(name, reason, root dependency)`.
+    fn answer(items: &[(&str, &str, &str)]) -> Value {
+        let affected: Vec<Value> = items
+            .iter()
+            .map(|(name, kind, dep)| {
+                let mut reason = json!({ "__typename": kind });
+                if !dep.is_empty() {
+                    reason["rootInternalDep"] = json!(dep);
+                }
+                json!({ "name": name, "reason": reason })
+            })
+            .collect();
+        json!({ "data": {
+            "affectedPackages": { "items": affected },
+            "packages": { "items": [
+                { "name": "//", "path": "" },
+                { "name": "@m/breadboard", "path": "packages/breadboard" },
+                { "name": "@m/vita", "path": "products/vita" },
+                { "name": "@m/vita-ui", "path": "products/vita/ui" },
+            ] },
+        } })
+    }
+
+    // #336: the vita branches after a develop merge. turbo's own answer for
+    // a change of the root's dependency @m/vita is every package, breadboard
+    // too; the check takes vita and the packages in its directory.
+    #[test]
+    fn a_change_of_a_root_dependency_checks_that_package_not_everything() {
+        let vita = answer(&[
+            ("//", "RootInternalDepChanged", "@m/vita"),
+            ("@m/breadboard", "RootInternalDepChanged", "@m/vita"),
+            ("@m/vita", "RootInternalDepChanged", "@m/vita"),
+            ("@m/vita-ui", "RootInternalDepChanged", "@m/vita"),
+        ]);
+        assert_eq!(filters_of(&vita), vec!["{./products/vita}", "...{./products/vita/*}"]);
+        // A change inside vita-ui: vita-ui and what depends on it.
+        let ui = answer(&[
+            ("@m/vita-ui", "FileChanged", ""),
+            ("@m/vita-web", "DependencyChanged", ""),
+        ]);
+        assert_eq!(filters_of(&ui), vec!["@m/vita-ui", "@m/vita-web"]);
+        // The root alone (a CI file, a lockfile): nothing to check.
+        assert!(filters_of(&answer(&[("//", "FileChanged", "")])).is_empty());
+        // turbo.json: every package, as turbo says.
+        assert_eq!(
+            filters_of(&answer(&[
+                ("//", "GlobalDepsChanged", ""),
+                ("@m/breadboard", "GlobalDepsChanged", ""),
+            ])),
+            vec!["@m/breadboard"]
+        );
+    }
+
+    #[test]
+    fn asks_turbo_for_the_change_up_to_a_commit_or_the_working_tree() {
+        assert!(affected_query("abc", Some("def")).contains("affectedPackages(base: \"abc\", head: \"def\")"));
+        assert!(affected_query("abc", None).contains("affectedPackages(base: \"abc\")"));
+        let scope = Scope {
+            tasks: vec!["lint".into(), "lint:rs".into()],
+            filters: vec!["@m/a".into(), "...{./p/*}".into()],
+        };
+        assert_eq!(
+            run_args(&scope),
+            vec!["run", "lint", "lint:rs", "--filter=@m/a", "--filter=...{./p/*}"]
+        );
+    }
+
+    /// A repo with breadboard's Rust sources and a vita file, `origin/develop` at its first commit.
+    fn repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("check-rs-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for file in [
+            "packages/breadboard/crates/core/lib.rs",
+            "products/vita/ui/a.ts",
+            "README.md",
+        ] {
+            fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            fs::write(dir.join(file), "1\n").unwrap();
+        }
+        let run = |args: &[&str]| {
+            let done = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+                .output()
+                .unwrap();
+            assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+        };
+        run(&["init", "--quiet", "--initial-branch=develop"]);
+        run(&["add", "-A"]);
+        run(&["commit", "--quiet", "-m", "base"]);
+        run(&["update-ref", "refs/remotes/origin/develop", "HEAD"]);
+        dir
+    }
+
+    fn commit_all(dir: &Path) -> String {
+        for args in [vec!["add", "-A"], vec!["commit", "--quiet", "-m", "x"]] {
+            let mut full = vec!["-c", "user.name=t", "-c", "user.email=t@t"];
+            full.extend(args);
+            assert!(git(&full, dir).is_ok);
+        }
+        git(&["rev-parse", "HEAD"], dir).text().to_string()
+    }
+
+    // #336: a vita branch runs no cargo, also after develop brought the crate.
+    #[test]
+    fn cargo_checks_only_when_the_rust_sources_change() {
+        let dir = repo("rust");
+        let base = git(&["rev-parse", "HEAD"], &dir).text().to_string();
+        assert!(!is_rust_changed(&dir, &base, None));
+        fs::write(dir.join("products/vita/ui/a.ts"), "2\n").unwrap();
+        let vita = commit_all(&dir);
+        assert!(!is_rust_changed(&dir, &base, Some(&vita)));
+        assert!(!is_rust_changed(&dir, &base, None));
+        // Uncommitted, untracked: the working tree counts.
+        fs::write(dir.join("packages/breadboard/crates/core/new.rs"), "1\n").unwrap();
+        assert!(is_rust_changed(&dir, &base, None));
+        assert!(!is_rust_changed(&dir, &base, Some(&vita)));
+        let rust = commit_all(&dir);
+        assert!(is_rust_changed(&dir, &base, Some(&rust)));
+        // develop moved on and was merged in: the merge base moves with it.
+        assert!(!is_rust_changed(&dir, &rust, None));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
