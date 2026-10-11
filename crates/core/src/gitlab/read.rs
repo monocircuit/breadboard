@@ -47,6 +47,116 @@ fn mr_fields() -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The queries, each in one place: `queries()` lists them for the contract
+// check against gitlab.com's schema (#338)
+// ---------------------------------------------------------------------------
+
+/// The develop pipeline of the merge commit `$sha`, with its jobs.
+fn deploy_query() -> String {
+    format!(
+        "query($project: ID!, $sha: String) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", sha: $sha, first: 1) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
+    )
+}
+
+/// develop's last 20 pipelines, with their jobs.
+fn later_deploys_query() -> String {
+    format!(
+        "query($project: ID!) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", first: 20) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
+    )
+}
+
+/// The issues blocking each of `$iids`.
+const LINKS_QUERY: &str = "query($project: ID!, $iids: [String!]) { project(fullPath: $project) { issues(iids: $iids, state: all, first: 100) { nodes { iid blockedByIssues { nodes { iid } } } } } }";
+
+/// develop, and where there are any the MRs of the open branches, the
+/// issues, the awaited MRs. GraphQL refuses a variable no field uses: each
+/// declared with its field.
+fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool) -> String {
+    let mut decls = vec!["$project: ID!"];
+    let mut parts = vec![format!(
+        "develop: pipelines(ref: \"develop\", first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
+    )];
+    if has_branches {
+        decls.push("$branches: [String!]");
+        parts.push(format!(
+            "mrs: mergeRequests(sourceBranches: $branches, first: 100, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }}",
+            mr_fields()
+        ));
+    }
+    if has_issues {
+        decls.push("$iids: [String!]");
+        parts.push(
+            "issues(iids: $iids, state: all, first: 100) { nodes { iid title description state webUrl } }".into(),
+        );
+    }
+    if has_awaited {
+        decls.push("$awaited: [String!]");
+        parts.push("awaited: mergeRequests(iids: $awaited, first: 100) { nodes { iid state } }".into());
+    }
+    format!(
+        "query({}) {{ project(fullPath: $project) {{ {} }} }}",
+        decls.join(", "),
+        parts.join(" ")
+    )
+}
+
+/// The next page of the open branches' MRs.
+fn mrs_page_query() -> String {
+    format!(
+        "query($project: ID!, $branches: [String!], $after: String) {{ project(fullPath: $project) {{ mrs: mergeRequests(sourceBranches: $branches, first: 100, after: $after, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
+        mr_fields()
+    )
+}
+
+/// The next batch of issues.
+const ISSUES_PAGE_QUERY: &str = "query($project: ID!, $iids: [String!]) { project(fullPath: $project) { issues(iids: $iids, state: all, first: 100) { nodes { iid title description state webUrl } } } }";
+
+/// One worktree's: the open MRs, and where it has them its branch's MRs and its issue.
+fn worktree_query(has_branch: bool, has_number: bool) -> String {
+    let mut decls = vec!["$project: ID!"];
+    let mut parts = vec![
+        "open: mergeRequests(state: opened, first: 100) { nodes { iid title draft state webUrl sourceBranch headPipeline { id iid status path sha ref } } }"
+            .to_string(),
+    ];
+    if has_branch {
+        decls.push("$branches: [String!]");
+        parts.push(format!(
+            "mrs: mergeRequests(sourceBranches: $branches, first: 20, sort: UPDATED_DESC) {{ nodes {{ {} }} }}",
+            mr_fields()
+        ));
+    }
+    if has_number {
+        decls.push("$iid: String!");
+        parts.push("issue(iid: $iid) { iid title description state webUrl }".into());
+    }
+    format!(
+        "query({}) {{ project(fullPath: $project) {{ {} }} }}",
+        decls.join(", "),
+        parts.join(" ")
+    )
+}
+
+/// The overview of everything: the open MRs and issues, develop's last pipeline.
+const EVERYTHING_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { \
+    mrs: mergeRequests(state: opened, first: 50) { nodes { iid title draft webUrl sourceBranch author { username } assignees { nodes { username } } headPipeline { id iid status path sha ref } } } \
+    issues(state: opened, first: 100) { nodes { iid title webUrl labels { nodes { title } } assignees { nodes { username } } } } \
+    develop: pipelines(ref: \"develop\", first: 1) { nodes { id iid status path sha ref } } } }";
+
+/// Every query breadboard sends to GitLab, each with all its parts, by name.
+pub fn queries() -> Vec<(&'static str, String)> {
+    vec![
+        ("deploy", deploy_query()),
+        ("later deploys", later_deploys_query()),
+        ("links", LINKS_QUERY.into()),
+        ("orchestration", orchestration_query(true, true, true)),
+        ("mrs page", mrs_page_query()),
+        ("issues page", ISSUES_PAGE_QUERY.into()),
+        ("worktree", worktree_query(true, true)),
+        ("everything", EVERYTHING_QUERY.into()),
+    ]
+}
+
 pub(super) fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(Value::as_str).filter(|text| !text.is_empty())
 }
@@ -302,10 +412,9 @@ pub async fn deploy_of(gitlab: &Gitlab, cache: &mut Cache, sha: &str, web: &str,
     let own = match cache.get::<Deploy>("deploys", sha) {
         Some(own) => own,
         None => {
-            let query = format!(
-                "query($project: ID!, $sha: String) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", sha: $sha, first: 1) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
-            );
-            let project = gitlab.graphql(&gitlab.on_branch(&query), json!({ "sha": sha })).await?;
+            let project = gitlab
+                .graphql(&gitlab.on_branch(&deploy_query()), json!({ "sha": sha }))
+                .await?;
             let found = nodes(&project, "pipelines").into_iter().next().unwrap_or(Value::Null);
             let own = deploy_from(&found, web);
             if deploy_state_of(Some(&own), now).is_final {
@@ -329,10 +438,9 @@ pub async fn deploy_of(gitlab: &Gitlab, cache: &mut Cache, sha: &str, web: &str,
 /// The newest develop pipeline after `after` whose commit contains `sha`: one
 /// that passed, else the newest (it may still deploy).
 async fn later_deploy_of(gitlab: &Gitlab, sha: &str, after: i64, web: &str) -> Result<Option<Deploy>> {
-    let query = format!(
-        "query($project: ID!) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", first: 20) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
-    );
-    let project = gitlab.graphql(&gitlab.on_branch(&query), json!({})).await?;
+    let project = gitlab
+        .graphql(&gitlab.on_branch(&later_deploys_query()), json!({}))
+        .await?;
     let all = nodes(&project, "pipelines");
     let passed = all
         .iter()
@@ -373,10 +481,9 @@ async fn read_links(gitlab: &Gitlab, memory: &mut Memory, numbers: &[i64]) {
     if numbers.is_empty() || memory.has_no_links {
         return;
     }
-    let query = "query($project: ID!, $iids: [String!]) { project(fullPath: $project) { issues(iids: $iids, state: all, first: 100) { nodes { iid blockedByIssues { nodes { iid } } } } } }";
     for batch in numbers.chunks(BATCH) {
         let iids: Vec<String> = batch.iter().map(i64::to_string).collect();
-        match gitlab.graphql(query, json!({ "iids": iids })).await {
+        match gitlab.graphql(LINKS_QUERY, json!({ "iids": iids })).await {
             Ok(project) => {
                 for issue in nodes(&project, "issues") {
                     let blocked: Vec<i64> = nodes(&issue, "blockedByIssues")
@@ -447,33 +554,11 @@ pub async fn read_orchestration(
         .collect();
 
     // One request: the MRs of the open branches, the issues, the awaited, develop.
-    // GraphQL refuses a variable no field uses: each declared with its field.
-    let mut decls = vec!["$project: ID!"];
-    let mut parts = vec![format!(
-        "develop: pipelines(ref: \"develop\", first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
-    )];
-    if !open_branches.is_empty() {
-        decls.push("$branches: [String!]");
-        parts.push(format!(
-            "mrs: mergeRequests(sourceBranches: $branches, first: 100, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }}",
-            mr_fields()
-        ));
-    }
     let first_issues: Vec<String> = open_numbers.iter().take(BATCH).map(i64::to_string).collect();
-    if !first_issues.is_empty() {
-        decls.push("$iids: [String!]");
-        parts.push(
-            "issues(iids: $iids, state: all, first: 100) { nodes { iid title description state webUrl } }".into(),
-        );
-    }
-    if !awaited_unknown.is_empty() {
-        decls.push("$awaited: [String!]");
-        parts.push("awaited: mergeRequests(iids: $awaited, first: 100) { nodes { iid state } }".into());
-    }
-    let query = format!(
-        "query({}) {{ project(fullPath: $project) {{ {} }} }}",
-        decls.join(", "),
-        parts.join(" ")
+    let query = orchestration_query(
+        !open_branches.is_empty(),
+        !first_issues.is_empty(),
+        !awaited_unknown.is_empty(),
     );
     let awaited_iids: Vec<String> = awaited_unknown.iter().map(i64::to_string).collect();
     let mut variables = json!({});
@@ -506,13 +591,9 @@ pub async fn read_orchestration(
         .cloned()
         .unwrap_or(Value::Null);
     while page.get("hasNextPage").and_then(Value::as_bool) == Some(true) {
-        let query = format!(
-            "query($project: ID!, $branches: [String!], $after: String) {{ project(fullPath: $project) {{ mrs: mergeRequests(sourceBranches: $branches, first: 100, after: $after, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
-            mr_fields()
-        );
         let more = gitlab
             .graphql(
-                &query,
+                &mrs_page_query(),
                 json!({ "branches": open_branches, "after": page.get("endCursor") }),
             )
             .await?;
@@ -526,12 +607,7 @@ pub async fn read_orchestration(
     let mut issue_nodes = nodes(&project, "issues");
     for batch in open_numbers.chunks(BATCH).skip(1) {
         let iids: Vec<String> = batch.iter().map(i64::to_string).collect();
-        let more = gitlab
-            .graphql(
-                "query($project: ID!, $iids: [String!]) { project(fullPath: $project) { issues(iids: $iids, state: all, first: 100) { nodes { iid title description state webUrl } } } }",
-                json!({ "iids": iids }),
-            )
-            .await?;
+        let more = gitlab.graphql(ISSUES_PAGE_QUERY, json!({ "iids": iids })).await?;
         issue_nodes.extend(nodes(&more, "issues"));
     }
     // Where the pages are: GitLab's own answer says, else the API's host.
@@ -717,27 +793,7 @@ pub async fn read_worktree(
     branch: Option<&str>,
 ) -> Result<WorktreeRemote> {
     let number = branch.and_then(number_of);
-    let mut decls = vec!["$project: ID!"];
-    let mut parts = vec![
-        "open: mergeRequests(state: opened, first: 100) { nodes { iid title draft state webUrl sourceBranch headPipeline { id iid status path sha ref } } }"
-            .to_string(),
-    ];
-    if branch.is_some() {
-        decls.push("$branches: [String!]");
-        parts.push(format!(
-            "mrs: mergeRequests(sourceBranches: $branches, first: 20, sort: UPDATED_DESC) {{ nodes {{ {} }} }}",
-            mr_fields()
-        ));
-    }
-    if number.is_some() {
-        decls.push("$iid: String!");
-        parts.push("issue(iid: $iid) { iid title description state webUrl }".into());
-    }
-    let query = format!(
-        "query({}) {{ project(fullPath: $project) {{ {} }} }}",
-        decls.join(", "),
-        parts.join(" ")
-    );
+    let query = worktree_query(branch.is_some(), number.is_some());
     let mut variables = json!({});
     if let Some(branch) = branch {
         variables["branches"] = json!([branch]);
@@ -862,11 +918,7 @@ fn names_of(value: &Value, key: &str) -> Vec<String> {
 /// The open MRs and issues of the project, develop's pipeline; `heads` the
 /// branches on origin (`git ls-remote`), which claim the issues.
 pub async fn read_everything(gitlab: &Gitlab, heads: &[String]) -> Result<EverythingRemote> {
-    let query = "query($project: ID!) { project(fullPath: $project) { \
-        mrs: mergeRequests(state: opened, first: 50) { nodes { iid title draft webUrl sourceBranch author { username } assignees { nodes { username } } headPipeline { id iid status path sha ref } } } \
-        issues(state: opened, first: 100) { nodes { iid title webUrl labels { nodes { title } } assignees { nodes { username } } } } \
-        develop: pipelines(ref: \"develop\", first: 1) { nodes { id iid status path sha ref } } } }";
-    let project = gitlab.graphql(&gitlab.on_branch(query), json!({})).await?;
+    let project = gitlab.graphql(&gitlab.on_branch(EVERYTHING_QUERY), json!({})).await?;
     let mr_nodes = nodes(&project, "mrs");
     let web = mr_nodes
         .iter()
@@ -947,6 +999,26 @@ pub async fn read_everything(gitlab: &Gitlab, heads: &[String]) -> Result<Everyt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The queries as the gauntlet checks them against gitlab.com's schema (#338):
+    /// a query changed here and not there fails, and the file is written anew to commit.
+    #[test]
+    fn the_queries_the_gauntlet_checks_are_the_ones_sent() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../breadboard-gauntlet/fixtures/gitlab-queries.json");
+        let listed: serde_json::Map<String, Value> = queries()
+            .into_iter()
+            .map(|(name, query)| (name.to_string(), Value::String(query)))
+            .collect();
+        let text = format!("{}\n", serde_json::to_string_pretty(&listed).unwrap());
+        if std::fs::read_to_string(&file).ok().as_deref() != Some(text.as_str()) {
+            std::fs::write(&file, &text).unwrap();
+            panic!(
+                "{} was behind the queries: written anew, commit it (the gauntlet checks it against gitlab.com's schema)",
+                file.display()
+            );
+        }
+    }
 
     const MR: &str = r#"{
         "iid": "303", "title": "Draft: feat(breadboard): every drawn button works", "state": "opened", "draft": true,
