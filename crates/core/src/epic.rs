@@ -4,6 +4,7 @@
 //! issues' milestone (`breadboard · Epic 15: …` → 15): epics are milestones.
 
 use crate::json::str_of;
+use crate::model::order::Item;
 use serde_json::Value;
 
 /// What every epic branch starts with.
@@ -57,10 +58,77 @@ pub fn epic_of(record: &Value) -> Option<String> {
         .map(String::from)
 }
 
+/// The merge the overview runs by itself now (#350): the first in ACTIONS
+/// whose turn offers it (no blockers) and whose MR goes into an epic, its
+/// MR's head not tried already (`tried`: a failed one waits for a push).
+/// Into develop or main it stays the user's two clicks.
+pub fn auto_merge_of(
+    items: &[Item],
+    target_of: impl Fn(&str) -> Option<String>,
+    tried: impl Fn(i64) -> bool,
+) -> Option<&Item> {
+    items.iter().find(|item| {
+        let (Some(offer), Some(branch)) = (item.merge.as_ref(), item.branch.as_deref()) else {
+            return false;
+        };
+        offer.blockers.is_empty()
+            && !item.is_running
+            && target_of(branch).is_some_and(|target| is_epic(&target))
+            && !tried(offer.iid)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::order::MergeOffer;
     use serde_json::json;
+
+    fn merge(iid: i64, branch: &str, blockers: &[&str]) -> Item {
+        Item {
+            kind: "merge".into(),
+            branch: Some(branch.into()),
+            merge: Some(MergeOffer {
+                iid,
+                blockers: blockers.iter().map(|blocker| blocker.to_string()).collect(),
+                ..MergeOffer::default()
+            }),
+            ..Item::default()
+        }
+    }
+
+    #[test]
+    fn merges_by_itself_only_an_offered_mr_into_an_epic() {
+        let target = |branch: &str| Some(if branch.contains("dev") { "develop" } else { "epic/15-b" }.to_string());
+        let items = [
+            merge(1, "feature/1-dev", &[]),
+            merge(2, "feature/2-x", &["pipeline running"]),
+            merge(3, "feature/3-x", &[]),
+            merge(4, "feature/4-x", &[]),
+        ];
+        let never = |_: i64| false;
+        assert_eq!(
+            auto_merge_of(&items, target, never)
+                .and_then(|item| item.merge.as_ref())
+                .map(|offer| offer.iid),
+            Some(3)
+        );
+        let tried = |iid: i64| iid == 3;
+        assert_eq!(
+            auto_merge_of(&items, target, tried)
+                .and_then(|item| item.merge.as_ref())
+                .map(|offer| offer.iid),
+            Some(4)
+        );
+        assert!(
+            auto_merge_of(&items[..2], target, never).is_none(),
+            "into develop: the user's clicks"
+        );
+        assert!(
+            auto_merge_of(&items, |_: &str| None, never).is_none(),
+            "no MR read: nothing"
+        );
+    }
 
     #[test]
     fn names_the_branch_after_the_milestones_epic() {
