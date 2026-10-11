@@ -827,7 +827,11 @@ fn stack(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, 
         scene.note(format!("shared, the one of the main checkout ({})", tree.project));
         look::say(
             scene,
-            "its tabs are in the space Monocircuit/Platform; an own stack: pnpm wt:stack",
+            &format!(
+                "its tabs are in the space {}; an own stack: {}",
+                breadboard_core::record::SPACE,
+                breadboard_core::config::here().command("wt:stack")
+            ),
             theme::dim(),
         );
         scene.end_line();

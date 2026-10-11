@@ -1,4 +1,4 @@
-//! The plugin after a move (#230): herdr keeps loading `monocircuit.platform`
+//! The plugin after a move (#230): herdr keeps loading the repo's plugin
 //! from the directory it was linked from. When that directory is gone (a
 //! worktree removed, the package moved as `packages/workflow` did in #219),
 //! every plugin action fails with "plugin action not found" and the tab

@@ -274,7 +274,7 @@ fn stacks_in(containers: Option<&[StackContainer]>, project: &str) -> usize {
 
 /// The blocked agents in the spaces of the repo: the main space, its
 /// worktrees' and the orchestrations' (`repo_root` is the main checkout, or
-/// the label starts with `Monocircuit/Platform`). No pane list without one.
+/// the label starts with the main space's). No pane list without one.
 fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -> Option<Value>) -> usize {
     let main = main.map(|main| main.display().to_string());
     let ours: Vec<&str> = spaces

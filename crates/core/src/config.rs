@@ -297,7 +297,7 @@ pub struct Library {
     pub name: String,
     /// Its folder, with its package.json and CHANGELOG.md.
     pub path: String,
-    /// Its tag before the version: `monolithium-v`.
+    /// Its tag before the version: `lib-v`.
     pub tag: String,
     /// Released together with it, as the entry says: `with utilities`.
     pub with: Option<String>,
@@ -306,7 +306,7 @@ pub struct Library {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Release {
-    /// What the tag is before the version: `v`, `monolithium-v`.
+    /// What the tag is before the version: `v`, `lib-v`.
     pub tag: String,
     /// The name the overview shows it under.
     pub name: String,

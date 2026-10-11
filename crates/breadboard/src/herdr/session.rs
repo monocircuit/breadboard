@@ -237,7 +237,7 @@ impl Session {
         version_after(&self.herdr(target, &["status", "server"]).out)
     }
 
-    /// Whether the target has a workspace labelled exactly `Monocircuit/Platform`.
+    /// Whether the target has a workspace labelled exactly as the main space (`[herdr] space`).
     pub fn has_space(&self, target: &Target) -> bool {
         self.ask(target, &["workspace", "list"])
             .is_some_and(|result| has_space_in(&result))

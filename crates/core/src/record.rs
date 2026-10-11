@@ -451,7 +451,7 @@ pub fn orchestrator_label(main: &Path, name: &str) -> String {
 }
 
 /// The orchestration of a space's label `⇶ <title>` (also `⇶ <name>` and an
-/// older `Monocircuit/Platform ⇶ <name>`), None for any other. `titles`:
+/// older `<main space> ⇶ <name>`), None for any other. `titles`:
 /// `(name, title)` of every record.
 pub fn orchestration_of_label(label: &str, titles: &[(String, String)]) -> Option<String> {
     let shown = label

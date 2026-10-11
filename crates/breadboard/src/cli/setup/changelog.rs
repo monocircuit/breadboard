@@ -562,7 +562,7 @@ pub fn overall_text(
     unreleased: Option<(&[Entry], &[String], Option<&str>)>,
 ) -> String {
     let mut lines = vec![
-        "# Monocircuit/Platform: changelog".to_string(),
+        format!("# {}: changelog", breadboard_core::record::SPACE),
         String::new(),
         format!(
             "Merged into develop since {}, by product and package.",
@@ -1003,7 +1003,9 @@ pub fn overall_command(args: &Args) -> ExitCode {
         .unwrap_or_default();
     if args.has("--watch") {
         let empty = format!(
-            "# Monocircuit/Platform: changelog\n\nNot written yet: the overview of the main space writes {relative}, or `pnpm changelog`.\n"
+            "# {}: changelog\n\nNot written yet: the overview of the main space writes {relative}, or `{}`.\n",
+            breadboard_core::record::SPACE,
+            breadboard_core::config::of(&main).command("changelog")
         );
         return view::watch(&file, &empty);
     }

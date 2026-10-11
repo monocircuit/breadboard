@@ -50,7 +50,7 @@ pub struct Scope {
 
 /// The `--filter`s of the packages a change affects, from turbo's
 /// `affectedPackages` and its package paths (`query`'s answer). Not turbo's
-/// `...[<base>]`: the root depends on `@monocircuit/vita` (#299), and turbo
+/// `...[<base>]`: the root may depend on a package (#299), and turbo
 /// counts a change in a package the root depends on as a change of every
 /// package (`RootInternalDepChanged`), so any vita change ran breadboard's
 /// cargo checks (#336). Such a package counts as itself and the packages in

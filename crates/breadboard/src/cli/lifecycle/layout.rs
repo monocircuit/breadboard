@@ -2,7 +2,7 @@
 //! that exist (worktree/layout.mjs). A space per purpose:
 //!
 //! ```text
-//! Monocircuit/Platform   root · overview (live, --herdr) · changelog · stack tabs
+//! <main space>          root · overview (live, --herdr) · changelog · stack tabs
 //! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim · stack tabs
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
 //! ```
@@ -39,7 +39,7 @@ const TAKES: Takes = Takes {
     valued: &[],
     lists: &[],
     words: 0,
-    about: "Lays out herdr: Monocircuit/Platform and a space per worktree, its tabs in order, the agents resumed (the way back after a herdr restart). --no-focus leaves the focus where it is.",
+    about: "Lays out herdr: the main space and a space per worktree, its tabs in order, the agents resumed (the way back after a herdr restart). --no-focus leaves the focus where it is.",
     usage: "usage: pnpm wt:herdr [--no-focus]",
 };
 
