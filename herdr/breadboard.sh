@@ -102,15 +102,35 @@ prune() {
   done
 }
 
+# What cargo left in this checkout's own target/ before every run used the
+# store's (#336: 1.9 GB per worktree): removed once, the binary, its stamps
+# and the build log stay. Not while a cargo holds it (its .cargo-lock), and
+# not without flock to tell; outside a clone there is no store to use instead.
+reclaim() {
+  own="$package/target"
+  [ -d "$own/debug" ] || [ -d "$own/release/deps" ] || return 0
+  store >/dev/null || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  for held in "$own"/*/.cargo-lock; do
+    [ -f "$held" ] || continue
+    # sh, not true: herdr's PATH may have no true.
+    flock -n "$held" sh -c : 2>/dev/null || return 0
+  done
+  rm -rf "$own/debug" "$own/release/deps" "$own/release/build" "$own/release/.fingerprint" \
+    "$own/release/incremental" "$own/release/examples" "$own/release/.cargo-lock" \
+    "$own/CACHEDIR.TAG" "$own/.rustc_info.json"
+  rm -f "$own"/release/*.d
+  echo "▸ removed this checkout's own cargo target/ (#336): every cargo run uses the store's" >&2
+}
+
 # The binary of HEAD's sources: the store's when it has one, else cargo
-# build --release (in the store's target/, or the package's own with
-# uncommitted changes to them); on success the stamp of what it is.
+# build --release in the store's target/; on success the stamp of what it is.
 build() {
   now=$(source_now)
   shared=$(store) || shared=
   kept=
-  # Uncommitted changes to the sources build here alone: the store keeps
-  # only what HEAD has, the key names it.
+  # Uncommitted changes to the sources are built but not kept: the store
+  # keeps only what HEAD has, the key names it.
   if [ -n "$shared" ] && [ -n "$now" ] && [ -z "$(git -C "$package" status --porcelain -- crates hooks Cargo.toml Cargo.lock 2>/dev/null)" ]; then
     kept="$shared/bin/$(printf '%s\n' "$now" | git hash-object --stdin)/breadboard"
     if [ -x "$kept" ] && install "$kept"; then
@@ -127,28 +147,32 @@ build() {
     echo "✗ $binary is missing or older than the checkout, and there is no cargo to build it (https://rustup.rs, then pnpm build:rs in $package)" >&2
     return 1
   fi
+  # Every build in the store's target/ (#336), one of uncommitted changes
+  # too: cargo compiles only what differs, never the dependencies again. The
+  # store's lock: the binary copied out is the one this build made.
   target="$package/target"
-  if [ -n "$kept" ]; then
+  if [ -n "$shared" ]; then
     target="$shared/target"
     mkdir -p "$shared" && lock_store
     # Another checkout may have built these sources while this one waited.
-    if [ -x "$kept" ] && install "$kept"; then
+    if [ -n "$kept" ] && [ -x "$kept" ] && install "$kept"; then
       unlock_store
       rm -f "$failed"
       printf '%s\n' "$now" >"$stamp"
       return 0
     fi
   fi
-  echo "▸ breadboard is built from $(git -C "$package" rev-parse --short HEAD 2>/dev/null) (cargo build --release in $package)" >&2
-  if ! CARGO_TARGET_DIR="$target" cargo build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
-    [ -n "$kept" ] && unlock_store
+  echo "▸ breadboard is built from $(git -C "$package" rev-parse --short HEAD 2>/dev/null) (cargo build --release in $target)" >&2
+  if ! CARGO_TARGET_DIR="$target" sh "$package/herdr/cargo.sh" build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
+    [ -n "$shared" ] && unlock_store
     mkdir -p "${binary%/*}"
     printf '%s\n' "$now" >"$failed"
     echo "✗ cargo build --release failed in $package" >&2
     return 1
   fi
-  if [ -n "$kept" ]; then
-    mkdir -p "${kept%/*}" && cp "$target/release/breadboard" "$kept.$$" && mv -f "$kept.$$" "$kept" && prune
+  if [ -n "$shared" ]; then
+    # Uncommitted sources never enter the store under HEAD's key.
+    [ -n "$kept" ] && mkdir -p "${kept%/*}" && cp "$target/release/breadboard" "$kept.$$" && mv -f "$kept.$$" "$kept" && prune
     install "$target/release/breadboard"
     copied=$?
     unlock_store
@@ -183,6 +207,7 @@ build_behind() {
 
 case $mode in
   built)
+    reclaim
     is_fresh && exit 0
     build && [ -x "$binary" ]
     exit $?
@@ -202,6 +227,7 @@ case $mode in
     fi
     ;;
   run)
+    reclaim
     if ! is_fresh && ! build; then
       if [ ! -x "$binary" ]; then
         echo "✗ breadboard can't run until it is built: pnpm build:rs in $package" >&2
