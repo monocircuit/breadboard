@@ -396,7 +396,8 @@ mod tests {
             "some-agent (claude 4242) still stands in 4-x, handed over nowhere: end it (/exit in its tab, or kill 4242) or let it leave the folder, then again"
         );
         assert!(
-            left_refusal(&left, "4-x", true).starts_with("claude 1 still stands in 4-x: it enters its next worktree")
+            left_refusal(&left, "4-x", true)
+                .starts_with("claude 1 still stands in 4-x: it restarts in its next worktree")
         );
         // Bound nowhere else: not on its way anywhere.
         assert!(!are_handed_over(
