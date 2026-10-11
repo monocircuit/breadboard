@@ -49,6 +49,8 @@ pub struct Action {
     pub delivered_at: Option<String>,
     /// Why the draft of its answer waits (draftWaits).
     pub waits: Option<String>,
+    /// A `permission` action's rule: what an `allow` lets the agent's next run do (#360).
+    pub rule: Option<String>,
     pub raw: Value,
 }
 
@@ -75,6 +77,7 @@ impl Action {
             delivering_at: str_of(value, "deliveringAt").map(String::from),
             delivered_at: str_of(value, "deliveredAt").map(String::from),
             waits: str_of(value, "waits").map(String::from),
+            rule: str_of(value, "rule").map(String::from),
             raw: value.clone(),
         })
     }
@@ -153,6 +156,7 @@ pub fn change_of(file: &Path) -> Option<Change> {
 pub fn answers_of(action: &Action) -> Vec<String> {
     let fixed: &[&str] = match action.kind.as_str() {
         "decide" => return action.options.clone(),
+        "permission" => &crate::permissions::PERMISSION_ANSWERS,
         "try" | "browser-check" => &["looks good", "broken"],
         "look" => &["done"],
         "plan" => &["ok", "different"],
@@ -343,6 +347,8 @@ pub struct NewAction {
     pub recommend: Option<String>,
     pub pane: Option<String>,
     pub mr: Option<i64>,
+    /// A `permission` action's rule (#360).
+    pub rule: Option<String>,
 }
 
 /// A new action in `file`, numbered after the highest there (the delivered
@@ -374,6 +380,9 @@ pub fn add_action(file: &Path, new: NewAction) -> io::Result<Action> {
         action.insert("pane".into(), json!(new.pane));
         if let Some(mr) = new.mr {
             action.insert("mr".into(), json!(mr));
+        }
+        if let Some(rule) = &new.rule {
+            action.insert("rule".into(), json!(rule));
         }
         action.insert("at".into(), json!(to_iso(now_ms())));
         let action = Value::Object(action);

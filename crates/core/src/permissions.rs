@@ -18,6 +18,7 @@
 //! - nothing decided it, so a tab would have asked: the same text without a
 //!   matching deny rule. Only these become a `permission` action.
 
+use crate::actions::{Action, NewAction, actions_file, add_action};
 use crate::json::{self, str_of};
 use serde_json::{Map, Value, json};
 use std::fs;
@@ -305,7 +306,7 @@ pub fn question_of(agent: &str, denial: &Denial) -> String {
 pub fn answer_run(answer: &str, rule: &str) -> (String, Vec<String>) {
     match answer {
         ALLOW_ONCE | ALLOW_ALWAYS => (
-            format!("[overview] the user allowed {rule}: run it again and go on."),
+            format!("[overview] the user allowed {rule}, go on: it is allowed in this run."),
             vec![rule.to_string()],
         ),
         _ => (
@@ -317,9 +318,48 @@ pub fn answer_run(answer: &str, rule: &str) -> (String, Vec<String>) {
     }
 }
 
+/// A `permission` action in the worktree's actions file for each call of a
+/// run that a tab would have asked about (`Why::Asked`); the same question
+/// again replaces the older one. `agent` names the worktree in the question.
+pub fn post_denials(dir: &Path, agent: &str, denials: &[Denial]) -> io::Result<Vec<Action>> {
+    denials
+        .iter()
+        .filter(|denial| denial.why == Why::Asked)
+        .map(|denial| {
+            add_action(
+                &actions_file(dir),
+                NewAction {
+                    kind: "permission".into(),
+                    text: question_of(agent, denial),
+                    options: PERMISSION_ANSWERS.iter().map(|answer| answer.to_string()).collect(),
+                    rule: Some(denial.rule.clone()),
+                    ..NewAction::default()
+                },
+            )
+        })
+        .collect()
+}
+
+/// What an answered `permission` action gives its agent's next run: the line
+/// and the rules allowed in that run. `allow always` writes the rule to the
+/// worktree's settings first. None for any other action, or one unanswered.
+pub fn delivery_of(dir: &Path, action: &Action) -> io::Result<Option<(String, Vec<String>)>> {
+    let (Some(answer), Some(rule)) = (&action.answer, &action.rule) else {
+        return Ok(None);
+    };
+    if action.kind != "permission" {
+        return Ok(None);
+    }
+    if answer == ALLOW_ALWAYS {
+        allow_always(dir, rule)?;
+    }
+    Ok(Some(answer_run(answer, rule)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::{actions_of, answer_action};
 
     /// The deny list of the repo's `.claude/settings.json`, the part a probe touches.
     fn deny() -> Vec<String> {
@@ -511,6 +551,41 @@ mod tests {
             json!(["Bash(ls)", "Bash(docker system prune)"])
         );
         assert_eq!(settings["statusLine"]["type"], "command");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_question_becomes_a_permission_action_and_allow_always_its_rule() {
+        let dir = std::env::temp_dir().join(format!("permissions-post-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join(".claude")).unwrap();
+        let lines = stream(&[
+            ("t1", "git tag v1", &rule_text("git tag v1")),
+            ("t2", "docker system prune", &rule_text("docker system prune")),
+        ]);
+        let posted = post_denials(&dir, "360-x", &denials_of(&lines, &deny())).unwrap();
+        assert_eq!(posted.len(), 1, "the deny rule's refusal asks nothing");
+        let actions = actions_of(&actions_file(&dir));
+        assert_eq!(actions.len(), 1);
+        let action = &actions[0];
+        assert_eq!(action.kind, "permission");
+        assert_eq!(action.text, "may 360-x run Bash: docker system prune?");
+        assert_eq!(crate::actions::answers_of(action), PERMISSION_ANSWERS);
+        assert_eq!(action.rule.as_deref(), Some("Bash(docker system prune)"));
+        assert_eq!(delivery_of(&dir, action).unwrap(), None, "not answered yet");
+
+        // The same question again replaces it.
+        post_denials(&dir, "360-x", &denials_of(&lines, &deny())).unwrap();
+        assert_eq!(actions_of(&actions_file(&dir)).len(), 1);
+
+        let id = actions_of(&actions_file(&dir))[0].id;
+        answer_action(&actions_file(&dir), id, ALLOW_ALWAYS).unwrap();
+        let answered = &actions_of(&actions_file(&dir))[0];
+        let (line, allowed) = delivery_of(&dir, answered).unwrap().unwrap();
+        assert!(line.starts_with("[overview] the user allowed Bash(docker system prune), go on"));
+        assert_eq!(allowed, vec!["Bash(docker system prune)"]);
+        let settings: Value = serde_json::from_str(&fs::read_to_string(local_settings(&dir)).unwrap()).unwrap();
+        assert_eq!(settings["permissions"]["allow"], json!(["Bash(docker system prune)"]));
         fs::remove_dir_all(&dir).unwrap();
     }
 

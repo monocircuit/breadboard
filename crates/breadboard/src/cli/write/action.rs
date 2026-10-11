@@ -440,6 +440,8 @@ pub fn run(argv: &Argv) -> Outcome {
         recommend,
         pane: std::env::var("HERDR_PANE_ID").ok(),
         mr,
+        // Only the daemon posts a `permission` action, from a run's denial (#360).
+        rule: None,
     };
     announce_lock(&file);
     let result = add_action(&file, new);
