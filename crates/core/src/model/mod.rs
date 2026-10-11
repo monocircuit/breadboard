@@ -177,6 +177,8 @@ pub struct Tree {
     // What an orchestration's read adds (view.mjs `readView`).
     /// The conversation bound to its space.
     pub claude: Option<Claude>,
+    /// What its agent said it does (`pnpm wt:action note`, #341).
+    pub note: Option<crate::said::Note>,
     /// claudes that stand in it without being its agent (#252).
     pub left: Vec<Running>,
     pub actions: Vec<Action>,

@@ -27,6 +27,7 @@ use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
+use crate::said::{Now, now_of};
 use crate::setups::Setup;
 use crate::time::{ago, clock, parse_iso};
 use crate::wait::waits_text;
@@ -291,6 +292,11 @@ pub struct Node {
     pub title: String,
     /// Its issue's boxes one by one, as its fold lists them (#346); none without a worktree.
     pub boxes: Vec<BoxSection>,
+    /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
+    /// only where its worktree is.
+    pub problem: Option<String>,
+    /// What its agent is on now (#341): its note or its last answer's first line.
+    pub now: Option<Now>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -816,6 +822,15 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     ),
                     _ => Vec::new(),
                 },
+                problem: tree.and(found).and_then(|found| found.problem.clone()),
+                now: tree.and_then(|tree| {
+                    let claude = tree.claude.as_ref();
+                    now_of(
+                        tree.note.as_ref(),
+                        claude.and_then(|claude| claude.answer.as_deref()),
+                        claude.and_then(|claude| claude.answer_at.or(claude.at)),
+                    )
+                }),
                 go,
             }
         })
@@ -1783,6 +1798,8 @@ mod tests {
             docker_at: 0,
             title: String::new(),
             boxes: Vec::new(),
+            problem: None,
+            now: None,
             go: Go::Nothing,
         }
     }
