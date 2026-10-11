@@ -45,6 +45,18 @@ fn is_waiting(status: &str) -> bool {
 // The pushes
 // ---------------------------------------------------------------------------
 
+/// A remote reached over the network (`git@host:p.git`, `ssh://`, `https://`):
+/// one GitLab serves, which takes push options.
+fn is_network_url(url: &str) -> bool {
+    if url.starts_with("file://") || url.starts_with('/') || url.starts_with('.') {
+        return false;
+    }
+    url.contains("://")
+        || url
+            .split_once(':')
+            .is_some_and(|(host, _)| host.contains('@') || host.contains('.'))
+}
+
 /// What a worktree's pushes carry, set so (#357): `ci.skip` in its own
 /// config (`git config --worktree push.pushOption`), the queue starts its
 /// pipelines; none with `git config breadboard.ci push`. The main checkout
@@ -57,7 +69,10 @@ pub fn set_push_option(dir: &Path) -> Option<String> {
     if !dirs.is_ok || own == common {
         return None;
     }
-    let is_queued = git(&["config", "--get", MODE_KEY]).out() != "push";
+    // A local origin (a path, `file://`) takes no push options: a push with one would fail.
+    let origin = git(&["remote", "get-url", "--push", "origin"]);
+    let is_network = origin.is_ok && is_network_url(origin.out());
+    let is_queued = is_network && git(&["config", "--get", MODE_KEY]).out() != "push";
     let options = git(&["config", "--get-all", "push.pushOption"]);
     let has_skip = options.lines().any(|line| line.trim() == SKIP_OPTION);
     if is_queued == has_skip {
@@ -763,6 +778,14 @@ mod tests {
             &main,
             &["worktree", "add", "-q", "-b", "feature/1-x", tree.to_str().unwrap()],
         );
+        // A local origin takes no push options: left alone.
+        let origin = scratch.join("origin.git");
+        run(&main, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        assert_eq!(set_push_option(&tree), None);
+        run(
+            &main,
+            &["remote", "set-url", "origin", "git@gitlab.com:monocircuit/platform.git"],
+        );
         assert_eq!(set_push_option(&main), None);
         assert!(set_push_option(&tree).is_some());
         let options = |dir: &Path| crate::git::git(dir, &["config", "--get-all", "push.pushOption"]).stdout;
@@ -774,6 +797,16 @@ mod tests {
         assert!(set_push_option(&tree).is_some());
         assert_eq!(options(&tree).trim(), "");
         std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn tells_a_network_remote_from_a_local_one() {
+        assert!(is_network_url("git@gitlab.com:monocircuit/platform.git"));
+        assert!(is_network_url("https://gitlab.example.org/p.git"));
+        assert!(is_network_url("ssh://git@host/p.git"));
+        assert!(!is_network_url("/tmp/world/origin.git"));
+        assert!(!is_network_url("file:///tmp/origin.git"));
+        assert!(!is_network_url("../origin.git"));
     }
 
     #[test]
