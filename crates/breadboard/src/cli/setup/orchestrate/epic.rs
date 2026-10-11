@@ -21,6 +21,10 @@ pub fn ensure_epic(name: &str, plan: &[Item], given: Option<&str>, is_dry: bool)
     if let Some(raw) = &raw {
         return Ok(epic_of(raw));
     }
+    // breadboard.toml's `[orchestration] epic_branches`: without it the default branch, unless `--epic` asks.
+    if given.is_none() && !breadboard_core::config::of(&main).config.orchestration.epic_branches {
+        return Ok(None);
+    }
     let number = match given {
         Some(given) => given
             .parse::<i64>()

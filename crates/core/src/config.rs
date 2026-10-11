@@ -24,6 +24,7 @@ pub struct Config {
     /// The dev stack of a checkout; None: worktrees have none.
     pub stack: Option<Stack>,
     pub mr: Mr,
+    pub orchestration: Orchestration,
     pub tries: Tries,
     pub check: Check,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
@@ -261,6 +262,16 @@ impl Default for Mr {
             tests: Vec::new(),
         }
     }
+}
+
+/// How an orchestration works.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orchestration {
+    /// A new orchestration makes an epic branch its tasks branch off and
+    /// merge into (#350), its number from the issues' milestone
+    /// (`… Epic N: …`) or `--epic`; else it works on the default branch.
+    pub epic_branches: bool,
 }
 
 /// A `try --on test`: the test instance a merge deploys to, and the jobs of
