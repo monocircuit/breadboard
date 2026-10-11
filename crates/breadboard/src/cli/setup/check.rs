@@ -393,9 +393,10 @@ pub fn command() -> ExitCode {
     let Some(turbo) = turbo_of(&dir) else {
         fail("turbo isn't installed here: pnpm install first")
     };
-    let base = git(&["merge-base", "origin/develop", "HEAD"], &dir).text().to_string();
+    let develop = breadboard_core::git::base(&dir);
+    let base = git(&["merge-base", &develop, "HEAD"], &dir).text().to_string();
     if base.is_empty() {
-        fail("no merge base with origin/develop: git fetch origin first");
+        fail(&format!("no merge base with {develop}: git fetch origin first"));
     }
     super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();

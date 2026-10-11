@@ -105,7 +105,7 @@ pub fn first_change_in(diff: &str) -> u64 {
 
 /// The first line of `file` the work of `dir` changes against develop, 1 for a new file.
 pub fn first_change(dir: &Path, file: &str) -> u64 {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    let base = git(dir, &["merge-base", &crate::git::base(dir), "HEAD"]);
     if !base.is_ok || base.out().is_empty() {
         return 1;
     }

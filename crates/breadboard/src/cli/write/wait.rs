@@ -272,8 +272,15 @@ fn hours_json(hours: f64) -> Value {
 
 /// How many commits of develop the worktree lacks, fetched first; None when git can't say.
 fn behind_of(dir: &Path) -> Option<u64> {
-    git(dir, &["fetch", "--quiet", "origin", "develop"]);
-    let count = git(dir, &["rev-list", "--count", "HEAD..origin/develop"]);
+    git(dir, &["fetch", "--quiet", "origin", &breadboard_core::git::branch(dir)]);
+    let count = git(
+        dir,
+        &[
+            "rev-list",
+            "--count",
+            &format!("HEAD..{}", breadboard_core::git::base(dir)),
+        ],
+    );
     if count.is_ok { count.out().parse().ok() } else { None }
 }
 

@@ -66,7 +66,7 @@ fn hand_over(previous: &Worktree) -> String {
         } else if is_on_origin {
             "its branch is still on origin"
         } else {
-            "commits not in develop"
+            "commits not in the default branch"
         };
         return format!("{feature} stays ({why}): its space keeps overview and nvim");
     }
@@ -76,7 +76,10 @@ fn hand_over(previous: &Worktree) -> String {
         .stdin(Stdio::null())
         .output();
     match removed {
-        Ok(output) if output.status.success() => format!("{feature} removed, its work is in develop"),
+        Ok(output) if output.status.success() => format!(
+            "{feature} removed, its work is in {}",
+            breadboard_core::git::branch(&main)
+        ),
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             format!(
@@ -136,7 +139,8 @@ pub fn command(args: &Args) -> ExitCode {
     }
 
     let dir_text = dir.to_string_lossy().into_owned();
-    step(&format!("git worktree add {dir_text} -b {branch} origin/develop"));
+    let base = breadboard_core::git::base(&main);
+    step(&format!("git worktree add {dir_text} -b {branch} {base}"));
     proc::run(
         "git",
         &[
@@ -147,7 +151,7 @@ pub fn command(args: &Args) -> ExitCode {
             &dir_text,
             "-b",
             &branch,
-            "origin/develop",
+            &base,
         ],
         How {
             cwd: Some(&main),

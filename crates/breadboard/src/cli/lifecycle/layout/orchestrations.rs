@@ -39,7 +39,14 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     fs::create_dir_all(dir.parent()?).ok()?;
     let is_made = git(
         &repo.main,
-        &["worktree", "add", "--quiet", "--detach", &text(&dir), "origin/develop"],
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            &text(&dir),
+            &breadboard_core::git::base(&repo.main),
+        ],
         None,
     )
     .is_ok;

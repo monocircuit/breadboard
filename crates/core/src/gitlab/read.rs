@@ -305,7 +305,7 @@ pub async fn deploy_of(gitlab: &Gitlab, cache: &mut Cache, sha: &str, web: &str,
             let query = format!(
                 "query($project: ID!, $sha: String) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", sha: $sha, first: 1) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
             );
-            let project = gitlab.graphql(&query, json!({ "sha": sha })).await?;
+            let project = gitlab.graphql(&gitlab.on_branch(&query), json!({ "sha": sha })).await?;
             let found = nodes(&project, "pipelines").into_iter().next().unwrap_or(Value::Null);
             let own = deploy_from(&found, web);
             if deploy_state_of(Some(&own), now).is_final {
@@ -332,7 +332,7 @@ async fn later_deploy_of(gitlab: &Gitlab, sha: &str, after: i64, web: &str) -> R
     let query = format!(
         "query($project: ID!) {{ project(fullPath: $project) {{ pipelines(ref: \"develop\", first: 20) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }} }} }}"
     );
-    let project = gitlab.graphql(&query, json!({})).await?;
+    let project = gitlab.graphql(&gitlab.on_branch(&query), json!({})).await?;
     let all = nodes(&project, "pipelines");
     let passed = all
         .iter()
@@ -486,7 +486,7 @@ pub async fn read_orchestration(
             variables[name] = json!(values);
         }
     }
-    let project = match gitlab.graphql(&query, variables).await {
+    let project = match gitlab.graphql(&gitlab.on_branch(&query), variables).await {
         Ok(project) => project,
         // GitLab answered, its GraphQL didn't (an older GitLab, a proxy): REST, Node's route.
         Err(error) if error.status.is_some() => {
@@ -866,7 +866,7 @@ pub async fn read_everything(gitlab: &Gitlab, heads: &[String]) -> Result<Everyt
         mrs: mergeRequests(state: opened, first: 50) { nodes { iid title draft webUrl sourceBranch author { username } assignees { nodes { username } } headPipeline { id iid status path sha ref } } } \
         issues(state: opened, first: 100) { nodes { iid title webUrl labels { nodes { title } } assignees { nodes { username } } } } \
         develop: pipelines(ref: \"develop\", first: 1) { nodes { id iid status path sha ref } } } }";
-    let project = gitlab.graphql(query, json!({})).await?;
+    let project = gitlab.graphql(&gitlab.on_branch(query), json!({})).await?;
     let mr_nodes = nodes(&project, "mrs");
     let web = mr_nodes
         .iter()

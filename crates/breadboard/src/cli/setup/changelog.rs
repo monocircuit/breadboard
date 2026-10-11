@@ -878,7 +878,8 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
     let start = since_of(&window, now).unwrap_or_else(|| since_of(DEFAULT_SINCE, now).unwrap_or(now));
     let start_iso = to_iso(start);
     let found: Vec<Value> = all_of(&format!(
-        "projects/:fullpath/merge_requests?state=merged&target_branch=develop&updated_after={}",
+        "projects/:fullpath/merge_requests?state=merged&target_branch={}&updated_after={}",
+        gitlab::encode(&breadboard_core::git::branch(&main)),
         gitlab::encode(&start_iso)
     ))?
     .into_iter()
@@ -979,7 +980,7 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
             })
         })
         .collect();
-    let entries = fragments::fragments_at(&main, "origin/develop");
+    let entries = fragments::fragments_at(&main, &breadboard_core::git::base(&main));
     let areas = fragments::areas_of(&main);
     let url = fragments::project_url(&main);
     let text = overall_text(&start_iso, &merged, &releases, Some((&entries, &areas, url.as_deref())));

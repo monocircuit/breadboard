@@ -61,28 +61,31 @@ fn targets(session: &Session) -> Vec<Target> {
 /// The main checkout to origin/develop when it can without a question:
 /// clean, on develop, fast-forward. Whether develop moved.
 fn pull_develop(main: &Path) -> bool {
+    let develop = breadboard_core::git::branch(main);
     let branch = git(main, &["branch", "--show-current"]).out().to_string();
     let is_dirty = !git(main, &["status", "--porcelain"]).out().is_empty();
-    if branch != "develop" || is_dirty {
+    if branch != develop || is_dirty {
         step(&format!(
             "the main checkout stays as it is ({}{})",
             if branch.is_empty() { "detached" } else { &branch },
-            if branch == "develop" { ", with changes" } else { "" }
+            if branch == develop { ", with changes" } else { "" }
         ));
         return false;
     }
-    git(main, &["fetch", "--quiet", "origin", "develop"]);
+    git(main, &["fetch", "--quiet", "origin", &develop]);
     let before = git(main, &["rev-parse", "HEAD"]).out().to_string();
-    let merged = git(main, &["merge", "--ff-only", "--quiet", "origin/develop"]);
+    let merged = git(main, &["merge", "--ff-only", "--quiet", &format!("origin/{develop}")]);
     let after = git(main, &["rev-parse", "HEAD"]).out().to_string();
     if !merged.is_ok {
-        step("develop can't fast-forward to origin/develop, it stays as it is");
+        step(&format!(
+            "{develop} can't fast-forward to origin/{develop}, it stays as it is"
+        ));
         return false;
     }
     if before == after {
-        step("develop is up to date");
+        step(&format!("{develop} is up to date"));
     } else {
-        step(&format!("develop moved to {}", after.get(..8).unwrap_or(&after)));
+        step(&format!("{develop} moved to {}", after.get(..8).unwrap_or(&after)));
     }
     before != after
 }
@@ -295,6 +298,8 @@ mod tests {
         git_in(&main, &["add", "a"]);
         git_in(&main, &["commit", "--quiet", "-m", "a"]);
         git_in(&main, &["push", "--quiet", "origin", "develop"]);
+        // origin's HEAD names the default branch where no breadboard.toml does.
+        git_in(&main, &["remote", "set-head", "origin", "develop"]);
         git_in(&root, &["clone", "--quiet", "origin.git", "other"]);
         (root.clone(), main, root.join("other"))
     }

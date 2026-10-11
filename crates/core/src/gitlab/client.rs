@@ -104,6 +104,18 @@ impl Gitlab {
         }
     }
 
+    /// The repo's default branch (breadboard.toml): the pipelines of `develop`.
+    pub fn branch(&self) -> String {
+        crate::git::branch(&self.main)
+    }
+
+    /// `query` with develop's pipelines asked of the repo's default branch:
+    /// the text stays the same where the branch is `develop`.
+    pub fn on_branch(&self, query: &str) -> String {
+        let branch = serde_json::to_string(&self.branch()).unwrap_or_else(|_| "\"develop\"".into());
+        query.replace("ref: \"develop\"", &format!("ref: {branch}"))
+    }
+
     /// Calls made so far by this client, tries included.
     pub fn calls(&self) -> u64 {
         self.shared.calls.load(Ordering::Relaxed)

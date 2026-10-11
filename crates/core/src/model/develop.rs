@@ -42,7 +42,12 @@ pub fn develop_of(dir: &Path) -> Develop {
     // Fields split by 0x1f, entries by 0x1e: a body has newlines.
     let log = git(
         dir,
-        &["log", "--first-parent", "--format=%s%x1f%b%x1e", "HEAD..origin/develop"],
+        &[
+            "log",
+            "--first-parent",
+            "--format=%s%x1f%b%x1e",
+            &format!("HEAD..{}", crate::git::base(dir)),
+        ],
     )
     .stdout;
     let entries: Vec<&str> = log
@@ -85,7 +90,7 @@ pub fn conflicts_of(dir: &Path) -> Option<Vec<String>> {
             "--name-only",
             "--no-messages",
             "HEAD",
-            "origin/develop",
+            &crate::git::base(dir),
         ],
     );
     // 0 clean, 1 conflicts (the tree's id, then one file per line), anything else: git can't.

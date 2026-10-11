@@ -191,8 +191,12 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
         .filter_map(|line| {
             let mut parts = line.split('|');
             let (name, track, worktree) = (parts.next()?, parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            let is_gone =
-                !name.is_empty() && worktree.is_empty() && track == "[gone]" && name != "develop" && name != "main";
+            let is_gone = !name.is_empty()
+                && worktree.is_empty()
+                && track == "[gone]"
+                && name != "develop"
+                && name != "main"
+                && name != breadboard_core::git::branch(&repo.main);
             is_gone.then(|| Entry {
                 name: name.to_string(),
                 dir: repo.main.clone(),

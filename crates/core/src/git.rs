@@ -222,14 +222,24 @@ pub fn changed_count(dir: &Path) -> usize {
         .count()
 }
 
+/// `origin/<the default branch>` of the repo of `dir` (breadboard.toml, #342).
+pub fn base(dir: &Path) -> String {
+    crate::config::of(dir).base()
+}
+
+/// The default branch of the repo of `dir`: `develop`, `main`.
+pub fn branch(dir: &Path) -> String {
+    crate::config::of(dir).branch.clone()
+}
+
 /// Commits of HEAD develop doesn't have.
 pub fn ahead_of_develop(dir: &Path) -> u64 {
-    count(dir, "origin/develop..HEAD").unwrap_or(0)
+    count(dir, &format!("{}..HEAD", base(dir))).unwrap_or(0)
 }
 
 /// Commits of develop HEAD doesn't have.
 pub fn behind_develop(dir: &Path) -> u64 {
-    count(dir, "HEAD..origin/develop").unwrap_or(0)
+    count(dir, &format!("HEAD..{}", base(dir))).unwrap_or(0)
 }
 
 /// Commits of `branch` develop doesn't have by patch (`git cherry`), what keeps
@@ -238,7 +248,7 @@ pub fn own_commits(dir: &Path, branch: &str) -> usize {
     if branch == "(detached)" {
         return 0;
     }
-    git(dir, &["cherry", "origin/develop", branch])
+    git(dir, &["cherry", &base(dir), branch])
         .lines()
         .filter(|line| line.starts_with('+'))
         .count()
@@ -269,7 +279,7 @@ pub fn push_state(dir: &Path, branch: Option<&str>) -> PushState {
     let base = if pushed.is_some() {
         remote.clone().unwrap_or_default()
     } else {
-        "origin/develop".into()
+        base(dir)
     };
     let log = git(dir, &["log", "--format=%ct", &format!("{base}..HEAD")]);
     let times: Vec<i64> = log.lines().filter_map(|line| line.trim().parse().ok()).collect();
@@ -302,7 +312,7 @@ pub fn path_of_status(line: &str) -> String {
 /// The files a worktree's work touches: committed since the merge base with
 /// develop, changed or new (diff.mjs `filesOf`).
 pub fn work_files(dir: &Path) -> BTreeSet<String> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    let base = git(dir, &["merge-base", &self::base(dir), "HEAD"]);
     if !base.is_ok || base.out().is_empty() {
         return BTreeSet::new();
     }
@@ -324,11 +334,12 @@ pub fn on_develop(dir: &Path, files: &BTreeSet<String>) -> Vec<String> {
     if files.is_empty() {
         return Vec::new();
     }
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    let develop = self::base(dir);
+    let base = git(dir, &["merge-base", &develop, "HEAD"]);
     if !base.is_ok || base.out().is_empty() {
         return Vec::new();
     }
-    git(dir, &["diff", "--name-only", base.out(), "origin/develop"])
+    git(dir, &["diff", "--name-only", base.out(), &develop])
         .lines()
         .filter(|file| files.contains(*file))
         .map(String::from)
@@ -438,6 +449,8 @@ pub(crate) mod fixture {
         run(&main, &["commit", "--quiet", "-m", "chore: begin"]);
         run(&main, &["push", "--quiet", "origin", "develop"]);
         run(&main, &["fetch", "--quiet", "origin"]);
+        // origin's HEAD names the default branch where no breadboard.toml does.
+        run(&main, &["remote", "set-head", "origin", "develop"]);
         main
     }
 

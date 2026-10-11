@@ -156,7 +156,8 @@ pub fn run(argv: &Argv) -> Outcome {
         }
     }
     let branch = here.branch();
-    if branch.is_empty() || branch == "develop" || branch == "main" {
+    if branch.is_empty() || branch == "develop" || branch == "main" || branch == breadboard_core::git::branch(&here.cwd)
+    {
         return Err(format!(
             "{} gets no merge request",
             if branch.is_empty() { "a detached HEAD" } else { &branch }
@@ -374,13 +375,14 @@ pub fn run(argv: &Argv) -> Outcome {
     let description = format!("{body}\n");
     let draft = format!("Draft: {title}");
     let label = labels.join(",");
+    let target = breadboard_core::git::branch(top);
     let milestone_id = work
         .get("milestone")
         .map(|m| glab::shown(m.get("id")))
         .filter(|id| !id.is_empty());
     let mut fields = vec![
         glab::Field::Raw("source_branch", &branch),
-        glab::Field::Raw("target_branch", "develop"),
+        glab::Field::Raw("target_branch", &target),
         glab::Field::Raw("title", &draft),
         glab::Field::Text("description", &description),
         glab::Field::Raw("labels", &label),

@@ -191,13 +191,14 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
     let mut refusals = Vec::new();
     for (branch, sha) in refs {
         let tree = tree_of(sha);
-        let base = text_of(&["merge-base", "origin/develop", sha]);
+        let develop = breadboard_core::git::base(dir);
+        let base = text_of(&["merge-base", &develop, sha]);
         let is_empty = base
             .as_ref()
             .is_some_and(|base| git(&["diff", "--quiet", base, sha], dir).is_ok);
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
-            (None, _) => Err("no merge base with origin/develop: git fetch origin".to_string()),
+            (None, _) => Err(format!("no merge base with {develop}: git fetch origin")),
             (Some(_), None) => Err("turbo isn't installed here: pnpm install first".to_string()),
             (Some(base), Some(turbo)) => {
                 check::scope_of(&turbo, dir, base, Some(sha)).and_then(|scope| check::plan_of(&turbo, dir, &scope))

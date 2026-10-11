@@ -136,9 +136,10 @@ impl Shown {
 
 /// Where the branch left develop.
 fn merge_base(dir: &Path) -> Result<String, Read> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    let develop = breadboard_core::git::base(dir);
+    let base = git(dir, &["merge-base", &develop, "HEAD"]);
     if !base.is_ok || base.out().is_empty() {
-        return Err(Read::Failed("no merge base with origin/develop".into()));
+        return Err(Read::Failed(format!("no merge base with {develop}")));
     }
     Ok(base.out().to_string())
 }
@@ -153,15 +154,21 @@ fn read_hunks(dir: &Path, file: &str, is_untracked: bool) -> Read {
             Err(why) => return why,
         }
     };
-    lines_of(&out, "no lines changed against develop")
+    lines_of(
+        &out,
+        &format!("no lines changed against {}", breadboard_core::git::branch(dir)),
+    )
 }
 
 /// `git diff -U3 <merge base> origin/develop -- <file>`: what develop did to it since.
 fn read_develop(dir: &Path, file: &str) -> Read {
     match merge_base(dir) {
         Ok(base) => lines_of(
-            &git(dir, &["diff", "-U3", &base, "origin/develop", "--", file]),
-            "develop changed no line of it",
+            &git(
+                dir,
+                &["diff", "-U3", &base, &breadboard_core::git::base(dir), "--", file],
+            ),
+            &format!("{} changed no line of it", breadboard_core::git::branch(dir)),
         ),
         Err(why) => why,
     }

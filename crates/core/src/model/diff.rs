@@ -135,7 +135,8 @@ fn statuses(dir: &Path, base: &str) -> HashMap<String, char> {
 
 /// The diff of `dir` against develop, without the overlaps with other worktrees; None without a merge base.
 pub fn own_diff_of(dir: &Path) -> Option<Diff> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
+    let develop = crate::git::base(dir);
+    let base = git(dir, &["merge-base", &develop, "HEAD"]);
     if !base.is_ok || base.out().is_empty() {
         return None;
     }
@@ -196,7 +197,7 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         );
         files.push(file);
     }
-    let on_develop: BTreeSet<String> = lines(&git(dir, &["diff", "--name-only", &base, "origin/develop"]).stdout)
+    let on_develop: BTreeSet<String> = lines(&git(dir, &["diff", "--name-only", &base, &develop]).stdout)
         .map(String::from)
         .collect();
     areas.sort_by_key(|area| std::cmp::Reverse(area.added + area.removed));
@@ -211,8 +212,8 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         .collect();
     with_develop.sort();
     Some(Diff {
-        ahead: count("origin/develop..HEAD"),
-        behind: count("HEAD..origin/develop"),
+        ahead: count(&format!("{develop}..HEAD")),
+        behind: count(&format!("HEAD..{develop}")),
         uncommitted: lines(&status).count(),
         added,
         removed,
@@ -294,7 +295,7 @@ pub fn stamp_of(path: &Path) -> String {
 impl DiffCache {
     pub fn own_diff_of(&mut self, dir: &Path) -> Option<Diff> {
         let status = git(dir, &["status", "--porcelain", "-uall"]).stdout;
-        let mut key = git(dir, &["rev-parse", "HEAD", "origin/develop"]).stdout;
+        let mut key = git(dir, &["rev-parse", "HEAD", &crate::git::base(dir)]).stdout;
         for line in lines(&status) {
             let file = path_of_status(line);
             key.push_str(&format!("{line}\t{}\n", stamp_of(&dir.join(&file))));

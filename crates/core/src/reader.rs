@@ -351,8 +351,9 @@ impl LocalReader {
                     .iter()
                     .map(|name| own.join(name)),
             );
+            let develop = format!("refs/remotes/{}", git::base(dir));
             files.git.extend(
-                ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
+                ["packed-refs", "FETCH_HEAD", develop.as_str()]
                     .iter()
                     .map(|name| common.join(name)),
             );
@@ -886,9 +887,10 @@ impl RemoteReader {
                 let refs = tokio::task::spawn_blocking(move || git::remote_heads(&main))
                     .await
                     .unwrap_or_default();
+                let develop = git::branch(&self.main);
                 let head = refs
                     .iter()
-                    .find(|(_, branch)| branch == "develop")
+                    .find(|(_, branch)| *branch == develop)
                     .map(|(sha, _)| sha.clone());
                 let heads: Vec<String> = refs.into_iter().map(|(_, branch)| branch).collect();
                 read::read_everything(&self.gitlab, &heads)
@@ -910,11 +912,12 @@ fn waiting_of(dir: &Path, branch: &str, open: &[OpenMr]) -> Vec<Waiting> {
         let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (dirs, memos) = &mut *held;
         let Some((own, common)) = dirs.entry(dir.to_path_buf()).or_insert_with(|| git_dirs(dir)).clone() else {
-            return waiting_for(dir, Some(branch), open, "origin/develop");
+            return waiting_for(dir, Some(branch), open, &git::base(dir));
         };
+        let develop = format!("refs/remotes/{}", git::base(dir));
         let mut files: Vec<PathBuf> = ["HEAD", "logs/HEAD"].iter().map(|name| own.join(name)).collect();
         files.extend(
-            ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
+            ["packed-refs", "FETCH_HEAD", develop.as_str()]
                 .iter()
                 .map(|name| common.join(name)),
         );
@@ -924,7 +927,7 @@ fn waiting_of(dir: &Path, branch: &str, open: &[OpenMr]) -> Vec<Waiting> {
         );
         memos.of(dir, stamp_of(&files))
     };
-    git::remembered(&memo, || waiting_for(dir, Some(branch), open, "origin/develop"))
+    git::remembered(&memo, || waiting_for(dir, Some(branch), open, &git::base(dir)))
 }
 
 /// The model of a view from what was read; `remote` None until GitLab answers.
