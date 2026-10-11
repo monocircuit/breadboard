@@ -395,17 +395,46 @@ pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_keyed: bo
     let draw = |scene: &mut Scene<Act>| {
         head(scene, item, ctx, true);
         text(scene, item, ctx);
+        let has_merge = merge_button(scene, item);
         if !is_menu {
-            answers(scene, item, is_keyed);
+            answers(scene, item, is_keyed, has_merge);
         }
+        scene.end_line();
     };
     match click_of(item) {
         Some(act) => scene.block(act, draw),
         None => draw(scene),
     }
     if is_menu {
-        answers(scene, item, is_keyed);
+        answers(scene, item, is_keyed, false);
     }
+}
+
+/// A merge's own button (#344), first and green: `merge !N`, `mark ready +
+/// merge !N` for a draft; the block's two clicks, so the ✓ beside it is
+/// never taken for the merge. None while something blocks it (a click on
+/// the block opens its MR then). Whether one was drawn.
+fn merge_button(scene: &mut Scene<Act>, item: &Item) -> bool {
+    let (Some(offer), Go::Merge { .. }) = (&item.merge, &item.go) else {
+        return false;
+    };
+    if !offer.blockers.is_empty() {
+        return false;
+    }
+    let label = if offer.is_draft {
+        format!("mark ready + merge !{}", offer.iid)
+    } else {
+        format!("merge !{}", offer.iid)
+    };
+    scene.button(
+        &label,
+        Tone::Green,
+        Act::Action {
+            key: item.key.clone(),
+            go: item.go.clone(),
+        },
+    );
+    true
 }
 
 /// The options a decide is drawn with as a menu: none once answered, for an
@@ -542,9 +571,10 @@ fn is_recommended(action: &Action, option: &stored::DecideOption) -> bool {
 
 /// The answer area: none for an automatic item or a waiting try; the answer
 /// on its way; a decide's options, numbered like a menu, each answering on
-/// all of its lines; else a button per answer, a green ✓ alone. Keyed (in
-/// NEXT): the numbers are keys, cyan, and each button carries its own.
-fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool) {
+/// all of its lines; else a button per answer, a green ✓ alone, a grey one
+/// after a merge's button (`after_merge`: the merge is the block's step).
+/// Keyed (in NEXT): the numbers are keys, cyan, and each button carries its own.
+fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool, after_merge: bool) {
     let (Some(action), Some(file)) = (&item.action, &item.file) else {
         return;
     };
@@ -599,7 +629,8 @@ fn answers(scene: &mut Scene<Act>, item: &Item, is_keyed: bool) {
     let labels = stored::answers_of(action);
     if labels.is_empty() {
         // Says what it does: no key, nothing typed (answers.mjs: `doneAction` alone).
-        scene.button(TICK, Tone::Green, answer("✓"));
+        let tone = if after_merge { Tone::Gray } else { Tone::Green };
+        scene.button(TICK, tone, answer("✓"));
         look::say(scene, NOT_TOLD, theme::dim());
     }
     for (at, label) in labels.iter().enumerate() {
@@ -1703,6 +1734,53 @@ mod tests {
             ..Default::default()
         });
         item
+    }
+
+    #[test]
+    fn a_merge_draws_its_own_button_before_the_tick() {
+        // #344: `✓ tick off` was the only button; the merge sat on an unmarked click on the rest.
+        let file = PathBuf::from("/w/.claude/actions.json");
+        let mut ready = merge_item(&[]);
+        ready.file = Some(file.clone());
+        let (_, scene) = drawn(&ready, 80);
+        let buttons: Vec<(String, Tone, Act)> = scene
+            .regions
+            .iter()
+            .filter_map(|region| match &region.target {
+                crate::tui::scene::Target::Button { label, tone, action } => {
+                    Some((label.clone(), *tone, action.clone()))
+                }
+                crate::tui::scene::Target::Block(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            buttons
+                .iter()
+                .map(|(label, tone, _)| (label.as_str(), *tone))
+                .collect::<Vec<_>>(),
+            [("mark ready + merge !318", Tone::Green), (TICK, Tone::Gray)]
+        );
+        assert_eq!(
+            buttons[0].2,
+            Act::Action {
+                key: ready.key.clone(),
+                go: ready.go.clone(),
+            },
+            "the merge's button is the block's two clicks"
+        );
+        // Blocked: no merge button, the ✓ stays as it was.
+        let mut blocked = merge_item(&["pipeline pending"]);
+        blocked.file = Some(file);
+        let (_, scene) = drawn(&blocked, 80);
+        let labels: Vec<(String, Tone)> = scene
+            .regions
+            .iter()
+            .filter_map(|region| match &region.target {
+                crate::tui::scene::Target::Button { label, tone, .. } => Some((label.clone(), *tone)),
+                crate::tui::scene::Target::Block(_) => None,
+            })
+            .collect();
+        assert_eq!(labels, [(TICK.to_string(), Tone::Green)]);
     }
 
     #[test]
