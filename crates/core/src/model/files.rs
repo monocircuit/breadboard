@@ -103,13 +103,12 @@ pub fn first_change_in(diff: &str) -> u64 {
     }
 }
 
-/// The first line of `file` the work of `dir` changes against develop, 1 for a new file.
+/// The first line of `file` the work of `dir` changes against its base, 1 for a new file.
 pub fn first_change(dir: &Path, file: &str) -> u64 {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
-    if !base.is_ok || base.out().is_empty() {
+    let Some(base) = crate::git::merge_base(dir) else {
         return 1;
-    }
-    first_change_in(&git(dir, &["diff", "-U0", base.out(), "--", file]).stdout)
+    };
+    first_change_in(&git(dir, &["diff", "-U0", &base, "--", file]).stdout)
 }
 
 /// A file and line a click on a line of a log opens.

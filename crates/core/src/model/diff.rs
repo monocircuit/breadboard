@@ -88,9 +88,22 @@ pub struct Diff {
     pub files: usize,
     /// By lines changed, most first.
     pub areas: Vec<Area>,
-    /// Its files develop changed too since the merge base.
-    pub with_develop: Vec<String>,
+    /// Its files its base changed too since the merge base.
+    pub with_base: Vec<String>,
     pub with_worktrees: Vec<Overlap>,
+    /// The branch it is against (#349): develop, or an epic; empty: develop.
+    pub base: String,
+}
+
+impl Diff {
+    /// The branch it is against.
+    pub fn base(&self) -> &str {
+        if self.base.is_empty() {
+            crate::git::DEVELOP
+        } else {
+            &self.base
+        }
+    }
 }
 
 fn lines(text: &str) -> impl Iterator<Item = &str> {
@@ -133,13 +146,11 @@ fn statuses(dir: &Path, base: &str) -> HashMap<String, char> {
         .collect()
 }
 
-/// The diff of `dir` against develop, without the overlaps with other worktrees; None without a merge base.
+/// The diff of `dir` against its base, without the overlaps with other worktrees; None without a merge base.
 pub fn own_diff_of(dir: &Path) -> Option<Diff> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
-    if !base.is_ok || base.out().is_empty() {
-        return None;
-    }
-    let base = base.out().to_string();
+    let against = crate::git::base_of(dir);
+    let remote = against.remote.clone();
+    let base = crate::git::merge_base(dir)?;
     let status = git(dir, &["status", "--porcelain", "-uall"]).stdout;
     let count = |range: &str| crate::git::count(dir, range).unwrap_or(0);
     let mut areas = Vec::new();
@@ -196,7 +207,7 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         );
         files.push(file);
     }
-    let on_develop: BTreeSet<String> = lines(&git(dir, &["diff", "--name-only", &base, "origin/develop"]).stdout)
+    let on_base: BTreeSet<String> = lines(&git(dir, &["diff", "--name-only", &base, &remote]).stdout)
         .map(String::from)
         .collect();
     areas.sort_by_key(|area| std::cmp::Reverse(area.added + area.removed));
@@ -204,22 +215,19 @@ pub fn own_diff_of(dir: &Path) -> Option<Diff> {
         area.changes
             .sort_by_key(|change| std::cmp::Reverse(change.added + change.removed));
     }
-    let mut with_develop: Vec<String> = files
-        .iter()
-        .filter(|file| on_develop.contains(*file))
-        .cloned()
-        .collect();
-    with_develop.sort();
+    let mut with_base: Vec<String> = files.iter().filter(|file| on_base.contains(*file)).cloned().collect();
+    with_base.sort();
     Some(Diff {
-        ahead: count("origin/develop..HEAD"),
-        behind: count("HEAD..origin/develop"),
+        ahead: count(&format!("{remote}..HEAD")),
+        behind: count(&format!("HEAD..{remote}")),
         uncommitted: lines(&status).count(),
         added,
         removed,
         files: files.len(),
         areas,
-        with_develop,
+        with_base,
         with_worktrees: Vec::new(),
+        base: against.local,
     })
 }
 
@@ -294,7 +302,7 @@ pub fn stamp_of(path: &Path) -> String {
 impl DiffCache {
     pub fn own_diff_of(&mut self, dir: &Path) -> Option<Diff> {
         let status = git(dir, &["status", "--porcelain", "-uall"]).stdout;
-        let mut key = git(dir, &["rev-parse", "HEAD", "origin/develop"]).stdout;
+        let mut key = git(dir, &["rev-parse", "HEAD", &crate::git::base_of(dir).remote]).stdout;
         for line in lines(&status) {
             let file = path_of_status(line);
             key.push_str(&format!("{line}\t{}\n", stamp_of(&dir.join(&file))));

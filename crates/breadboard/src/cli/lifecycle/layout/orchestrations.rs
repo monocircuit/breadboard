@@ -1,7 +1,7 @@
 //! The spaces of the orchestrations (worktree/orchestrator.mjs, origins.mjs,
 //! orchestrator-chat.mjs, free.mjs, order.mjs): `⇶ <title>` on its own
 //! checkout, the marks in the orchestration's colour, the orchestrator's
-//! chat and the free agents back after a restart, the order of the group,
+//! chat back after a restart, the order of the group,
 //! and the space that goes with the last worktree.
 
 use super::super::claude::{is_conversation_running, running_claudes};
@@ -109,9 +109,9 @@ fn changelog_command(name: &str) -> String {
 
 /// The space `⇶ <name>`: `root`, its `overview`, the orchestrator's tab,
 /// `changelog` and, with nvim, `changes`, in that order; renamed after a new
-/// title, an older space's tabs taken over. `should_resume` (a restart): its
-/// free agents run again in their tabs.
-pub fn orchestrator_space(repo: &Repo, name: &str, should_resume: bool) -> Option<String> {
+/// title, an older space's tabs taken over. A free agent has no tab (#345):
+/// nothing of it comes back after a restart, the record keeps it.
+pub fn orchestrator_space(repo: &Repo, name: &str) -> Option<String> {
     let main = repo.main.as_path();
     let label = repo.orchestrator_label(name);
     let all = herdr::spaces();
@@ -192,41 +192,7 @@ pub fn orchestrator_space(repo: &Repo, name: &str, should_resume: bool) -> Optio
         );
     }
     keep_order(&workspace, &ORDER);
-    if should_resume {
-        resume_free(repo, name, &workspace);
-    }
     Some(workspace)
-}
-
-/// After a herdr restart: every free agent of `name` runs again in its tab
-/// `free <agent>`, in the orchestration's checkout, unless its conversation
-/// runs somewhere already (#289). The names resumed.
-pub fn resume_free(repo: &Repo, name: &str, workspace: &str) -> Vec<String> {
-    let checkout = repo.checkout_of(name);
-    let Some(record) = record::record_of(&repo.main, name).filter(|_| checkout.exists()) else {
-        return Vec::new();
-    };
-    let tabs = herdr::tabs_of(workspace);
-    record
-        .free_agents()
-        .into_iter()
-        .filter(|worker| !is_conversation_running(&worker.id))
-        .filter_map(|worker| {
-            let agent = worker.name.clone().unwrap_or_default();
-            let label = format!("free {agent}");
-            let command = format!("cd {} && claude --resume {}", quote(&text(&checkout)), worker.id);
-            ensure_tab(
-                workspace,
-                &Want {
-                    label: &label,
-                    cwd: &checkout,
-                    command: Some(command),
-                },
-                &tabs,
-            )
-            .then_some(agent)
-        })
-        .collect()
 }
 
 /// The slot a space's tokens show.
@@ -331,8 +297,9 @@ pub fn mark_origins(repo: &Repo) {
 }
 
 /// The space of an orchestration closes once its last worktree is gone, but
-/// never while something runs in it; the record goes with the space, and so
-/// does one whose space and worktrees are both gone. What closed.
+/// never while something runs in it or its record keeps a free agent (#345:
+/// it has no tab that would); the record goes with the space, and so does one
+/// whose space and worktrees are both gone. What closed.
 pub fn prune_orchestrators(repo: &Repo) -> Vec<String> {
     let live: HashSet<String> = repo.orchestrated().into_iter().map(|(_, origin)| origin.name).collect();
     let mut closed = Vec::new();
@@ -342,7 +309,8 @@ pub fn prune_orchestrators(repo: &Repo) -> Vec<String> {
             continue;
         };
         open.insert(name.clone());
-        if live.contains(&name) {
+        let has_free = record::record_of(&repo.main, &name).is_some_and(|found| !found.free_agents().is_empty());
+        if live.contains(&name) || has_free {
             continue;
         }
         let workspace = s(&space, "workspace_id");

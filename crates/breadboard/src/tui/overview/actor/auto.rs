@@ -8,9 +8,8 @@
 use super::spawn::{self, Background, error_of};
 use super::{Effect, herdr};
 use crate::cli::lifecycle::handover::restart;
-use crate::cli::lifecycle::layout::nvim;
 use crate::tui::overview::Overview;
-use breadboard_core::git::{behind_develop, feature_of, work_files};
+use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
 use breadboard_core::herdr::{Agent, is_in_herdr};
 use breadboard_core::json;
@@ -22,7 +21,7 @@ use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationMod
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
 use breadboard_core::model::{Entry, Paint, Tree, issues_of};
-use breadboard_core::record::{Worker, orchestration_of_label, titles, write_worker};
+use breadboard_core::record::{Worker, write_worker};
 use breadboard_core::time::{now_ms, to_iso};
 use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
 use serde_json::json;
@@ -447,8 +446,8 @@ fn remove_merged(
     is_changed
 }
 
-/// Its agent freed (`freeOnCleanUp`): moved into `⇶ <name>` as `free <agent>`;
-/// freed, the removal waits until it left; not freed, it goes with the space.
+/// Its agent freed (`freeOnCleanUp`): its claude ended, its tab closed, the
+/// record keeping it (#345); then its worktree goes. Not freed, it goes with the space.
 fn free_then_remove(
     app: &mut Overview,
     name: &str,
@@ -463,14 +462,13 @@ fn free_then_remove(
         .as_ref()
         .map(|record| record.workers.clone())
         .unwrap_or_default();
+    let worker = known.iter().find(|worker| worker.id == id);
     let free = Free {
         main: app.actor.main.clone(),
         name: name.to_string(),
         agent: agent_name_of(Some(&id), &tree.name, &known),
-        known: known
-            .iter()
-            .find(|worker| worker.id == id)
-            .map(|worker| worker.files.clone()),
+        known: worker.map(|worker| worker.files.clone()),
+        mrs: worker.map(|worker| worker.mrs.clone()).unwrap_or_default(),
         id,
         pane,
         dir: tree.dir.clone(),
@@ -486,7 +484,7 @@ fn free_then_remove(
                 Ok(agent) => app.actor.log(
                     Paint::Green,
                     format!(
-                        "{} is free in {}: its worktree goes once it left",
+                        "{} is free: its claude ended, AGENTS of {} keeps its conversation, its worktree goes",
                         app.actor.shown(&agent),
                         free_label(app)
                     ),
@@ -520,55 +518,32 @@ struct Free {
     id: String,
     agent: String,
     known: Option<Vec<String>>,
+    /// The MRs it merged before this one.
+    mrs: Vec<i64>,
     pane: String,
     dir: PathBuf,
     iid: i64,
 }
 
 impl Free {
-    /// Ok(its name) when it moved, Err why not.
+    /// Ok(its name) once it sleeps, Err why not: its claude ended, its tab
+    /// closed, the record keeping it by its conversation's id (#345).
     fn run(&self) -> Result<String, String> {
-        let names = titles(&self.main);
-        let workspace = breadboard_core::herdr::spaces()
-            .into_iter()
-            .find(|space| orchestration_of_label(&space.label, &names).as_deref() == Some(&self.name))
-            .ok_or_else(|| format!("no space of {}", self.name))?
-            .id;
-        // Ended in its worktree, resumed in the checkout (#335): a claude can't EnterWorktree out of where it was resumed.
-        let checkout = breadboard_core::git::orchestrations_dir(&self.main).join(&self.name);
-        let label = format!("free {}", self.agent);
-        let line = free_line(self.iid, &checkout);
-        let restarted = restart::restart(
-            &restart::Machine,
-            &restart::Restart {
-                id: &self.id,
-                workspace: &workspace,
-                label: &label,
-                cwd: &checkout,
-                name: &self.agent,
-                prompt: &line,
-                from: Some(&self.pane),
-                ide: nvim::ide_flag(&checkout),
-            },
-        );
-        match restarted {
-            Ok(_) => {}
-            Err(restart::Failed::Before(why)) => return Err(why),
-            Err(restart::Failed::After { why, command }) => {
-                return Err(format!(
-                    "its claude ended, but {why}: resume it from a shell: {command}"
-                ));
-            }
-        }
+        restart::retire(&restart::Machine, &self.id, &self.pane, &free_line(self.iid))?;
         let mut files: Vec<String> = self.known.clone().unwrap_or_default();
         for file in work_files(&self.dir) {
             if !files.contains(&file) {
                 files.push(file);
             }
         }
+        let mut mrs = self.mrs.clone();
+        if !mrs.contains(&self.iid) {
+            mrs.push(self.iid);
+        }
         let fields = json!({
             "name": self.agent,
             "files": files,
+            "mrs": mrs,
             "free": { "at": to_iso(now_ms()), "from": feature_of(&self.main, &self.dir), "mr": self.iid },
         });
         let _ = write_worker(
@@ -583,11 +558,10 @@ impl Free {
     }
 }
 
-/// The line a merged agent is freed with (`freeLine`).
-pub fn free_line(iid: i64, checkout: &Path) -> String {
+/// The last line of a merged agent before its claude ends (`freeLine`, #345).
+pub fn free_line(iid: i64) -> String {
     format!(
-        "[overview] !{iid} merged, your worktree is removed: you are free, your conversation runs again in the orchestration's checkout {}. Stop and wait: a next issue resumes you in its worktree, its line your first prompt.",
-        checkout.display()
+        "[overview] !{iid} merged, your worktree goes: you are free. Your claude ends now, nothing to do or answer; a next issue resumes this conversation in its worktree, its line your first prompt."
     )
 }
 
@@ -779,8 +753,8 @@ fn deliver_wait(
         let mut conflicts = conflicts.lock().unwrap_or_else(|e| e.into_inner());
         verdict_of(wait, found, now_ms(), conflicts.entry(dir.to_path_buf()).or_default())
     };
-    let behind = (verdict == Verdict::Merged).then(|| behind_develop(dir));
-    let line = line_of(wait, &verdict, behind)?;
+    let behind = (verdict == Verdict::Merged).then(|| behind_base(dir));
+    let line = line_of(wait, &verdict, &base_of(dir).local, behind)?;
     // A new wt:wait may have started meanwhile.
     if wait_of(dir).and_then(|now| now.since) != wait.since || !herdr::deliver_to(main, dir, &line) {
         return None;
@@ -901,10 +875,10 @@ mod tests {
     }
 
     #[test]
-    fn frees_an_agent_resumed_in_the_checkout() {
+    fn frees_an_agent_with_its_last_line() {
         assert_eq!(
-            free_line(316, Path::new("/r/platform/.claude/orchestrations/breadboard")),
-            "[overview] !316 merged, your worktree is removed: you are free, your conversation runs again in the orchestration's checkout /r/platform/.claude/orchestrations/breadboard. Stop and wait: a next issue resumes you in its worktree, its line your first prompt."
+            free_line(316),
+            "[overview] !316 merged, your worktree goes: you are free. Your claude ends now, nothing to do or answer; a next issue resumes this conversation in its worktree, its line your first prompt."
         );
     }
 

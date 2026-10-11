@@ -479,10 +479,12 @@ impl Running {
             );
         }
         let sha = fresh.sha.clone().unwrap_or_default();
-        // A branch built on the merged one has its commits already.
+        let target = fresh.target();
+        // A branch built on the merged one has its commits already; one on another base doesn't take it in (#349).
         let dirs: Vec<&PathBuf> = self
             .others
             .iter()
+            .filter(|dir| breadboard_core::git::base_of(dir).local == target)
             .filter(|dir| git(dir, &["merge-base", "--is-ancestor", &sha, "HEAD"]).status != 0)
             .collect();
         if dirs.is_empty() {
@@ -505,9 +507,9 @@ impl Running {
             if !shared.is_empty() {
                 tell(
                     dir,
-                    format!("to merge develop in (!{} touched its files)", self.iid),
+                    format!("to merge {target} in (!{} touched its files)", self.iid),
                     format!(
-                        "[overview] !{} is merged and touched your files too ({}): merge develop in (git fetch origin, git merge origin/develop)",
+                        "[overview] !{} is merged and touched your files too ({}): merge {target} in (git fetch origin, git merge origin/{target})",
                         self.iid,
                         names_of(&shared)
                     ),
