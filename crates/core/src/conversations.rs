@@ -205,6 +205,8 @@ pub struct Claude {
     pub prompt: Option<String>,
     pub prompt_at: Option<i64>,
     pub answer: Option<String>,
+    /// When the last answer was written.
+    pub answer_at: Option<i64>,
     pub transcript: PathBuf,
     /// Where `claude --resume` finds it: where it last worked, else the worktree.
     pub cwd: PathBuf,
@@ -265,6 +267,7 @@ pub fn read_claude(dir: &Path) -> Option<Claude> {
         id,
         prompt_at: prompt.as_ref().and_then(|(_, at)| *at),
         prompt: prompt.map(|(text, _)| text),
+        answer_at: answer.as_ref().and_then(|(_, at)| *at),
         answer: answer.map(|(text, _)| text),
         transcript: fs::canonicalize(&transcript).unwrap_or(transcript.clone()),
         cwd,

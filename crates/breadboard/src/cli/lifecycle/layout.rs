@@ -217,7 +217,7 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
     for name in orchestrations {
-        let workspace = orchestrator_space(repo, &name, should_resume);
+        let workspace = orchestrator_space(repo, &name);
         // Its epic stack's tabs (#351), in the orchestration's space.
         let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
         if !changed.is_empty() {
