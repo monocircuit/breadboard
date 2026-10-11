@@ -85,7 +85,11 @@ fn leave_worktree_in(file: &Path, id: &str) -> bool {
         return false;
     }
     let record = serde_json::json!({ "type": "worktree-state", "worktreeSession": null, "sessionId": id });
-    let gap = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+    let gap = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
     fs::OpenOptions::new()
         .append(true)
         .open(file)

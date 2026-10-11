@@ -264,7 +264,10 @@ mod tests {
             !self.is_stubborn
         }
         fn leave_worktree(&self, id: &str) {
-            assert!(self.pid.borrow().is_none(), "a transcript written under a running claude");
+            assert!(
+                self.pid.borrow().is_none(),
+                "a transcript written under a running claude"
+            );
             self.did.borrow_mut().push(format!("leave {id}"));
         }
         fn run(&self, pane: &str, command: &str) -> bool {
