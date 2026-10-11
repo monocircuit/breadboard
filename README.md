@@ -32,6 +32,9 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 
 What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
+What it knows about the repo (the default branch, the stack, the MR
+template's boxes, the changelog, its name in herdr) comes from the repo's
+`breadboard.toml`: [`docs/config.md`](docs/config.md).
 The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
 
