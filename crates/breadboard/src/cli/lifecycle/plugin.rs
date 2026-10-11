@@ -19,8 +19,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-/// The plugin's id in `herdr-plugin.toml`.
-pub const PLUGIN: &str = "monocircuit.platform";
+/// The plugin's id in `herdr-plugin.toml` (`[herdr] plugin`).
+pub use breadboard_core::record::PLUGIN;
 const MANIFEST: &str = "herdr-plugin.toml";
 /// What runs the binary for herdr, beside the manifest.
 const LAUNCHER: &str = "breadboard.sh";
@@ -110,7 +110,7 @@ fn check(main: &Path) -> Vec<String> {
 }
 
 fn relink(old: &Path, current: &Path) -> String {
-    herdr::did(&["plugin", "unlink", PLUGIN]);
+    herdr::did(&["plugin", "unlink", &PLUGIN.get()]);
     match run(&["plugin", "link", &text(current)]) {
         Some(out) if out.is_ok => format!(
             "plugin {PLUGIN} linked again from {}: {} is gone",
@@ -177,7 +177,7 @@ fn plugin_dir_of(path: &Path) -> PathBuf {
 /// the entry that names the plugin; in text, those on its line and the
 /// indented lines under it.
 fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
-    if !listed.contains(PLUGIN) {
+    if !listed.contains(&PLUGIN.get()) {
         return None;
     }
     let mut paths = Vec::new();
@@ -187,7 +187,7 @@ fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
     }
     let mut is_ours = false;
     for line in listed.lines() {
-        if line.contains(PLUGIN) {
+        if line.contains(&PLUGIN.get()) {
             is_ours = true;
         } else if !line.starts_with(char::is_whitespace) {
             is_ours = false;
@@ -207,9 +207,9 @@ fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
 fn entry_paths(value: &Value, paths: &mut Vec<PathBuf>) {
     match value {
         Value::Object(map) => {
-            if let Some(entry) = map.get(PLUGIN) {
+            if let Some(entry) = map.get(&PLUGIN.get()) {
                 strings_in(entry, paths);
-            } else if map.values().any(|field| field.as_str() == Some(PLUGIN)) {
+            } else if map.values().any(|field| field.as_str() == Some(PLUGIN.get().as_str())) {
                 strings_in(value, paths);
             } else {
                 map.values().for_each(|field| entry_paths(field, paths));

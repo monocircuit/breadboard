@@ -1,5 +1,6 @@
 //! `breadboard.toml` (#342): everything breadboard knows about the repo it
-//! runs in, read from the root of the main checkout. Without the file every
+//! runs in, read from the root of the checkout it runs in, else of the main
+//! checkout (a worktree made before the file came). Without the file every
 //! default holds: the branch origin's HEAD names, no stack, commands shown as
 //! `breadboard <command>`. The schema is `docs/config.md`; a file that
 //! doesn't match it is refused with the key and why, never half read.
@@ -18,6 +19,7 @@ pub const FILE: &str = "breadboard.toml";
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub repo: Repo,
+    pub herdr: Herdr,
     pub worktrees: Worktrees,
     /// The dev stack of a checkout; None: worktrees have none.
     pub stack: Option<Stack>,
@@ -39,6 +41,17 @@ pub struct Repo {
     pub run: Option<String>,
     /// Shown where the repo is named (briefs, errors); None: the GitLab project from origin.
     pub name: Option<String>,
+}
+
+/// How the repo shows in herdr (#342: per repo, the answer to decide #1).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Herdr {
+    /// The plugin's id: its manifest's, every sidebar token's source, the
+    /// block marker in herdr's configs; None: `breadboard.<repo>`.
+    pub plugin: Option<String>,
+    /// The label of the main checkout's space; None: the repo's name.
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -459,6 +472,43 @@ impl Loaded {
         self.config.command(command)
     }
 
+    /// The folder name of the main checkout: `platform`.
+    fn folder(&self) -> String {
+        self.main
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "repo".into())
+    }
+
+    /// The herdr plugin's id: `[herdr] plugin`, else `breadboard.<main checkout's folder>`.
+    pub fn plugin(&self) -> String {
+        self.config.herdr.plugin.clone().unwrap_or_else(|| {
+            let slug: String = self
+                .folder()
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c.to_ascii_lowercase()
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            format!("breadboard.{slug}")
+        })
+    }
+
+    /// The label of the main checkout's herdr space: `[herdr] space`, else
+    /// `[repo] name`, else the main checkout's folder.
+    pub fn space(&self) -> String {
+        self.config
+            .herdr
+            .space
+            .clone()
+            .or_else(|| self.config.repo.name.clone())
+            .unwrap_or_else(|| self.folder())
+    }
+
     /// The name the repo goes by.
     pub fn name(&self) -> String {
         self.config.repo.name.clone().unwrap_or_else(|| {
@@ -513,8 +563,8 @@ fn origin_head(main: &Path) -> Option<String> {
 /// The configs read, by main checkout, with the file's time then.
 type Cache = HashMap<PathBuf, (Option<SystemTime>, Arc<Loaded>)>;
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-/// The main checkout of a directory asked before.
-static MAINS: LazyLock<Mutex<HashMap<PathBuf, PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The checkout and the main checkout of a directory asked before.
+static MAINS: LazyLock<Mutex<HashMap<PathBuf, (PathBuf, PathBuf)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn mtime(main: &Path) -> Option<SystemTime> {
     std::fs::metadata(main.join(FILE)).and_then(|meta| meta.modified()).ok()
@@ -522,30 +572,47 @@ fn mtime(main: &Path) -> Option<SystemTime> {
 
 /// The config of the main checkout `main`, read again once its file changed.
 pub fn of_main(main: &Path) -> Arc<Loaded> {
-    let time = mtime(main);
+    of_root(main, main)
+}
+
+/// The config in the checkout `root` of the repo whose main checkout is `main`.
+fn of_root(root: &Path, main: &Path) -> Arc<Loaded> {
+    let time = mtime(root);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((was, loaded)) = cache.get(main)
+    if let Some((was, loaded)) = cache.get(root)
         && *was == time
     {
         return Arc::clone(loaded);
     }
-    let loaded = Arc::new(load(main));
-    cache.insert(main.to_path_buf(), (time, Arc::clone(&loaded)));
+    let mut loaded = load(root);
+    loaded.main = main.to_path_buf();
+    let loaded = Arc::new(loaded);
+    cache.insert(root.to_path_buf(), (time, Arc::clone(&loaded)));
     loaded
 }
 
-/// The config of the repo `dir` lies in (any checkout or a folder in one);
-/// outside any repo the defaults, as if `dir` were a main checkout.
+/// The config of the checkout `dir` lies in (any checkout or a folder in
+/// one): its own breadboard.toml, a branch that changes it uses its own;
+/// else the main checkout's. Outside any repo the defaults, as if `dir` were
+/// a main checkout.
 pub fn of(dir: &Path) -> Arc<Loaded> {
     let known = MAINS.lock().unwrap_or_else(|e| e.into_inner()).get(dir).cloned();
-    let main = known.unwrap_or_else(|| {
+    let (top, main) = known.unwrap_or_else(|| {
+        let top = dir
+            .ancestors()
+            .find(|at| at.join(".git").exists())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| dir.to_path_buf());
         let main = main_of(dir).unwrap_or_else(|| dir.to_path_buf());
         MAINS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(dir.to_path_buf(), main.clone());
-        main
+            .insert(dir.to_path_buf(), (top.clone(), main.clone()));
+        (top, main)
     });
+    if top != main && top.join(FILE).is_file() {
+        return of_root(&top, &main);
+    }
     of_main(&main)
 }
 
@@ -659,6 +726,11 @@ mod tests {
         file.set_modified(filetime).unwrap();
         let loaded = of(&tree);
         assert!(loaded.error.as_deref().is_some_and(|error| error.contains("nope")));
+        // A worktree with a file of its own reads it, the main checkout keeps its own.
+        std::fs::write(tree.join(FILE), "[herdr]\nspace = \"Mine\"\n").unwrap();
+        assert_eq!(of(&tree.join("a/b")).space(), "Mine");
+        assert_eq!(of(&tree).main, main);
+        assert_eq!(of(&main).space(), "repo");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -35,7 +35,8 @@ pub struct Checkout<'a> {
 impl Checkout<'_> {
     /// Its herdr space (spaces.mjs `spaceLabel`): the main checkout's is `Monocircuit/Platform`.
     fn space(&self) -> Option<String> {
-        let label = if self.is_main { SPACE } else { self.feature };
+        let space = SPACE.get();
+        let label = if self.is_main { space.as_str() } else { self.feature };
         herdr::spaces()
             .into_iter()
             .find(|space| space.label == label)

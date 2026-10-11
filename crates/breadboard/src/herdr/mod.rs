@@ -32,11 +32,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The plugin's id: the manifest's, every sidebar token's source, the block
-/// marker in configs (rule 5: never changes).
-pub const PLUGIN: &str = "monocircuit.platform";
-/// The herdr space of the repo's main checkout (constants.mjs `SPACE`).
-pub const SPACE: &str = "Monocircuit/Platform";
+pub use breadboard_core::record::{PLUGIN, SPACE};
 
 const USAGE: &str = "usage: breadboard herdr [--here | --no-attach | --reload | --stop]   (pnpm herdr)
        breadboard herdr:install                              (pnpm herdr:install)

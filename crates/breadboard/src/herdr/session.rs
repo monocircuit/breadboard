@@ -252,7 +252,7 @@ pub fn has_space_in(result: &Value) -> bool {
         .is_some_and(|spaces| {
             spaces
                 .iter()
-                .any(|space| space.get("label").and_then(Value::as_str) == Some(super::SPACE))
+                .any(|space| space.get("label").and_then(Value::as_str) == Some(super::SPACE.get().as_str()))
         })
 }
 

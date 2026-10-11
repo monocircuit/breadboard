@@ -289,7 +289,7 @@ fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -
                         .and_then(|tree| tree.get("repo_root"))
                         .and_then(Value::as_str);
                     let label = space.get("label").and_then(Value::as_str).unwrap_or_default();
-                    (root.is_some() && root == main.as_deref()) || label.starts_with(SPACE)
+                    (root.is_some() && root == main.as_deref()) || label.starts_with(&SPACE.get())
                 })
                 .filter_map(|space| space.get("workspace_id").and_then(Value::as_str))
                 .collect()

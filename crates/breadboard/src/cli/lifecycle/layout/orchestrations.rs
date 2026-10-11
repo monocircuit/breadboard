@@ -266,12 +266,13 @@ pub fn mark_space(repo: &Repo, space: &Value, origin: Option<&Origin>) {
         return;
     }
     // herdr wants the space first: `--source` in front takes the id for an option.
+    let source = TOKEN_SOURCE.get();
     let mut all = vec![
         "workspace",
         "report-metadata",
         s(space, "workspace_id"),
         "--source",
-        TOKEN_SOURCE,
+        &source,
     ];
     all.extend(args.iter().map(String::as_str));
     call(&all);
@@ -674,7 +675,7 @@ mod tests {
     #[test]
     fn orchestrations_sort_below_the_plain_worktrees() {
         let list = vec![
-            space("m", SPACE, false),
+            space("m", &SPACE.get(), false),
             space("a", "⇶ o", true),
             space("b", "2-b", true),
             space("c", "1-c", true),

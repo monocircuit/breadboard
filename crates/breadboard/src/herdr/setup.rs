@@ -433,11 +433,11 @@ fn start_server(session: &Session) -> Result<(), Fail> {
 pub fn link_plugin(session: &Session, target: &Target) -> Result<bool, Fail> {
     let listed = session.herdr(target, &["plugin", "list"]).out;
     let dir = session.plugin_dir.display().to_string();
-    if listed.contains(PLUGIN) && listed.contains(&dir) {
+    if listed.contains(&PLUGIN.get()) && listed.contains(&dir) {
         return Ok(false);
     }
-    if listed.contains(PLUGIN) {
-        session.herdr(target, &["plugin", "unlink", PLUGIN]);
+    if listed.contains(&PLUGIN.get()) {
+        session.herdr(target, &["plugin", "unlink", &PLUGIN.get()]);
     }
     let Answer { is_ok, out } = session.herdr(target, &["plugin", "link", &dir]);
     if !is_ok {

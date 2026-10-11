@@ -232,7 +232,7 @@ fn reload(session: &Session, target: &Target, is_stale: bool) -> Result<(), Fail
 
     let linked = fs::read_to_string(linked_file_of(session, target)).ok();
     if linked.as_deref().map(str::trim) != Some(manifest_hash(session).as_str()) {
-        session.herdr(target, &["plugin", "unlink", PLUGIN]);
+        session.herdr(target, &["plugin", "unlink", &PLUGIN.get()]);
         link_plugin(session, target)?;
         write_linked(session, target);
         step(&format!("plugin {PLUGIN} linked again, its manifest changed"));
