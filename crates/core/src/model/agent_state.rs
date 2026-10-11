@@ -1,0 +1,485 @@
+//! What an agent waits for (#288, agent-state.mjs): one state per agent, the
+//! same words in WORKTREES of an orchestration and herdr's sidebar, never a
+//! bare `idle`.
+
+use super::change::is_change_open;
+use super::handovers::next_text;
+use super::{Tone, Tree, counted};
+use crate::conversations::question_of;
+use crate::gitlab::Mr;
+use crate::wait::waits_text;
+use std::collections::HashSet;
+
+/// GitLab's statuses of a pipeline that hasn't finished yet.
+pub const RUNNING: [&str; 6] = [
+    "created",
+    "waiting_for_resource",
+    "preparing",
+    "pending",
+    "running",
+    "scheduled",
+];
+
+/// What an agent waits for: `key` the case, `text` its words, `tone` whom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentState {
+    pub key: &'static str,
+    pub text: String,
+    pub tone: Tone,
+}
+
+fn state(key: &'static str, text: impl Into<String>, tone: Tone) -> AgentState {
+    AgentState {
+        key,
+        text: text.into(),
+        tone,
+    }
+}
+
+/// The handover announced for an agent: the issue it takes, the MRs it still waits for.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NextIssue {
+    pub number: i64,
+    pub open: Vec<i64>,
+}
+
+/// What agentStateOf knows besides the worktree: its MR, herdr's state of the
+/// agent, the iids known merged (a wait names only the others), the announced
+/// handover, what the human's checks still lack (merge.rs `checks_of`).
+#[derive(Debug, Clone, Default)]
+pub struct Facts<'a> {
+    pub mr: Option<&'a Mr>,
+    pub status: Option<&'a str>,
+    pub merged: Option<&'a HashSet<i64>>,
+    pub handover: Option<&'a NextIssue>,
+    pub checks: &'a [String],
+}
+
+/// What an agent waits for, the first that holds: at work; asks you; waits
+/// for the pipeline; pipeline failed; waits for you (its open actions, a
+/// merge once its pipeline passed); checks open; waits for other MRs; the
+/// next issue announced; change requested; not pushed; free.
+pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
+    let Facts {
+        mr,
+        status,
+        merged,
+        handover,
+        checks,
+    } = facts;
+    if *status == Some("working") {
+        return state("working", "at work", Tone::Work);
+    }
+    let is_asking = tree
+        .claude
+        .as_ref()
+        .and_then(|claude| claude.answer.as_deref())
+        .and_then(question_of)
+        .is_some();
+    if *status == Some("blocked") || is_asking {
+        return state("asks", "asks you", Tone::You);
+    }
+    let is_open = mr.is_some_and(|mr| mr.is_open());
+    let pipeline = mr.and_then(|mr| mr.pipeline_status());
+    let sha = mr
+        .and_then(|mr| mr.pipeline.as_ref())
+        .and_then(|pipeline| pipeline.sha.as_deref());
+    // Pushed, but GitLab's pipeline is still the one of a commit before.
+    let is_behind = sha.is_some() && tree.pushed.is_some() && sha != tree.pushed.as_deref();
+    if is_open && (pipeline.is_some_and(|status| RUNNING.contains(&status)) || is_behind) {
+        return state("pipeline", "waits for the pipeline", Tone::Gitlab);
+    }
+    if is_open && pipeline == Some("failed") {
+        return state("failed", "pipeline failed", Tone::You);
+    }
+    let mut kinds: Vec<String> = Vec::new();
+    for action in tree.actions.iter().filter(|action| action.answer.is_none()) {
+        let kind = if action.is_try() {
+            format!("try #{}", action.id)
+        } else {
+            action.kind.clone()
+        };
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    let is_green = is_open && pipeline == Some("success") && !is_change_open(Some(tree), *mr);
+    if is_green && checks.is_empty() && !kinds.iter().any(|kind| kind == "merge") {
+        kinds.push("merge".into());
+    }
+    if !kinds.is_empty() {
+        return state("waits", format!("waits for you: {}", kinds.join(", ")), Tone::You);
+    }
+    if is_green {
+        return state("checks", format!("checks open: {}", checks.join(", ")), Tone::You);
+    }
+    if let Some(wait) = &tree.wait {
+        let none = HashSet::new();
+        return state("waitsForMr", waits_text(wait, merged.unwrap_or(&none)), Tone::Gitlab);
+    }
+    if let Some(handover) = handover {
+        return state("next", next_text(handover.number, &handover.open), Tone::Gitlab);
+    }
+    if is_change_open(Some(tree), *mr) {
+        return state("change", "change requested", Tone::You);
+    }
+    if tree.unpushed > 0 {
+        return state(
+            "unpushed",
+            format!("not pushed: {}", counted(tree.unpushed, "commit")),
+            Tone::You,
+        );
+    }
+    state("free", "free", Tone::Free)
+}
+
+/// The line of an agent in herdr's sidebar: its state, its MR behind it.
+pub fn sidebar_line_of(tree: &Tree, facts: &Facts) -> String {
+    let reference = facts.mr.map(|mr| format!(" · !{}", mr.iid)).unwrap_or_default();
+    format!("{}{reference}", agent_state_of(tree, facts).text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::{Action, Change};
+    use crate::conversations::Claude;
+    use crate::gitlab::Pipeline;
+    use crate::wait::Wait;
+    use std::path::PathBuf;
+
+    fn claude(answer: &str) -> Claude {
+        Claude {
+            id: "c1".into(),
+            prompt: None,
+            prompt_at: None,
+            answer: Some(answer.into()),
+            transcript: PathBuf::new(),
+            cwd: PathBuf::new(),
+            model: None,
+            at: None,
+            used: 0,
+            window: 1,
+        }
+    }
+    fn tree() -> Tree {
+        Tree {
+            claude: Some(claude("Pushed, the pipeline runs.")),
+            pushed: Some("a".into()),
+            ..Default::default()
+        }
+    }
+    fn mr(status: &str) -> Mr {
+        Mr {
+            iid: 192,
+            state: "opened".into(),
+            is_draft: true,
+            pipeline: Some(Pipeline {
+                status: status.into(),
+                sha: Some("a".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+    fn at(tree: &Tree, mr: Option<&Mr>, status: &str) -> AgentState {
+        agent_state_of(
+            tree,
+            &Facts {
+                mr,
+                status: Some(status),
+                ..Default::default()
+            },
+        )
+    }
+    fn action(id: i64, kind: &str, answer: Option<&str>) -> Action {
+        Action {
+            id,
+            kind: kind.into(),
+            answer: answer.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn says_the_agent_is_at_work() {
+        assert_eq!(
+            at(&tree(), Some(&mr("success")), "working"),
+            state("working", "at work", Tone::Work)
+        );
+    }
+
+    #[test]
+    fn asks_you_when_blocked_or_stopped_on_a_question() {
+        assert_eq!(at(&tree(), None, "blocked").text, "asks you");
+        let asking = Tree {
+            claude: Some(claude("Done.\n\nShall I merge?")),
+            ..tree()
+        };
+        assert_eq!(at(&asking, None, "idle").key, "asks");
+        assert_eq!(at(&asking, None, "idle").tone, Tone::You);
+    }
+
+    #[test]
+    fn waits_for_the_pipeline_while_it_runs_or_gitlab_has_none_for_the_push() {
+        for status in ["running", "pending", "created"] {
+            assert_eq!(at(&tree(), Some(&mr(status)), "idle").text, "waits for the pipeline");
+        }
+        let behind = at(
+            &Tree {
+                pushed: Some("b".into()),
+                ..tree()
+            },
+            Some(&mr("success")),
+            "idle",
+        );
+        assert_eq!(
+            (behind.text.as_str(), behind.tone),
+            ("waits for the pipeline", Tone::Gitlab)
+        );
+    }
+
+    #[test]
+    fn says_a_failed_pipeline() {
+        assert_eq!(
+            at(&tree(), Some(&mr("failed")), "idle"),
+            state("failed", "pipeline failed", Tone::You)
+        );
+    }
+
+    #[test]
+    fn waits_for_your_merge_once_the_pipeline_passed() {
+        assert_eq!(at(&tree(), Some(&mr("success")), "idle").text, "waits for you: merge");
+        assert_eq!(
+            at(
+                &tree(),
+                Some(&Mr {
+                    is_draft: false,
+                    ..mr("success")
+                }),
+                "done"
+            )
+            .text,
+            "waits for you: merge"
+        );
+    }
+
+    #[test]
+    fn offers_no_merge_while_a_try_or_box_is_open() {
+        let checks = vec![
+            "try #2 broken".to_string(),
+            "1 acceptance box open: free shows".to_string(),
+        ];
+        let facts = Facts {
+            mr: Some(&mr("success")),
+            status: Some("idle"),
+            checks: &checks,
+            ..Default::default()
+        };
+        assert_eq!(
+            agent_state_of(&tree(), &facts),
+            state(
+                "checks",
+                "checks open: try #2 broken, 1 acceptance box open: free shows",
+                Tone::You
+            )
+        );
+        let checks = vec!["try #3 open".to_string()];
+        let with_try = Tree {
+            actions: vec![action(3, "try", None)],
+            ..tree()
+        };
+        let facts = Facts {
+            mr: Some(&mr("success")),
+            status: Some("idle"),
+            checks: &checks,
+            ..Default::default()
+        };
+        assert_eq!(agent_state_of(&with_try, &facts).text, "waits for you: try #3");
+    }
+
+    #[test]
+    fn names_the_open_actions_a_try_by_its_number() {
+        let actions = vec![
+            action(3, "decide", None),
+            action(4, "try", None),
+            action(5, "browser-check", None),
+            action(6, "look", Some("done")),
+            action(7, "merge", None),
+        ];
+        assert_eq!(
+            at(&Tree { actions, ..tree() }, Some(&mr("success")), "idle").text,
+            "waits for you: decide, try #4, try #5, merge"
+        );
+    }
+
+    #[test]
+    fn waits_for_other_mrs_then_for_an_announced_handover() {
+        let wait = Wait {
+            mrs: vec![271, 272],
+            ..Default::default()
+        };
+        let merged: HashSet<i64> = [272].into();
+        let waiting = Tree {
+            wait: Some(wait.clone()),
+            ..tree()
+        };
+        let facts = Facts {
+            status: Some("idle"),
+            merged: Some(&merged),
+            ..Default::default()
+        };
+        assert_eq!(
+            agent_state_of(&waiting, &facts),
+            state("waitsForMr", "waits for !271 · 1 merged", Tone::Gitlab)
+        );
+        let handover = NextIssue {
+            number: 226,
+            open: vec![232],
+        };
+        let facts = Facts {
+            status: Some("idle"),
+            handover: Some(&handover),
+            ..Default::default()
+        };
+        assert_eq!(agent_state_of(&tree(), &facts).text, "→ next #226 after !232");
+        assert_eq!(agent_state_of(&waiting, &facts).text, "waits for !271, !272");
+    }
+
+    #[test]
+    fn says_a_requested_change_then_commits_not_pushed() {
+        let change = Change {
+            text: "less padding".into(),
+            head: Some("a".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            at(
+                &Tree {
+                    change: Some(change),
+                    ..tree()
+                },
+                Some(&mr("success")),
+                "idle"
+            )
+            .text,
+            "change requested"
+        );
+        assert_eq!(
+            at(&Tree { unpushed: 2, ..tree() }, None, "idle").text,
+            "not pushed: 2 commits"
+        );
+        assert_eq!(
+            at(&Tree { unpushed: 1, ..tree() }, None, "idle").text,
+            "not pushed: 1 commit"
+        );
+    }
+
+    #[test]
+    fn is_free_only_with_nothing_open() {
+        assert_eq!(at(&tree(), None, "idle"), state("free", "free", Tone::Free));
+        let merged = Mr {
+            state: "merged".into(),
+            ..mr("success")
+        };
+        assert_eq!(at(&tree(), Some(&merged), "idle").text, "free");
+        let handover = NextIssue {
+            number: 9,
+            open: vec![],
+        };
+        let facts = Facts {
+            mr: Some(&merged),
+            status: Some("idle"),
+            handover: Some(&handover),
+            ..Default::default()
+        };
+        assert_eq!(agent_state_of(&tree(), &facts).text, "→ next #9 now");
+    }
+
+    #[test]
+    fn takes_the_first_that_holds_in_this_order() {
+        let mut extra = Tree {
+            claude: Some(claude("Shall I?")),
+            actions: vec![action(1, "decide", None)],
+            wait: Some(Wait {
+                mrs: vec![271],
+                ..Default::default()
+            }),
+            change: Some(Change {
+                text: "x".into(),
+                head: Some("a".into()),
+                ..Default::default()
+            }),
+            unpushed: 1,
+            pushed: Some("a".into()),
+            ..Default::default()
+        };
+        let handover = NextIssue {
+            number: 9,
+            open: vec![271],
+        };
+        let mut status = "working";
+        let mut current = Some(mr("running"));
+        let mut has_handover = true;
+        let mut order = Vec::new();
+        let key = |extra: &Tree, current: &Option<Mr>, status: &str, has_handover: bool| {
+            let facts = Facts {
+                mr: current.as_ref(),
+                status: Some(status),
+                handover: has_handover.then_some(&handover),
+                ..Default::default()
+            };
+            agent_state_of(extra, &facts).key
+        };
+        order.push(key(&extra, &current, status, has_handover));
+        for step in 0..9 {
+            match step {
+                0 => status = "idle",
+                1 => extra.claude = Some(claude("Done.")),
+                2 => current = Some(mr("failed")),
+                3 => current = None,
+                4 => extra.actions.clear(),
+                5 => extra.wait = None,
+                6 => has_handover = false,
+                7 => extra.change = None,
+                _ => extra.unpushed = 0,
+            }
+            order.push(key(&extra, &current, status, has_handover));
+        }
+        assert_eq!(
+            order,
+            [
+                "working",
+                "asks",
+                "pipeline",
+                "failed",
+                "waits",
+                "waitsForMr",
+                "next",
+                "change",
+                "unpushed",
+                "free"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_sidebar_line_is_the_state_with_the_mr() {
+        let facts = Facts {
+            mr: Some(&mr("success")),
+            status: Some("idle"),
+            ..Default::default()
+        };
+        assert_eq!(sidebar_line_of(&tree(), &facts), "waits for you: merge · !192");
+        assert_eq!(
+            sidebar_line_of(
+                &tree(),
+                &Facts {
+                    status: Some("working"),
+                    ..Default::default()
+                }
+            ),
+            "at work"
+        );
+    }
+}

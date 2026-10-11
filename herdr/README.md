@@ -4,9 +4,11 @@
 agents side by side. This directory makes it fit the repo: a plugin that puts
 the parallel-work commands (skill `parallel-work`) on keys and rebuilds the
 space of the repo when herdr starts, plus the config `pnpm herdr` sets up.
-It is a thin layer: `run.mjs` turns what herdr passes (the focused pane) into
-a call of `../src/*.mjs`, so everything also works as a plain `pnpm` command
-without herdr. Nobody has to use it.
+It is a thin layer: every command of `herdr-plugin.toml` runs
+`sh breadboard.sh herdr <action>`, the binary of this checkout (built first
+when it is missing or older than the checkout, see `breadboard.sh`), which
+turns what herdr passes (the focused pane) into the same code a plain `pnpm`
+command runs without herdr. Nobody has to use it.
 
 ## Start
 
@@ -17,12 +19,12 @@ pnpm herdr
 From any checkout of the repo, also from a pane of another herdr. The first
 time it
 
-1. downloads the pinned herdr (`VERSION` in `../src/session/session.mjs`) into
+1. downloads the pinned herdr (`VERSION` in `../crates/breadboard/src/herdr/session.rs`) into
    `.herdr/bin/` of the main checkout, checked against its pinned sha256 — no
    sudo, your own herdr is not touched,
 2. writes `.herdr/config.toml`: your config as the base (`.herdr/config.local.toml`,
    else `~/.config/herdr/config.toml`, which is only read), else `config.toml`
-   here, `keys.toml` appended, and the sidebar rows (`../src/worktree/sidebar.mjs`,
+   here, `keys.toml` appended, and the sidebar rows (`../crates/breadboard/src/herdr/sidebar.rs`,
    colours from your `[theme.custom]`): the spaces of an orchestration
    (`pnpm wt:orchestrate`) marked `⇶ <name>` (or its `--title`) in its colour (`$orch1`..`$orch3`
    in `blue`, `teal`, `mauve`), and under each agent of a worktree what it
@@ -53,7 +55,7 @@ The session's server and its panes get no `CLAUDE*` variables, even when
 `pnpm herdr` runs inside Claude Code: a `claude` started in a pane would
 otherwise take itself for a child session and save no transcript.
 
-**New herdr version:** bump `VERSION` and the sha256 in `../src/session/session.mjs`
+**New herdr version:** bump `VERSION` and the sha256 in `../crates/breadboard/src/herdr/session.rs`
 (`gh api repos/herdrdev/herdr/releases/tags/v<version>`). `pnpm herdr`
 downloads it; a running session says it is older and needs `pnpm herdr --stop`
 once — that ends its panes, so pick the moment.
@@ -116,13 +118,14 @@ block included: run `pnpm herdr:install` again after it.
 has the space; plugins are linked for all sessions of a user, and a personal
 session doesn't get a space it never had. The keys are in `keys.toml`.
 
-The **tab bar** shows `⬢ 3 stacks · 1 needs you` (`node run.mjs status`,
+The **tab bar** shows `⬢ 3 stacks · 1 needs you` (`breadboard herdr status`,
 every 10 s): the running vita stacks, and the agents in the repo's spaces
 that ask something. The session `platform` puts it in front of your own
 `tab_bar_right` (`config.toml` here has it for a session without a config of
 yours). Your own herdr: a block can't add to your `[ui]`, so add it to your
 `tab_bar_right` yourself:
-`{ type = "command", command = "node <main checkout>/packages/breadboard/herdr/run.mjs status", interval_seconds = 10, timeout_seconds = 3 }`.
+`{ type = "command", command = "sh <main checkout>/packages/breadboard/herdr/breadboard.sh --no-wait herdr status", interval_seconds = 10, timeout_seconds = 3 }`
+(`pnpm herdr:install` prints it, and turns an old `node …/run.mjs status` into it).
 
 ## An agent card
 
@@ -137,7 +140,7 @@ to next to the agent, then what it waits for; no name twice:
   claude
 ```
 
-The repo (`$wt_repo`, `../src/overview/agent-repo.mjs`) is on agents in a
+The repo (`$wt_repo`, `../crates/breadboard/src/tui/overview/actor/sync.rs`) is on agents in a
 worktree's space, an orchestration's too: `Monocircuit/Platform`. The
 repo's own space names it already,
 agents outside the repo get nothing. herdr can't group the agents panel
@@ -164,7 +167,7 @@ that holds:
 | `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
 | `free` | none of these: nothing to do | `teal` |
 
-The overview of the main space reports it (`../src/overview/agent-state.mjs`,
+The overview of the main space reports it (`../crates/breadboard/src/tui/overview/actor/sync.rs`,
 token `$wt_state`), every couple of seconds, GitLab's part every half
 minute. The row that shows it comes with the config (`--reload` renews it);
 the main checkout's agents get no line.
@@ -172,7 +175,7 @@ the main checkout's agents get no line.
 The same overview **notifies** (herdr's notifications, titled with the
 worktree) when its agent starts asking something, the pipeline of its MR
 fails, or its MR is merged: on the change only, never for what it finds at
-its start (`../src/overview/notify.mjs`).
+its start (`../crates/breadboard/src/tui/overview/actor/`).
 
 ## The browser
 

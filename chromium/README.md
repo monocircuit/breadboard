@@ -17,7 +17,7 @@ group gets a colour from its name. An app on localhost that doesn't answer yet
 (`wt:new` opens it while `pnpm dev` still starts) gets a page that waits for it.
 
 Chromium has no command line for tab groups, only extensions reach them: this
-directory is one, unpacked. `src/browser.mjs` opens its page
+directory is one, unpacked. breadboard (`crates/breadboard/src/cli/setup/browser.rs`) opens its page
 `chrome-extension://<id>/open.html?url=…&group=…`, which moves its tab into
 the group and turns into the url. The id is fixed by the `key` in
 `manifest.json`: `aikcnbeljldocaafkokjbngkboecmoli`.
@@ -39,7 +39,7 @@ extension after its merge. A directory missing at the browser's start gives a
   Chromium, or
 - `chrome://extensions` → *Developer mode* → *Load unpacked* → that directory.
 
-`src/browser.mjs` looks for `chromium`, `chromium-browser`,
+breadboard looks for `chromium`, `chromium-browser`,
 `google-chrome-stable` or `google-chrome` that loads the copy (the flags file)
 or knows the id (a profile's preferences), and every time it opens something
 it brings the copy up to `packages/breadboard/chromium` of the checkout it runs from.
@@ -52,4 +52,4 @@ connection error.
 Edit `open.js`; the next open from that checkout (or `pnpm browser`) updates
 the copy, then *Reload* on `chrome://extensions` or restart the browser. Two
 checkouts with different versions of the extension take turns writing the
-copy. Never change the `key`: it is the id `src/browser.mjs` opens.
+copy. Never change the `key`: it is the id breadboard opens.

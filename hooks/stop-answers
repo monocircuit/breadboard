@@ -1,0 +1,18 @@
+#!/bin/sh
+# Claude Code's Stop hook (.claude/settings.json runs this file with sh): the
+# answers of the orchestration overview handed over at the agent's stop. A
+# worktree's own binary where it is built (as its developer built it), else
+# the main checkout's through its launcher, which never waits for a build
+# here (the hook has 10 s): older than the main checkout's HEAD (a pull), the
+# binary from before hands over and the build starts behind it. Without a
+# binary nothing is handed over and the stop goes on (#306).
+dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 0
+own="$dir/packages/breadboard/target/release/breadboard"
+if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != "$common" ] && [ -x "$own" ]; then
+  exec "$own" hook stop-answers
+fi
+package="$common/../packages/breadboard"
+[ -x "$package/target/release/breadboard" ] || exit 0
+[ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" --no-wait hook stop-answers
+exec "$package/target/release/breadboard" hook stop-answers

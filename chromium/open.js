@@ -1,4 +1,4 @@
-// open.html?url=<url>&group=<herdr space>: src/browser.mjs opens this page
+// open.html?url=<url>&group=<herdr space>: breadboard (cli/setup/browser.rs) opens this page
 // with Chromium; it moves its own tab into the tab group named like the space
 // (the one there, else a new one) and then turns into <url>. A tab of that
 // group already showing <url> is brought to the front instead.

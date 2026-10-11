@@ -1,5 +1,5 @@
 -- What a worktree changes against develop, in nvim (#293). The herdr tab `nvim` of a
--- worktree's space loads it (packages/breadboard/src/worktree/nvim.mjs, editorCommand);
+-- worktree's space loads it (crates/breadboard/src/cli/lifecycle/layout/nvim.rs);
 -- any nvim can: :luafile packages/breadboard/nvim/changes.lua.
 --
 -- The view is the user's own neo-tree and gitsigns (LazyVim has both), only with the

@@ -1,6 +1,6 @@
 # The base config of the herdr session `platform` for people without an own
-# herdr config. pnpm herdr copies it into .herdr/config.toml and appends
-# keys.toml; {{RUN}} becomes the path of run.mjs.
+# herdr config. pnpm herdr copies it into .herdr/config.toml, appends
+# keys.toml and fills in the tab bar's status command below.
 #
 # Everything else is herdr's default. Your own keys and theme: put a whole
 # config into .herdr/config.local.toml, it is used instead of this file.
