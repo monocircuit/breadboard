@@ -437,8 +437,13 @@ pub fn command() -> ExitCode {
     if base.is_empty() {
         fail("no merge base with origin/develop: git fetch origin first");
     }
-    if let Some(refusal) = stale_migrations(&dir, "origin/develop") {
-        fail(&refusal);
+    // develop's, and for an orchestration's task its epic's: what the checkout of the epic holds (#351).
+    let epic =
+        super::epic::Epic::of_task(&dir).map(|epic| git(&["rev-parse", "HEAD"], &epic.checkout).text().to_string());
+    for base in std::iter::once("origin/develop".to_string()).chain(epic.filter(|head| !head.is_empty())) {
+        if let Some(refusal) = stale_migrations(&dir, &base) {
+            fail(&refusal);
+        }
     }
     super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
