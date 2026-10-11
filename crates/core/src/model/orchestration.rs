@@ -213,7 +213,7 @@ pub struct OrchestrationModel {
     pub stale: Vec<String>,
     /// The runner's load for the band (#357): `CI 3/4 slots · 2 queued`.
     pub ci_load: Option<String>,
-    /// What the acting overview publishes for the CI queue (#357); None until GitLab answered.
+    /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
     pub ci_published: Option<crate::ci::Published>,
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
     /// itself: the live overview writes them into the worktrees (#344).

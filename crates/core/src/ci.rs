@@ -6,7 +6,7 @@
 //!
 //! The files of `<main>/.claude/ci/`, each written whole by one side:
 //! - `order-<orchestration>.json` (`Published`): an orchestration's merge
-//!   order and each MR's bar (its boxes, its wt:check), by its acting overview;
+//!   order and each MR's bar (its boxes, its wt:check), by its live overviews;
 //! - `run-now.json` (`RunNow`): the MRs a click moved to the front;
 //! - `queue.json` (`Queue`): where each MR stands, by the scheduler, for the rows.
 
@@ -160,7 +160,7 @@ impl Bar {
     }
 }
 
-/// What an orchestration's acting overview publishes on each read.
+/// What an orchestration's live overviews publish on each read.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Published {

@@ -124,8 +124,11 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         let dirs: Vec<PathBuf> = local.trees.iter().map(|tree| tree.dir.clone()).collect();
         super::merge::retry_lines(&app.actor, dirs);
     }
-    if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
+    // Every live overview computes the same order: whichever reads first writes it.
+    if remote.is_some() {
         publish_ci(app, &name, &model);
+    }
+    if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
         tell(app, &model.tells, &local.agents);
         // herdr's sidebar reads them: it knows neither the merge order nor the boxes (#344).
         if is_remote {
@@ -149,7 +152,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     }
 }
 
-/// The orchestration's merge order for the CI queue (#357), written when it changed.
+/// The orchestration's merge order and bars for the CI queue (#357), written when they changed.
 fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
     let Some(published) = model.ci_published.as_ref() else {
         return;

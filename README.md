@@ -210,7 +210,7 @@ breadboard decides which pipelines exist at all:
 - **No pipeline before the bar is full** (the user's rule): an
   orchestration's MR gets one only once every box of its issue is ticked
   (after-deploy ones excepted) and `wt:check` passed at its HEAD; its
-  acting overview writes both, with the merge order, to
+  live overviews write both, with the merge order, to
   `.claude/ci/order-<name>.json`. Then the agent marks it ready and posts
   the merge after the pipeline is green.
 - **The order**: a click on the row (run now, also before the bar is full),
