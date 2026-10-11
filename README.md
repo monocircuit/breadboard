@@ -203,7 +203,10 @@ breadboard decides which pipelines exist at all:
   `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
   per look, for the MR's newest commit, while a slot is free and no pipeline
   waits for the runner. An older pipeline of that MR still running is
-  cancelled; one into `main`, of develop or of a tag never is.
+  cancelled. While the runner is full and the first MR waits, the
+  lowest-ranked running MR pipeline behind it is cancelled to make room,
+  one per 30 s, and queued again. A pipeline into `main`, of develop or
+  of a tag is never cancelled, and neither is one a click started.
 - **No pipeline before the bar is full** (the user's rule): an
   orchestration's MR gets one only once every box of its issue is ticked
   (after-deploy ones excepted) and `wt:check` passed at its HEAD; its

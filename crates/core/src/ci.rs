@@ -27,7 +27,7 @@ pub const QUEUE_STALE_MS: i64 = 60_000;
 pub const SLOTS_UNKNOWN: u32 = 2;
 
 /// A pipeline still to finish.
-fn is_live(status: &str) -> bool {
+pub fn is_live(status: &str) -> bool {
     matches!(
         status,
         "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled"
@@ -440,6 +440,8 @@ pub struct Ranks {
     /// The bars of the orchestrations' MRs; an MR of none has no bar to wait for.
     pub bars: HashMap<i64, Bar>,
     pub run_now: BTreeMap<i64, i64>,
+    /// The commits whose pipeline the queue cancelled for an MR ahead, by iid: queued again.
+    pub preempted: HashMap<i64, String>,
 }
 
 impl Ranks {
@@ -448,6 +450,7 @@ impl Ranks {
             orders: published.iter().map(|one| one.order.clone()).collect(),
             bars: published.iter().flat_map(|one| one.bars.clone()).collect(),
             run_now: run_now.at.clone(),
+            preempted: HashMap::new(),
         }
     }
 
@@ -500,27 +503,36 @@ pub struct Start {
 pub struct Decision {
     pub places: BTreeMap<i64, Place>,
     pub start: Option<Start>,
+    /// A live pipeline to cancel for the MR ahead, while the runner is full:
+    /// (iid, pipeline, sha), the lowest-ranked of those behind it.
+    pub preempt: Option<(i64, i64, String)>,
 }
 
-/// Whether `mr` waits for a pipeline of its newest commit: none yet, or a
-/// click asks for one again. A pipeline of that commit that a person
-/// cancelled or GitLab skipped stays so, without a click.
+/// Whether `mr` waits for a pipeline of its newest commit: none yet, a
+/// click asks for one again, or the queue cancelled it for an MR ahead. A
+/// pipeline of that commit that ended, or that a person cancelled or GitLab
+/// skipped, stays so without a click.
 fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i64)>, now: i64) -> bool {
     let Some(sha) = &mr.sha else {
         return false;
     };
-    // Asked for already and GitLab doesn't show it yet: on its way.
+    if mr.is_head_current() && mr.pipeline_status().is_some_and(is_live) {
+        return false;
+    }
+    let clicked = ranks.run_now.get(&mr.iid).copied();
+    let was_preempted = ranks.preempted.get(&mr.iid) == Some(sha);
     if let Some((asked, at)) = started.get(&mr.iid)
         && asked == sha
-        && now - at < STARTED_HOLDS_MS
+        && !clicked.is_some_and(|clicked| clicked > *at)
     {
-        let is_clicked_since = ranks.run_now.get(&mr.iid).is_some_and(|clicked| clicked > at);
-        if !is_clicked_since {
+        // On its way while GitLab doesn't show it yet; shown, once is enough.
+        let is_on_its_way = !mr.is_head_current() && now - at < STARTED_HOLDS_MS;
+        if is_on_its_way || (mr.is_head_current() && !was_preempted) {
             return false;
         }
     }
     if mr.is_head_current() {
-        return ranks.run_now.contains_key(&mr.iid) && !mr.pipeline_status().is_some_and(is_live);
+        return clicked.is_some() || was_preempted;
     }
     true
 }
@@ -569,15 +581,25 @@ pub fn decide(
         }
     }
     fn key_of(class: Class, mr: &OpenMr, ranks: &Ranks) -> (usize, i64, i64) {
-        {
-            match class {
-                // The latest click first.
-                Class::RunNow => (0, -ranks.run_now.get(&mr.iid).copied().unwrap_or(0), mr.iid),
-                Class::Ready | Class::Fix => (ranks.place_in_order(mr.iid).unwrap_or(usize::MAX), 0, mr.iid),
-                _ => (0, 0, mr.iid),
-            }
+        match class {
+            // The latest click first.
+            Class::RunNow => (0, -ranks.run_now.get(&mr.iid).copied().unwrap_or(0), mr.iid),
+            Class::Ready | Class::Fix => (ranks.place_in_order(mr.iid).unwrap_or(usize::MAX), 0, mr.iid),
+            _ => (0, 0, mr.iid),
         }
     }
+    // How an MR ranks, lower first; one whose bar isn't full after every class.
+    let rank_of = |mr: &OpenMr| -> (Option<Class>, (usize, i64, i64)) {
+        match class_of(mr, ranks) {
+            Some(class) => (Some(class), key_of(class, mr, ranks)),
+            None => (None, (0, 0, mr.iid)),
+        }
+    };
+    let worse = |a: &(Option<Class>, (usize, i64, i64)), b: &(Option<Class>, (usize, i64, i64))| match (a.0, b.0) {
+        (None, Some(_)) => true,
+        (Some(_), None) => false,
+        _ => (a.0, a.1) > (b.0, b.1),
+    };
     waiting.sort_by_key(|a| (a.0, a.1));
     let mut ahead: Option<i64> = None;
     for (at, (class, _, mr)) in waiting.iter().enumerate() {
@@ -589,8 +611,27 @@ pub fn decide(
         places.insert(mr.iid, place);
         ahead = Some(mr.iid);
     }
+    let is_full = is_runner_full || slots.free() == 0;
+    // The runner full and the first MR waiting: the live pipeline ranked lowest
+    // behind it makes room, one a look, never one into `main` or of a branch.
+    let preempt = waiting
+        .first()
+        .filter(|(class, _, _)| is_full && *class != Class::Idle)
+        .and_then(|(class, key, first)| {
+            let first_rank = (Some(*class), *key);
+            mrs.iter()
+                .filter(|mr| mr.iid != first.iid && !mr.is_into_main())
+                .filter_map(|mr| {
+                    let pipeline = mr.pipeline.as_ref()?;
+                    (is_live(&pipeline.status) && is_mr_ref(pipeline.reference.as_deref()))
+                        .then(|| (rank_of(mr), mr, pipeline))
+                })
+                .filter(|(rank, _, _)| worse(rank, &first_rank))
+                .reduce(|a, b| if worse(&b.0, &a.0) { b } else { a })
+                .map(|(_, mr, pipeline)| (mr.iid, pipeline.id, pipeline.sha.clone().unwrap_or_default()))
+        });
     let start = waiting.first().and_then(|(class, _, mr)| {
-        if is_runner_full || slots.free() == 0 {
+        if is_full {
             return None;
         }
         // A draft at work waits for slots no one else uses: its own superseded pipeline aside.
@@ -610,7 +651,7 @@ pub fn decide(
             cancel,
         })
     });
-    Decision { places, start }
+    Decision { places, start, preempt }
 }
 
 /// An MR pipeline's ref (`refs/merge-requests/12/head`); a branch or tag pipeline is never ours to cancel.
@@ -767,6 +808,55 @@ mod tests {
         // A click starts one early.
         ranks.run_now.insert(349, NOW);
         assert_eq!(decide_now(&mrs, &ranks, slots(4, 1)).start.unwrap().iid, 349);
+    }
+
+    #[test]
+    fn makes_room_for_the_mr_ahead_by_cancelling_the_lowest_one_behind_it() {
+        // The runner full with 342 and 347, both behind 339 in the order: 347 goes, the last.
+        let mrs = [
+            mr(339, "a", None),
+            mr(342, "b", pipeline(42, "running", "b", 342)),
+            mr(347, "c", pipeline(47, "running", "c", 347)),
+        ];
+        let mut ranks = order(&[339, 342, 347]);
+        let decision = decide_now(&mrs, &ranks, slots(2, 2));
+        assert_eq!(decision.start, None);
+        assert_eq!(decision.preempt, Some((347, 47, "c".into())));
+        // Requeued: once the slot is free, 347 waits behind 339 again.
+        ranks.preempted.insert(347, "c".into());
+        let mrs = [
+            mr(339, "a", pipeline(39, "running", "a", 339)),
+            mr(342, "b", pipeline(42, "running", "b", 342)),
+            mr(347, "c", pipeline(47, "canceled", "c", 347)),
+        ];
+        let decision = decide_now(&mrs, &ranks, slots(2, 2));
+        assert_eq!(decision.places[&347], Place::Next { at: 1 });
+        // 339 and 342 both ahead of it: nothing to cancel for 347.
+        assert_eq!(decision.preempt, None);
+    }
+
+    #[test]
+    fn never_preempts_for_a_draft_at_work_or_with_room_left() {
+        let mrs = [draft(1, "i", None), mr(2, "r", pipeline(20, "running", "r", 2))];
+        assert_eq!(decide_now(&mrs, &order(&[2]), slots(1, 1)).preempt, None);
+        let mrs = [mr(1, "a", None), mr(2, "b", pipeline(20, "running", "b", 2))];
+        let decision = decide_now(&mrs, &order(&[1, 2]), slots(3, 1));
+        assert_eq!(
+            (decision.start.map(|start| start.iid), decision.preempt),
+            (Some(1), None)
+        );
+    }
+
+    #[test]
+    fn asks_once_for_a_commit_that_got_its_pipeline() {
+        // Its pipeline came and passed: not again, not even after STARTED_HOLDS_MS.
+        let mrs = [mr(1, "a", pipeline(10, "success", "a", 1))];
+        let started = HashMap::from([(1, ("a".to_string(), NOW - STARTED_HOLDS_MS * 2))]);
+        let mut ranks = order(&[1]);
+        assert_eq!(decide(&mrs, &ranks, slots(2, 0), &started, NOW).start, None);
+        // A click after it: again.
+        ranks.run_now.insert(1, NOW - 1000);
+        assert!(decide(&mrs, &ranks, slots(2, 0), &started, NOW).start.is_some());
     }
 
     #[test]

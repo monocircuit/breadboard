@@ -18,6 +18,9 @@ use std::time::Duration;
 
 /// How often the queue is looked at.
 pub const EVERY: Duration = Duration::from_secs(10);
+/// How long after making room for an MR ahead the queue makes room again:
+/// the runner's containers take a while to go, the slot shows free only then.
+const PREEMPT_EVERY: Duration = Duration::from_secs(30);
 /// How long a click keeps an MR up front when its pipeline never came.
 const RUN_NOW_HOLDS_MS: i64 = 60 * 60_000;
 
@@ -31,6 +34,9 @@ pub fn is_queued(main: &Path) -> bool {
 pub async fn schedule(main: PathBuf) {
     let gitlab = Gitlab::new(&main);
     let mut started: HashMap<i64, (String, i64)> = HashMap::new();
+    // The commits whose pipeline the queue cancelled for an MR ahead: queued again.
+    let mut preempted: HashMap<i64, String> = HashMap::new();
+    let mut preempted_at: Option<std::time::Instant> = None;
     let mut last: Option<String> = None;
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -56,6 +62,7 @@ pub async fn schedule(main: PathBuf) {
         let mrs = open_mrs_of(&project);
         let main_now = main.clone();
         let asked = std::mem::take(&mut started);
+        let cancelled = preempted.clone();
         let step = tokio::task::spawn_blocking(move || {
             let now = now_ms();
             let running = mrs
@@ -68,7 +75,8 @@ pub async fn schedule(main: PathBuf) {
                 .count() as u32;
             let slots = Slots::read(running);
             let run_now: RunNow = ci::read_or_default(&ci::run_now_file(&main_now));
-            let ranks = Ranks::of(&ci::published_of(&main_now), &run_now);
+            let mut ranks = Ranks::of(&ci::published_of(&main_now), &run_now);
+            ranks.preempted = cancelled;
             (
                 ci::decide(&mrs, &ranks, slots, &asked, now),
                 slots,
@@ -82,8 +90,26 @@ pub async fn schedule(main: PathBuf) {
             continue;
         };
         started = was_started;
-        let Decision { places, start } = decision;
+        let Decision { places, start, preempt } = decision;
+        if let Some((iid, id, sha)) = preempt.filter(|_| preempted_at.is_none_or(|at| at.elapsed() >= PREEMPT_EVERY)) {
+            preempted_at = Some(std::time::Instant::now());
+            let main = main.clone();
+            let said = tokio::task::spawn_blocking(move || {
+                glab_post(&main, "glab", &format!("projects/:fullpath/pipelines/{id}/cancel"))
+            })
+            .await;
+            if let Ok(said) = said {
+                last = Some(match said {
+                    Ok(()) => {
+                        preempted.insert(iid, sha);
+                        format!("!{iid} held for the MR ahead")
+                    }
+                    Err(error) => format!("!{iid} not held: {}", first_line(&error)),
+                });
+            }
+        }
         if let Some(start) = start {
+            preempted.remove(&start.iid);
             let main = main.clone();
             let done = tokio::task::spawn_blocking(move || {
                 let said = run(&main, &start);
@@ -100,9 +126,19 @@ pub async fn schedule(main: PathBuf) {
                 });
             }
         }
-        // What was asked for of MRs no longer open goes, a click whose pipeline came too.
-        let open: HashMap<i64, Option<&str>> = mrs.iter().map(|mr| (mr.iid, mr.sha.as_deref())).collect();
+        // What was asked for of MRs no longer open goes, a click whose pipeline ended too.
+        let open: HashMap<i64, bool> = mrs
+            .iter()
+            .map(|mr| {
+                let is_live = mr
+                    .pipeline
+                    .as_ref()
+                    .is_some_and(|pipeline| pipeline.sha == mr.sha && ci::is_live(&pipeline.status));
+                (mr.iid, is_live)
+            })
+            .collect();
         started.retain(|iid, _| open.contains_key(iid));
+        preempted.retain(|iid, _| open.contains_key(iid));
         forget_clicks(&main, &run_now, &started, &open, now);
         let queue = Queue {
             at: now,
@@ -114,16 +150,21 @@ pub async fn schedule(main: PathBuf) {
     }
 }
 
-/// The clicks that are done: their MR closed, its pipeline asked for since, or an hour gone.
+/// The clicks that are done: their MR closed, the pipeline asked for since
+/// ended (while it runs the click keeps it up front, never cancelled for
+/// another), or an hour gone. `open`: iid → whether its newest commit's pipeline runs.
 fn forget_clicks(
     main: &Path,
     run_now: &RunNow,
     started: &HashMap<i64, (String, i64)>,
-    open: &HashMap<i64, Option<&str>>,
+    open: &HashMap<i64, bool>,
     now: i64,
 ) {
-    let is_done = |iid: &i64, at: &i64| {
-        !open.contains_key(iid) || now - at > RUN_NOW_HOLDS_MS || started.get(iid).is_some_and(|(_, asked)| asked >= at)
+    let is_done = |iid: &i64, at: &i64| match open.get(iid) {
+        None => true,
+        Some(is_live) => {
+            now - at > RUN_NOW_HOLDS_MS || (!is_live && started.get(iid).is_some_and(|(_, asked)| asked >= at))
+        }
     };
     if !run_now.at.iter().any(|(iid, at)| is_done(iid, at)) {
         return;
@@ -216,8 +257,8 @@ mod tests {
         run_now.at.insert(3, 1000);
         ci::write_whole(&ci::run_now_file(&scratch), &run_now).unwrap();
         let started = HashMap::from([(1, ("a".to_string(), 2000))]);
-        // 1 asked for since, 2 waits still, 3 closed.
-        let open = HashMap::from([(1, Some("a")), (2, Some("b"))]);
+        // 1 asked for since and ended, 2 waits still, 3 closed.
+        let open = HashMap::from([(1, false), (2, false)]);
         forget_clicks(&scratch, &run_now, &started, &open, 3000);
         let left: RunNow = ci::read_or_default(&ci::run_now_file(&scratch));
         assert_eq!(left.at.keys().copied().collect::<Vec<_>>(), vec![2]);
