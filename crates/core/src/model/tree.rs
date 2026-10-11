@@ -7,6 +7,7 @@
 
 use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
+use super::boxes::{BoxSection, sections_of};
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
 use super::develop::Migrations;
@@ -284,6 +285,8 @@ pub struct Node {
     pub migrations_at: i64,
     pub docker_at: i64,
     pub title: String,
+    /// Its issue's boxes one by one, as its fold lists them (#346); none without a worktree.
+    pub boxes: Vec<BoxSection>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -794,6 +797,10 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .map(|found| found.title.clone())
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
+                boxes: match (tree, found) {
+                    (Some(tree), Some(found)) => sections_of(&found.boxes, &tree.actions, &tree.answered),
+                    _ => Vec::new(),
+                },
                 go,
             }
         })
@@ -1758,6 +1765,7 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: String::new(),
+            boxes: Vec::new(),
             go: Go::Nothing,
         }
     }

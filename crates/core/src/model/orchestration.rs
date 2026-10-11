@@ -5,6 +5,7 @@
 //! section is derived on its own (#306): one that fails says so in its place.
 
 use super::auto_actions::{AutoFacts, Removal, Tell, auto_actions_of, conflicts_of, failed_pipelines_of};
+use super::boxes::{BoxSection, sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
@@ -162,6 +163,8 @@ pub struct MrFacts {
     pub reasons: Vec<Reason>,
     /// Its issue's boxes, ticked of all (#294); None for a merged one or an issue without boxes.
     pub progress: Option<Progress>,
+    /// Its issue's boxes one by one, as its fold lists them (#346); none for a merged one.
+    pub boxes: Vec<BoxSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -621,6 +624,15 @@ fn merge_requests_of(
                 None
             } else {
                 part.issue.as_ref().and_then(|found| progress_of(&found.boxes))
+            },
+            boxes: match (&part.issue, is_merged) {
+                (Some(found), false) => {
+                    let (actions, answered) = tree
+                        .map(|tree| (&tree.actions[..], &tree.answered[..]))
+                        .unwrap_or((&[], &[]));
+                    sections_of(&found.boxes, actions, answered)
+                }
+                _ => Vec::new(),
             },
         }
     };

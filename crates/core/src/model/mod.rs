@@ -5,6 +5,7 @@
 
 pub mod agent_state;
 pub mod auto_actions;
+pub mod boxes;
 pub mod change;
 pub mod clean_up;
 pub mod develop;

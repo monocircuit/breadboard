@@ -14,7 +14,7 @@
 //! its issue's page; hover lights the whole node (#296).
 
 use super::actor::spawn::Run;
-use super::{Act, Ctx, Fold, look};
+use super::{Act, Ctx, Fold, boxes, look};
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme;
 use crate::tui::{Page, Scene};
@@ -438,6 +438,7 @@ fn node_lines(
             }
             look::say(scene, &node.title, theme::dim());
             scene.end_line();
+            boxes_line(scene, node, ctx);
         });
     };
     if node.go == Go::Nothing {
@@ -445,6 +446,34 @@ fn node_lines(
     } else {
         scene.block(Act::Go(node.go.clone()), draw);
     }
+}
+
+/// `▸ 2/6 boxes · 2 open` under the title, the fold of its issue's boxes
+/// (#346): a click or Enter lists them under it, another folds them. None
+/// without boxes, and none for `--once`.
+fn boxes_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
+    let Some(number) = node.number.filter(|_| !node.boxes.is_empty() && !ctx.is_once) else {
+        return;
+    };
+    let all = node.boxes.iter().flat_map(|section| &section.boxes);
+    let (ticked, total) = all.fold((0, 0), |(ticked, total), line| {
+        (ticked + usize::from(line.is_ticked), total + 1)
+    });
+    let is_open = ctx.folds.boxes.worktrees.contains(&number);
+    scene.block(Act::Fold(Fold::TreeBoxes(number)), |scene| {
+        let mut spans = vec![boxes::mark(is_open), look::dim(format!("{ticked}/{total} boxes"))];
+        if ticked < total {
+            spans.push(look::span(
+                format!(" · {} open", total - ticked),
+                theme::tone(theme::Tone::Yellow),
+            ));
+        }
+        scene.atom_gap(spans, 0);
+        scene.end_line();
+        if is_open {
+            boxes::list(scene, &node.boxes, 2);
+        }
+    });
 }
 
 /// `● Mira Albrecht · 3 issues · 2 MRs merged` (#292): the dot in the colour
@@ -847,6 +876,7 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
+            boxes: vec![],
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
             } else {
@@ -910,6 +940,53 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
             .map(|line| line.trim_end().to_string())
             .collect()
+    }
+
+    #[test]
+    fn a_nodes_boxes_fold_under_its_title_and_list_every_box() {
+        use breadboard_core::model::boxes::{BoxLine, BoxSection};
+        let mut worktrees = worktrees(0, 0);
+        worktrees.tree.live[1].boxes = vec![BoxSection {
+            heading: "Scope".into(),
+            boxes: vec![
+                BoxLine {
+                    is_ticked: true,
+                    text: "The same fold on the worktree node".into(),
+                    check: None,
+                },
+                BoxLine {
+                    is_ticked: false,
+                    text: "Gauntlet checks: fold and unfold by click and key".into(),
+                    check: None,
+                },
+            ],
+        }];
+        let folded = draw(&worktrees, Folds::default(), 56);
+        let lines = text(&folded);
+        assert_eq!(lines.last().unwrap(), "      ▸ 1/2 boxes · 1 open", "{lines:?}");
+        let fold = Act::Fold(Fold::TreeBoxes(302));
+        let region = folded
+            .regions
+            .iter()
+            .find(|region| *region.action() == fold)
+            .expect("the fold's block");
+        assert_eq!(region.area.y as usize, lines.len() - 1);
+
+        let mut folds = Folds::default();
+        folds.boxes.worktrees.insert(302);
+        let lines = text(&draw(&worktrees, folds, 56));
+        let at = lines.iter().position(|line| line.contains("▾ 1/2 boxes")).unwrap();
+        assert_eq!(
+            lines[at + 1..],
+            [
+                "        Scope",
+                "        ☑ The same fold on the worktree node",
+                "        ☐ Gauntlet checks: fold and unfold by click and",
+                "          key",
+            ]
+        );
+        // The first node has no boxes: no fold.
+        assert_eq!(lines.iter().filter(|line| line.contains("boxes")).count(), 1);
     }
 
     #[test]
