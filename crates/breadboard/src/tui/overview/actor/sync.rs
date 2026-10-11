@@ -503,12 +503,33 @@ fn report_states(
     // Panes whose line waits for GitLab's first answer: left as herdr holds them.
     let mut held: HashSet<String> = HashSet::new();
     let claudes = breadboard_core::local::claudes();
+    // A headless agent has no pane (#361): its line goes onto a pane of its
+    // worktree's space, its state the status table's.
+    let headless = if breadboard_core::runs::is_headless(main) {
+        breadboard_core::runs::agents_of(main)
+    } else {
+        HashMap::new()
+    };
+    let mut hosts: Vec<String> = Vec::new();
     for listed in trees.iter().filter(|tree| tree.dir != main) {
         let label = herdr::space_label(main, &listed.dir);
         let Some(space) = all_spaces.iter().find(|space| space.label == label) else {
             continue;
         };
-        let own: Vec<&&Pane> = agents.iter().filter(|pane| pane.workspace == space.id).collect();
+        let mut own: Vec<(String, Option<String>)> = agents
+            .iter()
+            .filter(|pane| pane.workspace == space.id)
+            .map(|pane| (pane.id.clone(), pane.status.clone()))
+            .collect();
+        if own.is_empty()
+            && let Some(agent) =
+                breadboard_core::conversations::bound_session(&listed.dir).and_then(|id| headless.get(&id))
+        {
+            // The sidebar shows agent rows for agent panes only: the space's row says it.
+            let host = format!("{SPACE_KEY}{}", space.id);
+            own.push((host.clone(), agent.status.clone()));
+            hosts.push(host);
+        }
         if own.is_empty() {
             continue;
         }
@@ -541,10 +562,10 @@ fn report_states(
                 .and_then(|pipeline| pipeline.sha.as_deref());
             record.turn_now(sha, &open)
         });
-        for pane in own {
+        for (pane, status) in own {
             let facts = Facts {
                 mr: mr.as_ref(),
-                status: pane.status.as_deref(),
+                status: status.as_deref(),
                 merged: Some(&merged),
                 handover: handover.as_ref(),
                 checks: &checks,
@@ -553,16 +574,17 @@ fn report_states(
             };
             match line_of(&tree, &facts, lab) {
                 Some(line) => {
-                    lines.insert(pane.id.clone(), line);
+                    lines.insert(pane, line);
                 }
                 None => {
-                    held.insert(pane.id.clone());
+                    held.insert(pane);
                 }
             }
         }
     }
     let repos = repos_of(all_spaces, &agents);
     let mut ids: HashSet<String> = agents.iter().map(|pane| pane.id.clone()).collect();
+    ids.extend(hosts);
     ids.extend(memory.reported.keys().cloned());
     // A held pane gets all its tokens in one write once GitLab answers, as Node's one write.
     for pane in ids.iter().filter(|pane| !held.contains(*pane)) {
@@ -653,6 +675,10 @@ fn repos_of(all_spaces: &[breadboard_core::herdr::Space], agents: &[&Pane]) -> H
 }
 
 /// The tokens of one pane: set what changed, clear what went.
+/// What a reported key starts with when it is a space, not a pane: a
+/// headless agent's line goes onto its worktree's space (#361).
+const SPACE_KEY: &str = "space:";
+
 fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
     let is_new = memory.known.insert(pane.to_string());
     let before = memory.reported.get(pane).cloned().unwrap_or_default();
@@ -673,7 +699,10 @@ fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
         }
     }
     if !args.is_empty() {
-        let mut all = vec!["pane", "report-metadata", pane, "--source", SOURCE];
+        let mut all = match pane.strip_prefix(SPACE_KEY) {
+            Some(space) => vec!["workspace", "report-metadata", space, "--source", SOURCE],
+            None => vec!["pane", "report-metadata", pane, "--source", SOURCE],
+        };
         all.extend(args.iter().map(String::as_str));
         herdr::did(&all);
     }

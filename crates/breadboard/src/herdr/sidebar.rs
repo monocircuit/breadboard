@@ -40,6 +40,20 @@ fn has_table(text: &str, name: &str) -> bool {
 pub fn sidebar_config(base: &str) -> Option<String> {
     let colour = |(name, fallback): (&str, &str)| colour_in(base, name, fallback);
     let mut parts: Vec<String> = Vec::new();
+    let rules: Vec<String> = STATE_RULES
+        .iter()
+        .map(|(prefix, slot, is_bold)| {
+            format!(
+                "{{ starts_with = \"{prefix}\", fg = \"{}\"{} }}",
+                colour(*slot),
+                if *is_bold { ", bold = true" } else { "" }
+            )
+        })
+        .collect();
+    let state = format!(
+        "[{{ token = \"$wt_state\", dim = true, rules = [{}] }}]",
+        rules.join(", ")
+    );
     if !has_table(base, "ui.sidebar.spaces") {
         let mut tokens: Vec<String> = ORIGIN_SLOTS
             .iter()
@@ -64,26 +78,13 @@ pub fn sidebar_config(base: &str) -> Option<String> {
             "# A worktree's branch is $wt_branch: herdr's branch stays empty for a linked worktree. Both in pink."
                 .into(),
         );
+        parts.push("# A headless agent (#361) has no agent card: what it waits for is its space's third row.".into());
         parts.push(format!(
-            "rows = [[\"state_icon\", \"workspace\"], [{}, \"git_status\"]]",
+            "rows = [[\"state_icon\", \"workspace\"], [{}, \"git_status\"], {state}]",
             tokens.join(", ")
         ));
     }
     if !has_table(base, "ui.sidebar.agents.rows_by_agent") {
-        let rules: Vec<String> = STATE_RULES
-            .iter()
-            .map(|(prefix, slot, is_bold)| {
-                format!(
-                    "{{ starts_with = \"{prefix}\", fg = \"{}\"{} }}",
-                    colour(*slot),
-                    if *is_bold { ", bold = true" } else { "" }
-                )
-            })
-            .collect();
-        let state = format!(
-            "[{{ token = \"$wt_state\", dim = true, rules = [{}] }}]",
-            rules.join(", ")
-        );
         let rows = format!("[[\"state_icon\", \"workspace\"], [{{ token = \"$wt_repo\" }}, \"agent\"], {state}]");
         if !parts.is_empty() {
             parts.push(String::new());
@@ -119,10 +120,10 @@ mod tests {
         assert!(rows.lines().any(|line| line == "[ui.sidebar.agents]"));
         assert!(rows.contains(&format!("\nrows = {AGENT_ROWS}")));
         let spaces = rows.lines().find(|line| line.contains("$orch1")).unwrap();
-        assert_eq!(
-            spaces,
-            "rows = [[\"state_icon\", \"workspace\"], [{ token = \"$orch1\", fg = \"#89B4FA\", bold = true }, { token = \"$orch2\", fg = \"#94E2D5\", bold = true }, { token = \"$orch3\", fg = \"#CBA6F7\", bold = true }, { token = \"branch\", fg = \"#FF79C6\" }, { token = \"$wt_branch\", fg = \"#FF79C6\" }, \"git_status\"]]"
-        );
+        assert!(spaces.starts_with(
+            "rows = [[\"state_icon\", \"workspace\"], [{ token = \"$orch1\", fg = \"#89B4FA\", bold = true }, { token = \"$orch2\", fg = \"#94E2D5\", bold = true }, { token = \"$orch3\", fg = \"#CBA6F7\", bold = true }, { token = \"branch\", fg = \"#FF79C6\" }, { token = \"$wt_branch\", fg = \"#FF79C6\" }, \"git_status\"], [{ token = \"$wt_state\", dim = true, rules = ["
+        ), "{spaces}");
+        assert!(spaces.ends_with("] }]]"), "{spaces}");
     }
 
     #[test]
