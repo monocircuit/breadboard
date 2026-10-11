@@ -244,6 +244,14 @@ pub fn click(app: &mut Overview, go: &Go) {
         });
         return;
     }
+    start(app, branch, action, &offer);
+}
+
+/// A merge under way at once: after a second click, or by itself into an
+/// epic (#350); on a thread of its own.
+pub fn start(app: &mut Overview, branch: &str, action: &Option<(PathBuf, i64)>, offer: &MergeOffer) {
+    let iid = offer.iid;
+    let dir = app.tree_dir_of(branch);
     app.actor.merges.of.insert(
         iid,
         Merge {

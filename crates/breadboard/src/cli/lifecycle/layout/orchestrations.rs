@@ -14,7 +14,9 @@ use super::tabs::{
     CHANGELOG, CHANGES, ORCHESTRATOR_TAB, OVERVIEW, ROOT, TOKEN_SOURCE, View, Want, drop_duplicates, ensure_space,
     ensure_tab, ensure_worktree_space, keep_order, move_into, overview_command,
 };
+use breadboard_core::epic::epic_of;
 use breadboard_core::git::orchestrator_checkouts;
+use breadboard_core::json;
 use breadboard_core::record::{self, ORCHESTRATOR, Origin, Record, SLOTS, SPACE, is_session_id};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
@@ -29,28 +31,62 @@ fn token_of(slot: u32) -> String {
     format!("orch{}", slot + 1)
 }
 
-/// The checkout of the orchestration `name`, made on first use (`git
-/// worktree add --detach` on origin/develop); None when git refuses.
+/// The checkout of the orchestration `name`, made on first use: on its epic
+/// branch (#350), with its dependencies installed, else (an orchestration
+/// made before) detached on the default branch's; None when git refuses.
 pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     let dir = repo.checkout_of(name);
     if orchestrator_checkouts(&repo.main).contains(&dir) {
         return Some(dir);
     }
     fs::create_dir_all(dir.parent()?).ok()?;
-    let is_made = git(
-        &repo.main,
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            &text(&dir),
-            &breadboard_core::git::base(&repo.main),
-        ],
-        None,
-    )
-    .is_ok;
-    is_made.then_some(dir)
+    let epic = json::read(&record::record_file(&repo.main, name)).and_then(|raw| epic_of(&raw));
+    let path = text(&dir);
+    let base = breadboard_core::git::Base::of(&breadboard_core::git::branch(&repo.main)).remote;
+    let add = checkout_args(epic.as_deref(), &path, &base, |branch| {
+        git(
+            &repo.main,
+            &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            None,
+        )
+        .is_ok
+    });
+    let args: Vec<&str> = add.iter().map(String::as_str).collect();
+    if !git(&repo.main, &args, None).is_ok {
+        return None;
+    }
+    if epic.is_some() {
+        // The epic's own wt:check and stack (#351, #352) need its setup: breadboard.toml's [[worktrees.setup]].
+        for step in &breadboard_core::config::of(&repo.main).config.worktrees.setup {
+            let _ = std::process::Command::new("sh")
+                .args(["-c", &step.run])
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    Some(dir)
+}
+
+/// `git worktree add` of a checkout at `path`: on the local `epic` branch
+/// when it exists (never reset: it may hold merges not pushed yet), else
+/// made from origin's, tracking it; detached on `base` (the default branch's) without one.
+fn checkout_args(epic: Option<&str>, path: &str, base: &str, has_local: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut args: Vec<String> = ["worktree", "add", "--quiet"].map(String::from).to_vec();
+    match epic {
+        Some(branch) if has_local(branch) => args.extend([path.to_string(), branch.to_string()]),
+        Some(branch) => args.extend([
+            "--track".into(),
+            "-b".into(),
+            branch.to_string(),
+            path.to_string(),
+            format!("origin/{branch}"),
+        ]),
+        None => args.extend(["--detach".into(), path.to_string(), base.to_string()]),
+    }
+    args
 }
 
 /// The checkout goes with its space; a changed file keeps it, and says so.
@@ -635,6 +671,24 @@ pub fn sort_spaces(repo: &Repo) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_checkout_stands_on_its_epic_or_detached_on_develop() {
+        let local = |_: &str| true;
+        let none = |_: &str| false;
+        assert_eq!(
+            checkout_args(None, "/c", "origin/develop", none).join(" "),
+            "worktree add --quiet --detach /c origin/develop"
+        );
+        assert_eq!(
+            checkout_args(Some("epic/15-b"), "/c", "origin/develop", none).join(" "),
+            "worktree add --quiet --track -b epic/15-b /c origin/epic/15-b"
+        );
+        assert_eq!(
+            checkout_args(Some("epic/15-b"), "/c", "origin/develop", local).join(" "),
+            "worktree add --quiet /c epic/15-b"
+        );
+    }
 
     fn space(id: &str, label: &str, is_linked: bool) -> Value {
         json!({ "workspace_id": id, "label": label, "worktree": { "is_linked_worktree": is_linked, "repo_key": "/r/.git" } })
