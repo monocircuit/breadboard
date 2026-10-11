@@ -6,7 +6,7 @@ Chromium tab group named like the space:
 
 | Opened by | Group |
 | --------- | ----- |
-| `pnpm wt:new` / `pnpm wt:stack` with an own stack, inside herdr: the app (`http://localhost:3000+n`) | the worktree's, `<feature>` |
+| `pnpm wt:new` / `pnpm wt:stack` with an own stack, inside herdr: the app (`http://localhost:3000+n`); not a `wt:new` of an orchestration (`--origin`, #337: its tab came to the front and passed for another worktree's try) | the worktree's, `<feature>` |
 | a click in the overview of a worktree (app, keycloak, s3, studio, storybook, issue, MR) | that worktree's |
 | a click in the main overview: a worktree's app, an MR or issue of a branch that has a worktree | that worktree's |
 | any other click in the main overview | `Monocircuit/Platform` |
