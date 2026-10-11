@@ -111,6 +111,14 @@ pub fn agent_pane_of(main: &Path, to: &Target) -> Option<Pane> {
         .find(|pane| pane.tab == tab && pane.agent.is_some())
 }
 
+/// The tab of the pane that runs the conversation `id`, None when none does.
+pub fn agent_tab_of_session(id: &str) -> Option<String> {
+    herdr::all_panes()
+        .into_iter()
+        .find(|pane| pane.session.as_deref() == Some(id))
+        .map(|pane| pane.tab)
+}
+
 /// Whether a line can go into `pane`: there is one, and its agent isn't at a question.
 pub fn can_type(pane: Option<&Pane>) -> bool {
     pane.is_some_and(|pane| pane.status.as_deref() != Some("blocked"))

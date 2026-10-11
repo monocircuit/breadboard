@@ -24,6 +24,7 @@ pub mod glab;
 pub mod herdr;
 pub mod layout_log;
 pub mod merge;
+pub mod open_agent;
 pub mod spawn;
 pub mod sync;
 pub mod tries;
