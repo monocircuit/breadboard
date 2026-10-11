@@ -51,7 +51,8 @@ You work on issue #{number} of monocircuit/platform, started by the orchestratio
    Your pushes skip CI (#357): breadboard starts your MR's pipeline once every box of the issue is ticked (after-deploy ones excepted) and `pnpm wt:check` passed at HEAD, in the runner's order; until then `wt:check` is the gate. Don't start one yourself.
    Your MR's pipeline failed: the overview types `[overview] the pipeline of !N failed: job …, <url>: …` into this tab by itself. Read the job's log (the url, or `glab ci trace <job id>`), fix what is your MR's doing and push. When the line says develop fails the same job, it isn't yours: say so in the MR (`glab mr note`) and go on, don't chase it.
    Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run `pnpm wt:wait !N … --then "<what next>"` with `run_in_background` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline; MERGE REQUESTS shows the boxes: no note, no status message.
+3. **The overview shows your work, you don't report it.** Your node in its WORKTREES shows herdr's state of your agent and what you wait for, with commits, MR and pipeline, under its title the problem from your issue's Goal or Bug and what you are on now; MERGE REQUESTS shows the boxes: no status message.
+   At every stage, `pnpm wt:action note "<one line>"`: what you are on, in plain words for the user (`cause found: …`, `fix pushed, waiting for the pipeline`, `waits for !N`). Your node shows the newer of it and the first line of your last answer.
    `SendMessage` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
    - a decision that is the user's (options, your recommendation), then wait for the answer instead of guessing; with its `decide` action posted, the message is only context: the user answers on the action's buttons, and the orchestrator relays it only while the action is open;
@@ -95,6 +96,7 @@ mod tests {
         assert!(brief.starts_with("# #12 a title\n\nYou work on issue #12 of monocircuit/platform, started by the orchestration `o` (herdr space `⇶ O`).\nYour worktree is `/r/p-12-a-title` on `feature/12-a-title`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run"));
         assert!(brief.contains("\n1. Read the issue: `glab issue view 12 --comments`, then"));
         assert!(brief.contains("Before that, `ListAgents` finds it (it works in `/r/p`)."));
+        assert!(brief.contains("\n   At every stage, `pnpm wt:action note \"<one line>\"`: what you are on"));
         assert!(brief.ends_with("read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
     }
 

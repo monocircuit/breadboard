@@ -13,6 +13,8 @@ use breadboard_core::actions::{
 use breadboard_core::git::push_state;
 use breadboard_core::lock::lock_of;
 use breadboard_core::record::{is_name, origin_of, record_file, record_of};
+use breadboard_core::said::{note_file, set_note};
+use breadboard_core::time::now_ms;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -22,6 +24,7 @@ pub const USAGE: &str = r#"usage: pnpm wt:action <kind> <text> [--url <url>]   k
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action try <what to check> --on test --url <path>   on the test instance, ready once the MR is merged and deployed
        pnpm wt:action merge <what is in it> --orchestration <name> --mr !N   the orchestrator's merge of an MR
+       pnpm wt:action note <one line>   what you are on, in plain words, under your node in WORKTREES
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list   the open actions, then the answered ones (a decision answered is taken)
        pnpm wt:action --done <id>
@@ -249,6 +252,26 @@ fn change_text(argv: &Argv) -> Result<String, String> {
     Ok(text)
 }
 
+/// `wt:action note <one line>` (#341): what the agent is on, in plain words,
+/// under its node in WORKTREES; no action, nothing for the human to click.
+fn note(argv: &Argv, here: &Here) -> Outcome {
+    let Some(dir) = here.worktree() else {
+        return Err("a note is for a worktree's agent: run it inside its worktree".into());
+    };
+    let text = text_of(argv);
+    let Some(line) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return Err("what are you on? pnpm wt:action note \"<one line>\"".into());
+    };
+    set_note(dir, line, now_ms())
+        .map_err(|error| format!("{} could not be written: {error}", note_file(dir).display()))?;
+    let shown = match origin_of(dir) {
+        Some(origin) => format!("under its node in WORKTREES of ⇶ {}", origin.name),
+        None => "noted (no orchestration shows it)".into(),
+    };
+    say(&format!("\n✓ {shown}: {line}\n"));
+    Ok(ExitCode::SUCCESS)
+}
+
 pub fn run(argv: &Argv) -> Outcome {
     // Refused before anything is written: Node dropped a flag it didn't know and posted.
     if argv.check(&TAKES)? {
@@ -262,6 +285,9 @@ pub fn run(argv: &Argv) -> Outcome {
     let here = Here::find();
     if kind == Some("change") {
         return change::run(argv, &here, &change_text(argv)?);
+    }
+    if kind == Some("note") {
+        return note(argv, &here);
     }
     let (file, name) = where_of(argv, &here)?;
     intact(&file, &here)?;
@@ -330,12 +356,12 @@ pub fn run(argv: &Argv) -> Outcome {
         return Err(match kind {
             // A word that is no kind says which it likely is, the usage's 11 lines would bury it.
             Some(word) => {
-                let kinds: Vec<&str> = ACTION_KINDS.iter().copied().chain(["change"]).collect();
+                let kinds: Vec<&str> = ACTION_KINDS.iter().copied().chain(["change", "note"]).collect();
                 let meant = nearest(word, &kinds)
                     .map(|meant| format!(": did you mean {meant}?"))
                     .unwrap_or_default();
                 format!(
-                    "{word} is no kind of action{meant} (merge, try, decide, look, plan, change)\n{}",
+                    "{word} is no kind of action{meant} (merge, try, decide, look, plan, change, note)\n{}",
                     TAKES.after_error()
                 )
             }

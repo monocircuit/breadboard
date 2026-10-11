@@ -408,13 +408,15 @@ fn herdr_unanswered(why: &str, worker: &str) -> Fail {
     ))
 }
 
-/// Why an agent can't take a next issue, or None: no pane runs it, it works
-/// or waits, herdr can't tell, or its context `share` is above `limit`.
-pub fn refusal_of(pane: Option<&Value>, share: Option<f64>, limit: f64) -> Option<String> {
-    let Some(pane) = pane else {
-        return Some("no claude runs it (herdr knows no pane with its conversation)".into());
+/// Why an agent can't take a next issue, or None: no pane runs it (a free
+/// agent sleeps without one, #345), it works or waits, herdr can't tell, or
+/// its context `share` is above `limit`.
+pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit: f64) -> Option<String> {
+    let status = match pane {
+        Some(pane) => pane.get("agent_status").and_then(Value::as_str).unwrap_or("unknown"),
+        None if is_free => "idle",
+        None => return Some("no claude runs it (herdr knows no pane with its conversation)".into()),
     };
-    let status = pane.get("agent_status").and_then(Value::as_str).unwrap_or("unknown");
     match status {
         "working" => return Some("it is working".into()),
         "blocked" => return Some("it waits for an answer".into()),
@@ -974,7 +976,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let pane =
         as_step(&idle, || pane_of_conversation(&worker.id)).map_err(|why| herdr_unanswered(&why, &worker.name))?;
     let share = context_share_of(&worker.id);
-    let refusal = refusal_of(pane.as_ref(), share, limit);
+    let refusal = refusal_of(pane.as_ref(), worker.is_free, share, limit);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
     // The handover fails: in the agent's history (not on a dry run), then said.
@@ -1089,7 +1091,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             ));
         }
     };
-    if let Some(now) = refusal_of(pane.as_ref(), None, limit) {
+    if let Some(now) = refusal_of(pane.as_ref(), worker.is_free, None, limit) {
         let why = format!(
             "after the setup, {} {}",
             worker.name,
@@ -1102,7 +1104,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             undone(is_gone, &issue)
         ));
     }
-    if pane.is_none() {
+    if pane.is_none() && !worker.is_free {
         return fail("herdr lost the agent's pane");
     }
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
@@ -1381,23 +1383,29 @@ mod tests {
     fn refuses_an_agent_at_work_or_full() {
         let pane = |status: &str| json!({ "agent_status": status });
         assert_eq!(
-            refusal_of(None, None, 0.5).unwrap(),
+            refusal_of(None, false, None, 0.5).unwrap(),
             "no claude runs it (herdr knows no pane with its conversation)"
         );
-        assert_eq!(refusal_of(Some(&pane("working")), None, 0.5).unwrap(), "it is working");
         assert_eq!(
-            refusal_of(Some(&pane("blocked")), None, 0.5).unwrap(),
+            refusal_of(Some(&pane("working")), false, None, 0.5).unwrap(),
+            "it is working"
+        );
+        assert_eq!(
+            refusal_of(Some(&pane("blocked")), false, None, 0.5).unwrap(),
             "it waits for an answer"
         );
         assert_eq!(
-            refusal_of(Some(&json!({})), None, 0.5).unwrap(),
+            refusal_of(Some(&json!({})), false, None, 0.5).unwrap(),
             "herdr can't tell what it does (unknown)"
         );
         assert_eq!(
-            refusal_of(Some(&pane("idle")), Some(0.62), 0.5).unwrap(),
+            refusal_of(Some(&pane("idle")), false, Some(0.62), 0.5).unwrap(),
             "its context is at 62 %, above the limit of 50 %"
         );
-        assert_eq!(refusal_of(Some(&pane("done")), Some(0.4), 0.5), None);
+        assert_eq!(refusal_of(Some(&pane("done")), false, Some(0.4), 0.5), None);
+        // A free agent sleeps without a pane (#345): it takes one, unless full.
+        assert_eq!(refusal_of(None, true, Some(0.4), 0.5), None);
+        assert!(refusal_of(None, true, Some(0.62), 0.5).is_some());
     }
 
     #[test]
