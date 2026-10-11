@@ -489,6 +489,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     let dir = tree.dir.clone();
     let file = actions_file(&dir);
     tree.claude = read_claude(&dir);
+    tree.note = crate::said::note_of(&dir);
     tree.left = left_in(&dir, claudes, bound_session(&dir).as_deref());
     tree.actions = actions_of(&file);
     tree.answered = answered_of(&file);
@@ -503,6 +504,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.behind = behind_develop(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
     tree.wait = wait_of(&dir);
+    tree.merge_turn = crate::model::merge_turn::turn_record_of(&dir);
     let push = push_state(&dir, Some(&tree.branch));
     tree.pushed = push.pushed;
     tree.unpushed = push.unpushed;

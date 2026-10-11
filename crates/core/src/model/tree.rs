@@ -17,6 +17,7 @@ use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
+use super::merge_turn::MergeTurn;
 use super::numbering::numbers_of;
 use super::order::Go;
 use super::workers::{Suggestion, TRIES_AGAIN};
@@ -25,6 +26,7 @@ use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
+use crate::said::{Now, now_of};
 use crate::setups::Setup;
 use crate::time::{ago, clock, parse_iso};
 use crate::wait::waits_text;
@@ -65,6 +67,8 @@ pub struct LifeFacts<'a> {
     /// The automatic wt:remove of its worktree.
     pub removal: Option<&'a Removal>,
     pub merged: Option<&'a HashSet<i64>>,
+    /// Its MR's merge turn (merge_turn.rs): offered, waits for other MRs, lacks.
+    pub turn: Option<&'a MergeTurn>,
     pub setup: Option<&'a Setup>,
     pub handover: Option<&'a NextIssue>,
     pub checks: &'a [String],
@@ -117,6 +121,7 @@ pub fn lifecycle_of(issue: &Entry, facts: &LifeFacts) -> Lifecycle {
             merged: facts.merged,
             handover: facts.handover,
             checks: facts.checks,
+            turn: facts.turn,
         },
     );
     if key == "free" && tree.claude.is_none() && facts.status.is_none() {
@@ -284,6 +289,11 @@ pub struct Node {
     pub migrations_at: i64,
     pub docker_at: i64,
     pub title: String,
+    /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
+    /// only where its worktree is.
+    pub problem: Option<String>,
+    /// What its agent is on now (#341): its note or its last answer's first line.
+    pub now: Option<Now>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -374,6 +384,8 @@ pub struct TreeFacts<'a> {
     pub has_remote: bool,
     pub known: &'a Known,
     pub merged: Option<&'a HashSet<i64>>,
+    /// The open MRs' turns by issue, None before GitLab answered.
+    pub turns: Option<&'a super::orchestration::Turns>,
     pub setups: &'a [Setup],
     pub now: i64,
 }
@@ -713,6 +725,10 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                         .map(String::as_str),
                     removal: tree.and_then(|tree| facts.removals.and_then(|removals| removals.get(&tree.dir))),
                     merged: facts.merged,
+                    turn: issue
+                        .number
+                        .and_then(|number| facts.turns.and_then(|turns| turns.get(&number)))
+                        .map(|(_, turn)| turn),
                     setup: tree.and_then(|tree| {
                         facts
                             .setups
@@ -794,6 +810,15 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .map(|found| found.title.clone())
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
+                problem: tree.and(found).and_then(|found| found.problem.clone()),
+                now: tree.and_then(|tree| {
+                    let claude = tree.claude.as_ref();
+                    now_of(
+                        tree.note.as_ref(),
+                        claude.and_then(|claude| claude.answer.as_deref()),
+                        claude.and_then(|claude| claude.answer_at.or(claude.at)),
+                    )
+                }),
                 go,
             }
         })
@@ -977,6 +1002,7 @@ mod tests {
                 &LifeFacts {
                     mr: Some(&mr),
                     status: Some("idle"),
+                    turn: Some(&MergeTurn::Offered),
                     ..Default::default()
                 }
             )
@@ -1000,6 +1026,7 @@ mod tests {
             &LifeFacts {
                 mr: Some(&draft),
                 status: Some("idle"),
+                turn: Some(&MergeTurn::Offered),
                 ..Default::default()
             },
         );
@@ -1758,6 +1785,8 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: String::new(),
+            problem: None,
+            now: None,
             go: Go::Nothing,
         }
     }
