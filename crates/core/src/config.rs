@@ -24,6 +24,7 @@ pub struct Config {
     /// The dev stack of a checkout; None: worktrees have none.
     pub stack: Option<Stack>,
     pub mr: Mr,
+    pub tries: Tries,
     pub check: Check,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
     pub changelog: Option<Changelog>,
@@ -190,6 +191,32 @@ impl Default for Mr {
         Mr {
             template: ".gitlab/merge_request_templates/Default.md".into(),
             tests: Vec::new(),
+        }
+    }
+}
+
+/// A `try --on test`: the test instance a merge deploys to, and the jobs of
+/// the default branch's pipeline that deploy it.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tries {
+    /// The variable (the environment's, else the main checkout's env file) with the test instance's origin.
+    pub test_origin_env: String,
+    /// The jobs that deploy; the pipeline's others don't hold a try.
+    pub deploy_jobs: Vec<String>,
+    /// The last of them; None: the pipeline passing is the deploy.
+    pub deploy_job: Option<String>,
+    /// The last step where a pipeline has no `deploy_job`.
+    pub publish_job: Option<String>,
+}
+
+impl Default for Tries {
+    fn default() -> Self {
+        Tries {
+            test_origin_env: "TEST_ORIGIN".into(),
+            deploy_jobs: Vec::new(),
+            deploy_job: None,
+            publish_job: None,
         }
     }
 }

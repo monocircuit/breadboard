@@ -581,12 +581,13 @@ pub fn free_agents(record: Option<&record::Record>) -> Vec<(record::Worker, f64)
         .unwrap_or_default()
 }
 
-/// The origin of the test instance: `$VITA_TEST_ORIGIN`, else in the main checkout's .env.local (try.mjs `testOrigin`).
+/// The origin of the test instance: `$<[tries] test_origin_env>`, else in the main checkout's env file (try.mjs `testOrigin`).
 pub fn test_origin(main: &Path) -> Option<String> {
-    let origin = std::env::var("VITA_TEST_ORIGIN")
+    let variable = crate::config::of(main).config.tries.test_origin_env.clone();
+    let origin = std::env::var(&variable)
         .ok()
         .filter(|origin| !origin.is_empty())
-        .or_else(|| read_env(&env_file_of(main)).and_then(|env| env.get("VITA_TEST_ORIGIN").cloned()))?;
+        .or_else(|| read_env(&env_file_of(main)).and_then(|env| env.get(&variable).cloned()))?;
     Some(origin.trim().trim_end_matches('/').to_string()).filter(|origin| !origin.is_empty())
 }
 

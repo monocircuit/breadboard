@@ -29,6 +29,9 @@ as `breadboard <command>`, and there is no stack.
 | `run` | `breadboard` | how a command is shown to type: `<run> wt:new`. `pnpm` where the root `package.json` has the commands as scripts |
 | `name` | the GitLab project of `origin` | how the repo is named in briefs and errors |
 
+The GitLab project is always `origin`'s (its URL's host and path), as glab
+finds it too.
+
 ## `[herdr]`
 
 How the repo shows in herdr, one plugin per repo.
@@ -128,6 +131,21 @@ WHERE and a herdr tab of its name.
 | --- | ------- | ------------ |
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
+
+## `[tries]`
+
+A `try --on test` waits for the merge's deployment to the test instance, then
+opens its path there.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `test_origin_env` | `TEST_ORIGIN` | the variable with the test instance's origin: the environment's, else the main checkout's env file |
+| `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
+| `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
+| `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
+
+A deploy counts as done 90 s after its last job passed (the host pulls and
+starts the image).
 
 ## `[check]`
 
