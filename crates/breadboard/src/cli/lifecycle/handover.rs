@@ -1066,6 +1066,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             let why = format!("its worktree failed: {reason}");
             undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
             record_failure(repo, name, &worker.id, number, &why);
+            alarm(repo, name, &format!("#{number} did not go to {}: {why}", worker.name));
             return fail(format!("#{number} {}: {reason}", issue.feature));
         }
     }
@@ -1141,6 +1142,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         let why = format!("{} was not restarted in its worktree: {why}", worker.name);
         let is_gone = undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
         record_failure(repo, name, &worker.id, number, &why);
+        alarm(repo, name, &format!("#{number} did not go to {why}"));
         return fail(format!("{why}; {}{queued}", undone(is_gone, &issue)));
     }
     record_handover(repo, name, &worker, &issue);
@@ -1173,6 +1175,13 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             // Its claude ended and runs nowhere: the one shell line that resumes it, into a shell.
             step(&format!("resume it from a shell of the space {feature}:"));
             println!("    {command}");
+            alarm(
+                repo,
+                name,
+                &format!(
+                    "{feature}'s claude ended, but {why}: its conversation runs nowhere, run in a shell of its space: {command}"
+                ),
+            );
             fail(format!(
                 "#{number} {feature} is {}'s, its claude ended, but {why}: its conversation runs nowhere until the line above runs in a shell",
                 worker.name
@@ -1180,6 +1189,17 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         }
         Err(restart::Failed::Before(_)) => unreachable!("returned above"),
     }
+}
+
+/// A handover that failed after its start, in ACTIONS of the orchestration
+/// (#335): a ✗ of a background run is easily missed, a `look` stays.
+fn alarm(repo: &Repo, name: &str, text: &str) {
+    let action = breadboard_core::actions::NewAction {
+        kind: "look".into(),
+        text: text.into(),
+        ..Default::default()
+    };
+    let _ = breadboard_core::actions::add_action(&record::record_file(&repo.main, name), action);
 }
 
 /// The space of `dir`, waited for a while: wt:new's layout may lag behind it.
