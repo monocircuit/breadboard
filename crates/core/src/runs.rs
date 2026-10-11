@@ -171,6 +171,25 @@ pub fn enqueue(main: &Path, event: Event) -> std::io::Result<()> {
     change_queue(main, |queue| queue.events.push(event))
 }
 
+/// A line queued for the agent of the worktree `dir`: its session the one
+/// bound there (`.claude/herdr-session`), its name the worktree's feature.
+/// NotFound when no session is bound. The daemon is woken by the caller
+/// (`daemon::client::wake_runs`).
+pub fn enqueue_line(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> {
+    let session = crate::conversations::bound_session(dir)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no session bound to the worktree"))?;
+    enqueue(
+        main,
+        Event {
+            session,
+            dir: dir.to_path_buf(),
+            name: crate::git::feature_of(main, dir),
+            line: line.to_string(),
+            at: crate::time::now_ms(),
+        },
+    )
+}
+
 /// The lines of one run, in the order they came; a line that came twice in
 /// a row (a retry of the same tell) once.
 pub fn prompt_of(events: &[Event]) -> String {
@@ -192,6 +211,15 @@ pub fn room_for(available: Option<u64>, starting: usize) -> usize {
     };
     let left = available.saturating_sub(RESERVE + RUN * starting as u64);
     (left / RUN) as usize
+}
+
+/// The memory free for runs: `MemAvailable` of `/proc/meminfo`, or of the
+/// file `BREADBOARD_MEMINFO` names (a test's low memory).
+pub fn available() -> Option<u64> {
+    match std::env::var_os("BREADBOARD_MEMINFO") {
+        Some(file) => crate::model::memory::available_in(&std::fs::read_to_string(file).ok()?),
+        None => crate::model::memory::free_memory(),
+    }
 }
 
 /// A worktree's place in its orchestration's merge order (`wt:plan`, the
