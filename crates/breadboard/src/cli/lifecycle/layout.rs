@@ -217,7 +217,7 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
     for name in orchestrations {
-        orchestrator_space(repo, &name, should_resume);
+        orchestrator_space(repo, &name);
         if let Some(resumed) = should_resume.then(|| restore_chat(repo, &name)).flatten() {
             report.push(format!("{}: {resumed}", repo.orchestrator_label(&name)));
         }
