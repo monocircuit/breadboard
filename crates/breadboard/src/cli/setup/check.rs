@@ -25,13 +25,20 @@ const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
 /// sources, never because develop was merged in or a package it depends on
 /// changed. They run through herdr/cargo.sh, in the clone's shared target/.
 const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
-/// The Rust sources of breadboard, as the launcher keys its builds on them.
-const RUST_SOURCES: [&str; 5] = [
+/// The Rust sources of breadboard, as the launcher keys its builds on them
+/// (herdr/breadboard.sh `sources`: the crates and what they embed).
+const RUST_SOURCES: [&str; 11] = [
     "packages/breadboard/crates",
     "packages/breadboard/hooks",
+    "packages/breadboard/claude",
+    "packages/breadboard/herdr/herdr-plugin.toml",
+    "packages/breadboard/herdr/keys.toml",
+    "packages/breadboard/herdr/config.toml",
+    "packages/breadboard/herdr/breadboard.sh",
+    "packages/breadboard/nvim",
+    "packages/breadboard/chromium",
     "packages/breadboard/Cargo.toml",
     "packages/breadboard/Cargo.lock",
-    "packages/breadboard/rustfmt.toml",
 ];
 
 /// What a check runs: turbo's tasks and the filters of the packages they run in.
