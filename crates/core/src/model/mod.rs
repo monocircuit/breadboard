@@ -18,6 +18,7 @@ pub mod history;
 pub mod memory;
 pub mod merge;
 pub mod merge_order;
+pub mod merge_turn;
 pub mod mr_blockers;
 pub mod next;
 pub mod numbering;

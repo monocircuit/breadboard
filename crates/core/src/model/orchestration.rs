@@ -8,8 +8,9 @@ use super::auto_actions::{AutoFacts, Removal, Tell, auto_actions_of, conflicts_o
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
-use super::merge::{blockers_of, checks_of, to_check_of};
+use super::merge::{blockers_of, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
+use super::merge_turn::{MergeTurn, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, progress_of, row_blockers_of};
 use super::next::{IssueState, Next, NextMerge, next_of, nothing_text, stale_of, updated_plan, why_of};
 use super::order::{Go, Item, MergeOffer, Target, order_actions, place_in};
@@ -213,16 +214,47 @@ fn of<'a>(remote: Option<&'a Remote>, issue: &Entry) -> &'a BranchRemote {
     remote.map(|remote| remote.of(&issue.branch)).unwrap_or(&NONE)
 }
 
-/// Whether a posted merge shows in ACTIONS: not once its MR is merged, nor
-/// while a try or an acceptance box is open (#280).
-fn is_merge_offered(issue: &Entry, part: &BranchRemote) -> bool {
-    let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
-    let (actions, answered) = issue
-        .tree
-        .as_ref()
-        .map(|tree| (&tree.actions[..], &tree.answered[..]))
-        .unwrap_or((&[], &[]));
-    !part.mr.as_ref().is_some_and(Mr::is_merged) && checks_of(boxes, actions, answered).is_empty()
+/// Each open MR's row reasons and merge turn (merge_turn.rs), by its issue:
+/// the one rule of what is offered and what waits (#344).
+pub type Turns = HashMap<i64, (Vec<Reason>, MergeTurn)>;
+
+/// The turn of an issue's MR; None without an open one (merged, none, GitLab not read yet).
+fn turn_of<'a>(issue: &Entry, turns: &'a Turns) -> Option<&'a MergeTurn> {
+    issue.number.and_then(|number| turns.get(&number)).map(|(_, turn)| turn)
+}
+
+/// Whether a merge shows in ACTIONS, posted or automatic: only while its
+/// turn says offered: not once merged, nor while a try or a box is open
+/// (#280), nor while it comes after another MR (#344).
+fn is_merge_offered(issue: &Entry, turns: &Turns) -> bool {
+    turn_of(issue, turns) == Some(&MergeTurn::Offered)
+}
+
+/// The turns of the open MRs, from their row's reasons.
+fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
+    let Some(remote) = remote else { return Turns::new() };
+    let after_of: HashMap<i64, &[super::merge_order::After]> =
+        order.open.iter().map(|item| (item.number, &item.after[..])).collect();
+    let mut turns = Turns::new();
+    for issue in issues {
+        let Some(number) = issue.number else { continue };
+        let part = remote.of(&issue.branch);
+        let Some(mr) = part.mr.as_ref().filter(|mr| mr.is_open()) else {
+            continue;
+        };
+        let tree = issue.tree.as_ref();
+        let verdict = merge_verdict_of(
+            mr,
+            part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]),
+            tree.map(|tree| tree.behind).unwrap_or(0),
+            after_of.get(&number).copied().unwrap_or(&[]),
+            &part.jobs,
+            tree,
+            done,
+        );
+        turns.insert(number, verdict);
+    }
+    turns
 }
 
 /// The open MRs after `number` in the merge order, the issue next first (merge.mjs `openAfter`).
@@ -289,11 +321,13 @@ fn page_of(url: &str, offset: i64) -> String {
 }
 
 /// Every open action, posted and automatic, split into ACTIONS and UP NEXT.
+#[allow(clippy::too_many_arguments)]
 fn actions_of(
     local: &OrchestrationLocal,
     issues: &[Entry],
     remote: Option<&Remote>,
     order: &MergeOrder,
+    turns: &Turns,
     workers: &super::workers::WorkerActions,
     state: &ViewState,
     now: i64,
@@ -307,7 +341,7 @@ fn actions_of(
                 .iter()
                 .find(|issue| of(remote, issue).mr.as_ref().is_some_and(|mr| mr.iid == iid))
         });
-        if issue.is_some_and(|issue| !is_merge_offered(issue, of(remote, issue))) {
+        if issue.is_some_and(|issue| !is_merge_offered(issue, turns)) {
             continue;
         }
         let file = local.record_file.clone();
@@ -359,7 +393,7 @@ fn actions_of(
         let mr = part.mr.as_ref();
         let file = crate::actions::actions_file(&tree.dir);
         for action in &tree.actions {
-            if action.kind == "merge" && !is_merge_offered(issue, part) {
+            if action.kind == "merge" && !is_merge_offered(issue, turns) {
                 continue;
             }
             let try_state = is_try(action).then(|| {
@@ -416,12 +450,11 @@ fn actions_of(
             items.push(item);
         }
     }
-    // Drafts nothing but the draft holds up, next in the merge order (#242).
-    let ready_drafts: HashSet<i64> = order
-        .open
+    // Drafts whose merge is offered: nothing but the draft holds them up (#242, #344).
+    let ready_drafts: HashSet<i64> = issues
         .iter()
-        .filter(|item| item.hold_up.len() == 1 && item.hold_up[0] == "draft")
-        .map(|item| item.number)
+        .filter(|issue| is_merge_offered(issue, turns) && of(remote, issue).mr.as_ref().is_some_and(|mr| mr.is_draft))
+        .filter_map(|issue| issue.number)
         .collect();
     let auto = auto_actions_of(
         issues,
@@ -437,6 +470,10 @@ fn actions_of(
     );
     for mut item in auto {
         let issue = issues.iter().find(|issue| Some(&issue.branch) == item.branch.as_ref());
+        // The overview's own merge follows the same rule as a posted one.
+        if item.kind == "merge" && !issue.is_some_and(|issue| is_merge_offered(issue, turns)) {
+            continue;
+        }
         if item.key.ends_with(":remove")
             && issue
                 .and_then(|issue| issue.tree.as_ref())
@@ -460,7 +497,7 @@ fn actions_of(
     }
     items.extend(workers.actions.iter().cloned());
     // The end: once all is merged and no worktree is left.
-    let has_next_merge = next_merge(issues, remote, order).is_some();
+    let has_next_merge = next_merge(issues, remote, order, turns).is_some();
     if remote.is_some() && local.trees.is_empty() && !issues.iter().any(|issue| issue.is_queued) && !has_next_merge {
         items.push(Item {
             key: format!("end:{}", local.name),
@@ -512,7 +549,7 @@ fn actions_of(
 }
 
 /// The MR next in the merge order: the first nothing holds up, else the first and what holds it.
-fn next_merge(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> Option<NextMerge> {
+fn next_merge(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, turns: &Turns) -> Option<NextMerge> {
     let with_mr = |number: i64| {
         issues
             .iter()
@@ -524,7 +561,15 @@ fn next_merge(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> 
         .iter()
         .filter(|item| with_mr(item.number).is_some())
         .collect();
-    let ready: Vec<_> = open.iter().filter(|item| item.hold_up.is_empty()).collect();
+    // Ready: its merge is offered, the same rule as ACTIONS (#344).
+    let ready: Vec<_> = open
+        .iter()
+        .filter(|item| {
+            turns
+                .get(&item.number)
+                .is_some_and(|(_, turn)| *turn == MergeTurn::Offered)
+        })
+        .collect();
     let first = ready.first().copied().or(open.first())?;
     let issue = with_mr(first.number)?;
     let mr = of(remote, issue).mr.as_ref()?;
@@ -551,10 +596,12 @@ fn merged_when(at: i64, now: i64) -> String {
 }
 
 /// MERGE REQUESTS: the open ones as a graph in the merge order, the merged below.
+#[allow(clippy::too_many_arguments)]
 fn merge_requests_of(
     issues: &[Entry],
     remote: &Remote,
     order: &MergeOrder,
+    turns: &Turns,
     agents: &HashMap<String, Agent>,
     resolves: &mut Resolves,
     done: &HashSet<i64>,
@@ -582,6 +629,8 @@ fn merge_requests_of(
         let behind = tree.map(|tree| tree.behind).unwrap_or(0);
         let reasons = if is_merged {
             Vec::new()
+        } else if let Some((reasons, _)) = issue.number.and_then(|number| turns.get(&number)) {
+            reasons.clone()
         } else {
             let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
             let after = issue
@@ -847,15 +896,35 @@ pub fn orchestration_of(
     .unwrap_or_default();
     model.orders = workers.orders.clone();
     model.holds = workers.holds.clone();
+    // The MRs a wait may name that are over already: the orchestration's own and the awaited (#262).
+    let mut done: HashSet<i64> = HashSet::new();
+    let mut merged: HashSet<i64> = HashSet::new();
+    for issue in &issues {
+        if let Some(mr) = of(remote, issue).mr.as_ref().filter(|mr| !mr.is_open()) {
+            done.insert(mr.iid);
+            if mr.is_merged() {
+                merged.insert(mr.iid);
+            }
+        }
+    }
+    for (iid, found) in remote.map(|remote| &remote.awaited).into_iter().flatten() {
+        if found != "opened" {
+            done.insert(*iid);
+            if found == "merged" {
+                merged.insert(*iid);
+            }
+        }
+    }
+    let turns = turns_of(&issues, remote, &order, &done);
     model.actions = section("ACTIONS", || {
-        actions_of(local, &issues, remote, &order, &workers, state, now)
+        actions_of(local, &issues, remote, &order, &turns, &workers, state, now)
     });
     model.stale = if remote.is_some() {
         stale_of(plan, &states_of(&issues, remote), order.is_off_plan)
     } else {
         Vec::new()
     };
-    let merge = remote.and_then(|_| next_merge(&issues, remote, &order));
+    let merge = remote.and_then(|_| next_merge(&issues, remote, &order, &turns));
     model.next = section("NEXT", || {
         let (actions, up_next) = match &model.actions {
             Ok(section) => (&section.actions[..], &section.up_next[..]),
@@ -886,25 +955,6 @@ pub fn orchestration_of(
         };
         NextSection { band, why }
     });
-    // The MRs a wait may name that are over already: the orchestration's own and the awaited (#262).
-    let mut done: HashSet<i64> = HashSet::new();
-    let mut merged: HashSet<i64> = HashSet::new();
-    for issue in &issues {
-        if let Some(mr) = of(remote, issue).mr.as_ref().filter(|mr| !mr.is_open()) {
-            done.insert(mr.iid);
-            if mr.is_merged() {
-                merged.insert(mr.iid);
-            }
-        }
-    }
-    for (iid, found) in remote.map(|remote| &remote.awaited).into_iter().flatten() {
-        if found != "opened" {
-            done.insert(*iid);
-            if found == "merged" {
-                merged.insert(*iid);
-            }
-        }
-    }
     let merge_numbers: Vec<i64> = order.open.iter().map(|item| item.number).collect();
     model.worktrees = section("WORKTREES", || {
         worktrees_of(
@@ -923,6 +973,7 @@ pub fn orchestration_of(
                 has_remote: remote.is_some(),
                 known,
                 merged: Some(&merged),
+                turns: Some(&turns),
                 setups: &local.setups,
                 now,
             },
@@ -935,7 +986,7 @@ pub fn orchestration_of(
     if let Some(remote) = remote {
         let resolves = &mut state.resolves;
         model.merge_requests = section("MERGE REQUESTS", || {
-            merge_requests_of(&issues, remote, &order, &local.agents, resolves, &done, now)
+            merge_requests_of(&issues, remote, &order, &turns, &local.agents, resolves, &done, now)
         });
     }
     model
@@ -1051,6 +1102,100 @@ mod tests {
             .into(),
             ..Default::default()
         }
+    }
+
+    /// #344, !324 of one-codebase: done itself, behind another MR in the merge order.
+    fn behind_another() -> (OrchestrationLocal, Remote) {
+        let mut local = local();
+        let files: std::collections::BTreeSet<String> = ["package.json".to_string()].into();
+        for tree in &mut local.trees {
+            tree.files = files.clone();
+            tree.pushed = Some("a".into());
+        }
+        // Its agent posted the merge anyway: no merge is offered while it waits.
+        local.trees[1].actions = vec![Action {
+            id: 1,
+            kind: "merge".into(),
+            text: "the work".into(),
+            ..Default::default()
+        }];
+        let mut remote = remote();
+        let draft = |iid: i64, branch: &str, status: &str| Mr {
+            is_draft: true,
+            merge_status: Some("draft_status".into()),
+            pipeline: Some(Pipeline {
+                status: status.into(),
+                sha: Some("a".into()),
+                ..Default::default()
+            }),
+            ..mr(iid, branch, "opened", status)
+        };
+        remote.of.get_mut("feature/1-one").unwrap().mr = Some(draft(11, "feature/1-one", "running"));
+        remote.of.get_mut("feature/2-two").unwrap().mr = Some(draft(12, "feature/2-two", "success"));
+        (local, remote)
+    }
+
+    #[test]
+    fn a_done_mr_behind_another_never_waits_for_you() {
+        let (local, remote) = behind_another();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        let actions = model.actions.unwrap();
+        assert!(
+            !actions.actions.iter().any(|item| item.kind == "merge"),
+            "{:?}",
+            actions.actions
+        );
+        let next = model.next.unwrap();
+        assert!(
+            matches!(&next.band, NextBand::Nothing(text) if text.contains("next merge: !11")),
+            "{:?}",
+            next.band
+        );
+        let worktrees = model.worktrees.unwrap();
+        let two = worktrees.tree.live.iter().find(|node| node.name == "2-two").unwrap();
+        assert_eq!(two.state.text, "waits for !11");
+        let mrs = model.merge_requests.unwrap();
+        let row = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert_eq!(
+            row.reasons
+                .iter()
+                .map(|reason| format!("{} → {}", reason.text, reason.who))
+                .collect::<Vec<_>>(),
+            ["draft: mark ready → agent", "after !11 (shares package.json) → !11"]
+        );
+    }
+
+    #[test]
+    fn its_merge_is_offered_once_the_one_before_is_merged() {
+        let (local, mut remote) = behind_another();
+        remote.of.get_mut("feature/1-one").unwrap().mr = Some(mr(11, "feature/1-one", "merged", "success"));
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        let actions = model.actions.unwrap();
+        assert_eq!(
+            actions
+                .actions
+                .iter()
+                .filter(|item| item.kind == "merge")
+                .map(|item| item.who.as_str())
+                .collect::<Vec<_>>(),
+            ["2-two"]
+        );
+        let worktrees = model.worktrees.unwrap();
+        let two = worktrees.tree.live.iter().find(|node| node.name == "2-two").unwrap();
+        assert_eq!(two.state.text, "waits for you: merge");
+        let mrs = model.merge_requests.unwrap();
+        let row = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert_eq!(row.reasons[0].who, "you");
     }
 
     #[test]

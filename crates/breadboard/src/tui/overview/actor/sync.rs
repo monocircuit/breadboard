@@ -540,6 +540,8 @@ fn report_states(
                 merged: Some(&merged),
                 handover: handover.as_ref(),
                 checks: &checks,
+                // The merge order isn't known here: never `waits for you: merge` from the pipeline alone (#344).
+                turn: None,
             };
             match line_of(&tree, &facts, lab) {
                 Some(line) => {
