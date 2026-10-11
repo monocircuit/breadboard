@@ -2,7 +2,8 @@
 //! check.mjs `checkGate`): the git pre-push hook in Rust. It refuses a push
 //! to the branch of a merged or closed MR (#184) and one of a commit
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
-//! Same texts as the Node hook: an agent reads them and acts on them.
+//! Same texts as the Node hook: an agent reads them and acts on them. It
+//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`).
 
 use super::check::{self, Failure};
 use super::gitlab;
@@ -243,6 +244,10 @@ pub fn command(words: &[String]) -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &super::repo::cwd())
         .text()
         .to_string();
+    // From the next push on: git read this one's options before the hook ran.
+    if let Some(said) = breadboard_core::ci::set_push_option(Path::new(&dir)) {
+        errln!("breadboard: {said}, from the next push on");
+    }
     let mut refusals = check_push(&refs);
     refusals.extend(check_gate(&refs, Path::new(&dir)));
     if refusals.is_empty() {

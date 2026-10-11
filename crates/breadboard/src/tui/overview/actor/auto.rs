@@ -58,6 +58,8 @@ pub struct Auto {
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
+    /// What the CI queue was last told of this orchestration (#357).
+    published: Option<breadboard_core::ci::Published>,
 }
 
 /// `key` remembered as sent in the worktree's `.claude/overview-sent.json`, newest 50.
@@ -124,6 +126,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         super::merge::retry_lines(&app.actor, dirs);
     }
     if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
+        publish_ci(app, &name, &model);
         tell(app, &model.tells, &local.agents);
         if is_remote {
             deliver_waits(app, &local, remote);
@@ -138,6 +141,20 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     notify_new(app, &model);
     if is_changed {
         app.redraw();
+    }
+}
+
+/// The orchestration's merge order for the CI queue (#357), written when it changed.
+fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
+    let Some(published) = model.ci_published.as_ref() else {
+        return;
+    };
+    if app.actor.auto.published.as_ref() == Some(published) {
+        return;
+    }
+    let file = breadboard_core::ci::order_file(&app.actor.main, name);
+    if breadboard_core::ci::write_whole(&file, published).is_ok() {
+        app.actor.auto.published = Some(published.clone());
     }
 }
 

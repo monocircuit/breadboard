@@ -42,6 +42,50 @@ fn is_waiting(status: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// The pushes
+// ---------------------------------------------------------------------------
+
+/// What a worktree's pushes carry, set so (#357): `ci.skip` in its own
+/// config (`git config --worktree push.pushOption`), the queue starts its
+/// pipelines; none with `git config breadboard.ci push`. The main checkout
+/// is left alone: develop's pipelines deploy. Says what changed, None when nothing did.
+pub fn set_push_option(dir: &Path) -> Option<String> {
+    let git = |args: &[&str]| crate::git::git(dir, args);
+    let dirs = git(&["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+    let mut lines = dirs.lines();
+    let (own, common) = (lines.next()?, lines.next()?);
+    if !dirs.is_ok || own == common {
+        return None;
+    }
+    let is_queued = git(&["config", "--get", MODE_KEY]).out() != "push";
+    let options = git(&["config", "--get-all", "push.pushOption"]);
+    let has_skip = options.lines().any(|line| line.trim() == SKIP_OPTION);
+    if is_queued == has_skip {
+        return None;
+    }
+    if !is_queued {
+        git(&[
+            "config",
+            "--worktree",
+            "--unset-all",
+            "push.pushOption",
+            &format!("^{SKIP_OPTION}$"),
+        ]);
+        return Some("pushes start their pipelines (breadboard.ci = push)".into());
+    }
+    // A config of the worktree's own needs git's extension, once for the clone.
+    if git(&["config", "--get", "extensions.worktreeConfig"]).out() != "true" {
+        git(&["config", "extensions.worktreeConfig", "true"]);
+    }
+    let set = git(&["config", "--worktree", "--add", "push.pushOption", SKIP_OPTION]);
+    Some(if set.is_ok {
+        "pushes skip CI, breadboard's queue starts the pipelines (#357)".into()
+    } else {
+        format!("! pushes still start their pipelines: {}", set.stderr.trim())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The files
 // ---------------------------------------------------------------------------
 
@@ -95,6 +139,11 @@ pub enum Place {
 }
 
 impl Place {
+    /// Waiting for its pipeline: next or held.
+    pub fn is_waiting(&self) -> bool {
+        matches!(self, Place::Next { .. } | Place::Held { .. })
+    }
+
     /// `CI: running`, `CI: next (2nd)`, `CI: held, after !339`.
     pub fn text(&self) -> String {
         match self {
@@ -699,6 +748,32 @@ mod tests {
         assert_eq!(concurrent_of("[[runners]]\n"), None);
         // Helper and build container of one job count once.
         assert_eq!(running_of("812\n812\n813\n\n"), 2);
+    }
+
+    #[test]
+    fn makes_a_worktree_push_skip_ci_and_leaves_the_main_checkout_alone() {
+        use crate::git::fixture::run;
+        let scratch = std::env::temp_dir().join(format!("ci-push-test-{}", std::process::id()));
+        let main = scratch.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        run(&main, &["init", "-q", "-b", "develop"]);
+        run(&main, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let tree = scratch.join("tree");
+        run(
+            &main,
+            &["worktree", "add", "-q", "-b", "feature/1-x", tree.to_str().unwrap()],
+        );
+        assert_eq!(set_push_option(&main), None);
+        assert!(set_push_option(&tree).is_some());
+        let options = |dir: &Path| crate::git::git(dir, &["config", "--get-all", "push.pushOption"]).stdout;
+        assert_eq!(options(&tree).trim(), SKIP_OPTION);
+        assert_eq!(options(&main).trim(), "");
+        // Once is enough.
+        assert_eq!(set_push_option(&tree), None);
+        run(&main, &["config", MODE_KEY, "push"]);
+        assert!(set_push_option(&tree).is_some());
+        assert_eq!(options(&tree).trim(), "");
+        std::fs::remove_dir_all(&scratch).unwrap();
     }
 
     #[test]

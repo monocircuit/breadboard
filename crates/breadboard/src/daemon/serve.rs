@@ -38,6 +38,8 @@ struct State {
     status: Mutex<HashMap<std::path::PathBuf, Status>>,
     /// The feeds followed now, by view.
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
+    /// The repos whose CI queue runs (`ci`), one each.
+    queues: Mutex<std::collections::HashSet<std::path::PathBuf>>,
     /// The last answer of a feed that ended, by view, for GRACE.
     kept: Mutex<HashMap<String, (Instant, Arc<str>)>>,
 }
@@ -214,6 +216,16 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             write.write_all(line.as_bytes()).await
         }
         Ok(Request::Gitlab { main, view, ask }) => {
+            // The first overview of a repo starts its CI queue, for as long as the daemon runs.
+            if main.is_absolute()
+                && state
+                    .queues
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(main.clone())
+            {
+                tokio::spawn(super::ci::schedule(main.clone()));
+            }
             let key = serde_json::to_string(&(&main, &view)).unwrap_or_default();
             let (feed, said, last) = {
                 let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());

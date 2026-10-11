@@ -21,9 +21,13 @@
 //! GRACE after its last connection closed. One per user, protocol and the
 //! programs it runs: the socket's name carries a key of them (`key`), so a
 //! build of other sources never talks to another's daemon and a gauntlet
-//! world (its own herdr, glab, HOME) never reaches the user's. It only reads (rewrite rule 6): what an overview does
-//! stays in the overview. An overview that can't reach it reads by itself.
+//! world (its own herdr, glab, HOME) never reaches the user's. It only reads
+//! (rewrite rule 6), but for the one thing the user asked of it: the CI queue
+//! (`ci`, #357) creates the MR pipelines of a repo in their order. Everything
+//! else an overview does stays in the overview. An overview that can't reach
+//! it reads by itself.
 
+mod ci;
 pub mod client;
 mod feed;
 pub mod gitlab;

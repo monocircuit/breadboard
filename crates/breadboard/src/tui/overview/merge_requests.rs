@@ -436,9 +436,17 @@ fn head(scene: &mut Scene<Act>, mr: &MrFacts, columns: &Columns, merge: Option<&
 
 /// An MR's pipeline mark opens its pipeline (§3: `!iid` and the mark are
 /// links), a merged one's too: a failed one's page is a click away from its
-/// row; the rest of the row opens the MR.
+/// row; the rest of the row opens the MR. One waiting in the CI queue runs now.
 fn pipeline_region(scene: &mut Scene<Act>, mr: &MrFacts, area: Rect) {
-    let Some(url) = mr.pipeline.url.as_ref() else {
+    // Waiting in the CI queue (#357): a click moves it to the front.
+    let action = if mr.ci.is_some() {
+        Act::RunNow(mr.iid)
+    } else if let Some(url) = mr.pipeline.url.as_ref() {
+        Act::Go(Go::Show {
+            url: url.clone(),
+            dir: mr.dir.clone(),
+        })
+    } else {
         return;
     };
     let tone = match mr.pipeline.paint {
@@ -452,10 +460,7 @@ fn pipeline_region(scene: &mut Scene<Act>, mr: &MrFacts, area: Rect) {
         target: Target::Button {
             label: mr.pipeline.text.clone(),
             tone,
-            action: Act::Go(Go::Show {
-                url: url.clone(),
-                dir: mr.dir.clone(),
-            }),
+            action,
         },
     });
 }
@@ -1171,6 +1176,7 @@ mod tests {
             conflict: None,
             reasons: vec![],
             progress: None,
+            ci: None,
         }
     }
 
@@ -1328,5 +1334,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_mark_of_an_mr_waiting_in_the_ci_queue_runs_it_now() {
+        let mut mr = facts("fix(x): y", None);
+        mr.pipeline = breadboard_core::model::Span::new("CI: next (2nd) ▸", breadboard_core::model::Paint::Yellow);
+        mr.pipeline.url = Some("https://gitlab/pipelines/9".into());
+        mr.ci = Some(breadboard_core::ci::Place::Next { at: 2 });
+        let columns = Columns::of(&MergeRequests {
+            open: vec![MrRow {
+                number: Some(302),
+                graph: String::new(),
+                below: String::new(),
+                mr: Some(mr.clone()),
+            }],
+            ..Default::default()
+        });
+        let mut scene = Scene::<Act>::new(90);
+        head(&mut scene, &mr, &columns, None);
+        scene.finish();
+        let found = scene
+            .regions
+            .iter()
+            .find(|region| region.is_button())
+            .expect("its mark");
+        assert!(matches!(found.action(), Act::RunNow(311)));
+        assert!(lines(&scene)[0].contains("CI: next (2nd) ▸"), "{:?}", lines(&scene));
     }
 }

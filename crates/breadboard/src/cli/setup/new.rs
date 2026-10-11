@@ -185,6 +185,9 @@ pub fn command(args: &Args) -> ExitCode {
         "push guard: {} (#184)",
         crate::cli::write::mr::install_push_guard(&dir)
     ));
+    if let Some(said) = breadboard_core::ci::set_push_option(&dir) {
+        step(&format!("CI: {said}"));
+    }
     step(&format!("git push -u origin {branch} (the empty claim on the issue)"));
     let pushed = proc::run(
         "git",

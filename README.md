@@ -180,6 +180,39 @@ on a heading or `z` folds it, `Z` folds all):
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
   new ones. The tab is in the main space, `root · overview · changelog`.
 
+## The CI queue
+
+GitLab has no job priorities: its runner takes jobs first come, first served,
+so a pipeline of an MR far back could hold up the one next to merge (#357).
+breadboard decides which pipelines exist at all:
+
+- **Pushes from a worktree skip CI**: `wt:new` and the push guard set
+  `git config --worktree push.pushOption ci.skip` (from the push after the
+  guard first ran). The main checkout is left alone. `git config
+  breadboard.ci push` turns it off: pushes start their pipelines again, and
+  the queue starts none.
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+  the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
+  repo is open, it reads the open MRs and the runner's free slots
+  (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job
+  containers, counted as `gitlab-runner-autoscale` counts them;
+  `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
+  per look, for the MR's newest commit, while a slot is free and no pipeline
+  waits for the runner. An older pipeline of that MR still running is
+  cancelled; one into `main`, of develop or of a tag never is.
+- **The order**: a click on the row (run now), a hotfix or anything into
+  `main`, ready MRs in the merge order (each orchestration's acting overview
+  writes it to `.claude/ci/order-<name>.json`), drafts whose agent posted the
+  merge or whose try was answered in the last 30 min, drafts with a fix after
+  a red run. Then drafts at work, but only while no other pipeline runs. A
+  pipeline that a person cancelled, or GitLab skipped, for the newest commit
+  stays that way until a click.
+- **The overview** shows a waiting MR's place instead of its pipeline mark,
+  e.g. `CI: next (2nd) ▸` or `CI: held, after !339 ▸`; a click on it moves the MR to the front
+  (`.claude/ci/run-now.json`). The band shows the runner's load:
+  `CI 3/4 slots · 2 queued`. The queue's state is
+  `.claude/ci/queue.json`.
+
 ## Checks
 
 ```sh
