@@ -55,11 +55,24 @@ fn is_network_url(url: &str) -> bool {
             .is_some_and(|(host, _)| host.contains('@') || host.contains('.'))
 }
 
+/// What `set_push_option` changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushOption {
+    /// Pushes skip CI from now on: a queue runs.
+    Set,
+    /// Pushes start their pipelines again, and why: no queue runs (its
+    /// heartbeat is stale), `breadboard.ci = push`, or git refused the option.
+    Dropped(String),
+}
+
 /// What a worktree's pushes carry, set so (#357): `ci.skip` in its own
-/// config (`git config --worktree push.pushOption`), the queue starts its
-/// pipelines; none with `git config breadboard.ci push`. The main checkout
-/// is left alone: develop's pipelines deploy. Says what changed, None when nothing did.
-pub fn set_push_option(dir: &Path) -> Option<String> {
+/// config (`git config --worktree push.pushOption`) while a queue runs to
+/// start its pipelines (the heartbeat: `queue.json` younger than
+/// QUEUE_STALE_MS), else none, so nothing stalls while no `breadboard serve`
+/// runs; none with `git config breadboard.ci push` or a local origin either.
+/// The main checkout is left alone: develop's pipelines deploy. None when
+/// nothing changed.
+pub fn set_push_option(dir: &Path, now: i64) -> Option<PushOption> {
     let git = |args: &[&str]| crate::git::git(dir, args);
     let dirs = git(&["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
     let mut lines = dirs.lines();
@@ -70,7 +83,9 @@ pub fn set_push_option(dir: &Path) -> Option<String> {
     // A local origin (a path, `file://`) takes no push options: a push with one would fail.
     let origin = git(&["remote", "get-url", "--push", "origin"]);
     let is_network = origin.is_ok && is_network_url(origin.out());
-    let is_queued = is_network && git(&["config", "--get", MODE_KEY]).out() != "push";
+    let is_on = git(&["config", "--get", MODE_KEY]).out() != "push";
+    let is_running = crate::git::main_dir(dir).is_some_and(|main| Queue::read(&main, now).is_some());
+    let is_queued = is_network && is_on && is_running;
     let options = git(&["config", "--get-all", "push.pushOption"]);
     let has_skip = options.lines().any(|line| line.trim() == SKIP_OPTION);
     if is_queued == has_skip {
@@ -84,7 +99,14 @@ pub fn set_push_option(dir: &Path) -> Option<String> {
             "push.pushOption",
             &format!("^{SKIP_OPTION}$"),
         ]);
-        return Some("pushes start their pipelines (breadboard.ci = push)".into());
+        let why = if !is_on {
+            "breadboard.ci = push"
+        } else if !is_network {
+            "its origin takes no push options"
+        } else {
+            "no breadboard serve runs the CI queue"
+        };
+        return Some(PushOption::Dropped(why.into()));
     }
     // A config of the worktree's own needs git's extension, once for the clone.
     if git(&["config", "--get", "extensions.worktreeConfig"]).out() != "true" {
@@ -92,9 +114,9 @@ pub fn set_push_option(dir: &Path) -> Option<String> {
     }
     let set = git(&["config", "--worktree", "--add", "push.pushOption", SKIP_OPTION]);
     Some(if set.is_ok {
-        "pushes skip CI, breadboard's queue starts the pipelines (#357)".into()
+        PushOption::Set
     } else {
-        format!("! pushes still start their pipelines: {}", set.stderr.trim())
+        PushOption::Dropped(set.stderr.trim().to_string())
     })
 }
 
@@ -831,7 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn makes_a_worktree_push_skip_ci_and_leaves_the_main_checkout_alone() {
+    fn makes_a_worktree_push_skip_ci_only_while_a_queue_runs() {
         use crate::git::fixture::run;
         let scratch = std::env::temp_dir().join(format!("ci-push-test-{}", std::process::id()));
         let main = scratch.join("main");
@@ -843,23 +865,44 @@ mod tests {
             &main,
             &["worktree", "add", "-q", "-b", "feature/1-x", tree.to_str().unwrap()],
         );
+        let beat = |at: i64| {
+            write_whole(
+                &queue_file(&main),
+                &Queue {
+                    at,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        beat(NOW);
         // A local origin takes no push options: left alone.
         let origin = scratch.join("origin.git");
         run(&main, &["remote", "add", "origin", origin.to_str().unwrap()]);
-        assert_eq!(set_push_option(&tree), None);
+        assert_eq!(set_push_option(&tree, NOW), None);
         run(
             &main,
             &["remote", "set-url", "origin", "git@gitlab.com:monocircuit/platform.git"],
         );
-        assert_eq!(set_push_option(&main), None);
-        assert!(set_push_option(&tree).is_some());
+        assert_eq!(set_push_option(&main, NOW), None);
+        assert_eq!(set_push_option(&tree, NOW), Some(PushOption::Set));
         let options = |dir: &Path| crate::git::git(dir, &["config", "--get-all", "push.pushOption"]).stdout;
         assert_eq!(options(&tree).trim(), SKIP_OPTION);
         assert_eq!(options(&main).trim(), "");
         // Once is enough.
-        assert_eq!(set_push_option(&tree), None);
+        assert_eq!(set_push_option(&tree, NOW), None);
+        // The queue's heartbeat stale: pushes start their pipelines again.
+        assert_eq!(
+            set_push_option(&tree, NOW + QUEUE_STALE_MS),
+            Some(PushOption::Dropped("no breadboard serve runs the CI queue".into()))
+        );
+        assert_eq!(options(&tree).trim(), "");
+        assert_eq!(set_push_option(&tree, NOW), Some(PushOption::Set));
         run(&main, &["config", MODE_KEY, "push"]);
-        assert!(set_push_option(&tree).is_some());
+        assert_eq!(
+            set_push_option(&tree, NOW),
+            Some(PushOption::Dropped("breadboard.ci = push".into()))
+        );
         assert_eq!(options(&tree).trim(), "");
         std::fs::remove_dir_all(&scratch).unwrap();
     }

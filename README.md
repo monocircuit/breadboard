@@ -186,11 +186,15 @@ GitLab has no job priorities: its runner takes jobs first come, first served,
 so a pipeline of an MR far back could hold up the one next to merge (#357).
 breadboard decides which pipelines exist at all:
 
-- **Pushes from a worktree skip CI**: `wt:new` and the push guard set
-  `git config --worktree push.pushOption ci.skip` (from the push after the
-  guard first ran). The main checkout is left alone. `git config
-  breadboard.ci push` turns it off: pushes start their pipelines again, and
-  the queue starts none.
+- **Pushes from a worktree skip CI while a queue runs**: `wt:new` and the
+  push guard set `git config --worktree push.pushOption ci.skip` (from the
+  push after the guard first ran) while the queue's heartbeat
+  (`.claude/ci/queue.json`, written every 10 s) is younger than a minute. When it
+  is stale (no `breadboard serve` of a build with the queue runs), the guard
+  drops the option and refuses that one push: pushed again, GitLab starts
+  the pipeline itself, so nothing stalls. The main checkout and a local
+  origin are left alone. `git config breadboard.ci push` turns it off:
+  pushes start their pipelines again, and the queue starts none.
 - **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
   the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
   repo is open, it reads the open MRs and the runner's free slots

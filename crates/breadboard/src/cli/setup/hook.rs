@@ -8,6 +8,7 @@
 use super::check::{self, Failure};
 use super::gitlab;
 use super::proc::{errln, fail, git};
+use breadboard_core::ci::PushOption;
 use breadboard_core::json::str_of;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Value, json};
@@ -244,11 +245,16 @@ pub fn command(words: &[String]) -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &super::repo::cwd())
         .text()
         .to_string();
-    // From the next push on: git read this one's options before the hook ran.
-    if let Some(said) = breadboard_core::ci::set_push_option(Path::new(&dir)) {
-        errln!("breadboard: {said}, from the next push on");
-    }
     let mut refusals = check_push(&refs);
+    // git read this push's options before the hook ran: a change counts from the next push.
+    match breadboard_core::ci::set_push_option(Path::new(&dir), now_ms()) {
+        Some(PushOption::Set) => errln!("breadboard: pushes skip CI from the next one on, breadboard's queue starts the pipelines (#357)"),
+        // This push would skip CI with no queue to start its pipeline: once more, without the option.
+        Some(PushOption::Dropped(why)) => refusals.push(format!(
+            "✗ push refused: it would skip CI, and {why} (#357).\n  The option is dropped now: push again, and GitLab starts the pipeline itself."
+        )),
+        None => {}
+    }
     refusals.extend(check_gate(&refs, Path::new(&dir)));
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
