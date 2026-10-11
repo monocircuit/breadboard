@@ -112,6 +112,16 @@ pub fn open_tries_of<'a>(actions: &'a [Action], answered: &'a [Action]) -> Vec<&
 /// `try #1 open`, `1 acceptance box open: Two clicks merge a …`: what the
 /// human's checks still lack before a merge; none when they are all done.
 pub fn checks_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) -> Vec<String> {
+    checks(boxes, actions, answered, true)
+}
+
+/// `checks_of` with the open acceptance boxes counted, not named: `2
+/// acceptance boxes open` (an MR row's, whose fold lists them, #346).
+pub fn counted_checks_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) -> Vec<String> {
+    checks(boxes, actions, answered, false)
+}
+
+fn checks(boxes: &[IssueBox], actions: &[Action], answered: &[Action], is_named: bool) -> Vec<String> {
     let open: Vec<&IssueBox> = boxes
         .iter()
         .filter(|found| is_acceptance(found) && !found.is_ticked && !is_after_deploy(found))
@@ -131,6 +141,15 @@ pub fn checks_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) ->
         })
         .collect();
     if !open.is_empty() {
+        let counted = format!(
+            "{} acceptance box{} open",
+            open.len(),
+            if open.len() == 1 { "" } else { "es" }
+        );
+        if !is_named {
+            checks.push(counted);
+            return checks;
+        }
         let named = open
             .iter()
             .take(NAMED_BOXES)
@@ -142,11 +161,7 @@ pub fn checks_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) ->
         } else {
             String::new()
         };
-        checks.push(format!(
-            "{} acceptance box{} open: {named}{more}",
-            open.len(),
-            if open.len() == 1 { "" } else { "es" }
-        ));
+        checks.push(format!("{counted}: {named}{more}"));
     }
     checks
 }

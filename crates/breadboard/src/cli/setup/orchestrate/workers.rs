@@ -79,7 +79,7 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
         })
         .filter(|(worker, share)| {
             let pane = handover::pane_of_conversation(&worker.id).ok().flatten();
-            refusal_of(pane.as_ref(), *share, CONTEXT_LIMIT).is_none()
+            refusal_of(pane.as_ref(), worker.is_free, *share, CONTEXT_LIMIT).is_none()
         })
         .collect();
     let merged = gitlab::in_turns(&candidates, 12, |(worker, _)| {

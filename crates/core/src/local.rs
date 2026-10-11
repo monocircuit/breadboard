@@ -490,6 +490,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     let dir = tree.dir.clone();
     let file = actions_file(&dir);
     tree.claude = read_claude(&dir);
+    tree.note = crate::said::note_of(&dir);
     tree.left = left_in(&dir, claudes, bound_session(&dir).as_deref());
     tree.actions = actions_of(&file);
     tree.answered = answered_of(&file);

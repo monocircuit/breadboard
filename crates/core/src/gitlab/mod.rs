@@ -91,6 +91,9 @@ pub struct Mr {
     /// GitLab didn't say, which means develop.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub target: String,
+    /// The boxes of its own description (its Tests), apart from its issue's (#346).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<IssueBox>,
 }
 
 impl Mr {
@@ -140,6 +143,8 @@ pub struct Issue {
     pub needs: Vec<i64>,
     /// The files it names: the agent that knows them is suggested for it.
     pub paths: Vec<String>,
+    /// What is wrong or wanted, from its `## Goal` / `## Bug` (#341).
+    pub problem: Option<String>,
 }
 
 impl Issue {
@@ -159,6 +164,7 @@ impl Issue {
             boxes: boxes_of(description),
             needs,
             paths: paths_of(description),
+            problem: crate::said::problem_of(description),
         }
     }
 }
