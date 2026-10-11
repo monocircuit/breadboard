@@ -159,9 +159,74 @@ pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Res
     })
 }
 
-fn ci_only(package: &str) -> Option<&'static str> {
-    (package == "@monocircuit/vita")
-        .then_some("vita's integration tests (test:int) need the stack: they run in CI only (check:vita:int)")
+/// What breadboard.toml says of a package whose tests need the stack (`[[check.stack_tests]]`).
+fn ci_only(dir: &Path, package: &str) -> Option<String> {
+    breadboard_core::config::of(dir)
+        .config
+        .check
+        .stack_tests
+        .iter()
+        .find(|tests| tests.package == package)
+        .map(|tests| tests.says.clone())
+}
+
+/// breadboard's own package in the repo it is developed in, by the name in its package.json.
+fn breadboard_package(dir: &Path) -> Option<String> {
+    let package = breadboard_core::json::read(&dir.join("packages/breadboard/package.json"))?;
+    breadboard_core::json::str_of(&package, "name").map(String::from)
+}
+
+/// wt:check without turbo: `[check] run` once over the branch, stamped like
+/// turbo's; without it nothing to check, stamped at once.
+fn plain_check(dir: &Path, sha: &str, tree: &str) -> ExitCode {
+    let loaded = breadboard_core::config::of(dir);
+    let short: String = sha.chars().take(8).collect();
+    let Some(run) = loaded.config.check.plain().map(String::from) else {
+        write_check(
+            dir,
+            json!({
+                "passed": { "sha": sha, "tree": tree, "packages": [], "at": to_iso(now_ms()), "duration": 0 },
+                "failed": null, "running": null,
+            }),
+        );
+        outln!("\n✓ nothing to check: breadboard.toml names no [check]; {short} may be pushed\n");
+        return ExitCode::SUCCESS;
+    };
+    step(&format!("{run} (breadboard.toml's [check] run)"));
+    write_check(
+        dir,
+        json!({ "running": { "sha": sha, "tree": tree, "pid": std::process::id(), "since": to_iso(now_ms()) } }),
+    );
+    let started = now_ms();
+    let status = Command::new("sh").args(["-c", &run]).current_dir(dir).status();
+    let duration = ((now_ms() - started) as f64 / 1000.0).round() as i64;
+    let at = to_iso(now_ms());
+    if !status.is_ok_and(|status| status.success()) {
+        write_check(
+            dir,
+            json!({
+                "running": null,
+                "failed": { "sha": sha, "tree": tree, "packages": [], "failures": [], "at": at, "duration": duration },
+            }),
+        );
+        fail(&format!(
+            "wt:check failed after {duration} s: {run}\n  Fix it, commit, run {} again: the push waits for it.",
+            loaded.command("wt:check")
+        ));
+    }
+    if working_tree_of(dir).as_deref() != Some(tree) {
+        write_check(dir, json!({ "running": null }));
+        fail("the files changed while wt:check ran: what passed isn't what is there now. Run it again.");
+    }
+    write_check(
+        dir,
+        json!({
+            "running": null, "failed": null,
+            "passed": { "sha": sha, "tree": tree, "packages": [], "at": at, "duration": duration },
+        }),
+    );
+    outln!("\n✓ checked in {duration} s: {run}\n  {short} may be pushed\n");
+    ExitCode::SUCCESS
 }
 
 /// core's `write_check` (`.claude/checked.json`, one reader and writer for
@@ -390,9 +455,10 @@ pub fn command() -> ExitCode {
         fail("wt:check runs in a checkout of the repo");
     }
     let dir = PathBuf::from(dir);
-    let Some(turbo) = turbo_of(&dir) else {
+    let turbo = turbo_of(&dir);
+    if turbo.is_none() && breadboard_core::config::of(&dir).config.check.turbo {
         fail("turbo isn't installed here: pnpm install first")
-    };
+    }
     let develop = breadboard_core::git::base(&dir);
     let base = git(&["merge-base", &develop, "HEAD"], &dir).text().to_string();
     if base.is_empty() {
@@ -402,6 +468,9 @@ pub fn command() -> ExitCode {
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
     let Some(tree) = working_tree_of(&dir) else {
         fail("couldn't read the working tree (git add -A in a copy of the index failed)")
+    };
+    let Some(turbo) = turbo else {
+        return plain_check(&dir, &sha, &tree);
     };
     let scope = scope_of(&turbo, &dir, &base, None).unwrap_or_else(|error| fail(&error));
     let planned = plan_of(&turbo, &dir, &scope).unwrap_or_else(|error| fail(&error));
@@ -434,11 +503,11 @@ pub fn command() -> ExitCode {
         outln!("  {package}  {}", tasks.join(" "));
     }
     for package in &packages {
-        if let Some(why) = ci_only(package) {
+        if let Some(why) = ci_only(&dir, package) {
             outln!("  ({why})");
         }
     }
-    if packages.iter().any(|package| package == "@monocircuit/breadboard")
+    if breadboard_package(&dir).is_some_and(|own| packages.contains(&own))
         && !scope.tasks.iter().any(|task| task.ends_with(":rs"))
     {
         outln!("  (breadboard's cargo checks: only when the branch changes its Rust sources, CI runs them anyway)");

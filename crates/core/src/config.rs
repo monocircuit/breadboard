@@ -193,10 +193,22 @@ pub struct TestBox {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Check {
+    /// wt:check runs lint, typecheck and test of the changed packages and
+    /// their dependents through turbo (a pnpm monorepo).
+    pub turbo: bool,
+    /// Else one command checks the branch (`cargo test`, `npm test`); with
+    /// neither there is nothing to check and every push passes the gate.
+    pub run: Option<String>,
     /// Packages whose tests need the stack: what the check says instead of running them.
     pub stack_tests: Vec<StackTests>,
-    /// What `wt:check` builds before it checks, each a step.
-    pub before: Vec<Step>,
+}
+
+impl Check {
+    /// What the pre-push gate waits for without turbo: one check of the
+    /// whole branch, or nothing.
+    pub fn plain(&self) -> Option<&str> {
+        self.run.as_deref().filter(|run| !self.turbo && !run.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

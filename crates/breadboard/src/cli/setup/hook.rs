@@ -199,7 +199,19 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
             (None, _) => Err(format!("no merge base with {develop}: git fetch origin")),
-            (Some(_), None) => Err("turbo isn't installed here: pnpm install first".to_string()),
+            (Some(_), None) => {
+                let loaded = breadboard_core::config::of(dir);
+                let check = &loaded.config.check;
+                if check.turbo {
+                    Err("turbo isn't installed here: pnpm install first".to_string())
+                } else {
+                    // One command checks the branch, or nothing does (no [check] in breadboard.toml).
+                    Ok(check
+                        .plain()
+                        .map(|run| vec![("the branch".to_string(), vec![run.to_string()])])
+                        .unwrap_or_default())
+                }
+            }
             (Some(base), Some(turbo)) => {
                 check::scope_of(&turbo, dir, base, Some(sha)).and_then(|scope| check::plan_of(&turbo, dir, &scope))
             }
