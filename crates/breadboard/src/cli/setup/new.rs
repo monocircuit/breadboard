@@ -4,6 +4,7 @@
 //! its herdr space; the agent that ran it moves along.
 
 use super::conversations::{self, session_file};
+use super::epic::{self, Epic};
 use super::herdr::{self, field};
 use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
 use super::repo::{self, VITA};
@@ -241,9 +242,17 @@ pub fn command(args: &Args) -> ExitCode {
             fail(&format!("couldn't copy {}: {error}", main_env.display()));
         }
         0
+    } else if let Some(epic) = Epic::of_task(&dir) {
+        // An orchestration's task: its stack starts when needed (#351).
+        step(&format!(
+            "task stack on the epic {}: its .env.local, started by pnpm stack:up",
+            epic.name
+        ));
+        epic::reserve_task(&dir, &feature, &epic)
     } else {
         stack::create_stack(&dir, &feature)
     };
+    let epic_port = epic::epic_port_of(&dir);
     // Set up: what follows only tells and arranges, nothing to finish by hand.
     set_hint("");
     // GitLab not answering costs the count, never the worktree; an orchestration's skips the sweep.
@@ -272,6 +281,7 @@ pub fn command(args: &Args) -> ExitCode {
         is_stack_only: false,
         is_stackless: !main_env.exists(),
         is_unpushed: !pushed.is_ok,
+        epic_port,
     });
     ExitCode::SUCCESS
 }

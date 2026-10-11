@@ -16,6 +16,7 @@ use super::proc::{
 };
 use super::prune::{has_own_commits, own_files};
 use super::repo::{Repo, VITA, compose_args, offset_of};
+use crate::cli::setup::epic;
 use crate::cli::typo::nearest;
 use breadboard_core::git::{is_inside, own_commits};
 use breadboard_core::json::str_of;
@@ -502,6 +503,10 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         let args = compose_args(&["down", "-v"]);
         if !run_inherit("docker", &args, &dir.join(VITA)) {
             return fail(format!("docker {} failed", args.join(" ")));
+        }
+        // A task stack's databases lie on its epic's Postgres (#351).
+        if let Some(epic) = epic::epic_of_stack(&dir) {
+            epic::drop_task(feature, &epic);
         }
     }
     step(&format!("git worktree remove {dir_text}"));

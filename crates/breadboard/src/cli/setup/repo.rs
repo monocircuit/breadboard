@@ -111,14 +111,14 @@ pub fn is_port_free(port: u32) -> bool {
     !breadboard_core::local::is_port_taken(i64::from(port))
 }
 
-/// The worktree whose stack answers on `port`: the app port or one of its
-/// services', offset 0 the main checkout.
+/// The checkout whose stack answers on `port`: the app port or one of its
+/// services', offset 0 the main checkout; an orchestration's epic stack too.
 pub fn worktree_on_port(port: u32) -> Option<Worktree> {
     let offset = PORTS
         .iter()
         .map(|(base, _)| i64::from(port) - i64::from(*base))
         .find(|candidate| (0..50).contains(candidate))?;
-    let all = worktrees();
+    let all = core_git::all_worktrees(&main_dir());
     if offset == 0 {
         return all.into_iter().next();
     }

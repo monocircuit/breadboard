@@ -10,6 +10,7 @@ pub(in crate::cli) mod changelog;
 mod check;
 mod commands;
 mod conversations;
+pub(in crate::cli) mod epic;
 mod fragments;
 mod gitlab;
 mod herdr;
