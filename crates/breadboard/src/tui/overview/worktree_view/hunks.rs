@@ -671,6 +671,8 @@ mod tests {
         let develop = parse("@@ -1 +1 @@\n-# platform\n+# platform (develop)\n");
         let dir = std::env::temp_dir().join(format!("breadboard-sides-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        // The heading names the base: the repo's default branch, breadboard.toml's.
+        std::fs::write(dir.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
         std::fs::write(dir.join("README.md"), "# platform (this branch)\nmore\n").unwrap();
         stored(
             &shown,

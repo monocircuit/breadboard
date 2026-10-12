@@ -10,9 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// Where the lines of the commands are kept, the one place a new script gets
-/// its line (AGENTS.md): `<package dir>` → script → what it is for, the root "".
-const SOURCE: &str = "packages/breadboard/commands.json";
+/// Where the lines of the commands are kept, at the repo's root, the one place
+/// a new script gets its line (AGENTS.md): `<package dir>` → script → what it
+/// is for, the root "".
+const SOURCE: &str = "commands.json";
 
 /// `<package dir>` → script → what it is for; the root is "".
 type Descriptions = Vec<(String, Vec<(String, String)>)>;

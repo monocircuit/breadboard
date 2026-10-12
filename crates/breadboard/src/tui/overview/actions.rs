@@ -157,7 +157,10 @@ fn actions(scene: &mut Scene<Act>, section: &ActionsSection, in_next: Option<&st
     if items.is_empty() {
         scene.note("nothing waits for you");
         scene.pad_to(1);
-        scene.text("none: an agent asks with pnpm wt:action <kind> <text>", theme::dim());
+        scene.text(
+            &breadboard_core::config::in_repo("none: an agent asks with pnpm wt:action <kind> <text>"),
+            theme::dim(),
+        );
         return;
     }
     scene.note(note_of(items));

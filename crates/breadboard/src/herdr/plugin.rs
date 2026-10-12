@@ -154,7 +154,10 @@ fn pane_of(pane: &str) -> ExitCode {
             "\n  {} is not in a worktree of the platform repo, so there is no stack to control.",
             from.as_deref().unwrap_or("this pane")
         );
-        println!("  Focus a tab of the repo, or use pnpm stack:{action} --port <p>.");
+        println!(
+            "  Focus a tab of the repo, or use {run} stack:{action} --port <p>.",
+            run = breadboard_core::config::run_word()
+        );
         wait_for_key();
         return ExitCode::FAILURE;
     }
@@ -182,7 +185,12 @@ fn pane_of(pane: &str) -> ExitCode {
 fn commands(dir: &Path) -> ExitCode {
     let list = match this(&["commands"], dir).stderr(Stdio::inherit()).output() {
         Ok(output) => output.stdout,
-        Err(error) => return refused(&format!("pnpm commands didn't run: {error}")),
+        Err(error) => {
+            return refused(&format!(
+                "{run} commands didn't run: {error}",
+                run = breadboard_core::config::run_word()
+            ));
+        }
     };
     let pager = Command::new("less")
         .args(["-R", "-X", "+g"])
@@ -226,7 +234,12 @@ fn status() -> ExitCode {
     let waiting = needs_you(main.as_deref(), ask(&["workspace", "list"]).as_ref(), || {
         ask(&["pane", "list"])
     }) + main.as_deref().map_or(0, headless_asks);
-    println!("{}", status_line(stacks_in(containers.as_deref()), waiting));
+    let project = main
+        .as_deref()
+        .and_then(breadboard_core::stack::of)
+        .map(|stack| stack.project)
+        .unwrap_or_default();
+    println!("{}", status_line(stacks_in(containers.as_deref(), &project), waiting));
     ExitCode::SUCCESS
 }
 
@@ -250,16 +263,19 @@ fn status_main() -> Option<PathBuf> {
         .flatten()
         .filter(|dir| dir.is_dir())
         .filter_map(|dir| git::main_dir(&dir))
-        .find(|main| main.join("packages/breadboard/herdr/herdr-plugin.toml").is_file())
+        .find(|main| crate::cli::files_dir(main).join("herdr/herdr-plugin.toml").is_file())
 }
 
-/// How many vita stacks run: compose projects named `vita…` with a running
-/// container (what `compose ls` lists without `--all`, as Node counted).
-fn stacks_in(containers: Option<&[StackContainer]>) -> usize {
+/// How many of the repo's stacks run: compose projects named `<project>…`
+/// with a running container (what `compose ls` lists without `--all`, as
+/// Node counted); none without a stack.
+fn stacks_in(containers: Option<&[StackContainer]>, project: &str) -> usize {
     let running: BTreeSet<&str> = containers
         .unwrap_or_default()
         .iter()
-        .filter(|container| container.state == "running" && container.project.starts_with("vita"))
+        .filter(|container| {
+            !project.is_empty() && container.state == "running" && container.project.starts_with(project)
+        })
         .map(|container| container.project.as_str())
         .collect();
     running.len()
@@ -267,7 +283,7 @@ fn stacks_in(containers: Option<&[StackContainer]>) -> usize {
 
 /// The blocked agents in the spaces of the repo: the main space, its
 /// worktrees' and the orchestrations' (`repo_root` is the main checkout, or
-/// the label starts with `Monocircuit/Platform`). No pane list without one.
+/// the label starts with the main space's). No pane list without one.
 fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -> Option<Value>) -> usize {
     let main = main.map(|main| main.display().to_string());
     let ours: Vec<&str> = spaces
@@ -282,7 +298,7 @@ fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -
                         .and_then(|tree| tree.get("repo_root"))
                         .and_then(Value::as_str);
                     let label = space.get("label").and_then(Value::as_str).unwrap_or_default();
-                    (root.is_some() && root == main.as_deref()) || label.starts_with(SPACE)
+                    (root.is_some() && root == main.as_deref()) || label.starts_with(&SPACE.get())
                 })
                 .filter_map(|space| space.get("workspace_id").and_then(Value::as_str))
                 .collect()
@@ -381,9 +397,10 @@ mod tests {
             container("other", "db", "running"),
         ];
         // Two stacks run; one only stopped and another project's don't count.
-        assert_eq!(stacks_in(Some(&listed)), 2);
-        assert_eq!(stacks_in(Some(&[])), 0);
-        assert_eq!(stacks_in(None), 0);
+        assert_eq!(stacks_in(Some(&listed), "vita"), 2);
+        assert_eq!(stacks_in(Some(&listed), ""), 0);
+        assert_eq!(stacks_in(Some(&[]), "vita"), 0);
+        assert_eq!(stacks_in(None, "vita"), 0);
     }
 
     #[test]

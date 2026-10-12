@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The source breadboard reports its tokens under, and the tokens.
-const SOURCE: &str = "monocircuit.platform";
+/// The source breadboard reports its tokens under (the plugin's id), and the tokens.
+use breadboard_core::record::PLUGIN as SOURCE;
 const STATE_TOKEN: &str = "wt_state";
 const REPO_TOKEN: &str = "wt_repo";
 /// Tokens of an older breadboard, always cleared.
@@ -606,7 +606,7 @@ fn repos_of(all_spaces: &[breadboard_core::herdr::Space], agents: &[&Pane]) -> H
                 return None;
             }
             let repo = repos.get(worktree.get("repo_root").and_then(|v| v.as_str())?)?;
-            repo.starts_with(SPACE).then(|| (agent.id.clone(), repo.clone()))
+            repo.starts_with(&SPACE.get()).then(|| (agent.id.clone(), repo.clone()))
         })
         .collect()
 }
@@ -636,9 +636,10 @@ fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
         }
     }
     if !args.is_empty() {
+        let source = SOURCE.get();
         let mut all = match pane.strip_prefix(SPACE_KEY) {
-            Some(space) => vec!["workspace", "report-metadata", space, "--source", SOURCE],
-            None => vec!["pane", "report-metadata", pane, "--source", SOURCE],
+            Some(space) => vec!["workspace", "report-metadata", space, "--source", &source],
+            None => vec!["pane", "report-metadata", pane, "--source", &source],
         };
         all.extend(args.iter().map(String::as_str));
         herdr::did(&all);

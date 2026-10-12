@@ -1,14 +1,14 @@
 //! What a click in the view of a worktree does, and what it started, kept
 //! over rebuilds (actions.mjs, files.mjs, render-worktree.mjs): the delete
 //! button's two clicks, `stack:up` (the button and `u`), `pnpm pg:migrate`,
-//! Storybook's tab, a file in nvim. Never in a print (`--once`): it has no clicks.
+//! a tool's tab (Storybook), a file in nvim. Never in a print (`--once`): it has no clicks.
 
 use super::super::Act;
 use super::editor::{self, Checkout};
 use super::hunks::{self, Shown};
 use super::started::{self, Started};
 use crate::tui::Flow;
-use breadboard_core::model::worktree::{STORYBOOK_PORT, WorktreeModel};
+use breadboard_core::model::worktree::WorktreeModel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -17,12 +17,9 @@ use std::time::{Duration, Instant};
 pub const ARM: Duration = Duration::from_millis(5000);
 /// How often a view with something running is drawn again: its last line moves.
 pub const WATCH: Duration = Duration::from_millis(500);
-/// Where the vita app lives in a checkout, its `pnpm pg:migrate` runs there.
-const VITA: &str = "products/vita/web";
-
-/// A Storybook start: on its way until the row turns ●, or why it couldn't.
+/// A tool's start: on its way until the row turns ●, or why it couldn't.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Storybook {
+pub enum ToolStart {
     Starting,
     Failed(String),
 }
@@ -35,7 +32,8 @@ pub struct State {
     pub removal: Option<Started>,
     pub stack: Option<Started>,
     pub migration: Option<Started>,
-    pub storybook: Option<Storybook>,
+    /// The tool last started, by name.
+    pub tool: Option<(String, ToolStart)>,
     /// Why the last click on a file didn't open it; None once one did.
     pub nvim: Option<String>,
     /// The file whose hunks show in DIFF or DEVELOP, and under which row.
@@ -58,10 +56,12 @@ impl State {
         self.migration.as_ref().filter(|migration| !migration.is_done())
     }
 
-    /// What a read showed: Storybook answers, its start is over.
+    /// What a read showed: the tool started answers, its start is over.
     pub fn saw(&mut self, model: &WorktreeModel) {
-        if model.local.is_storybook_up {
-            self.storybook = None;
+        if let Some((name, _)) = &self.tool
+            && model.local.tools_up.get(name).copied().unwrap_or(false)
+        {
+            self.tool = None;
         }
     }
 }
@@ -210,32 +210,44 @@ pub fn start_stack(state: &mut State, dir: &Path) -> Flow {
     Flow::Redraw
 }
 
-/// `pnpm pg:migrate` in the worktree's vita, once at a time.
+/// The stack's migrations (`[stack.migrations] run`) in its folder, once at a time.
 pub fn migrate(state: &mut State, dir: &Path) -> Flow {
     if state.migration.as_ref().is_some_and(Started::is_running) {
         return Flow::Same;
     }
+    let Some(run) = breadboard_core::stack::of(dir)
+        .and_then(|stack| stack.migrations)
+        .map(|m| m.run)
+    else {
+        return Flow::Same;
+    };
     let log = started::log_of("migrate", dir);
-    let mut command = Command::new("pnpm");
-    command.arg("pg:migrate").current_dir(dir.join(VITA));
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", &run])
+        .current_dir(breadboard_core::stack::dir_of(dir));
     state.migration = Some(Started::start(command, log));
     Flow::Redraw
 }
 
-/// Storybook in the tab `storybook` of the worktree's space; the row says it is on its way.
-pub fn start_storybook(state: &mut State, model: &WorktreeModel, main: &Path) -> Flow {
+/// A tool in the tab of its name in the worktree's space; the row says it is on its way.
+pub fn start_tool(state: &mut State, model: &WorktreeModel, main: &Path, name: &str) -> Flow {
     let Some(checkout) = checkout_of(model, main) else {
         return Flow::Same;
     };
-    if state.storybook == Some(Storybook::Starting) {
+    let Some(tool) = model.local.stack.as_ref().and_then(|stack| stack.tool(name)) else {
+        return Flow::Same;
+    };
+    if state.tool == Some((name.to_string(), ToolStart::Starting)) {
         return Flow::Same;
     }
     let offset = model.local.tree.as_ref().map_or(0, |tree| tree.offset);
-    state.storybook = Some(if editor::start_storybook(&checkout, STORYBOOK_PORT + offset) {
-        Storybook::Starting
+    let start = if editor::start_tool(&checkout, tool, u16::try_from(offset).unwrap_or(0)) {
+        ToolStart::Starting
     } else {
-        Storybook::Failed("no space of the worktree in herdr to start it in".into())
-    });
+        ToolStart::Failed("no space of the worktree in herdr to start it in".into())
+    };
+    state.tool = Some((name.to_string(), start));
     Flow::Redraw
 }
 

@@ -1,20 +1,18 @@
 //! `wt:list` (list.mjs): which version runs where. `●` means something
 //! answers on that port, and with an own stack that is this worktree.
-//! Worktrees on the shared stack all point at 3000 and which of them serves
+//! Worktrees on the shared stack all point at the app's port and which of them serves
 //! it can't be seen from outside, so they say that instead of claiming it.
 
 use super::args::{Takes, cwd, main_dir, pad};
+use breadboard_core::config::Stack;
 use breadboard_core::git::{self, Worktree};
 use breadboard_core::local::{self, StackContainer};
-use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::thread;
 
-/// Where vita's app and its `.env.local` live in a checkout (constants.mjs `VITA`).
-const VITA: &str = "products/vita/web";
 const LEGEND: &str = "  ● answers  ○ nothing there  ⇒ shares the port of the main checkout  → you are here";
 
 pub const TAKES: Takes = Takes {
@@ -34,12 +32,14 @@ pub fn run() -> ExitCode {
     };
     let here = cwd();
     let trees = git::worktrees(&main);
+    let stack = breadboard_core::stack::of(&main);
+    let stack = stack.as_ref();
     // git and the ports per worktree side by side; docker is one shared read for all (#331).
     let rows: Vec<Row> = thread::scope(|scope| {
         let handles: Vec<_> = trees
             .iter()
             .enumerate()
-            .map(|(index, tree)| scope.spawn(move || row_of(index == 0, tree, port_answers)))
+            .map(|(index, tree)| scope.spawn(move || row_of(stack, index == 0, tree, port_answers)))
             .collect();
         handles
             .into_iter()
@@ -59,38 +59,61 @@ struct Row {
     stack: String,
 }
 
-fn row_of(is_main: bool, tree: &Worktree, is_answering: impl Fn(i64) -> bool) -> Row {
+fn row_of(stack: Option<&Stack>, is_main: bool, tree: &Worktree, is_answering: impl Fn(i64) -> bool) -> Row {
     let dir = &tree.dir;
-    let env_file = env_file_of(dir);
-    let has_env = env_file.exists();
-    let offset = if is_main { 0 } else { offset_of(&env_file) };
+    let branch = tree.branch.clone().unwrap_or_else(|| "(detached)".into());
+    let Some(stack) = stack else {
+        return Row {
+            dir: dir.clone(),
+            branch,
+            app: "—".into(),
+            stack: "none (breadboard.toml has no [stack])".into(),
+        };
+    };
+    let env_file = dir.join(&stack.dir).join(&stack.env_file);
+    let env = local::read_env(&env_file);
+    let has_env = env.is_some();
+    let offset = if is_main {
+        0
+    } else {
+        breadboard_core::stack::offset_in(Some(stack), env.as_ref())
+    };
     let has_own_port = is_main || offset > 0;
-    let port = 3000 + offset;
+    let base = i64::from(stack.app.port);
+    let port = base + offset;
+    // The port the offset is read from names the stack: `postgres 5434`.
+    let named = |offset: i64| {
+        stack
+            .offset_port()
+            .map(|named| format!("{} {}", named.name, i64::from(named.port) + offset))
+            .unwrap_or_default()
+    };
     let app = if !has_env {
-        "○ no .env.local".to_string()
+        format!("○ no {}", stack.env_file)
     } else if has_own_port {
         format!("{} http://localhost:{port}", if is_answering(port) { "●" } else { "○" })
     } else {
-        "⇒ http://localhost:3000 (shared)".to_string()
+        format!("⇒ http://localhost:{base} (shared)")
     };
-    let stack = if is_main {
-        "the default stack (pg 5432)".to_string()
+    let stack_text = if is_main {
+        format!("the default stack ({})", named(0))
     } else if !has_env {
         "none".to_string()
     } else if offset == 0 {
         "shared with the main checkout — only one app at a time".to_string()
     } else {
-        let state = match containers_up(&env_file) {
+        let project = breadboard_core::stack::project_in(Some(stack), env.as_ref());
+        let state = match containers_up(&project) {
             0 => "stopped".to_string(),
             count => format!("{count} containers up"),
         };
-        format!("own +{offset} (pg {}), {state}", 5432 + offset)
+        format!("own +{offset} ({}), {state}", named(offset))
     };
     Row {
         dir: dir.clone(),
-        branch: tree.branch.clone().unwrap_or_else(|| "(detached)".into()),
+        branch,
         app,
-        stack,
+        stack: stack_text,
     }
 }
 
@@ -124,39 +147,6 @@ fn table(rows: &[Row], here: &Path) -> String {
     text + "\n" + LEGEND + "\n\n"
 }
 
-/// The `.env.local` of a checkout, moved over from `products/vita` first when
-/// it is still there from before #191 (stack.mjs `envFileOf` / `adoptEnv`):
-/// it is untracked, so git left it behind when the app moved to `web/`.
-fn env_file_of(dir: &Path) -> PathBuf {
-    let target = dir.join(VITA).join(".env.local");
-    let old = dir.join("products/vita/.env.local");
-    if old.exists() && !target.exists() && dir.join(VITA).join("package.json").exists() {
-        let _ = fs::rename(&old, &target);
-    }
-    target
-}
-
-/// The offset of a worktree's own stack: `POSTGRES_PORT - 5432` when the env
-/// names its own compose project, else 0, the shared stack (stack.mjs `offsetOf`).
-pub(super) fn offset_of(env_file: &Path) -> i64 {
-    let Ok(text) = fs::read_to_string(env_file) else {
-        return 0;
-    };
-    let value = |key: &str| {
-        text.split('\n')
-            .filter(|line| line.contains('=') && !line.trim_start().starts_with('#'))
-            .filter_map(|line| line.split_once('='))
-            .filter(|(name, _)| *name == key)
-            .map(|(_, value)| value)
-            .next_back()
-    };
-    let has_project = value("COMPOSE_PROJECT_NAME").is_some_and(|name| !name.is_empty());
-    match value("POSTGRES_PORT").filter(|port| !port.is_empty()) {
-        Some(port) if has_project => port.trim().parse::<i64>().map(|port| port - 5432).unwrap_or(0),
-        _ => 0,
-    }
-}
-
 /// Whether something listens on the port: it can't be taken on 127.0.0.1 (stack.mjs `isPortFree`).
 pub(super) fn port_answers(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_err())
@@ -165,11 +155,8 @@ pub(super) fn port_answers(port: i64) -> bool {
 /// The containers of a worktree's own stack that run (`docker compose ps -q`
 /// counted them), from core's one shared read of docker (#331): one
 /// `docker ps` for every stack, none while another process's read is fresh.
-fn containers_up(env_file: &Path) -> usize {
+fn containers_up(project: &str) -> usize {
     static CONTAINERS: OnceLock<Vec<StackContainer>> = OnceLock::new();
-    let Some(project) = local::read_env(env_file).and_then(|env| env.get("COMPOSE_PROJECT_NAME").cloned()) else {
-        return 0;
-    };
     // Never the machine's docker from a test: `running_of` is tested with its own.
     let containers = CONTAINERS.get_or_init(|| {
         if cfg!(test) {
@@ -178,7 +165,7 @@ fn containers_up(env_file: &Path) -> usize {
             local::containers().unwrap_or_default()
         }
     });
-    running_of(containers, &project)
+    running_of(containers, project)
 }
 
 /// How many of `containers` belong to `project` and run.
@@ -192,12 +179,25 @@ fn running_of(containers: &[StackContainer], project: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("breadboard-list-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    const WEB: &str = "web";
+
+    fn stack() -> Stack {
+        breadboard_core::config::Config::parse(
+            "[stack]\ndir = \"web\"\nproject = \"p\"\n[stack.app]\nport = 3000\n\
+             [[stack.services]]\nname = \"pg\"\nport = 5432\nenv = \"POSTGRES_PORT\"\n",
+        )
+        .unwrap()
+        .stack
+        .unwrap()
     }
 
     fn tree(dir: &Path) -> Worktree {
@@ -210,9 +210,10 @@ mod tests {
     #[test]
     fn a_worktree_without_env_has_no_stack() {
         let dir = scratch("none");
-        let row = row_of(false, &tree(&dir), |_| true);
+        let row = row_of(Some(&stack()), false, &tree(&dir), |_| true);
         assert_eq!((row.app.as_str(), row.stack.as_str()), ("○ no .env.local", "none"));
         let main = row_of(
+            Some(&stack()),
             true,
             &Worktree {
                 branch: None,
@@ -229,9 +230,9 @@ mod tests {
     #[test]
     fn an_env_without_its_own_project_shares_the_main_stack() {
         let dir = scratch("shared");
-        fs::create_dir_all(dir.join(VITA)).unwrap();
-        fs::write(dir.join(VITA).join(".env.local"), "POSTGRES_PORT=5433\n").unwrap();
-        let row = row_of(false, &tree(&dir), |_| true);
+        fs::create_dir_all(dir.join(WEB)).unwrap();
+        fs::write(dir.join(WEB).join(".env.local"), "POSTGRES_PORT=5433\n").unwrap();
+        let row = row_of(Some(&stack()), false, &tree(&dir), |_| true);
         assert_eq!(row.app, "⇒ http://localhost:3000 (shared)");
         assert_eq!(row.stack, "shared with the main checkout — only one app at a time");
     }
@@ -239,13 +240,13 @@ mod tests {
     #[test]
     fn an_own_stack_has_its_ports_moved_by_its_offset() {
         let dir = scratch("own");
-        fs::create_dir_all(dir.join(VITA)).unwrap();
+        fs::create_dir_all(dir.join(WEB)).unwrap();
         fs::write(
-            dir.join(VITA).join(".env.local"),
+            dir.join(WEB).join(".env.local"),
             "# x=1\nCOMPOSE_PROJECT_NAME=p2\nPOSTGRES_PORT=5434\n",
         )
         .unwrap();
-        let row = row_of(false, &tree(&dir), |port| port == 3002);
+        let row = row_of(Some(&stack()), false, &tree(&dir), |port| port == 3002);
         assert_eq!(row.app, "● http://localhost:3002");
         assert!(row.stack.starts_with("own +2 (pg 5434), "), "{}", row.stack);
     }
@@ -271,18 +272,12 @@ mod tests {
     }
 
     #[test]
-    fn an_old_env_moves_to_the_app_once_the_app_is_there() {
-        let dir = scratch("adopt");
-        fs::create_dir_all(dir.join(VITA)).unwrap();
-        fs::write(dir.join("products/vita/.env.local"), "A=1\n").unwrap();
-        assert!(!env_file_of(&dir).exists() || dir.join(VITA).join(".env.local").exists());
-        assert!(
-            dir.join("products/vita/.env.local").exists(),
-            "no package.json: it stays"
+    fn a_repo_without_a_stack_says_so() {
+        let row = row_of(None, false, &tree(Path::new("/r/x")), |_| true);
+        assert_eq!(
+            (row.app.as_str(), row.stack.as_str()),
+            ("—", "none (breadboard.toml has no [stack])")
         );
-        fs::write(dir.join(VITA).join("package.json"), "{}").unwrap();
-        assert!(env_file_of(&dir).exists());
-        assert!(!dir.join("products/vita/.env.local").exists());
     }
 
     #[test]
