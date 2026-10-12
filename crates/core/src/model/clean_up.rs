@@ -30,7 +30,11 @@ pub fn clean_up_of(tree: Option<&Tree>, mr: Option<&Mr>, status: Option<&str>, h
         kept.push(format!("{} changed", tree.changed));
     }
     if tree.own_commits > 0 {
-        kept.push(format!("{} not in develop", counted(tree.own_commits as u64, "commit")));
+        kept.push(format!(
+            "{} not in {}",
+            counted(tree.own_commits as u64, "commit"),
+            tree.base.local
+        ));
     }
     if !kept.is_empty() {
         return Some(CleanUp::Kept(kept.join(", ")));

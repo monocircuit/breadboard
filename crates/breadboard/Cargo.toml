@@ -1,6 +1,6 @@
 [package]
 name = "breadboard"
-description = "The dev workflow of monocircuit/platform: the overview, wt:* and stack:*, the herdr plugin"
+description = "The dev workflow of a repo: worktrees, their stacks, the live overview, the herdr plugin"
 edition.workspace = true
 version.workspace = true
 publish.workspace = true

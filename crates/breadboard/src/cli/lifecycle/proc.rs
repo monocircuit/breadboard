@@ -20,7 +20,7 @@ pub type Done = Result<(), Fail>;
 
 /// A failure with `reason`.
 pub fn fail<T>(reason: impl Into<String>) -> Result<T, Fail> {
-    Err(Fail(reason.into()))
+    Err(Fail(breadboard_core::config::in_repo(&reason.into())))
 }
 
 /// Whether a stream gets colours: a terminal, and no NO_COLOR (the overview
@@ -76,7 +76,11 @@ pub fn finish(done: Done) -> ExitCode {
 /// after it hangs under it: the pending step of `as_step` is said no more.
 pub fn step(message: &str) {
     PENDING_STEP.take();
-    println!("\n{} {message}", paint(tone::STEP, "▸"));
+    println!(
+        "\n{} {}",
+        paint(tone::STEP, "▸"),
+        breadboard_core::config::in_repo(message)
+    );
 }
 
 /// `✓ <message>` after a blank line: what the command did.

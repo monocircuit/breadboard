@@ -20,9 +20,10 @@ fn late_text(iid: &str, state: &str, text: &str) -> String {
     format!(
         "!{iid} is {state} already: \"{text}\" can't go into it any more. It gets its own at once, pushed and visible:
   glab issue create --title \"<what>\" --description \"<why, Related: !{iid}>\"
-  pnpm wt:new <n>-<feature>   (with --origin <orchestration> for its overview)
-  commit, push, pnpm wt:mr    the draft MR from the first commit
-  pnpm wt:wait !N … --then \"…\" when it has to wait for others: pushed first, waiting second"
+  {run} wt:new <n>-<feature>   (with --origin <orchestration> for its overview)
+  commit, push, {run} wt:mr    the draft MR from the first commit
+  {run} wt:wait !N … --then \"…\" when it has to wait for others: pushed first, waiting second",
+        run = breadboard_core::config::run_word()
     )
 }
 

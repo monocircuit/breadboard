@@ -20,8 +20,8 @@ pub const CHANGES: &str = "changes";
 pub const EDITOR: &str = "nvim";
 /// The orchestrating session's tab in its space.
 pub const ORCHESTRATOR_TAB: &str = "orchestrator";
-/// Whose sidebar tokens they are, for herdr: the plugin's id.
-pub const TOKEN_SOURCE: &str = "monocircuit.platform";
+/// Whose sidebar tokens they are, for herdr: the plugin's id (`[herdr] plugin`).
+pub use breadboard_core::record::PLUGIN as TOKEN_SOURCE;
 /// The branch of a worktree as a sidebar token (herdrdev/herdr#2952).
 pub const BRANCH_TOKEN: &str = "wt_branch";
 
@@ -211,12 +211,13 @@ pub fn mark_branch(repo: &Repo, workspace: &str, dir: &Path) {
         return;
     }
     let token = format!("{BRANCH_TOKEN}={branch}");
+    let source = TOKEN_SOURCE.get();
     call(&[
         "workspace",
         "report-metadata",
         workspace,
         "--source",
-        TOKEN_SOURCE,
+        &source,
         "--token",
         &token,
     ]);

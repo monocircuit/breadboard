@@ -36,7 +36,9 @@ pub const ASSETS: [(&str, &str, &str); 4] = [
         "053be0639935fe54ab5efbdb46651054e4f6a753a5b43153c88bd6912bce1e94",
     ),
 ];
-pub const SESSION: &str = "platform";
+/// The session of the pinned herdr (`pnpm herdr`): the main checkout's folder, `platform`.
+pub use breadboard_core::record::Named;
+pub const SESSION: Named = Named::Session;
 const MANIFEST: &str = "herdr-plugin.toml";
 
 /// The block `pnpm herdr:install` keeps in your config.toml; a line starting
@@ -46,8 +48,9 @@ pub fn block_mark() -> String {
 }
 pub fn block_begin() -> String {
     format!(
-        "{}: written by pnpm herdr:install on every run, changes here are overwritten",
-        block_mark()
+        "{}: written by {run} herdr:install on every run, changes here are overwritten",
+        block_mark(),
+        run = breadboard_core::config::run_word()
     )
 }
 pub fn block_end() -> String {
@@ -105,15 +108,15 @@ impl Session {
         let init = std::env::var_os("INIT_CWD").map(PathBuf::from);
         let main = git::main_dir(&cwd)
             .or_else(|| init.as_deref().and_then(git::main_dir))
-            .ok_or("not inside the repo: run it in a checkout of monocircuit/platform")?;
+            .ok_or("not inside the repo: run it in a checkout of the repo")?;
         let top = git::git(&cwd, &["rev-parse", "--show-toplevel"]);
         let here = top.is_ok.then(|| PathBuf::from(top.out()));
         let plugin_dir = [Some(main.as_path()), here.as_deref()]
             .into_iter()
             .flatten()
-            .map(|checkout| checkout.join("packages/breadboard/herdr"))
+            .map(|checkout| crate::cli::files_dir(checkout).join("herdr"))
             .find(|dir| dir.join(MANIFEST).is_file())
-            .ok_or("packages/breadboard/herdr is missing in this checkout")?;
+            .ok_or("the herdr plugin is missing in this checkout: breadboard init writes it")?;
         Ok(Session::at(main, plugin_dir))
     }
 
@@ -147,7 +150,12 @@ impl Session {
     /// The tab bar's status command, as the configs carry it: through the
     /// launcher, which never waits for a build (herdr gives it 3 s).
     pub fn status_command(&self) -> String {
-        format!("sh {} --no-wait herdr status", self.launcher().display())
+        // A repo breadboard isn't developed in has no launcher: the breadboard on PATH.
+        if self.launcher().is_file() {
+            format!("sh {} --no-wait herdr status", self.launcher().display())
+        } else {
+            "breadboard herdr status".to_string()
+        }
     }
 
     /// The environment of the session's server, and so of every pane in it:
@@ -175,7 +183,7 @@ impl Session {
         command.env_clear();
         match target {
             Target::Pinned => {
-                command.args(["--session", SESSION]).envs(self.session_env());
+                command.args(["--session", &SESSION.get()]).envs(self.session_env());
             }
             // Your own herdr talks to your default session, also from a pane of `platform`.
             Target::Own(_) => {
@@ -230,7 +238,7 @@ impl Session {
         version_after(&self.herdr(target, &["status", "server"]).out)
     }
 
-    /// Whether the target has a workspace labelled exactly `Monocircuit/Platform`.
+    /// Whether the target has a workspace labelled exactly as the main space (`[herdr] space`).
     pub fn has_space(&self, target: &Target) -> bool {
         self.ask(target, &["workspace", "list"])
             .is_some_and(|result| has_space_in(&result))
@@ -252,7 +260,7 @@ pub fn has_space_in(result: &Value) -> bool {
         .is_some_and(|spaces| {
             spaces
                 .iter()
-                .any(|space| space.get("label").and_then(Value::as_str) == Some(super::SPACE))
+                .any(|space| space.get("label").and_then(Value::as_str) == Some(super::SPACE.get().as_str()))
         })
 }
 
@@ -330,10 +338,20 @@ mod tests {
             PathBuf::from("/r/platform/packages/breadboard/herdr"),
         );
         assert_eq!(session.bin, PathBuf::from("/r/platform/.herdr/bin/herdr"));
+        // No launcher there (a repo breadboard isn't developed in): the breadboard on PATH.
+        assert_eq!(session.status_command(), "breadboard herdr status");
+        let root = std::env::temp_dir().join(format!("session-launcher-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("herdr")).unwrap();
+        std::fs::write(root.join("herdr/breadboard.sh"), "").unwrap();
+        let developed = Session::at(PathBuf::from("/r/platform"), root.join("herdr"));
         assert_eq!(
-            session.status_command(),
-            "sh /r/platform/packages/breadboard/herdr/breadboard.sh --no-wait herdr status"
+            developed.status_command(),
+            format!(
+                "sh {} --no-wait herdr status",
+                root.join("herdr/breadboard.sh").display()
+            )
         );
+        let _ = std::fs::remove_dir_all(&root);
         let env = session.session_env();
         assert!(
             env.iter()

@@ -9,6 +9,7 @@ use super::gitlab;
 use super::proc::{Args, errln, fail, step};
 use super::repo;
 use super::view;
+use breadboard_core::config::Release as ReleaseTag;
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record::{self, ORCHESTRATOR};
 use breadboard_core::time::{day as day_of, hm as time_of};
@@ -369,7 +370,8 @@ pub fn orchestration_command(name: &str, is_live: bool) -> ExitCode {
             text
         }
         Some(Rewritten::Unanswered(what, why)) => fail(&format!(
-            "{UNANSWERED} for {what} ({why}): {relative} stays as it was\n  pnpm wt:orchestrate {name} --changelog tries again"
+            "{UNANSWERED} for {what} ({why}): {relative} stays as it was\n  {run} wt:orchestrate {name} --changelog tries again",
+            run = breadboard_core::config::run_word()
         )),
         None if file.exists() => {
             step(&format!("{name} has no record any more: {relative} as it is"));
@@ -488,19 +490,15 @@ pub fn issue_of(branch: &str, description: &str) -> Option<i64> {
         .and_then(|found| found[1].parse().ok())
 }
 
-/// A release tag: vita `vX.Y.Z` in products/vita, `monolithium-vX.Y.Z` in monolithium and utilities.
-pub fn release_of(tag: &str) -> Option<(String, &'static str, Vec<&'static str>)> {
-    static VITA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^v(\d+\.\d+\.\d+.*)$").unwrap());
-    static LIBRARY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^monolithium-v(\d+\.\d+\.\d+.*)$").unwrap());
-    if let Some(found) = VITA.captures(tag) {
-        return Some((found[1].to_string(), "vita", vec!["products/vita"]));
-    }
-    LIBRARY.captures(tag).map(|found| {
-        (
-            found[1].to_string(),
-            "monolithium",
-            vec!["packages/monolithium", "packages/utilities"],
-        )
+/// A release tag of breadboard.toml's `[[releases]]`: `<tag>X.Y.Z` → its
+/// version, name and the folders it releases (the first holds its CHANGELOG.md).
+pub fn release_of(releases: &[ReleaseTag], tag: &str) -> Option<(String, String, Vec<String>)> {
+    static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+\.\d+\.\d+").unwrap());
+    releases.iter().find_map(|release| {
+        let version = tag
+            .strip_prefix(&release.tag)
+            .filter(|version| VERSION.is_match(version))?;
+        Some((version.to_string(), release.name.clone(), release.paths.clone()))
     })
 }
 
@@ -565,10 +563,11 @@ pub fn overall_text(
     unreleased: Option<(&[Entry], &[String], Option<&str>)>,
 ) -> String {
     let mut lines = vec![
-        "# Monocircuit/Platform: changelog".to_string(),
+        format!("# {}: changelog", breadboard_core::record::SPACE),
         String::new(),
         format!(
-            "Merged into develop since {}, by product and package.",
+            "Merged into {} since {}, by product and package.",
+            breadboard_core::git::default_branch(),
             day_of(ms_of(since))
         ),
         String::new(),
@@ -965,11 +964,12 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
         .first()
         .and_then(|mr| str_of(mr, "web_url"))
         .and_then(|url| url.rsplit_once("/merge_requests/").map(|(base, _)| base.to_string()));
+    let releases_known = breadboard_core::config::of(&main).config.releases.clone();
     let releases: Vec<Release> = tags
         .iter()
         .filter_map(|tag| {
             let name = str_of(tag, "name")?;
-            let (version, _, groups) = release_of(name)?;
+            let (version, _, groups) = release_of(&releases_known, name)?;
             let at = str_of(tag, "created_at")
                 .or_else(|| {
                     tag.get("commit")
@@ -980,19 +980,19 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
                 return None;
             }
             let notes = release_notes_of(
-                &fs::read_to_string(main.join(groups[0]).join("CHANGELOG.md")).unwrap_or_default(),
+                &fs::read_to_string(main.join(groups.first()?).join("CHANGELOG.md")).unwrap_or_default(),
                 &version,
             );
             Some(Release {
                 url: base.as_ref().map(|base| format!("{base}/tags/{name}")),
                 tag: name.to_string(),
                 at,
-                groups: groups.into_iter().map(String::from).collect(),
+                groups,
                 notes,
             })
         })
         .collect();
-    let entries = fragments::fragments_at(&main, "origin/develop");
+    let entries = fragments::fragments_at(&main, &breadboard_core::git::base(&main));
     let areas = fragments::areas_of(&main);
     let url = fragments::project_url(&main);
     let text = overall_text(&start_iso, &merged, &releases, Some((&entries, &areas, url.as_deref())));
@@ -1017,7 +1017,9 @@ pub fn overall_command(args: &Args) -> ExitCode {
         .unwrap_or_default();
     if args.has("--watch") {
         let empty = format!(
-            "# Monocircuit/Platform: changelog\n\nNot written yet: the overview of the main space writes {relative}, or `pnpm changelog`.\n"
+            "# {}: changelog\n\nNot written yet: the overview of the main space writes {relative}, or `{}`.\n",
+            breadboard_core::record::SPACE,
+            breadboard_core::config::of(&main).command("changelog")
         );
         return view::watch(&file, &empty);
     }
@@ -1042,6 +1044,32 @@ pub fn overall_command(args: &Args) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tag_names_its_release_as_breadboard_toml_says() {
+        let releases = [
+            ReleaseTag {
+                tag: "v".into(),
+                name: "app".into(),
+                paths: vec!["apps/app".into()],
+            },
+            ReleaseTag {
+                tag: "lib-v".into(),
+                name: "lib".into(),
+                paths: vec!["libs/lib".into(), "libs/util".into()],
+            },
+        ];
+        assert_eq!(
+            release_of(&releases, "v1.2.3"),
+            Some(("1.2.3".into(), "app".into(), vec!["apps/app".into()]))
+        );
+        assert_eq!(
+            release_of(&releases, "lib-v0.4.0-rc.1").map(|(v, n, _)| (v, n)),
+            Some(("0.4.0-rc.1".into(), "lib".into()))
+        );
+        assert_eq!(release_of(&releases, "v1.2"), None);
+        assert_eq!(release_of(&[], "v1.2.3"), None);
+    }
 
     #[test]
     fn groups_an_mr_by_its_type() {

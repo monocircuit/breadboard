@@ -3,6 +3,8 @@
 
 pub mod actions;
 pub mod check;
+pub mod ci;
+pub mod config;
 pub mod conversations;
 pub mod epic;
 pub mod git;
@@ -17,5 +19,6 @@ pub mod record;
 pub mod runs;
 pub mod said;
 pub mod setups;
+pub mod stack;
 pub mod time;
 pub mod wait;
