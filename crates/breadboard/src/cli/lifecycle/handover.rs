@@ -12,7 +12,7 @@ mod brief;
 pub mod restart;
 
 use super::args::{Args, Takes};
-use super::claude::{bound_session, context_share_of, is_conversation_running, session_file};
+use super::claude::{bound_session, context_share_of, is_conversation_running, leave_worktree, session_file};
 use super::gitlab;
 use super::herdr;
 use super::layout::spaces::space_of;
@@ -428,6 +428,8 @@ fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Re
     if is_conversation_running(&worker.id) {
         return Err(restart::Failed::Before("a claude runs its conversation".into()));
     }
+    // Out of the worktree it entered: a resumed run starts where its transcript last stood (#363).
+    leave_worktree(&worker.id);
     bind(worker, issue);
     if !crate::tui::overview::actor::herdr::enqueue(main, &issue.dir, line) {
         return Err(restart::Failed::Before("its line could not be queued".into()));
