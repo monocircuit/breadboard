@@ -218,7 +218,9 @@ fn stack_cell(node: &Node, ctx: &Ctx) -> (model::Span, Option<Act>) {
 
 /// A worktree's stack, `no .env.local` without one (boxes.mjs `stackCell`).
 fn stack_of(node: &Node) -> model::Span {
-    node.stack.clone().unwrap_or_else(|| model::Span::dim("no .env.local"))
+    node.stack
+        .clone()
+        .unwrap_or_else(|| model::Span::dim(breadboard_core::config::env_missing()))
 }
 
 /// A worktree's app, `—` without its .env.local (render.mjs).
@@ -591,9 +593,12 @@ fn migrations_line(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
                 names.join(", ")
             );
             look::say(scene, &text, yellow);
-            let label = "▶ pnpm pg:migrate";
-            let rects = scene.atom_gap(vec![look::span(label, theme::tone(theme::Tone::Cyan))], 2);
-            button_on(scene, &rects, label, theme::Tone::Cyan, migrate);
+            let label = format!(
+                "▶ {}",
+                node.dir.as_deref().map_or_else(|| "migrate".into(), migrate_run)
+            );
+            let rects = scene.atom_gap(vec![look::span(&label, theme::tone(theme::Tone::Cyan))], 2);
+            button_on(scene, &rects, &label, theme::Tone::Cyan, migrate);
             if let Some(why) = run.and_then(|run| run.error.as_deref()) {
                 scene.atom_gap(vec![look::span(format!("✗ {why}"), look::style_of(&Paint::Red))], 2);
             }
@@ -638,6 +643,13 @@ fn link_atom(scene: &mut Scene<Act>, link: Span<'static>, after: &str, act: Opti
             action: act,
         },
     });
+}
+
+/// What applies a worktree's migrations (`[stack.migrations] run`), as its button says it.
+pub fn migrate_run(dir: &std::path::Path) -> String {
+    breadboard_core::stack::of(dir)
+        .and_then(|stack| stack.migrations)
+        .map_or_else(|| "migrate".into(), |migrations| migrations.run)
 }
 
 /// The name of develop among the collisions (core's tree).

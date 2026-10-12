@@ -294,11 +294,16 @@ fn work(
     let layout = Layout::of(&parts, scene.width(), ctx);
     let tree = &worktrees.tree;
     // Why there is no app and no stack, or why a stack says `?`: said once, not on every block.
+    let no_env = if breadboard_core::config::has_stack() {
+        format!(
+            "{} in any worktree: no stack, the app can't run there",
+            breadboard_core::config::env_missing()
+        )
+    } else {
+        "no stack: breadboard.toml has no [stack]".to_string()
+    };
     let why = if !layout.cells.is_any_env && tree.live.iter().any(|node| node.has_tree) {
-        Some((
-            "no .env.local in any worktree: no stack, the app can't run there",
-            theme::dim(),
-        ))
+        Some((no_env.as_str(), theme::dim()))
     } else if tree.live.iter().any(|node| node.docker == Docker::Silent) {
         Some((
             "docker does not answer: the stacks are unknown",
@@ -1136,12 +1141,10 @@ mod tests {
         let lines = text(&scene);
         assert!(lines.contains(&"   ⚠ the database doesn't answer: connection refused".to_string()));
         assert!(
-            lines.contains(
-                &"   ⚠ 4 migrations not applied: 0041_a, 0042_b, 0043_c +1 more  ▶ pnpm pg:migrate".to_string()
-            ),
+            lines.contains(&"   ⚠ 4 migrations not applied: 0041_a, 0042_b, 0043_c +1 more  ▶ migrate".to_string()),
             "{lines:#?}"
         );
-        assert!(buttons(&scene).contains(&("▶ pnpm pg:migrate".into(), Act::Migrate("/w/305-refresh".into()))));
+        assert!(buttons(&scene).contains(&("▶ migrate".into(), Act::Migrate("/w/305-refresh".into()))));
         // All applied: nothing to say.
         worktrees.tree.live[1].migrations = Some(Migrations::Pending {
             pending: vec![],

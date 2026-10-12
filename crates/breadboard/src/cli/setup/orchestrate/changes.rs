@@ -79,7 +79,10 @@ fn range_of(mr: &Value, cwd: &Path) -> Option<(String, String)> {
         )
     })?;
     let develop = commit_of(
-        &format!("origin/{}", str_of(mr, "target_branch").unwrap_or("develop")),
+        &format!(
+            "origin/{}",
+            str_of(mr, "target_branch").unwrap_or(&breadboard_core::git::branch(cwd))
+        ),
         cwd,
     )?;
     let base = read(&["merge-base", &develop, &head], cwd)?;

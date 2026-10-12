@@ -5,6 +5,11 @@
 //! writes one: silent and quick without an answer, and never in the way of
 //! a stop: whatever fails, it exits 0 (#306).
 //!
+//! `breadboard hook pre-edit`: Claude Code's PreToolUse hook on edits
+//! (.claude/hooks/pre-edit-worktree.mjs before #342): every task works in
+//! its own worktree, so an edit in the main checkout is blocked with the
+//! command that starts one.
+//!
 //! Also the git pre-push shim of the binary (`PRE_PUSH_SHIM`,
 //! packages/breadboard/hooks/pre-push): wt:new and wt:mr install it
 //! (`cli::write::mr::SHIM`). Its sibling hooks/stop-answers is what
@@ -22,7 +27,84 @@ use std::process::ExitCode;
 /// The marker line stays, so the installers recognise it as theirs.
 pub const PRE_PUSH_SHIM: &str = include_str!("../../../../hooks/pre-push");
 
-pub const USAGE: &str = "usage: breadboard hook stop-answers   (Claude Code runs it at a stop, its JSON on stdin)";
+pub const USAGE: &str = "usage: breadboard hook stop-answers   (Claude Code runs it at a stop, its JSON on stdin)
+       breadboard hook pre-edit       (before an edit, its JSON on stdin: exit 2 blocks it)";
+
+/// `breadboard hook pre-edit`: the edit of `tool_input.file_path` (or
+/// `notebook_path`) in the main checkout is blocked (exit 2, why on
+/// stderr). Allowed there: what git ignores, files inside another worktree
+/// (claude -w puts them below the main checkout), and everything with
+/// `CLAUDE_ALLOW_MAIN_CHECKOUT=1`. Outside a repo, or on input it can't
+/// read, it lets the edit through.
+pub fn pre_edit(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        let _ = writeln!(std::io::stderr(), "{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    if std::env::var("CLAUDE_ALLOW_MAIN_CHECKOUT").as_deref() == Ok("1") {
+        return ExitCode::SUCCESS;
+    }
+    let value: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let tool = value.get("tool_input");
+    let Some(file) = ["file_path", "notebook_path"]
+        .iter()
+        .find_map(|key| tool.and_then(|tool| tool.get(key)).and_then(|file| file.as_str()))
+    else {
+        return ExitCode::SUCCESS;
+    };
+    let target = std::env::current_dir().unwrap_or_default().join(file);
+    // The closest folder that exists: git needs one, a new file's may not be there yet.
+    let Some(dir) = target.ancestors().skip(1).find(|dir| dir.is_dir()) else {
+        return ExitCode::SUCCESS;
+    };
+    let trees: Vec<PathBuf> = breadboard_core::git::all_worktrees(dir)
+        .into_iter()
+        .map(|tree| tree.dir)
+        .collect();
+    let is_ignored = || {
+        breadboard_core::git::git(
+            dir,
+            &["check-ignore", "--quiet", "--no-index", &target.to_string_lossy()],
+        )
+        .is_ok
+    };
+    match blocked(&target, &trees, is_ignored) {
+        Some(main) => {
+            let loaded = breadboard_core::config::of(&main);
+            let relative = target.strip_prefix(&main).unwrap_or(&target).display().to_string();
+            let _ = write!(
+                std::io::stderr(),
+                "Blocked: {relative} is in the main checkout, and every task works in its own worktree.
+
+Start one and make the change there:
+
+  {} <feature>          # from {}; --fix for a fix
+
+then use the paths below {}-<feature>/. If the user explicitly wants this edit in the main checkout, they can set CLAUDE_ALLOW_MAIN_CHECKOUT=1 for the session.
+",
+                loaded.command("wt:new"),
+                main.display(),
+                main.display()
+            );
+            ExitCode::from(2)
+        }
+        None => ExitCode::SUCCESS,
+    }
+}
+
+/// The main checkout when `target` is in it and not in another worktree
+/// below it nor ignored by git; `trees` the main checkout first.
+fn blocked(target: &Path, trees: &[PathBuf], is_ignored: impl FnOnce() -> bool) -> Option<PathBuf> {
+    let main = trees.first()?;
+    // The worktree a file belongs to is the deepest one holding it.
+    let owner = trees
+        .iter()
+        .filter(|tree| target.starts_with(tree))
+        .max_by_key(|tree| tree.components().count())?;
+    (owner == main && !is_ignored()).then(|| main.clone())
+}
 
 pub fn stop_answers(args: &[String]) -> ExitCode {
     if !args.is_empty() {
@@ -92,6 +174,31 @@ fn reply_of(answers: &[Action]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocks_an_edit_in_the_main_checkout_only() {
+        let trees = [
+            PathBuf::from("/r/app"),
+            PathBuf::from("/r/app-1-x"),
+            PathBuf::from("/r/app/.claude/worktrees/w"),
+        ];
+        assert_eq!(
+            blocked(Path::new("/r/app/src/a.rs"), &trees, || false),
+            Some(PathBuf::from("/r/app"))
+        );
+        assert_eq!(
+            blocked(Path::new("/r/app/src/a.rs"), &trees, || true),
+            None,
+            "ignored by git"
+        );
+        assert_eq!(blocked(Path::new("/r/app-1-x/src/a.rs"), &trees, || false), None);
+        assert_eq!(
+            blocked(Path::new("/r/app/.claude/worktrees/w/a.rs"), &trees, || false),
+            None
+        );
+        assert_eq!(blocked(Path::new("/elsewhere/a.rs"), &trees, || false), None);
+        assert_eq!(blocked(Path::new("/r/app/a.rs"), &[], || false), None);
+    }
     use serde_json::Value;
     use std::fs;
 
@@ -179,7 +286,7 @@ mod tests {
     #[test]
     fn the_pre_push_shim_runs_the_guard_of_the_branch_and_refuses_without_one() {
         assert!(
-            PRE_PUSH_SHIM.contains("monocircuit push guard (#184)"),
+            PRE_PUSH_SHIM.contains("breadboard push guard (#184)"),
             "the installers' marker"
         );
         let root = std::env::temp_dir().join(format!("pre-push-shim-{}", std::process::id()));

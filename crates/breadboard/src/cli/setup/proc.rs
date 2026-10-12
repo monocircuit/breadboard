@@ -145,7 +145,10 @@ pub fn wants_help(args: &Args) -> bool {
 /// wrong, then the command's usage (exit 1).
 pub fn refuse_misuse(args: &Args, shape: &Shape) {
     if let Some(message) = misuse(args, shape) {
-        fail(&format!("{message}\n{}", shape.usage));
+        fail(&format!(
+            "{message}\n{}",
+            breadboard_core::config::in_repo(&shape.usage)
+        ));
     }
 }
 
@@ -328,7 +331,8 @@ pub fn release_held() {
 /// `\n✗ <message>` (and the hint) on stderr, exit 1. Other processes read
 /// the `✗ ` at the start of a line (wt:orchestrate, the overview).
 pub fn fail(message: &str) -> ! {
-    let hint = hint();
+    let message = breadboard_core::config::in_repo(message);
+    let hint = breadboard_core::config::in_repo(&hint());
     flush_out();
     if hint.is_empty() {
         errln!("\n✗ {message}");
@@ -341,7 +345,7 @@ pub fn fail(message: &str) -> ! {
 
 /// `\n▸ <message>` on stdout.
 pub fn step(message: &str) {
-    outln!("\n▸ {message}");
+    outln!("\n▸ {}", breadboard_core::config::in_repo(message));
 }
 
 /// What a child process answered.

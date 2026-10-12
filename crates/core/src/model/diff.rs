@@ -99,7 +99,7 @@ impl Diff {
     /// The branch it is against.
     pub fn base(&self) -> &str {
         if self.base.is_empty() {
-            crate::git::DEVELOP
+            crate::git::default_branch()
         } else {
             &self.base
         }

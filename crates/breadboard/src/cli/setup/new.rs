@@ -8,7 +8,7 @@ use super::conversations::{self, session_file};
 use super::epic::{self, Epic};
 use super::herdr::{self, field};
 use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
-use super::repo::{self, VITA};
+use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
 use crate::cli::lifecycle::handover::claim_on_origin;
@@ -17,10 +17,6 @@ use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
-
-const INSTALL: &str = "pnpm install --frozen-lockfile";
-const PRETTIER: &str = "pnpm --filter @monocircuit/prettier-config build";
-const ESLINT: &str = "pnpm --filter @monocircuit/eslint-config build:prod";
 
 pub const USAGE: &str =
     "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
@@ -183,22 +179,33 @@ pub fn command(args: &Args) -> ExitCode {
         ));
     }
     // A step that fails names the commands that finish the worktree from there.
+    let loaded = breadboard_core::config::of(&main);
+    let setup = loaded.config.worktrees.setup.clone();
     let main_env = repo::env_file_of(&main);
     let stack_step = if !main_env.exists() {
         None
     } else if args.has("--shared") {
-        Some(format!("cp {} {VITA}/.env.local", main_env.display()))
+        Some(format!(
+            "cp {} {}",
+            main_env.display(),
+            repo::env_file_of(&dir).display()
+        ))
     } else {
-        Some("pnpm wt:stack".to_string())
+        Some(loaded.command("wt:stack"))
     };
-    let finish = |rest: &[&str]| {
-        let rest: Vec<&str> = rest.iter().copied().chain(stack_step.as_deref()).collect();
+    let finish = |rest: &[breadboard_core::config::Step]| {
+        let rest: Vec<&str> = rest
+            .iter()
+            .map(|step| step.run.as_str())
+            .chain(stack_step.as_deref())
+            .collect();
         format!(
-            "the worktree is only half set up: fix the cause, then finish it in {dir_text}: {}; or start over with pnpm wt:remove {feature}",
-            rest.join(" && ")
+            "the worktree is only half set up: fix the cause, then finish it in {dir_text}: {}; or start over with {} {feature}",
+            rest.join(" && "),
+            loaded.command("wt:remove")
         )
     };
-    set_hint(&finish(&[INSTALL, PRETTIER, ESLINT]));
+    set_hint(&finish(&setup));
 
     step(&format!(
         "push guard: {} (#184)",
@@ -224,40 +231,39 @@ pub fn command(args: &Args) -> ExitCode {
         outln!("! origin refused the branch, push it yourself: git push -u origin {branch}");
     }
 
-    step("pnpm install");
-    proc::run(
-        "pnpm",
-        &["install", "--frozen-lockfile"],
-        How {
-            cwd: Some(&dir),
-            is_quiet: proc::is_agent(),
-            ..How::default()
-        },
-    );
-    set_hint(&finish(&[PRETTIER, ESLINT]));
-    step("build the lint and format configs (lint and the hooks load them)");
-    let quiet = || How {
-        cwd: Some(&dir),
-        is_quiet: true,
-        ..How::default()
-    };
-    proc::run("pnpm", &["--filter", "@monocircuit/prettier-config", "build"], quiet());
-    proc::run(
-        "pnpm",
-        &["--filter", "@monocircuit/eslint-config", "build:prod"],
-        quiet(),
-    );
-    set_hint(&finish(&[]));
+    // breadboard.toml's `[[worktrees.setup]]` in order (the install, what lint loads); a quiet one
+    // shows its output only when it fails, every one quiet for an agent.
+    for (at, run) in setup.iter().enumerate() {
+        if let Some(says) = &run.says {
+            step(says);
+        } else if !run.is_quiet {
+            step(&run.run);
+        }
+        proc::run(
+            "sh",
+            &["-c", &run.run],
+            How {
+                cwd: Some(&dir),
+                is_quiet: run.is_quiet || proc::is_agent(),
+                ..How::default()
+            },
+        );
+        set_hint(&finish(&setup[at + 1..]));
+    }
 
-    let offset = if !main_env.exists() {
+    let has_stack = loaded.config.stack.is_some();
+    let offset = if !has_stack {
+        // No [stack] in breadboard.toml: nothing to share or own.
+        0
+    } else if !main_env.exists() {
         outln!(
-            "\n! {} is missing, the worktree has no .env.local and no stack",
+            "\n! {} is missing, the worktree has no env file and no stack",
             main_env.display()
         );
         0
     } else if args.has("--shared") {
-        step("share the dev stack of the main checkout (copy its .env.local)");
-        let target = dir.join(VITA).join(".env.local");
+        step("share the dev stack of the main checkout (copy its env file)");
+        let target = repo::env_file_of(&dir);
         if let Some(parent) = target.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -268,8 +274,9 @@ pub fn command(args: &Args) -> ExitCode {
     } else if let Some(epic) = Epic::of_task(&dir) {
         // An orchestration's task: its stack starts when needed (#351).
         step(&format!(
-            "task stack on the epic {}: its .env.local, started by pnpm stack:up",
-            epic.name
+            "task stack on the epic {}: its .env.local, started by {run} stack:up",
+            epic.name,
+            run = breadboard_core::config::run_word()
         ));
         epic::reserve_task(&dir, &feature, &epic)
     } else {
@@ -302,7 +309,7 @@ pub fn command(args: &Args) -> ExitCode {
         left,
         origin: origin.as_ref().map(|origin| origin.name.as_str()),
         is_stack_only: false,
-        is_stackless: !main_env.exists(),
+        is_stackless: has_stack && !main_env.exists(),
         is_unpushed: !pushed.is_ok,
         epic_port,
     });
