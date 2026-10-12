@@ -2,11 +2,13 @@
 //! check.mjs `checkGate`): the git pre-push hook in Rust. It refuses a push
 //! to the branch of a merged or closed MR (#184) and one of a commit
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
-//! Same texts as the Node hook: an agent reads them and acts on them.
+//! Same texts as the Node hook: an agent reads them and acts on them. It
+//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`).
 
 use super::check::{self, Failure};
 use super::gitlab;
 use super::proc::{errln, fail, git};
+use breadboard_core::ci::PushOption;
 use breadboard_core::json::str_of;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Value, json};
@@ -264,6 +266,15 @@ pub fn command(words: &[String]) -> ExitCode {
         .text()
         .to_string();
     let mut refusals = check_push(&refs);
+    // git read this push's options before the hook ran: a change counts from the next push.
+    match breadboard_core::ci::set_push_option(Path::new(&dir), now_ms()) {
+        Some(PushOption::Set) => errln!("breadboard: pushes skip CI from the next one on, breadboard's queue starts the pipelines (#357)"),
+        // This push would skip CI with no queue to start its pipeline: once more, without the option.
+        Some(PushOption::Dropped(why)) => refusals.push(format!(
+            "✗ push refused: it would skip CI, and {why} (#357).\n  The option is dropped now: push again, and GitLab starts the pipeline itself."
+        )),
+        None => {}
+    }
     refusals.extend(check_gate(&refs, Path::new(&dir)));
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
