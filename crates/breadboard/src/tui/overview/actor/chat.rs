@@ -147,7 +147,7 @@ fn restore(main: &Path, name: &str) -> Option<String> {
     };
     let workspace = match spaces().into_iter().find(|space| space.label == label) {
         Some(space) => space.id,
-        None => orchestrations::orchestrator_space(&repo, name, false)?,
+        None => orchestrations::orchestrator_space(&repo, name)?,
     };
     let chat = chat_of(main, name);
     let tabs = tabs_of(&workspace);

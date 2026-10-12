@@ -6,7 +6,7 @@ use crate::git::{count, git};
 use crate::gitlab::read::OpenMr;
 use std::path::Path;
 
-/// An open MR the worktree builds on, with how many of its commits are in HEAD and not on develop.
+/// An open MR the worktree builds on, with how many of its commits are in HEAD and not on its base.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Waiting {
     pub mr: OpenMr,
@@ -14,7 +14,7 @@ pub struct Waiting {
 }
 
 /// The open MRs whose branch the worktree `dir` builds on: commits of the
-/// branch (its `origin/` ref) are in HEAD and not in develop yet, through
+/// branch (its `origin/` ref) are in HEAD and not in its base (`develop`, the remote ref) yet, through
 /// their merge base, so a base that got more commits since still counts. The
 /// base of the stack first: that is the merge order.
 pub fn waiting_for(dir: &Path, branch: Option<&str>, mrs: &[OpenMr], develop: &str) -> Vec<Waiting> {

@@ -24,7 +24,7 @@ pub fn remove_orchestrator_checkout(name: &str) -> Option<String> {
 /// The space `⇶ <title>` with its tabs; renamed after a new title, an older
 /// one handing its tabs over (the lifecycle group's, one with `wt:herdr`).
 pub fn orchestrator_space(name: &str) -> Option<String> {
-    orchestrations::orchestrator_space(&repo::lifecycle(), name, false)
+    orchestrations::orchestrator_space(&repo::lifecycle(), name)
 }
 
 /// Whether `⇶ <name>` has an orchestrator already: a tab `orchestrator` with

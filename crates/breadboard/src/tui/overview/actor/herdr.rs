@@ -124,9 +124,25 @@ pub fn type_into(pane: Option<&Pane>, line: &str) -> bool {
     did(&["agent", "prompt", &pane.id, &overview_line(line)])
 }
 
-/// One line into the pane of the agent of the worktree `dir` (`deliverTo`); true when it got in.
+/// One line for the agent of the worktree `dir` (`deliverTo`); true when it
+/// got in: typed into its pane, or queued for its next run when the repo's
+/// agents run headless (#358).
 pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
+    if breadboard_core::runs::is_headless(main) {
+        return enqueue(main, dir, line);
+    }
     type_into(agent_pane_of(main, &Target::Dir(dir.to_path_buf())).as_ref(), line)
+}
+
+/// One line queued for the next run of the headless agent of the worktree
+/// `dir` (#358), the daemon woken to run it; false when no session is bound
+/// there. Queued is in: the daemon runs it, now or once memory allows.
+pub fn enqueue(main: &Path, dir: &Path, line: &str) -> bool {
+    if breadboard_core::runs::enqueue_line(main, dir, &overview_line(line)).is_err() {
+        return false;
+    }
+    crate::daemon::client::wake_runs(main);
+    true
 }
 
 /// A checkout's space in front (`focusSpace`); false outside herdr or without one.

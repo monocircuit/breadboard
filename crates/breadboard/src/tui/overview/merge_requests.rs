@@ -9,7 +9,7 @@
 //! (ACTIONS, rule 6); a row only says when the overview merges it.
 
 use super::actor::merge::{Merge, Phase};
-use super::{Act, Ctx, Fold, look};
+use super::{Act, Ctx, Fold, boxes, look};
 use crate::tui::links;
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme::{self, Tone};
@@ -215,14 +215,7 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, i
             head(scene, mr, columns, merge_of(ctx, mr));
             let at = columns.title_at();
             if let Some(progress) = &mr.progress {
-                let beside = if columns.status > 0 { columns.status + 2 } else { 0 };
-                let room = scene.width().saturating_sub(at);
-                let size = (columns.title_in(scene.width()) + beside).min(room);
-                if room >= MIN_BAR {
-                    scene.pad_to(at);
-                    scene.atom_gap(bar(progress, size), 0);
-                    scene.end_line();
-                }
+                bar_line(scene, mr, progress, columns, ctx);
             }
             if has_lacks(mr, ctx) {
                 let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
@@ -236,6 +229,40 @@ fn open_row(scene: &mut Scene<Act>, row: &MrRow, columns: &Columns, ctx: &Ctx, i
                 scene.blank();
             }
         });
+    });
+}
+
+/// The bar of an MR's boxes under its head, the fold of their list (#346):
+/// `▸ ━━──  2/6 boxes · …`, a click or Enter on it opens every box under
+/// it, one on the line or the list folds it again. `--once` has no fold.
+fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress, columns: &Columns, ctx: &Ctx) {
+    let at = columns.title_at();
+    let beside = if columns.status > 0 { columns.status + 2 } else { 0 };
+    let room = scene.width().saturating_sub(at);
+    let size = (columns.title_in(scene.width()) + beside).min(room);
+    if ctx.is_once || mr.boxes.is_empty() {
+        if room >= MIN_BAR {
+            scene.pad_to(at);
+            scene.atom_gap(bar(progress, mr.issue, size), 0);
+            scene.end_line();
+        }
+        return;
+    }
+    let is_open = ctx.folds.boxes.mrs.contains(&mr.iid);
+    scene.block(Act::Fold(Fold::MrBoxes(mr.iid)), |scene| {
+        scene.pad_to(at);
+        let mut spans = vec![boxes::mark(is_open)];
+        if room >= MIN_BAR + 2 {
+            spans.extend(bar(progress, mr.issue, size - 2));
+        } else {
+            spans.push(look::dim(format!("{}/{}", progress.ticked, progress.total)));
+        }
+        scene.atom_gap(spans, 0);
+        scene.end_line();
+        if is_open {
+            let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
+            boxes::list(scene, &mr.boxes, at + 2);
+        }
     });
 }
 
@@ -494,8 +521,9 @@ fn title_spans(title: &str, is_merged: bool) -> Vec<Span<'static>> {
 /// The bar of an MR's boxes in at most `width` columns (#294, `progressBar`): the
 /// ticked part a thick line, green (yellow once only acceptance boxes are
 /// open), the rest a thin dim one; behind it the counts, dropped section by
-/// section on a narrow width, never `…`.
-fn bar(progress: &Progress, width: u16) -> Vec<Span<'static>> {
+/// section on a narrow width, never `…`. The counts are `issue`'s boxes and
+/// say so (`#335: 8/10 boxes`, #346): the MR's own description has its own.
+fn bar(progress: &Progress, issue: Option<i64>, width: u16) -> Vec<Span<'static>> {
     let &Progress {
         ticked,
         total,
@@ -516,8 +544,10 @@ fn bar(progress: &Progress, width: u16) -> Vec<Span<'static>> {
             full.push(format!("{name} {done}/{all}"));
         }
     }
+    let source = issue.map(|issue| format!("#{issue}: ")).unwrap_or_default();
     let candidates = [
-        full.join(" · "),
+        format!("{source}{}", full.join(" · ")),
+        format!("{source}{ticked}/{total} boxes"),
         format!("{ticked}/{total} boxes"),
         format!("{ticked}/{total}"),
     ];
@@ -704,16 +734,16 @@ mod tests {
             acceptance: (0, 3),
             ..Default::default()
         };
-        let wide = text(&bar(&progress, 50));
+        let wide = text(&bar(&progress, None, 50));
         assert!(wide.ends_with("  9/12 boxes · work 9/9 · acceptance 0/3"), "{wide}");
         assert_eq!(Span::raw(wide.as_str()).width(), 50);
         // Wider: the bar takes the room it is given, the counts at its end (#294).
-        let wide = text(&bar(&progress, 80));
+        let wide = text(&bar(&progress, None, 80));
         assert_eq!(Span::raw(wide.as_str()).width(), 80);
         assert!(wide.starts_with(&"━".repeat(30)), "{wide}");
-        assert!(text(&bar(&progress, 20)).ends_with("  9/12 boxes"));
-        assert!(text(&bar(&progress, 15)).ends_with("  9/12"));
-        assert_eq!(text(&bar(&progress, 8)), "━━━━━━──");
+        assert!(text(&bar(&progress, None, 20)).ends_with("  9/12 boxes"));
+        assert!(text(&bar(&progress, None, 15)).ends_with("  9/12"));
+        assert_eq!(text(&bar(&progress, None, 8)), "━━━━━━──");
     }
 
     #[test]
@@ -727,7 +757,7 @@ mod tests {
             other: (0, 7),
             other_name: "scope".into(),
         };
-        let label = text(&bar(&progress, 80));
+        let label = text(&bar(&progress, None, 80));
         assert!(label.ends_with("  0/9 boxes · acceptance 0/2 · scope 0/7"), "{label}");
         // Once they are ticked they go unnamed: the label accounts for the open boxes.
         let done = Progress {
@@ -735,7 +765,7 @@ mod tests {
             other: (7, 7),
             ..progress
         };
-        assert!(text(&bar(&done, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
+        assert!(text(&bar(&done, None, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
     }
 
     #[test]
@@ -747,13 +777,13 @@ mod tests {
             acceptance: (0, 2),
             ..Default::default()
         };
-        assert_eq!(bar(&only_acceptance, 8)[0].style.fg, Some(Tone::Yellow.fg()));
+        assert_eq!(bar(&only_acceptance, None, 8)[0].style.fg, Some(Tone::Yellow.fg()));
         let work_open = Progress {
             work: (1, 2),
             acceptance: (1, 2),
             ..only_acceptance
         };
-        assert_eq!(bar(&work_open, 8)[0].style.fg, Some(Tone::Green.fg()));
+        assert_eq!(bar(&work_open, None, 8)[0].style.fg, Some(Tone::Green.fg()));
     }
 
     #[test]
@@ -838,6 +868,131 @@ mod tests {
         rows(&mut scene, &mrs, &ctx);
         scene.finish();
         lines(&scene)
+    }
+
+    /// An open row with its boxes at `width`, their fold as `folds` has it, `--once` or not.
+    fn drawn_boxes(folds: super::super::Folds, is_once: bool, width: u16) -> Scene<Act> {
+        use breadboard_core::model::boxes::{BoxLine, BoxSection, Check};
+        let line = |text: &str, is_ticked: bool, check: Option<(&str, Option<&str>)>| BoxLine {
+            is_ticked,
+            text: text.into(),
+            check: check.map(|(text, answer)| Check {
+                text: text.into(),
+                answer: answer.map(String::from),
+            }),
+        };
+        let mr = MrFacts {
+            progress: Some(Progress {
+                ticked: 1,
+                total: 3,
+                acceptance: (0, 1),
+                other: (1, 2),
+                other_name: "scope".into(),
+                ..Default::default()
+            }),
+            boxes: vec![
+                BoxSection {
+                    heading: "Scope".into(),
+                    boxes: vec![
+                        line(
+                            "A fold control on the MR row",
+                            true,
+                            Some(("test: boxes.rs › folds", None)),
+                        ),
+                        line(
+                            "Folded by default; the state per MR survives refreshes and a restart",
+                            false,
+                            None,
+                        ),
+                    ],
+                },
+                BoxSection {
+                    heading: "Acceptance criteria".into(),
+                    boxes: vec![line(
+                        "A click shows every box",
+                        false,
+                        Some(("try #12", Some("looks good"))),
+                    )],
+                },
+            ],
+            reasons: vec![reason("1 acceptance box open", "agent")],
+            issue: Some(346),
+            ..facts("feat(breadboard): an MR's boxes fold out", None)
+        };
+        let gitlab = super::super::GitlabState::default();
+        let ctx = Ctx {
+            is_once,
+            folds,
+            gitlab: &gitlab,
+            now: 60_000,
+            main_name: "platform",
+            actor: super::super::actor::idle(),
+            words: super::super::actor::view::no_words(),
+        };
+        let mrs = MergeRequests {
+            open: vec![MrRow {
+                number: Some(346),
+                graph: "●".into(),
+                below: String::new(),
+                mr: Some(mr),
+            }],
+            ..Default::default()
+        };
+        let mut scene = Scene::<Act>::new(width);
+        rows(&mut scene, &mrs, &ctx);
+        scene.finish();
+        scene
+    }
+
+    #[test]
+    fn the_boxes_fold_under_the_bar_and_open_every_box_whole() {
+        let folded = drawn_boxes(Default::default(), false, 60);
+        let lines = super::tests::lines(&folded);
+        assert!(lines[1].trim_start().starts_with("▸ ━"), "{lines:?}");
+        // The counts name the issue they are of: the MR's description has boxes of its own.
+        assert!(lines[1].ends_with("  #346: 1/3 boxes"), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("☐")), "{lines:?}");
+        // The bar's line is its own block in the row's, its click the fold.
+        let fold = Act::Fold(Fold::MrBoxes(311));
+        let region = folded
+            .regions
+            .iter()
+            .find(|region| *region.action() == fold && !region.is_button())
+            .expect("the fold's block");
+        assert_eq!((region.area.y, region.area.height), (1, 1));
+
+        let mut folds = super::super::Folds::default();
+        folds.boxes.mrs.insert(311);
+        let open = drawn_boxes(folds, false, 60);
+        let lines = super::tests::lines(&open);
+        assert!(lines[1].trim_start().starts_with("▾ ━"), "{lines:?}");
+        assert_eq!(
+            lines[2..10],
+            [
+                "                     Scope",
+                "                     ☑ A fold control on the MR row ·",
+                "                       test: boxes.rs › folds",
+                "                     ☐ Folded by default; the state per MR",
+                "                       survives refreshes and a restart",
+                "                     Acceptance criteria",
+                "                     ☐ A click shows every box ·",
+                "                       try #12 looks good",
+            ],
+            "{lines:?}"
+        );
+        // The list is the fold's block: a click on it folds it again, the reasons stay under it.
+        let region = open
+            .regions
+            .iter()
+            .find(|region| *region.action() == fold)
+            .expect("the fold's block");
+        assert_eq!((region.area.y, region.area.height), (1, 9), "{lines:?}");
+        assert!(lines[10].contains("1 acceptance box open"), "{lines:?}");
+
+        // `--once` draws the bar alone: nothing to click.
+        let once = drawn_boxes(Default::default(), true, 60);
+        assert!(super::tests::lines(&once)[1].trim_start().starts_with('━'));
+        assert!(!once.regions.iter().any(|region| *region.action() == fold));
     }
 
     #[test]
@@ -1171,6 +1326,8 @@ mod tests {
             conflict: None,
             reasons: vec![],
             progress: None,
+            boxes: vec![],
+            issue: None,
         }
     }
 

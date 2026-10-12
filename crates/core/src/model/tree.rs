@@ -7,6 +7,7 @@
 
 use super::agent_state::{AgentState, Facts, NextIssue, agent_state_of};
 use super::auto_actions::Removal;
+use super::boxes::{BoxSection, all_sections_of};
 use super::change::{change_fact, unpushed_fact};
 use super::clean_up::{CleanUp, clean_up_of};
 use super::develop::Migrations;
@@ -159,8 +160,11 @@ pub fn pipeline_mark(pipeline: Option<&Pipeline>) -> Span {
     }
 }
 
-/// Where an MR stands: ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
-pub fn mr_state(mr: &Mr) -> Span {
+/// Where an MR stands: ` in epic` (#350), ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
+pub fn mr_state(mr: &Mr, issue: Option<&Issue>) -> Span {
+    if crate::epic::is_in_epic(mr, issue) {
+        return Span::new(" in epic", Paint::Cyan);
+    }
     match mr.state.as_str() {
         "merged" => Span::new(" merged", Paint::Cyan),
         "closed" => Span::new(" closed", Paint::Dim),
@@ -289,6 +293,8 @@ pub struct Node {
     pub migrations_at: i64,
     pub docker_at: i64,
     pub title: String,
+    /// Its issue's boxes one by one, as its fold lists them (#346); none without a worktree.
+    pub boxes: Vec<BoxSection>,
     /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
     /// only where its worktree is.
     pub problem: Option<String>,
@@ -495,7 +501,7 @@ fn facts_of(
             .map(|at| vec![Span::dim(format!("merged {}", clock(at, now)))])
             .unwrap_or_default(),
         Some(mr) => {
-            let mut fact = vec![Span::link(format!("!{}", mr.iid), Some(&mr.url)), mr_state(mr)];
+            let mut fact = vec![Span::link(format!("!{}", mr.iid), Some(&mr.url)), mr_state(mr, found)];
             if mr.is_open() {
                 fact.push(Span::plain(" "));
                 fact.push(pipeline_mark(mr.pipeline.as_ref()));
@@ -667,13 +673,11 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let Some((_, _, mine)) = works.iter().find(|(at, _, _)| *at == index) else {
             return Vec::new();
         };
-        let develop = issues[index]
-            .tree
-            .as_ref()
-            .map(|tree| tree.on_develop.clone())
-            .unwrap_or_default();
+        let tree = issues[index].tree.as_ref();
+        let develop = tree.map(|tree| tree.on_base.clone()).unwrap_or_default();
+        // Named after its base: develop, or its epic (#349).
         let develop = (!develop.is_empty()).then(|| Overlap {
-            name: "develop".into(),
+            name: tree.map_or_else(|| "develop".into(), |tree| tree.base.local.clone()),
             files: develop,
         });
         let others = works
@@ -810,6 +814,15 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .map(|found| found.title.clone())
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
+                boxes: match (tree, found) {
+                    (Some(tree), Some(found)) => all_sections_of(
+                        &found.boxes,
+                        mr.map(|mr| (mr.iid, &mr.boxes[..])),
+                        &tree.actions,
+                        &tree.answered,
+                    ),
+                    _ => Vec::new(),
+                },
                 problem: tree.and(found).and_then(|found| found.problem.clone()),
                 now: tree.and_then(|tree| {
                     let claude = tree.claude.as_ref();
@@ -1256,7 +1269,7 @@ mod tests {
                 ahead: 1,
                 behind: 3,
                 files: files.iter().map(|file| file.to_string()).collect(),
-                on_develop: on_develop.iter().map(|file| file.to_string()).collect(),
+                on_base: on_develop.iter().map(|file| file.to_string()).collect(),
                 has_env: true,
                 has_own_port: true,
                 offset: number,
@@ -1785,6 +1798,7 @@ mod tests {
             migrations_at: 0,
             docker_at: 0,
             title: String::new(),
+            boxes: Vec::new(),
             problem: None,
             now: None,
             go: Go::Nothing,
@@ -1830,7 +1844,7 @@ mod tests {
         };
         assert_eq!(
             text_of(&head_of(&tree, Some(THRESHOLD + super::super::memory::STACK))),
-            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.5 GB free (shared stack below 1.5 GB)"
+            "1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 will be removed · 1 queued · 14 removed · 2.0 GB free (shared stack below 1.0 GB)"
         );
         let few = TreeOf {
             live: vec![node("x", Some(Tone::You))],

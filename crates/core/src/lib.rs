@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod check;
 pub mod conversations;
+pub mod epic;
 pub mod git;
 pub mod gitlab;
 pub mod herdr;
@@ -14,6 +15,7 @@ pub mod model;
 pub mod permissions;
 pub mod reader;
 pub mod record;
+pub mod runs;
 pub mod said;
 pub mod setups;
 pub mod time;

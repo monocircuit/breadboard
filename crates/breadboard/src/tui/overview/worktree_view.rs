@@ -17,6 +17,7 @@ use crate::tui::theme::{self, Tone};
 use crate::tui::{Flow, KeyEvent, Page, Scene, Section};
 use breadboard_core::check::CheckState;
 use breadboard_core::conversations::Claude;
+use breadboard_core::git::Base;
 use breadboard_core::gitlab::Job;
 use breadboard_core::gitlab::read::OpenMr;
 use breadboard_core::herdr;
@@ -166,8 +167,10 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
             diff: local.diff.as_ref(),
             shown: state.hunks.as_ref(),
         };
-        page.section("DEVELOP", |scene| {
-            develop_of(scene, develop, model.project_url.as_deref(), &place)
+        // DEVELOP, or BASE for a worktree based on an epic (#349).
+        let label = if tree.base.is_develop() { "DEVELOP" } else { "BASE" };
+        page.section(label, |scene| {
+            develop_of(scene, develop, &tree.base, model.project_url.as_deref(), &place)
         });
     }
     if !tree.has_env {
@@ -295,7 +298,7 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
             match &remote.mr {
                 Some(mr) => row(scene, "mr", Some(Act::Open(mr.url.clone())), |scene| {
                     let mut head = vec![look::span(format!("!{}", mr.iid), Style::new())];
-                    head.extend(look::spans(&[mr_state(mr)]));
+                    head.extend(look::spans(&[mr_state(mr, remote.issue.as_ref())]));
                     scene.atom(head);
                     scene.atom(look::spans(&[pipeline_mark(mr.pipeline.as_ref())]));
                     scene.atom_gap(vec![look::dim(&mr.url)], 2);
@@ -361,7 +364,7 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
             let hint = if ctx.is_once {
                 format!("pnpm wt:remove {}", tree.name)
             } else {
-                "nothing left in it: no changes, all of it in develop".into()
+                format!("nothing left in it: no changes, all of it in {}", tree.base.local)
             };
             look::say(scene, &hint, theme::dim());
             if let Some(error) = removal.and_then(|removal| removal.error("wt:remove")) {
@@ -377,7 +380,7 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
         .and_then(|remote| remote.mr.as_ref())
         .is_some_and(|mr| mr.is_merged());
     let why = if is_merged && local.own_commits > 0 {
-        "merged on GitLab, but develop here is older: git fetch".to_string()
+        format!("merged on GitLab, but {} here is older: git fetch", tree.base.local)
     } else {
         let mut parts = vec![];
         // DIFF's count (every untracked file, not its folder) where DIFF shows, so the two agree.
@@ -387,8 +390,9 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
         }
         if local.own_commits > 0 {
             parts.push(format!(
-                "{} not in develop",
-                counted(local.own_commits as u64, "commit")
+                "{} not in {}",
+                counted(local.own_commits as u64, "commit"),
+                tree.base.local
             ));
         }
         format!("not yet: {}", parts.join(", "))
@@ -623,9 +627,14 @@ fn log_lines(scene: &mut Scene<Act>, lines: &[(String, Option<LogTarget>)], open
     }
 }
 
-fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, place: &diff::Files) {
+fn develop_of(scene: &mut Scene<Act>, develop: &Develop, base: &Base, project: Option<&str>, place: &diff::Files) {
+    let into = if base.is_develop() {
+        String::new()
+    } else {
+        format!("{}, ", base.local)
+    };
     scene.note(format!(
-        "since the branch started  {}",
+        "{into}since the branch started  {}",
         counted(develop.merges.len() as u64, "merge request")
     ));
     match &develop.conflicts {
@@ -636,7 +645,7 @@ fn develop_of(scene: &mut Scene<Act>, develop: &Develop, project: Option<&str>, 
         Some(files) if files.is_empty() => {
             scene.atom(vec![look::span("✓", theme::tone(Tone::Green))]);
             scene.text("merges cleanly:", Style::new());
-            scene.text("git fetch && git merge origin/develop", theme::dim());
+            scene.text(&format!("git fetch && git merge {}", base.remote), theme::dim());
         }
         Some(conflicts) => diff::conflicts(scene, conflicts, place),
     }
@@ -1105,7 +1114,7 @@ mod tests {
             diff: None,
             shown: None,
         };
-        develop_of(&mut scene, &develop, Some("https://gitlab/p"), &place);
+        develop_of(&mut scene, &develop, &Base::develop(), Some("https://gitlab/p"), &place);
         scene.finish();
         assert_eq!(
             text(&scene),
