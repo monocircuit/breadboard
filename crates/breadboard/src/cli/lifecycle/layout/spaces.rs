@@ -25,7 +25,7 @@ pub fn space_of(repo: &Repo, dir: &Path) -> Option<String> {
 pub fn main_space(repo: &Repo) -> Option<String> {
     let main = repo.main.as_path();
     let workspace = ensure_space(
-        SPACE,
+        &SPACE.get(),
         main,
         &Want {
             label: ROOT,
