@@ -104,13 +104,15 @@ pub fn unpushed_action_of(branch: &str, tree: &Tree, mr: Option<&Mr>, now: i64) 
     let commits = format!("{} of {branch}", counted(tree.unpushed, "commit"));
     let line = match mr.filter(|mr| mr.is_merged()) {
         Some(mr) => format!(
-            "[overview] {commits} came after !{} was merged and are not pushed: they get their own issue, branch and draft MR now (glab issue create, pnpm wt:new, cherry-pick them, push, pnpm wt:mr), waiting with pnpm wt:wait if they must.",
-            mr.iid
+            "[overview] {commits} came after !{} was merged and are not pushed: they get their own issue, branch and draft MR now (glab issue create, {run} wt:new, cherry-pick them, push, {run} wt:mr), waiting with {run} wt:wait if they must.",
+            mr.iid,
+            run = crate::config::run_word()
         ),
         None => format!(
-            "[overview] {commits} {} not pushed: push now (git push{}), a draft MR from the first commit (pnpm wt:mr). Waiting for another MR comes after the push.",
+            "[overview] {commits} {} not pushed: push now (git push{}), a draft MR from the first commit ({run} wt:mr). Waiting for another MR comes after the push.",
             if tree.unpushed == 1 { "is" } else { "are" },
-            if tree.has_remote_branch { "" } else { " -u origin HEAD" }
+            if tree.has_remote_branch { "" } else { " -u origin HEAD" },
+            run = crate::config::run_word()
         ),
     };
     Some(Unpushed {

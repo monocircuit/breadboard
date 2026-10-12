@@ -54,7 +54,8 @@ pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
         start_server(session)?;
     } else if let Some(running) = session.server_version(&pinned).filter(|version| version != VERSION) {
         println!(
-            "! the session runs herdr {running}, pinned is {VERSION}: pnpm herdr --stop (ends its panes), then pnpm herdr"
+            "! the session runs herdr {running}, pinned is {VERSION}: {run} herdr --stop (ends its panes), then {run} herdr",
+            run = breadboard_core::config::run_word()
         );
     } else if written.is_changed {
         session.herdr(&pinned, &["server", "reload-config"]);
@@ -67,7 +68,8 @@ pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
     session.herdr(&pinned, &["plugin", "action", "invoke", &format!("{PLUGIN}.restore")]);
     if is_no_attach {
         done(&format!(
-            "{SPACE} in the herdr session {SESSION} is ready: pnpm herdr attaches"
+            "{SPACE} in the herdr session {SESSION} is ready: {run} herdr attaches",
+            run = breadboard_core::config::run_word()
         ));
         return Ok(ExitCode::SUCCESS);
     }
@@ -83,18 +85,24 @@ pub fn start(session: &Session, is_here: bool, is_no_attach: bool) -> Done {
             .process_group(0)
             .spawn();
         if let Err(error) = opened {
-            return Err(format!("{program} didn't open a window ({error}): pnpm herdr --here").into());
+            return Err(format!(
+                "{program} didn't open a window ({error}): {run} herdr --here",
+                run = breadboard_core::config::run_word()
+            )
+            .into());
         }
         done(&format!(
-            "{SPACE} in the herdr session {SESSION}: opened in a window of its own ({program}, no padding)\n  here instead: pnpm herdr --here"
+            "{SPACE} in the herdr session {SESSION}: opened in a window of its own ({program}, no padding)\n  here instead: {run} herdr --here",
+            run = breadboard_core::config::run_word()
         ));
         return Ok(ExitCode::SUCCESS);
     }
     done(&format!(
-        "{SPACE} in the herdr session {SESSION}, attaching (detach: prefix+d, back: pnpm herdr)"
+        "{SPACE} in the herdr session {SESSION}, attaching (detach: prefix+d, back: {run} herdr)",
+        run = breadboard_core::config::run_word()
     ));
     let status = Command::new(&session.bin)
-        .args(["--session", SESSION])
+        .args(["--session", &SESSION.get()])
         .env_clear()
         .envs(session.session_env())
         .status()
@@ -120,7 +128,13 @@ fn asset() -> Result<(&'static str, &'static str), Fail> {
         .iter()
         .find(|(platform, _, _)| *platform == key)
         .map(|(_, name, sha)| (*name, *sha))
-        .ok_or_else(|| format!("no herdr release for {key}; install it yourself and use pnpm herdr:install").into())
+        .ok_or_else(|| {
+            format!(
+                "no herdr release for {key}; install it yourself and use {run} herdr:install",
+                run = breadboard_core::config::run_word()
+            )
+            .into()
+        })
 }
 
 /// The pinned binary in .herdr/bin, downloaded and checked when it is
@@ -267,9 +281,10 @@ pub fn ensure_breadboard(session: &Session) {
     if !super::launcher::built(&session.launcher()) && !session.breadboard().is_file() {
         let package = session.plugin_dir.parent().unwrap_or(&session.plugin_dir);
         println!(
-            "! {} is missing: the plugin's keys and the tab bar's status work once it is built (pnpm build:rs in {})",
+            "! {} is missing: the plugin's keys and the tab bar's status work once it is built ({run} build:rs in {})",
             shown(&session.breadboard()),
-            shown(package)
+            shown(package),
+            run = breadboard_core::config::run_word()
         );
     }
 }
@@ -315,8 +330,9 @@ fn write_config_over(session: &Session, own: &Path) -> Result<Written, Fail> {
     let keys = fill(session, &read(&session.plugin_dir.join("keys.toml"))?);
     let mut lines = vec![
         format!(
-            "# Written by pnpm herdr from {} and packages/breadboard/herdr/keys.toml. Changes here are",
-            base.display()
+            "# Written by {run} herdr from {} and packages/breadboard/herdr/keys.toml. Changes here are",
+            base.display(),
+            run = breadboard_core::config::run_word()
         ),
         "# overwritten: put your own into .herdr/config.local.toml.".into(),
         String::new(),
@@ -398,7 +414,7 @@ fn start_server(session: &Session) -> Result<(), Fail> {
     step(&format!("start the herdr session {SESSION}"));
     let mut command = Command::new(&session.bin);
     command
-        .args(["--session", SESSION, "server"])
+        .args(["--session", &SESSION.get(), "server"])
         .env_clear()
         .envs(session.session_env())
         .stdin(Stdio::null())
@@ -433,11 +449,11 @@ fn start_server(session: &Session) -> Result<(), Fail> {
 pub fn link_plugin(session: &Session, target: &Target) -> Result<bool, Fail> {
     let listed = session.herdr(target, &["plugin", "list"]).out;
     let dir = session.plugin_dir.display().to_string();
-    if listed.contains(PLUGIN) && listed.contains(&dir) {
+    if listed.contains(&PLUGIN.get()) && listed.contains(&dir) {
         return Ok(false);
     }
-    if listed.contains(PLUGIN) {
-        session.herdr(target, &["plugin", "unlink", PLUGIN]);
+    if listed.contains(&PLUGIN.get()) {
+        session.herdr(target, &["plugin", "unlink", &PLUGIN.get()]);
     }
     let Answer { is_ok, out } = session.herdr(target, &["plugin", "link", &dir]);
     if !is_ok {

@@ -6,8 +6,9 @@
 //! starts on demand (`stack:up`, `wt:stack`), never with `wt:new`.
 
 use super::proc::{self, How, fail, outln, step};
-use super::repo::{self, VITA};
+use super::repo;
 use super::stack;
+use breadboard_core::config::Stack;
 use breadboard_core::git::orchestrator_checkouts;
 use breadboard_core::record;
 use std::fs;
@@ -59,9 +60,25 @@ impl Epic {
         format!("epic-{}", self.name)
     }
 
+    /// The folder of its checkout the stack's commands run in.
     fn vita(&self) -> PathBuf {
-        self.checkout.join(VITA)
+        repo::stack_dir(&self.checkout)
     }
+}
+
+/// The repo's stack, refused without one: an epic stack is one of it.
+fn stack_of() -> Stack {
+    repo::stack().unwrap_or_else(|| fail("the repo has no stack: breadboard.toml has no [stack]"))
+}
+
+/// The port of the database a stack on `offset` keeps, the port its offset is read from.
+fn database_port(offset: u16) -> u32 {
+    stack_of().offset_port().map_or(0, |port| u32::from(port.port)) + u32::from(offset)
+}
+
+/// `compose --env-file <env> -f <compose file>`, then `rest`: docker's words for the repo's stack.
+fn compose(rest: &[&str]) -> Vec<String> {
+    breadboard_core::stack::compose_args(&stack_of(), rest)
 }
 
 /// `pnpm stack:*` of a task stack, `vita_<feature>`, `keycloak_<feature>`:
@@ -95,8 +112,16 @@ pub fn point_db(url: &str, port: u32, db: &str) -> String {
 /// What a task stack's `.env.local` says: the own stack's (ports moved by
 /// `offset`, its own compose project) without a Postgres of its own, on the
 /// epic's network, its databases on the epic's Postgres (`epic_port`).
-pub fn task_env(source: &str, feature: &str, offset: u16, epic: &str, epic_port: u32, network: &str) -> String {
-    let own = stack::stack_env(source, feature, offset);
+pub fn task_env(
+    stack: &Stack,
+    source: &str,
+    feature: &str,
+    offset: u16,
+    epic: &str,
+    epic_port: u32,
+    network: &str,
+) -> String {
+    let own = stack::stack_env(stack, source, feature, offset);
     let vita = db_name("vita", feature);
     let mut lines: Vec<String> = own
         .split('\n')
@@ -141,7 +166,7 @@ pub fn epic_of_stack(dir: &Path) -> Option<String> {
 /// The port of the epic's Postgres a task stack's databases lie on, None for any other stack.
 pub fn epic_port_of(dir: &Path) -> Option<u32> {
     let epic = Epic::named(&epic_of_stack(dir)?)?;
-    Some(5432 + u32::from(repo::offset_of(&epic.checkout)))
+    Some(database_port(repo::offset_of(&epic.checkout)))
 }
 
 /// Whether a task's database is cloned again: the template changed since it
@@ -179,12 +204,9 @@ pub fn clone_sql(db: &str, stamp: &str) -> Vec<String> {
 
 /// The epic's Postgres answering `sql` on database `db`: quiet, tuples only.
 fn psql(epic: &Epic, db: &str, sql: &[String], can_fail: bool) -> proc::Ran {
-    let mut args: Vec<&str> = vec![
-        "compose",
-        "--env-file",
-        ".env.local",
-        "-f",
-        "docker-compose.local.yml",
+    let words = compose(&[]);
+    let mut args: Vec<&str> = words.iter().map(String::as_str).collect();
+    args.extend([
         "exec",
         "-T",
         "postgres",
@@ -199,7 +221,7 @@ fn psql(epic: &Epic, db: &str, sql: &[String], can_fail: bool) -> proc::Ran {
         "postgres",
         "-d",
         db,
-    ];
+    ]);
     for statement in sql {
         args.push("-c");
         args.push(statement);
@@ -242,7 +264,7 @@ fn pnpm(dir: &Path, script: &[&str], env: Vec<(&str, String)>) {
         "pnpm",
         script,
         How {
-            cwd: Some(&dir.join(VITA)),
+            cwd: Some(&repo::stack_dir(dir)),
             env,
             ..How::default()
         },
@@ -251,26 +273,14 @@ fn pnpm(dir: &Path, script: &[&str], env: Vec<(&str, String)>) {
 
 /// The variable `key` of a checkout's `.env.local`.
 fn env_value(dir: &Path, key: &str) -> Option<String> {
-    crate::cli::lifecycle::repo::read_env(&repo::env_file_of(dir))?
-        .into_iter()
-        .rev()
-        .find(|(name, _)| name == key)
-        .map(|(_, value)| value)
+    breadboard_core::stack::env_of(dir)?.remove(key)
 }
 
 /// Whether any container of a checkout's stack exists (`running` only: runs).
 fn has_containers(dir: &Path, is_running: bool) -> bool {
-    let mut args = vec![
-        "compose",
-        "--env-file",
-        ".env.local",
-        "-f",
-        "docker-compose.local.yml",
-        "ps",
-        "-q",
-    ];
-    args.push(if is_running { "--status=running" } else { "-a" });
-    let ran = proc::sh("docker", &args, Some(&dir.join(VITA)));
+    let words = compose(&["ps", "-q", if is_running { "--status=running" } else { "-a" }]);
+    let args: Vec<&str> = words.iter().map(String::as_str).collect();
+    let ran = proc::sh("docker", &args, Some(&repo::stack_dir(dir)));
     ran.is_ok && !ran.text().is_empty()
 }
 
@@ -300,13 +310,15 @@ pub fn reserve_task(dir: &Path, feature: &str, epic: &Epic) -> u16 {
         ))
     };
     let network = network_of(epic);
+    let stack = stack_of();
     stack::reserve_with(dir, &text, |offset| {
         task_env(
+            &stack,
             &text,
             feature,
             offset,
             &epic.name,
-            5432 + u32::from(epic_offset),
+            database_port(epic_offset),
             &network,
         )
     })
@@ -387,7 +399,7 @@ fn ensure_template(epic: &Epic) -> String {
         ],
         false,
     );
-    let port = 5432 + u32::from(repo::offset_of(&epic.checkout));
+    let port = database_port(repo::offset_of(&epic.checkout));
     let url = |key: &'static str| {
         let value =
             env_value(&epic.checkout, key).unwrap_or_else(|| fail(&format!("the epic's .env.local has no {key}")));
@@ -485,17 +497,11 @@ pub fn end_epic(name: &str) -> Option<String> {
     if !has_containers(&epic.checkout, false) {
         return None;
     }
+    let words = compose(&["down", "-v"]);
+    let args: Vec<&str> = words.iter().map(String::as_str).collect();
     let ran = proc::run(
         "docker",
-        &[
-            "compose",
-            "--env-file",
-            ".env.local",
-            "-f",
-            "docker-compose.local.yml",
-            "down",
-            "-v",
-        ],
+        &args,
         How {
             cwd: Some(&epic.vita()),
             is_quiet: true,
@@ -537,7 +543,25 @@ mod tests {
     #[test]
     fn writes_a_task_stack_without_postgres() {
         let source = "APP_ORIGIN=http://localhost:3000\nDATABASE_URL=postgresql://vita_app:a@127.0.0.1:5432/vita\nMIGRATION_DATABASE_URL=postgresql://vita_migrator:m@127.0.0.1:5432/vita\n";
-        let env = task_env(source, "40-x", 3, "breadboard", 5433, "vita-epic-breadboard_default");
+        let stack = breadboard_core::config::Config::parse(
+            "[stack]\nproject = \"vita\"\n[stack.app]\nport = 3000\n\
+             [[stack.services]]\nname = \"postgres\"\nport = 5432\nenv = \"POSTGRES_PORT\"\n\
+             [[stack.services]]\nname = \"keycloak\"\nport = 8080\nenv = \"KEYCLOAK_PORT\"\n\
+             [[stack.services]]\nname = \"s3\"\nport = 8333\nenv = \"S3_PORT\"\n\
+             [[stack.services]]\nname = \"visualizer\"\nport = 64738\nenv = \"VISUALIZER_PORT\"\n",
+        )
+        .unwrap()
+        .stack
+        .unwrap();
+        let env = task_env(
+            &stack,
+            source,
+            "40-x",
+            3,
+            "breadboard",
+            5433,
+            "vita-epic-breadboard_default",
+        );
         assert_eq!(
             env,
             "APP_ORIGIN=http://localhost:3003\nDATABASE_URL=postgresql://vita_app:a@127.0.0.1:5433/vita_40_x\nMIGRATION_DATABASE_URL=postgresql://vita_migrator:m@127.0.0.1:5433/vita_40_x\n\n# --- own dev stack of the worktree 40-x, written by breadboard (pnpm wt:new, wt:stack) ---\nCOMPOSE_PROJECT_NAME=vita-40-x\nPOSTGRES_PORT=5435\nKEYCLOAK_PORT=8083\nS3_PORT=8336\nVISUALIZER_PORT=64741\n# a task stack of the epic breadboard: no Postgres of its own, its databases on the epic's (port 5433)\nBREADBOARD_EPIC=breadboard\nPOSTGRES_SCALE=0\nVITA_NETWORK=vita-epic-breadboard_default\nVITA_NETWORK_EXTERNAL=true\nKEYCLOAK_DB_NAME=keycloak_40_x\n"
