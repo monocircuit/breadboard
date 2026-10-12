@@ -5,6 +5,7 @@
 
 mod changes;
 mod end;
+mod epic;
 mod issue;
 pub mod setups;
 mod space;
@@ -24,7 +25,7 @@ use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
@@ -92,7 +93,7 @@ fn stray_flag(args: &Args) -> Option<String> {
 pub fn command(args: &Args) -> ExitCode {
     let argv = &args.all;
     let after = after_args(argv);
-    let valued = ["--peer", "--brief", "--to", "--limit", "--title"];
+    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--epic"];
     // The words, wherever the flags stand (`--dry-run breadboard 301`): the
     // orchestration, then its issues; the MRs after `--after` are none.
     let positional: Vec<&String> = argv
@@ -258,6 +259,12 @@ pub fn command(args: &Args) -> ExitCode {
             };
             outln!("  #{:<4} {line}", item.number);
         }
+    }
+    // The epic before anything is written: its tasks branch off it (#350).
+    match epic::ensure_epic(&name, &plan, args.value("--epic").as_deref(), is_dry) {
+        Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
+        Ok(None) => {}
+        Err(why) => fail(&format!("no epic branch: {why}")),
     }
     if is_dry {
         let first = plan.iter().find(|item| item.why.is_none()).unwrap_or(&plan[0]);

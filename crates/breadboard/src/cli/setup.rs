@@ -48,6 +48,7 @@ fn shape_of(command: &str) -> Option<Shape> {
         "wt:orchestrate" => shape(
             &[
                 "--title",
+                "--epic",
                 "--shared",
                 "--peer",
                 "--brief",
@@ -64,7 +65,7 @@ fn shape_of(command: &str) -> Option<Shape> {
                 "--now",
                 "--cap",
             ],
-            &["--title", "--peer", "--brief", "--to", "--limit"],
+            &["--title", "--epic", "--peer", "--brief", "--to", "--limit"],
             None,
             orchestrate::USAGE,
         ),

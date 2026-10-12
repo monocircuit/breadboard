@@ -25,6 +25,7 @@ mod actions;
 pub(crate) mod actor;
 mod agents;
 mod boxes;
+mod epic;
 mod everything;
 mod footer;
 mod header;
@@ -453,6 +454,7 @@ impl App for Overview {
                     return;
                 }
                 next::build(page, model, &ctx);
+                epic::build(page, model);
                 actions::build(page, model, &ctx);
                 worktrees::build(page, model, &ctx);
                 agents::build(page, model, &ctx);
