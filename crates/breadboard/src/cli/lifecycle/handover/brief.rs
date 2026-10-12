@@ -71,7 +71,7 @@ You run headless: breadboard resumes your conversation (`claude -p`) whenever so
    - `pnpm wt:action plan "<the plan in one line>"` before larger work, for an `ok` or `different`;
    - `pnpm wt:action look "<what>"` for anything else the user has to do.
    The user's click arrives as one line in your next run, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user: work from that, never from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `pnpm wt:action --done <id>` (`--list` shows them). While you are working, leave none.
-   `AskUserQuestion` is off in your runs: ask with `decide`. A tool call auto mode would ask the user about is denied in your run, and the overview asks the user for you (a `permission` action): say in your note what you need it for and stop. Your next line is `[overview] the user allowed <rule>, go on: it is allowed in this run.` or `[overview] the user denied <rule>: don't run it, go on without it or leave an action for the user.` A call the classifier or a deny rule blocks never reaches the user: go on without it.
+   A tool call auto mode would ask the user about is denied in your run, and the overview asks the user for you (a `permission` action): say in your note what you need it for and stop. Your next line is `[overview] the user allowed <rule>, go on: it is allowed in this run.` or `[overview] the user denied <rule>: don't run it, go on without it or leave an action for the user.` A call the classifier or a deny rule blocks never reaches the user: go on without it.
 5. The user may open your conversation in a tab and type there: their word wins over the orchestrator's.
 6. Your next issue may come as a line of your next run, which then stands in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>, read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
 {tail}"#
@@ -121,7 +121,7 @@ mod tests {
         assert!(brief.contains("You come from another worktree, and your runs stand in this one now.\nDon't run"));
         assert!(!brief.contains("EnterWorktree(path:"));
         assert!(brief.contains("\nYou run headless: breadboard resumes your conversation (`claude -p`)"));
-        assert!(brief.contains("`AskUserQuestion` is off in your runs: ask with `decide`."));
+        assert!(brief.contains("\n   A tool call auto mode would ask the user about is denied in your run"));
         assert!(!brief.contains("run_in_background"));
         assert!(!brief.contains("this tab"));
         assert!(brief.contains("   The orchestrator is the session `s-1` (`ListAgents`).\n"));
