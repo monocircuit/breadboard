@@ -81,6 +81,19 @@ pub fn all_sections_of(
     sections
 }
 
+/// The boxes that still hold the merge (#354): the open Work and acceptance
+/// boxes, those the deployment checks left out, as the row's reasons count
+/// them; shown under the row before any click.
+pub fn open_sections_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) -> Vec<BoxSection> {
+    use super::merge::{is_acceptance, is_after_deploy, is_work};
+    let open: Vec<IssueBox> = boxes
+        .iter()
+        .filter(|found| !found.is_ticked && (is_work(found) || is_acceptance(found)) && !is_after_deploy(found))
+        .cloned()
+        .collect();
+    sections_of(&open, actions, answered)
+}
+
 fn line_of(found: &IssueBox, actions: &[Action], answered: &[Action]) -> BoxLine {
     let (text, check) = match MARK.captures(&found.text) {
         Some(captures) => {
@@ -242,6 +255,40 @@ mod tests {
             ..found("", "a box", true)
         }];
         assert_eq!(all_sections_of(&[], Some((334, &loose)), &[], &[])[0].heading, "!334");
+    }
+
+    #[test]
+    fn the_open_boxes_are_the_work_and_acceptance_ones_that_hold_the_merge() {
+        let boxes = [
+            found("Work", "done already", true),
+            found("Work", "the open boxes under the row", false),
+            found("Scope", "a scope box holds no merge", false),
+            found("Acceptance criteria", "every open box in full", false),
+            found(
+                "Acceptance criteria",
+                "the test instance shows it (after deploy, try #4)",
+                false,
+            ),
+        ];
+        let open: Vec<(String, Vec<String>)> = open_sections_of(&boxes, &[], &[])
+            .into_iter()
+            .map(|section| {
+                (
+                    section.heading,
+                    section.boxes.into_iter().map(|line| line.text).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            open,
+            [
+                ("Work".to_string(), vec!["the open boxes under the row".to_string()]),
+                (
+                    "Acceptance criteria".to_string(),
+                    vec!["every open box in full".to_string()]
+                ),
+            ]
+        );
     }
 
     #[test]

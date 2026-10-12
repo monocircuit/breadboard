@@ -114,6 +114,21 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
     match act {
         Act::Fold(fold) => {
             let is_removed_folded = app.is_removed_folded();
+            // Whether the MR shows its open boxes before any click (#354).
+            let has_open_boxes = |iid: i64| {
+                app.orchestration()
+                    .and_then(|model| model.merge_requests.as_ref().ok())
+                    .is_some_and(|mrs| {
+                        mrs.open
+                            .iter()
+                            .filter_map(|row| row.mr.as_ref())
+                            .any(|mr| mr.iid == iid && !mr.open_boxes.is_empty())
+                    })
+            };
+            let has_open = match fold {
+                Fold::MrBoxes(iid) => has_open_boxes(iid),
+                _ => false,
+            };
             let folds = &mut app.folds;
             match fold {
                 Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
@@ -122,7 +137,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
-                Fold::MrBoxes(iid) => toggle(&mut folds.boxes.mrs, iid),
+                Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
             }
             if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))

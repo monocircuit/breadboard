@@ -5,7 +5,7 @@
 //! section is derived on its own (#306): one that fails says so in its place.
 
 use super::auto_actions::{AutoFacts, Removal, Tell, auto_actions_of, conflicts_of, failed_pipelines_of};
-use super::boxes::{BoxSection, all_sections_of};
+use super::boxes::{BoxSection, all_sections_of, open_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
@@ -173,6 +173,9 @@ pub struct MrFacts {
     /// Its issue's boxes one by one, then its own description's, as its fold
     /// lists them (#346); none for a merged one.
     pub boxes: Vec<BoxSection>,
+    /// The boxes that still hold its merge, shown under its row before any
+    /// click (#354); none for a merged one.
+    pub open_boxes: Vec<BoxSection>,
     /// The issue its bar counts the boxes of: the bar names it (#346).
     pub issue: Option<i64>,
 }
@@ -734,6 +737,15 @@ fn merge_requests_of(
                         .map(|tree| (&tree.actions[..], &tree.answered[..]))
                         .unwrap_or((&[], &[]));
                     all_sections_of(&found.boxes, Some((mr.iid, &mr.boxes[..])), actions, answered)
+                }
+                _ => Vec::new(),
+            },
+            open_boxes: match (&part.issue, is_merged) {
+                (Some(found), false) => {
+                    let (actions, answered) = tree
+                        .map(|tree| (&tree.actions[..], &tree.answered[..]))
+                        .unwrap_or((&[], &[]));
+                    open_sections_of(&found.boxes, actions, answered)
                 }
                 _ => Vec::new(),
             },
