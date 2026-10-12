@@ -47,9 +47,10 @@ What it does, in this order:
    of the main checkout, with the orchestrator's conversation
    (`orchestrator: { sessionId, cwd }`, see The orchestrator's chat). A
    second run with the same name adds to it. The
-   space `⇶ <name>` stands on a detached checkout of `origin/{{branch}}` in
-   `.claude/orchestrations/<name>/`, so herdr hangs it under
-   `{{space}}` like a worktree's.
+   space `⇶ <name>` stands on the orchestration's epic branch
+   `epic/<N>-<name>` (made from `origin/{{branch}}` at the first run, the base
+   of every task{{#epics}}, [epics.md](epics.md){{/epics}}) in `.claude/orchestrations/<name>/`,
+   so herdr hangs it under `{{space}}` like a worktree's.
 3. Per issue, **at once** whatever the number at work: to a free or idle
    agent whose worktrees share the most files with the paths the issue
    names, else the one with the least context used (its MR merged, see
@@ -108,7 +109,7 @@ an agent's tab directly: that wins.
 **Waiting for other MRs needs no orchestrator.** An agent that has to wait
 runs `{{run}} wt:wait !N … --then "<what next>"` in the background and stops:
 the command asks GitLab every minute and exits with the line to go
-on with (`!213 is merged: merge {{branch}} in (3 behind), then …`), which wakes
+on with (`!213 is merged: merge your base in (3 behind), then …`), which wakes
 the agent; early when one is closed, stays in conflict for 30 min, or after
 8 h. The wait is in `.claude/wait.json`: the MR row says `waits for !213`, and
 when the command is gone (the agent restarted) the overview types the line.
@@ -203,11 +204,11 @@ order with draft / ready / merged and the pipeline; an open one's second line
 starts with `no merge conflicts`, `checking for conflicts…` (GitLab's check
 runs, or it hasn't seen the last push), or with the button `resolve merge
 conflicts` while GitLab reports some, settled: its click types the order to
-merge `{{branch}}` in, resolve, check and push into the MR's agent. It is grey
+merge its base in, resolve, check and push into the MR's agent. It is grey
 with the reason when the click can't reach it (no agent, at a question,
 `conflicts as of the pushed commits · N not pushed`); after a click, or the
 automatic line, the row says where it stands (`queued for its agent (at
-work)`, `its agent merges {{branch}} in`, `pushed, GitLab checks`, `conflicts
+work)`, `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
 resolved`) instead of offering a second click (#290). A click
 on a worktree goes to its space (on a removed one to its issue), on an MR
 elsewhere opens it. Look
@@ -237,9 +238,16 @@ first. While anything blocks (open boxes or tries, a pipeline that didn't
 pass, conflicts, a draft nobody posted the merge for), the row is grey and
 names it in one line, and a click opens the MR instead. After the merge the
 agent gets `[overview] !N merged`, NEXT moves on to the next ready MR, and that
-MR's agent gets `merge {{branch}} in` when the merged MR touched its files;
+MR's agent gets `merge your base in` when the merged MR touched its files;
 `clean up` offers the worktree. Agents still never run `glab mr merge`: the
 click is the user's (`core/src/model/merge.rs`).
+
+**Into an epic the merge needs no click.** A task MR whose target is its
+orchestration's epic branch merges by itself under the same rule (bar full,
+pipeline green, no conflicts, its turn), without a posted `merge`: the
+overview marks a draft ready and merges it; the row says `in epic` until the
+epic reaches `{{branch}}`. The two clicks stay for the milestone MR epic →
+`{{branch}}` and for anything into `{{branch}}` or `main`{{#epics}} ([epics.md](epics.md)){{/epics}}.
 
 ## Change requests
 
@@ -396,7 +404,7 @@ issue stays queued until its agent moved in. When the start fails after
 wt:new (the agent went or took up something), its worktree is removed again
 and the issue goes back to the queue (`back in the queue: <why>`): no
 worktree stays without its agent. `wt:remove` of a worktree whose branch
-carries nothing {{branch}} lacks also deletes the empty claim on origin, so the
+carries nothing its base lacks also deletes the empty claim on origin, so the
 issue can start again.
 
 WORKTREES' head line counts the agents by whom they wait for and the rest
@@ -464,7 +472,7 @@ changed / deleted with +/- counts, read again every minute and on `R`. <CR>
 opens a file at its first change, its new lines marked; `:OrchestrationDiff`
 shows it against its state before the MR (combined: before the
 orchestration). Merged MRs count as their merge commit, open ones as their
-branch against where it left {{branch}}: not what {{branch}} got meanwhile.
+branch against where it left its base: not what the base got meanwhile.
 `{{run}} wt:orchestrate <name> --changes` prints the set as JSON.
 
 ## The end

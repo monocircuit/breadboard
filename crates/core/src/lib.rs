@@ -15,6 +15,7 @@ pub mod lock;
 pub mod model;
 pub mod reader;
 pub mod record;
+pub mod runs;
 pub mod said;
 pub mod setups;
 pub mod stack;
