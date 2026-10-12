@@ -283,16 +283,43 @@ pub struct Folds {
 }
 
 /// The MRs (by iid) and the worktrees (by issue) whose boxes are open
-/// (#346): folded by default, kept per viewer in a file next to the
-/// orchestration's record, so they stay open over a restart.
+/// (#346), and the MRs folded by a click (#354): an MR with open boxes shows
+/// those until it is folded, every other list is folded until it is opened.
+/// Kept per viewer in a file next to the orchestration's record, so they
+/// stay over a restart.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct BoxFolds {
     pub mrs: std::collections::BTreeSet<i64>,
     pub worktrees: std::collections::BTreeSet<i64>,
+    pub folded_mrs: std::collections::BTreeSet<i64>,
 }
 
 impl BoxFolds {
+    /// What an MR's fold shows: every box, its open ones (#354: before any
+    /// click, when it has some), or nothing.
+    pub fn mr_list(&self, iid: i64, has_open: bool) -> MrList {
+        if self.mrs.contains(&iid) {
+            MrList::All
+        } else if has_open && !self.folded_mrs.contains(&iid) {
+            MrList::Open
+        } else {
+            MrList::Folded
+        }
+    }
+
+    /// A click on an MR's fold: a list shown (its open boxes, or all) folds,
+    /// a folded one opens every box.
+    pub fn fold_mr(&mut self, iid: i64, has_open: bool) {
+        if self.mr_list(iid, has_open) != MrList::Folded {
+            self.mrs.remove(&iid);
+            self.folded_mrs.insert(iid);
+        } else {
+            self.folded_mrs.remove(&iid);
+            self.mrs.insert(iid);
+        }
+    }
+
     /// Where an orchestration's are kept: `.claude/orchestrations/<name>.folds`,
     /// not `.json`, or it would read as a record.
     pub fn file(main: &Path, name: &str) -> PathBuf {
@@ -313,6 +340,14 @@ impl BoxFolds {
             let _ = std::fs::write(file, text + "\n");
         }
     }
+}
+
+/// What an MR's fold shows (#354).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrList {
+    All,
+    Open,
+    Folded,
 }
 
 /// What every section knows besides its model.

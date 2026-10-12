@@ -49,6 +49,8 @@ pub enum Act {
     CopyResume(String),
     /// A conflicted MR's agent merges develop in (#246).
     Resolve(i64),
+    /// An MR waiting in the CI queue goes to its front (#357).
+    RunNow(i64),
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -112,6 +114,21 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
     match act {
         Act::Fold(fold) => {
             let is_removed_folded = app.is_removed_folded();
+            // Whether the MR shows its open boxes before any click (#354).
+            let has_open_boxes = |iid: i64| {
+                app.orchestration()
+                    .and_then(|model| model.merge_requests.as_ref().ok())
+                    .is_some_and(|mrs| {
+                        mrs.open
+                            .iter()
+                            .filter_map(|row| row.mr.as_ref())
+                            .any(|mr| mr.iid == iid && !mr.open_boxes.is_empty())
+                    })
+            };
+            let has_open = match fold {
+                Fold::MrBoxes(iid) => has_open_boxes(iid),
+                _ => false,
+            };
             let folds = &mut app.folds;
             match fold {
                 Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
@@ -120,7 +137,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
-                Fold::MrBoxes(iid) => toggle(&mut folds.boxes.mrs, iid),
+                Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
             }
             if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
@@ -160,6 +177,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
+        Act::RunNow(iid) => run_now(app, iid),
     }
     app.redraw();
     Flow::Redraw
@@ -439,6 +457,21 @@ fn dismiss(app: &mut Overview, id: &str) {
 
 /// A click on an MR's resolve button (resolve.mjs `clickResolve`): the order
 /// typed into its agent's pane; nothing while the button isn't there.
+/// An MR waiting in the CI queue to its front (#357): the daemon's queue
+/// starts its pipeline as the next one, once the runner has a free slot.
+fn run_now(app: &mut Overview, iid: i64) {
+    use breadboard_core::ci::{RunNow, read_or_default, run_now_file, write_whole};
+    let file = run_now_file(&app.actor.main);
+    let mut run_now: RunNow = read_or_default(&file);
+    run_now.at.insert(iid, now_ms());
+    match write_whole(&file, &run_now) {
+        Ok(()) => app
+            .actor
+            .log(Paint::Green, format!("CI: !{iid} to the front of the queue")),
+        Err(error) => app.actor.log(Paint::Red, format!("CI: !{iid} not moved up: {error}")),
+    }
+}
+
 fn resolve(app: &mut Overview, iid: i64) {
     let Some(RemoteOf::Orchestration(remote)) = &app.remote else {
         return;
