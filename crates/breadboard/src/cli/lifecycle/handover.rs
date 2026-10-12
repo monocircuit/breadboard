@@ -109,6 +109,8 @@ pub struct Issue {
     /// Why it can't get a worktree: closed, there already, claimed on origin.
     pub why: Option<String>,
     pub branch: String,
+    /// Its milestone's title: which epic it belongs to (#350).
+    pub milestone: Option<String>,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -296,6 +298,10 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         is_fix,
         dir,
         why,
+        milestone: found
+            .get("milestone")
+            .and_then(|milestone| str_of(milestone, "title"))
+            .map(String::from),
     })
 }
 
@@ -490,7 +496,7 @@ pub fn before_line(issues: &[(i64, Option<String>)]) -> Option<String> {
         })
         .collect();
     Some(format!(
-        "You are a reused agent: you worked on {} before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged.",
+        "You are a reused agent: you worked on {} before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged.",
         list.join(", ")
     ))
 }
@@ -633,6 +639,18 @@ impl Made {
 /// may fail after the setup (#130), so the worktree counts when it is there.
 /// The one for a fresh start (the setup group's) and a handover.
 pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Made {
+    // One issue, one worktree, one MR (#349): never a branch that claims another issue.
+    let claimed = breadboard_core::git::issue_of_branch(&issue.branch);
+    if claimed.and_then(|claimed| i64::try_from(claimed).ok()) != Some(issue.number) {
+        return Made {
+            is_there: false,
+            failed: Some(format!(
+                "#{} gets a worktree of its own, {} claims another issue",
+                issue.number, issue.branch
+            )),
+            status: None,
+        };
+    }
     let mut args = vec!["wt:new", issue.feature.as_str(), "--origin", name];
     if issue.is_fix {
         args.push("--fix");
@@ -1419,6 +1437,7 @@ mod tests {
             dir: PathBuf::from("/r/p-5-t"),
             why: None,
             branch: "feature/5-t".into(),
+            milestone: None,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1440,6 +1459,7 @@ mod tests {
             dir: PathBuf::from("/r/p-247-t"),
             why: None,
             branch: "fix/247-t".into(),
+            milestone: None,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);
@@ -1499,7 +1519,7 @@ mod tests {
         assert_eq!(before_line(&[]), None);
         assert_eq!(
             before_line(&[(3, Some("a".into())), (4, None)]).unwrap(),
-            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged."
+            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged."
         );
     }
 

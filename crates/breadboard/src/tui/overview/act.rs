@@ -80,7 +80,8 @@ pub enum Act {
 }
 
 /// What folds: the removed worktrees, the queue, the merged MRs; in the
-/// view of everything the open MRs and issues the pane cut; DONE's commands.
+/// view of everything the open MRs and issues the pane cut; DONE's commands;
+/// the boxes of an MR and of a worktree (#346).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
@@ -89,6 +90,17 @@ pub enum Fold {
     Mrs,
     Issues,
     Done,
+    /// The boxes under an MR's row, by its iid (#346).
+    MrBoxes(i64),
+    /// The boxes under a worktree's node, by its issue (#346).
+    TreeBoxes(i64),
+}
+
+/// Opens what was folded, folds what was open.
+fn toggle(open: &mut std::collections::BTreeSet<i64>, key: i64) {
+    if !open.remove(&key) {
+        open.insert(key);
+    }
 }
 
 /// How long a first click keeps the end armed.
@@ -108,6 +120,13 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
+                Fold::MrBoxes(iid) => toggle(&mut folds.boxes.mrs, iid),
+                Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
+            }
+            if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
+                && let Some(file) = &app.folds_file
+            {
+                app.folds.boxes.write(file);
             }
             return Flow::Redraw;
         }
@@ -452,7 +471,7 @@ fn resolve(app: &mut Overview, iid: i64) {
         let who = breadboard_core::git::feature_of(&main, &tree.dir);
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
-            let about = format!("to merge develop in and resolve the conflicts of !{}", mr.iid);
+            let about = format!("to merge {} in and resolve the conflicts of !{}", mr.target(), mr.iid);
             if is_sent {
                 app.actor.told(&who, &about, &line, true);
             } else {

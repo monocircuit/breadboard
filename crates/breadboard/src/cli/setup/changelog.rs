@@ -877,13 +877,26 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
         .unwrap_or_else(|| DEFAULT_SINCE.to_string());
     let start = since_of(&window, now).unwrap_or_else(|| since_of(DEFAULT_SINCE, now).unwrap_or(now));
     let start_iso = to_iso(start);
-    let found: Vec<Value> = all_of(&format!(
-        "projects/:fullpath/merge_requests?state=merged&target_branch=develop&updated_after={}",
-        gitlab::encode(&start_iso)
-    ))?
-    .into_iter()
-    .filter(|mr| str_of(mr, "merged_at").is_some_and(|at| ms_of(at) >= start))
-    .collect();
+    // Into develop and into every epic (#349): a task merged into its epic
+    // counts here, the epic's own MR into develop is only its tasks again.
+    let bases = breadboard_core::git::bases(&main);
+    let mut found: Vec<Value> = Vec::new();
+    for base in &bases {
+        found.extend(all_of(&format!(
+            "projects/:fullpath/merge_requests?state=merged&target_branch={}&updated_after={}",
+            gitlab::encode(&base.local),
+            gitlab::encode(&start_iso)
+        ))?);
+    }
+    let found: Vec<Value> = found
+        .into_iter()
+        .filter(|mr| str_of(mr, "merged_at").is_some_and(|at| ms_of(at) >= start))
+        .filter(|mr| {
+            !bases
+                .iter()
+                .any(|base| str_of(mr, "source_branch") == Some(base.local.as_str()))
+        })
+        .collect();
     let read: Vec<(i64, Result<Value, gitlab::Failure>)> = gitlab::in_turns(&found, 12, |mr| {
         let iid = int_of(mr, "iid").unwrap_or_default();
         (iid, changes_of(iid, &known))
