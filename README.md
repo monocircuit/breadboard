@@ -129,6 +129,36 @@ key, and it uses a stored copy only when that copy carries its key (found with
 `grep`, never run); one that doesn't is removed. A stamp from before #339
 counts as none, so every checkout takes a checked binary once.
 
+## Headless agents
+
+A task agent can be a Claude Code session instead of a process (#358,
+rollout #359–#362): `git config breadboard.agents headless` in the main
+checkout turns it on (tabs stay the default until #361).
+
+- **A line for an agent is queued**, not typed into a pane: the overview's
+  deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
+  it to `.claude/runs/queue.json` (`breadboard_core::runs::enqueue_line`,
+  the session bound in `<dir>/.claude/herdr-session`) and wake the daemon.
+- **`breadboard serve` runs it** (`crates/breadboard/src/daemon/runs.rs`):
+  `claude -p --resume <id> --name <feature> --permission-mode auto
+  --permission-prompts none --disallowedTools AskUserQuestion
+  --output-format stream-json --verbose '<lines>'` in the worktree
+  (`--session-id` for a conversation without a transcript). One run per
+  session at a time; lines queued meanwhile go into the next run together.
+  A session open in an interactive claude (`~/.claude/sessions`) holds its
+  queue. Between runs no claude process exists. The daemon stays while a
+  line is queued or a run in flight; one engine per repo (`.claude/runs/engine.pid`).
+- **Capacity**: a run starts while `MemAvailable` less 6 GB (the reserve
+  `gitlab-runner-autoscale` keeps) and 0.5 GB for each run still starting
+  leaves 0.5 GB. Waiting sessions go in the merge order of their
+  orchestration's plan (`wt:plan`), then by age. `BREADBOARD_MEMINFO` names
+  another `/proc/meminfo` (the gauntlet's low memory).
+- **The status table**, `.claude/runs/status.json`: `running`, `idle`,
+  `asks` (the run was denied a tool, its `permission_denials`), and
+  `queued` from the queue. The overview reads it as herdr's agent states
+  (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
+  prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
+
 ## The nvim tab
 
 A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)

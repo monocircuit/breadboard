@@ -154,8 +154,9 @@ pub fn conflicts_of(issues: &[Entry], remote: &Remote) -> Vec<Tell> {
                 return Some(Tell::Send {
                     dir: tree.dir.clone(),
                     line: format!(
-                        "[overview] !{} has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)",
-                        mr.iid
+                        "[overview] !{} has conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target})",
+                        mr.iid,
+                        target = mr.target()
                     ),
                     key,
                     iid: mr.iid,

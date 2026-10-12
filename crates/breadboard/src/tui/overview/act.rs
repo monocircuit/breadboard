@@ -45,6 +45,8 @@ pub enum Act {
     Chat,
     /// Two clicks dismiss a free agent (#289).
     Dismiss(String),
+    /// A free agent's id: `claude --resume <id>` into the clipboard (#345).
+    CopyResume(String),
     /// A conflicted MR's agent merges develop in (#246).
     Resolve(i64),
     /// Two clicks delete the worktree of the view.
@@ -78,7 +80,8 @@ pub enum Act {
 }
 
 /// What folds: the removed worktrees, the queue, the merged MRs; in the
-/// view of everything the open MRs and issues the pane cut; DONE's commands.
+/// view of everything the open MRs and issues the pane cut; DONE's commands;
+/// the boxes of an MR and of a worktree (#346).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
@@ -87,6 +90,17 @@ pub enum Fold {
     Mrs,
     Issues,
     Done,
+    /// The boxes under an MR's row, by its iid (#346).
+    MrBoxes(i64),
+    /// The boxes under a worktree's node, by its issue (#346).
+    TreeBoxes(i64),
+}
+
+/// Opens what was folded, folds what was open.
+fn toggle(open: &mut std::collections::BTreeSet<i64>, key: i64) {
+    if !open.remove(&key) {
+        open.insert(key);
+    }
 }
 
 /// How long a first click keeps the end armed.
@@ -106,6 +120,13 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
+                Fold::MrBoxes(iid) => toggle(&mut folds.boxes.mrs, iid),
+                Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
+            }
+            if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
+                && let Some(file) = &app.folds_file
+            {
+                app.folds.boxes.write(file);
             }
             return Flow::Redraw;
         }
@@ -137,6 +158,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
+        Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
     }
     app.redraw();
@@ -310,8 +332,59 @@ fn end(app: &mut Overview) {
     }
 }
 
+/// The programs a copy tries, in turn: Wayland's, then X's two.
+const CLIPBOARDS: [(&str, &[&str]); 3] = [
+    ("wl-copy", &[]),
+    ("xclip", &["-selection", "clipboard"]),
+    ("xsel", &["--clipboard", "--input"]),
+];
+
+/// A click on a free agent's id (#345): `claude --resume <id>` into the
+/// clipboard, the whole command in the log either way.
+fn copy_resume(app: &mut Overview, id: &str) {
+    let command = breadboard_core::model::free_agents::resume_command(id);
+    let key = format!("copy:{id}");
+    app.actor.queue(move || {
+        let copied = CLIPBOARDS
+            .iter()
+            .find(|(program, args)| copy_with(program, args, &command))
+            .map(|(program, _)| *program);
+        Some(Box::new(move |app: &mut Overview| {
+            let line = match copied {
+                Some(program) => format!("copied {command} ({program}): paste it into a shell to resume or look in"),
+                None => format!(
+                    "no clipboard ({}): resume it with {command}",
+                    CLIPBOARDS.map(|(program, _)| program).join(", ")
+                ),
+            };
+            app.actor.log_as(&key, Paint::Green, line, None);
+        }) as actor::Effect)
+    });
+}
+
+/// `text` into `program`'s stdin: whether it took it.
+fn copy_with(program: &str, args: &[&str], text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let is_written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    child.wait().is_ok_and(|status| status.success()) && is_written
+}
+
 /// A click on a free agent's row (free-agents.mjs `clickDismiss`): the first
-/// arms it, the second closes its tab and the record forgets it as free.
+/// arms it, the second drops it from the record (its tab closed, when one was
+/// resumed by hand); its conversation stays in `/resume`.
 fn dismiss(app: &mut Overview, id: &str) {
     let Some(name) = app.orchestration_name() else { return };
     let row = app
@@ -352,7 +425,7 @@ fn dismiss(app: &mut Overview, id: &str) {
                 Ok(()) => app.actor.log_as(
                     &key,
                     Paint::Green,
-                    format!("dismissed {who}: its tab closed, its conversation stays in /resume"),
+                    format!("dismissed {who}: its conversation stays in /resume"),
                     None,
                 ),
                 Err(error) => app
@@ -398,7 +471,7 @@ fn resolve(app: &mut Overview, iid: i64) {
         let who = breadboard_core::git::feature_of(&main, &tree.dir);
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
-            let about = format!("to merge develop in and resolve the conflicts of !{}", mr.iid);
+            let about = format!("to merge {} in and resolve the conflicts of !{}", mr.target(), mr.iid);
             if is_sent {
                 app.actor.told(&who, &about, &line, true);
             } else {

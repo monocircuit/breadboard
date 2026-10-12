@@ -3,11 +3,16 @@
 //! shared stack; the overview names the threshold.
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-/// What a worktree's own dev stack takes, and what a claude does.
+/// What a full dev stack takes (a free worktree's, an epic's), and what a
+/// claude does (a headless agent only while its run is in flight,
+/// `runs::RUN`: idle it is no process and costs nothing, #358).
 pub const STACK: u64 = 1 << 30;
 pub const AGENT: u64 = 1 << 29;
+/// What an orchestration's task stack takes (#351): Keycloak and SeaweedFS,
+/// its databases on the epic's Postgres, which runs once per orchestration.
+pub const TASK_STACK: u64 = STACK / 2;
 /// Below this much free memory a fresh agent gets the shared stack.
-pub const THRESHOLD: u64 = STACK + AGENT;
+pub const THRESHOLD: u64 = TASK_STACK + AGENT;
 
 /// `3.2 GB`.
 pub fn gb(bytes: u64) -> String {
@@ -39,7 +44,7 @@ mod tests {
             Some(2048 * 1024)
         );
         assert_eq!(available_in("MemFree: 1 kB"), None);
-        assert_eq!(gb(THRESHOLD), "1.5 GB");
+        assert_eq!(gb(THRESHOLD), "1.0 GB");
         assert_eq!(gb(3_435_973_837), "3.2 GB");
     }
 }
