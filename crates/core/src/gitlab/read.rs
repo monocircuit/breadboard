@@ -160,6 +160,7 @@ const EVERYTHING_QUERY: &str = "query($project: ID!) { project(fullPath: $projec
 /// Every query breadboard sends to GitLab, each with all its parts, by name.
 pub fn queries() -> Vec<(&'static str, String)> {
     vec![
+        ("ci queue", CI_QUERY.into()),
         ("deploy", deploy_query()),
         ("later deploys", later_deploys_query()),
         ("links", LINKS_QUERY.into()),
@@ -169,6 +170,39 @@ pub fn queries() -> Vec<(&'static str, String)> {
         ("worktree", worktree_query(true, true)),
         ("everything", EVERYTHING_QUERY.into()),
     ]
+}
+
+/// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 3) { nodes { id status sha ref } } } } } }";
+
+/// The open MRs of CI_QUERY's answer, as the CI queue takes them.
+pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
+    nodes(project, "mergeRequests")
+        .iter()
+        .map(|node| crate::ci::OpenMr {
+            iid: id_of(node.get("iid")),
+            source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
+            target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
+            is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
+            labels: nodes(node, "labels")
+                .iter()
+                .filter_map(|label| str_at(label, "title").map(String::from))
+                .collect(),
+            sha: str_at(node, "diffHeadSha").map(String::from),
+            // Its newest MR pipeline, of any commit: after a push that skipped CI
+            // GitLab's head pipeline is none, and a red one before it matters.
+            // A branch's (the `skipped` one a push with ci.skip leaves) isn't one.
+            pipeline: nodes(node, "pipelines")
+                .iter()
+                .filter_map(|pipeline| pipeline_of(pipeline, ""))
+                .find(|pipeline| {
+                    pipeline
+                        .reference
+                        .as_deref()
+                        .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+                }),
+        })
+        .collect()
 }
 
 pub(super) fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -1065,6 +1099,30 @@ mod tests {
             { "id": "gid://gitlab/Ci::Build/10", "name": "lint", "status": "SUCCESS", "webPath": "/monocircuit/platform/-/jobs/10", "finishedAt": null },
             { "id": "gid://gitlab/Ci::Build/11", "name": "test", "status": "FAILED", "webPath": "/monocircuit/platform/-/jobs/11", "finishedAt": null }
           ] } } }"#;
+
+    #[test]
+    fn reads_the_open_mrs_for_the_ci_queue() {
+        let project: Value = serde_json::from_str(
+            r#"{ "mergeRequests": { "nodes": [ { "iid": "349", "draft": true,
+              "sourceBranch": "feature/357-x", "targetBranch": "develop", "diffHeadSha": "0359",
+              "labels": { "nodes": [ { "title": "enhancement" } ] },
+              "pipelines": { "nodes": [ { "id": "gid://gitlab/Ci::Pipeline/2936237216", "status": "SKIPPED",
+                "sha": "0359", "ref": "feature/357-x" },
+                { "id": "gid://gitlab/Ci::Pipeline/2936237215", "status": "PENDING",
+                "sha": "0359", "ref": "refs/merge-requests/349/head" } ] } } ] } }"#,
+        )
+        .unwrap();
+        let mrs = open_mrs_of(&project);
+        assert_eq!(mrs.len(), 1);
+        assert_eq!(
+            (mrs[0].iid, mrs[0].is_draft, mrs[0].target.as_str()),
+            (349, true, "develop")
+        );
+        let pipeline = mrs[0].pipeline.as_ref().unwrap();
+        assert_eq!((pipeline.id, pipeline.status.as_str()), (2936237215, "pending"));
+        assert_eq!(pipeline.reference.as_deref(), Some("refs/merge-requests/349/head"));
+        assert_eq!(mrs[0].labels, vec!["enhancement".to_string()]);
+    }
 
     #[test]
     fn reads_an_mr_of_graphql_as_node_shapes_it() {
