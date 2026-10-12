@@ -6,7 +6,7 @@
 //! already is only put in front.
 
 use super::herdr::{self, quote};
-use breadboard_core::conversations::{bound_session, running_claudes};
+use breadboard_core::conversations::{bound_session, interactive_resumes, running_claudes};
 use breadboard_core::git::feature_of;
 use breadboard_core::runs::{self, State, Table};
 use std::path::Path;
@@ -57,8 +57,10 @@ fn run_of(main: &Path, id: &str) -> Option<State> {
     table.runs.get(id).map(|run| run.state)
 }
 
+/// Whether a claude runs the conversation: its session file, or an
+/// interactive resume of it still at its folder's trust question (no file yet).
 fn is_running(id: &str) -> bool {
-    running_claudes().iter().any(|claude| claude.id == id)
+    running_claudes().iter().any(|claude| claude.id == id) || interactive_resumes().contains(id)
 }
 
 /// Opens the agent of the worktree `dir` (on the actor's thread: a wait may

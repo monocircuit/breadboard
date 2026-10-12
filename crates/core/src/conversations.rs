@@ -420,6 +420,44 @@ pub struct Running {
     pub cwd: PathBuf,
 }
 
+/// The conversation an interactive `claude --resume <id>` command line
+/// resumes (NUL-separated, as `/proc/<pid>/cmdline` holds it); None for a
+/// headless one (`-p`, `--print`) and anything else.
+pub fn interactive_resume_in(cmdline: &[u8]) -> Option<String> {
+    let args: Vec<String> = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect();
+    let program = Path::new(args.first()?).file_name()?.to_string_lossy().into_owned();
+    // Claude Code runs as `claude`, or as node with its script after it.
+    let at = args.iter().position(|arg| arg == "--resume" || arg == "-r")?;
+    let is_claude = program == "claude"
+        || args
+            .iter()
+            .take(at)
+            .any(|arg| arg.ends_with("/claude") || arg == "claude");
+    let is_print = args.iter().any(|arg| arg == "-p" || arg == "--print");
+    (is_claude && !is_print)
+        .then(|| args.get(at + 1).cloned())
+        .flatten()
+        .filter(|id| !id.starts_with('-'))
+}
+
+/// The conversations an interactive claude resumes now, from `/proc`: one
+/// at its folder's trust question has no file in `~/.claude/sessions` yet
+/// (#361's probe), its command line says it already. Empty without `/proc`.
+pub fn interactive_resumes() -> std::collections::HashSet<String> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return std::collections::HashSet::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+        .filter_map(|entry| interactive_resume_in(&fs::read(entry.path().join("cmdline")).ok()?))
+        .collect()
+}
+
 /// The claudes running on this machine.
 pub fn running_claudes() -> Vec<Running> {
     let Ok(entries) = fs::read_dir(claude_dir().join("sessions")) else {
@@ -470,6 +508,27 @@ pub fn left_text(left: &[Running]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interactive_resume_is_read_from_its_command_line() {
+        let cmdline = |args: &[&str]| args.join("\0").into_bytes();
+        assert_eq!(
+            interactive_resume_in(&cmdline(&["claude", "--resume", "e970", "--name", "1-probe"])).as_deref(),
+            Some("e970")
+        );
+        assert_eq!(
+            interactive_resume_in(&cmdline(&["/usr/bin/node", "/opt/claude/bin/claude", "-r", "e970"])).as_deref(),
+            Some("e970")
+        );
+        // A headless run is no hold of its own queue.
+        assert_eq!(
+            interactive_resume_in(&cmdline(&["claude", "-p", "x", "--resume", "e970"])),
+            None
+        );
+        assert_eq!(interactive_resume_in(&cmdline(&["claude", "--resume"])), None);
+        assert_eq!(interactive_resume_in(&cmdline(&["vim", "--resume", "e970"])), None);
+        assert_eq!(interactive_resume_in(b""), None);
+    }
 
     fn lines(text: &[&str]) -> Vec<String> {
         text.iter().map(|line| line.to_string()).collect()

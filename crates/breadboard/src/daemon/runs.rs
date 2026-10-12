@@ -8,7 +8,7 @@
 //! merge order, then by age. One engine per repo across daemons of other
 //! builds: `.claude/runs/engine.pid`.
 
-use breadboard_core::conversations::{running_claudes, transcript_of};
+use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::runs::{
     self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, denials_in,
@@ -87,11 +87,14 @@ fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
     let table: Table = read_or_default(&status_file(main));
     let flying = locked(in_flight).clone();
     let ours: HashSet<i64> = flying.values().map(|(pid, _)| *pid).collect();
-    let open: HashSet<String> = running_claudes()
+    let mut open: HashSet<String> = running_claudes()
         .into_iter()
         .filter(|claude| !ours.contains(&claude.pid))
         .map(|claude| claude.id)
         .collect();
+    // One opened in a tab and still at its folder's trust question has no
+    // session file yet: its command line holds the queue too (#361's probe).
+    open.extend(interactive_resumes());
     let states = runs::states_of(&table, &queue);
     let now = now_ms();
     let starting = flying.values().filter(|(_, at)| now - at < STARTING_MS).count();
