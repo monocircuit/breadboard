@@ -40,6 +40,8 @@ struct State {
     status: Mutex<HashMap<std::path::PathBuf, Status>>,
     /// The feeds followed now, by view.
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
+    /// The run engines of the repos (`runs`), each busy while lines are queued or runs in flight.
+    engines: Mutex<HashMap<std::path::PathBuf, Arc<std::sync::atomic::AtomicBool>>>,
     /// The last answer of a feed that ended, by view, for GRACE.
     kept: Mutex<HashMap<String, (Instant, Arc<str>)>>,
     /// Whether it keeps the main checkouts on develop (`keep_up`; not a test's daemon).
@@ -211,11 +213,6 @@ async fn serve(
                 if std::fs::metadata(socket).map(|meta| meta.ino()).ok() != Some(own) {
                     return Ok(Ended::Done);
                 }
-                // A build installed over its binary: the overviews connect to the new one.
-                if binary.is_replaced() {
-                    let _ = std::fs::remove_file(socket);
-                    return Ok(Ended::Replaced);
-                }
                 state.kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (at, _)| at.elapsed() < GRACE);
                 // A worktree no overview asked about for a while (removed, its views closed): forgotten.
                 let old = breadboard_core::time::now_ms() - STALE_MS - GRACE.as_millis() as i64;
@@ -225,7 +222,23 @@ async fn serve(
                     Ok(held) => held.as_ref().is_none_or(|(_, at, _)| *at > old),
                 });
                 let idle = *state.idle_since.lock().unwrap_or_else(|e| e.into_inner());
-                if state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
+                // A run queued or in flight keeps it: nothing else would start or watch it.
+                let is_running = state
+                    .engines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values()
+                    .any(|busy| busy.load(Ordering::SeqCst));
+                if is_running {
+                    *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+                }
+                // A build installed over its binary: the overviews connect to the new one. Not
+                // while a run is queued or in flight: the new one wouldn't know its claude.
+                if !is_running && binary.is_replaced() {
+                    let _ = std::fs::remove_file(socket);
+                    return Ok(Ended::Replaced);
+                }
+                if !is_running && state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
                     let _ = std::fs::remove_file(socket);
                     return Ok(Ended::Done);
                 }
@@ -252,7 +265,13 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             line.push('\n');
             write.write_all(line.as_bytes()).await
         }
+        Ok(Request::Runs { main }) => {
+            start_engine(state, &main);
+            write.write_all(b"true\n").await
+        }
         Ok(Request::Gitlab { main, view, ask }) => {
+            // An overview of a repo starts its run engine: lines left queued by a daemon before run.
+            start_engine(state, &main);
             if state.is_keeping_up
                 && state
                     .kept_up
@@ -292,6 +311,20 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
         }
         Err(_) => Ok(()),
     }
+}
+
+/// The run engine of `main` (`runs`), once per daemon.
+fn start_engine(state: &State, main: &Path) {
+    if !main.is_absolute() {
+        return;
+    }
+    let mut engines = state.engines.lock().unwrap_or_else(|e| e.into_inner());
+    if engines.contains_key(main) {
+        return;
+    }
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    engines.insert(main.to_path_buf(), busy.clone());
+    tokio::spawn(super::runs::schedule(main.to_path_buf(), busy));
 }
 
 /// herdr's answer to `args`, read once for every overview that asks within HERDR_FRESH; only reads are ever made.
