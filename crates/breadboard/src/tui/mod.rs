@@ -12,7 +12,7 @@ mod clicks;
 mod demo;
 mod input;
 pub(crate) mod links;
-mod overview;
+pub(crate) mod overview;
 mod page;
 mod run;
 mod scene;

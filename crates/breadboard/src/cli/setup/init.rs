@@ -28,7 +28,7 @@ use std::sync::LazyLock;
 pub const USAGE: &str = "usage: breadboard init [--check]   breadboard's skill, hooks and herdr plugin into this repo";
 
 /// The skill's templates, by their file name.
-const SKILL: [(&str, &str); 4] = [
+const SKILL: [(&str, &str); 5] = [
     (
         "SKILL.md",
         include_str!("../../../../../claude/skills/parallel-work/SKILL.md"),
@@ -44,6 +44,11 @@ const SKILL: [(&str, &str); 4] = [
     (
         "cleanup.md",
         include_str!("../../../../../claude/skills/parallel-work/cleanup.md"),
+    ),
+    // Only where an orchestration works on epic branches (`[orchestration] epic_branches`).
+    (
+        "epics.md",
+        include_str!("../../../../../claude/skills/parallel-work/epics.md"),
     ),
 ];
 
@@ -132,6 +137,14 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
         ("setup", setup),
         ("check", check),
         ("test_origin_env", config.tries.test_origin_env.clone()),
+        (
+            "test_instance",
+            config
+                .tries
+                .test_instance
+                .clone()
+                .unwrap_or_else(|| "the test instance".into()),
+        ),
     ];
     if let Some(stack) = &config.stack {
         let named: Vec<&config::Service> = stack
@@ -182,6 +195,22 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
                 "stack.first",
                 first.map(|service| service.label().to_string()).unwrap_or_default(),
             ),
+            // The database the epic's tasks clone theirs on, and the services a task stack runs.
+            (
+                "stack.database",
+                first
+                    .map(|service| service.label().to_string())
+                    .unwrap_or_else(|| "database".into()),
+            ),
+            (
+                "stack.others",
+                named
+                    .iter()
+                    .skip(1)
+                    .map(|service| service.label().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" + "),
+            ),
             (
                 "stack.first_port",
                 first.map(|service| service.port.to_string()).unwrap_or_default(),
@@ -207,18 +236,52 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
 /// `{{#stack}}…{{/stack}}` stays only with a `[stack]`, a block's marks on
 /// lines of their own go with their lines. A value it doesn't know is a
 /// mistake of the template: it fails.
-pub fn render(template: &str, values: &[(&str, String)], has_stack: bool) -> Result<String, String> {
-    static BLOCK: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?s)\{\{#stack\}\}\n?(.*?)\{\{/stack\}\}\n?").unwrap());
+pub fn render(template: &str, values: &[(&str, String)], blocks: &[(&str, bool)]) -> Result<String, String> {
+    static CLOSE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{/([a-z_]+)\}\}").unwrap());
     static NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{([a-z_.0-9]+)\}\}").unwrap());
-    let kept = BLOCK.replace_all(
-        template,
-        |found: &regex::Captures| {
-            if has_stack { found[1].to_string() } else { String::new() }
-        },
-    );
     let mut missing = Vec::new();
-    let filled = NAME.replace_all(&kept, |found: &regex::Captures| {
+    // The innermost block first: the first close and the last open of its name before it.
+    let mut text = template.to_string();
+    while let Some(close) = CLOSE.captures(&text) {
+        let name = close[1].to_string();
+        let whole = close
+            .get(0)
+            .map(|found| (found.start(), found.end()))
+            .unwrap_or_default();
+        let open_mark = format!("{{{{#{name}}}}}");
+        let Some(open) = text[..whole.0].rfind(&open_mark) else {
+            return Err(format!("{{{{/{name}}}}} closes no block"));
+        };
+        let is_kept = match blocks.iter().find(|(known, _)| *known == name) {
+            Some((_, is_kept)) => *is_kept,
+            None => {
+                missing.push(format!("{{{{#{name}}}}}"));
+                false
+            }
+        };
+        // A mark on a line of its own goes with its line; one inside a line keeps the line's end.
+        let is_line = |at: usize, end: usize| {
+            (at == 0 || text[..at].ends_with('\n')) && (end == text.len() || text[end..].starts_with('\n'))
+        };
+        let body_start = open + open_mark.len();
+        let body_start = if is_line(open, body_start) {
+            body_start + 1
+        } else {
+            body_start
+        };
+        let end = if is_line(whole.0, whole.1) && whole.1 < text.len() {
+            whole.1 + 1
+        } else {
+            whole.1
+        };
+        let body = if is_kept {
+            text[body_start..whole.0].to_string()
+        } else {
+            String::new()
+        };
+        text = format!("{}{body}{}", &text[..open], &text[end..]);
+    }
+    let filled = NAME.replace_all(&text, |found: &regex::Captures| {
         match values.iter().find(|(name, _)| *name == &found[1]) {
             Some((_, value)) => value.clone(),
             None => {
@@ -240,11 +303,13 @@ pub fn render(template: &str, values: &[(&str, String)], has_stack: bool) -> Res
 /// The skill, rendered: `(path in the checkout, text)`.
 fn skill_of(loaded: &Loaded) -> Vec<(PathBuf, String)> {
     let values = values(loaded);
-    let has_stack = loaded.config.stack.is_some();
+    let has_epics = loaded.config.orchestration.epic_branches;
+    let blocks = [("stack", loaded.config.stack.is_some()), ("epics", has_epics)];
     SKILL
         .iter()
+        .filter(|(name, _)| *name != "epics.md" || has_epics)
         .map(|(name, template)| {
-            let text = render(template, &values, has_stack).unwrap_or_else(|error| fail(&format!("{name}: {error}")));
+            let text = render(template, &values, &blocks).unwrap_or_else(|error| fail(&format!("{name}: {error}")));
             (Path::new(".claude/skills/parallel-work").join(name), text)
         })
         .collect()
@@ -507,17 +572,27 @@ mod tests {
         let template =
             "a {{run}} wt:new from {{branch}}\n{{#stack}}\nstack line\n{{/stack}}\nend{{#stack}}, inline{{/stack}}.\n";
         assert_eq!(
-            render(template, &values(), true).unwrap(),
+            render(template, &values(), &[("stack", true)]).unwrap(),
             "a pnpm wt:new from develop\nstack line\nend, inline.\n"
         );
         assert_eq!(
-            render(template, &values(), false).unwrap(),
+            render(template, &values(), &[("stack", false)]).unwrap(),
             "a pnpm wt:new from develop\nend.\n"
         );
         assert_eq!(
-            render("{{nope}} {{run}}", &values(), false),
+            render("{{nope}} {{run}}", &values(), &[]),
             Err("the template names nope, which breadboard doesn't know".into())
         );
+    }
+
+    #[test]
+    fn renders_a_block_inside_another() {
+        let template = "{{#stack}}a{{#epics}} b{{/epics}} c{{/stack}}\n";
+        let blocks = |stack, epics| [("stack", stack), ("epics", epics)];
+        assert_eq!(render(template, &values(), &blocks(true, true)).unwrap(), "a b c\n");
+        assert_eq!(render(template, &values(), &blocks(true, false)).unwrap(), "a c\n");
+        assert_eq!(render(template, &values(), &blocks(false, true)).unwrap(), "\n");
+        assert!(render("{{/x}}", &values(), &[]).is_err());
     }
 
     #[test]

@@ -194,6 +194,7 @@ opens its path there.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
+| `test_instance` | `the test instance` | what the skill calls the test instance (`dev.example`) |
 | `test_origin_env` | `TEST_ORIGIN` | the variable with the test instance's origin: the environment's, else the main checkout's env file |
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |

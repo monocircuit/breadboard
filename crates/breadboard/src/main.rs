@@ -18,6 +18,11 @@ const SOURCE_KEY: &str = match option_env!("BREADBOARD_SOURCE_KEY_MARK") {
     None => "breadboard-source-key:",
 };
 
+/// The key of the sources this binary was built from, empty when it has none.
+pub(crate) fn source_key() -> &'static str {
+    SOURCE_KEY.trim_start_matches("breadboard-source-key:")
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((command, rest)) = args.split_first() else {
@@ -25,12 +30,14 @@ fn main() -> ExitCode {
     };
     match command.as_str() {
         "--source-key" => {
-            println!("{}", SOURCE_KEY.trim_start_matches("breadboard-source-key:"));
+            println!("{}", source_key());
             ExitCode::SUCCESS
         }
         "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),
         // The overviews' one reader, started by the first of them (daemon/).
         "serve" => daemon::main(rest),
+        // The headless agents' status table, a line queued for one (#358).
+        "runs" => daemon::runs::cli(rest),
         // pnpm herdr, herdr:install and the herdr plugin's actions (herdr/herdr-plugin.toml).
         "herdr" => herdr::main(rest),
         "herdr:install" => herdr::install(rest),
