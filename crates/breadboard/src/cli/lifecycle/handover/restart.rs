@@ -5,9 +5,11 @@
 //! runs the conversation ends, then `claude --resume <id> --name <name>
 //! '<line>'` starts it again in the tab `<label>` of its new space, standing
 //! in its new directory, the line its first prompt. Never two processes on
-//! one session: the resume starts only once the old one is gone.
+//! one session: the resume starts only once the old one is gone. A
+//! conversation that entered a worktree is taken out of it first: the
+//! resume restores it from the transcript, not from the directory (#363).
 
-use super::super::claude::running_claudes;
+use super::super::claude::{self, running_claudes};
 use super::super::herdr::{self, call, did, id_at, s};
 use super::super::layout::tabs::{drop_duplicates, idle_pane_of};
 use super::super::proc::{quote, text};
@@ -30,6 +32,8 @@ pub trait Host {
     fn pid_of(&self, id: &str) -> Option<i64>;
     /// The claude `pid` asked to end; whether it is gone within the wait.
     fn end(&self, pid: i64) -> bool;
+    /// The conversation `id` out of the worktree it entered (`claude::leave_worktree`).
+    fn leave_worktree(&self, id: &str);
     /// `command` run in the shell of `pane`.
     fn run(&self, pane: &str, command: &str) -> bool;
     /// The pane closed (its tab with it when it was its last).
@@ -94,6 +98,7 @@ pub fn restart(host: &dyn Host, restart: &Restart) -> Result<String, Failed> {
     if host.pid_of(restart.id).is_some() {
         return Err(Failed::Before("another claude runs its conversation".into()));
     }
+    host.leave_worktree(restart.id);
     let from = restart.from.filter(|from| *from != pane);
     if host.run(&pane, &command) {
         if let Some(from) = from {
@@ -186,6 +191,10 @@ impl Host for Machine {
         true
     }
 
+    fn leave_worktree(&self, id: &str) {
+        claude::leave_worktree(id);
+    }
+
     fn run(&self, pane: &str, command: &str) -> bool {
         // A shell line goes only into a shell, never into a running claude.
         herdr::is_idle(pane) && did(&["pane", "run", pane, command])
@@ -254,6 +263,13 @@ mod tests {
             }
             !self.is_stubborn
         }
+        fn leave_worktree(&self, id: &str) {
+            assert!(
+                self.pid.borrow().is_none(),
+                "a transcript written under a running claude"
+            );
+            self.did.borrow_mut().push(format!("leave {id}"));
+        }
         fn run(&self, pane: &str, command: &str) -> bool {
             assert!(self.pid.borrow().is_none(), "a second claude on one session");
             if self.refused.contains(&pane) {
@@ -304,6 +320,7 @@ mod tests {
             vec![
                 "shell 7-x".to_string(),
                 "end 41".into(),
+                "leave 0123abcd-0000-0000-0000-000000000000".into(),
                 "run new: cd '/r/p-7-x' && claude --resume 0123abcd-0000-0000-0000-000000000000 --name '7-x' '[overview] next issue #7, your name is 7-x now: read .claude/brief.md'".into(),
                 "close old".into(),
             ]
@@ -375,9 +392,9 @@ mod tests {
         };
         assert_eq!(restart(&fake, &free), Ok("new".into()));
         let did = fake.did.borrow();
-        assert_eq!(did.len(), 2, "{did:?}");
+        assert_eq!(did.len(), 3, "{did:?}");
         assert!(
-            did[1].starts_with("run new: cd '/r/p-7-x' && claude --resume "),
+            did[2].starts_with("run new: cd '/r/p-7-x' && claude --resume "),
             "{did:?}"
         );
     }
