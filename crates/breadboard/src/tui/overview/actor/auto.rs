@@ -578,6 +578,19 @@ impl Free {
     /// headless agent (#359, #361) has nothing to end or close: free is its
     /// record entry, and its next handover is the next run.
     fn run(&self) -> Result<String, String> {
+        // One still in its tab from before the switch (#361) ends there and
+        // its pane closes: the worktree's removal waits for every claude in it.
+        let pane = breadboard_core::herdr::all_panes()
+            .into_iter()
+            .find(|pane| pane.session.as_deref() == Some(self.id.as_str()));
+        for pid in breadboard_core::conversations::interactive_pids_of(&self.id) {
+            if !crate::cli::lifecycle::handover::end_claude(pid) {
+                return Err(format!("its claude in a tab (pid {pid}) did not end"));
+            }
+        }
+        if let Some(pane) = pane {
+            herdr::did(&["pane", "close", &pane.id]);
+        }
         self.record();
         Ok(self.agent.clone())
     }

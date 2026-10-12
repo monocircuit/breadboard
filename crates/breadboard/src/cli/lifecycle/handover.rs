@@ -17,6 +17,7 @@ use super::herdr;
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
+use breadboard_core::conversations::interactive_pids_of;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
 use breadboard_core::record::{self, is_name, origin_of};
@@ -406,8 +407,12 @@ pub fn pane_of_conversation(id: &str) -> Result<Option<Value>, String> {
 }
 
 /// What the agent `id` does: the run engine's status table (#359), where no
-/// row is an idle session that never ran.
+/// row is an idle session that never ran; one an interactive claude runs (a
+/// task agent still in its tab, #361) as herdr's pane of it says.
 fn agent_of(main: &Path, id: &str) -> Result<Option<Value>, String> {
+    if !interactive_pids_of(id).is_empty() {
+        return pane_of_conversation(id);
+    }
     let status = runs::agents_of(main)
         .remove(id)
         .and_then(|agent| agent.status)
@@ -416,9 +421,16 @@ fn agent_of(main: &Path, id: &str) -> Result<Option<Value>, String> {
 }
 
 /// A headless agent's next run (#359): bound to the issue's worktree, its
-/// line queued there. No claude may hold the conversation meanwhile: a run
-/// that started since the check would write over where it stands.
+/// line queued there. An idle claude of it still in a tab (#361, judged idle
+/// above) ends first, SIGTERM and waited for: from here on it is headless.
+/// No other claude may hold the conversation: a run that started since the
+/// check would write over where it stands.
 fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Result<(), String> {
+    for pid in interactive_pids_of(&worker.id) {
+        if !end_claude(pid) {
+            return Err(format!("its claude in a tab (pid {pid}) did not end"));
+        }
+    }
     if is_conversation_running(&worker.id) {
         return Err("a claude runs its conversation".into());
     }
@@ -427,6 +439,23 @@ fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Re
         return Err("its line could not be queued".into());
     }
     Ok(())
+}
+
+/// The claude `pid` asked to end (SIGTERM); whether it is gone within 15 s.
+pub fn end_claude(pid: i64) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: a signal to one process this user runs.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let started = std::time::Instant::now();
+    while breadboard_core::lock::is_alive(i64::from(pid)) {
+        if started.elapsed() >= Duration::from_secs(15) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    true
 }
 
 /// A handover herdr could not judge: nothing of the agent is refused or

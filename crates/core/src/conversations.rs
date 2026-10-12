@@ -461,14 +461,56 @@ pub fn interactive_resume_in(cmdline: &[u8]) -> Option<String> {
 /// at its folder's trust question has no file in `~/.claude/sessions` yet
 /// (#361's probe), its command line says it already. Empty without `/proc`.
 pub fn interactive_resumes() -> std::collections::HashSet<String> {
+    resumes_in_proc().into_iter().map(|(_, id)| id).collect()
+}
+
+/// `(pid, conversation)` of each interactive `claude --resume` in `/proc`
+/// that keeps its sessions where this process reads them (`claude_dir`): a
+/// claude of another `CLAUDE_CONFIG_DIR` has other conversations.
+fn resumes_in_proc() -> Vec<(i64, String)> {
     let Ok(entries) = fs::read_dir("/proc") else {
-        return std::collections::HashSet::new();
+        return Vec::new();
     };
+    let ours = std::env::var_os("CLAUDE_CONFIG_DIR").map(|dir| dir.to_string_lossy().into_owned());
     entries
         .flatten()
-        .filter(|entry| entry.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
-        .filter_map(|entry| interactive_resume_in(&fs::read(entry.path().join("cmdline")).ok()?))
+        .filter_map(|entry| {
+            let pid: i64 = entry.file_name().to_string_lossy().parse().ok()?;
+            let id = interactive_resume_in(&fs::read(entry.path().join("cmdline")).ok()?)?;
+            let environ = fs::read(entry.path().join("environ")).ok()?;
+            (config_dir_in(&environ) == ours).then_some((pid, id))
+        })
         .collect()
+}
+
+/// `CLAUDE_CONFIG_DIR` of an environment (NUL-separated, as `/proc/<pid>/environ` holds it).
+fn config_dir_in(environ: &[u8]) -> Option<String> {
+    environ
+        .split(|byte| *byte == 0)
+        .find_map(|pair| pair.strip_prefix(b"CLAUDE_CONFIG_DIR="))
+        .map(|dir| String::from_utf8_lossy(dir).into_owned())
+}
+
+/// The pids of the interactive claudes that run the conversation `id`: its
+/// session files whose claude is no `-p` run, and the resumes in `/proc`.
+pub fn interactive_pids_of(id: &str) -> Vec<i64> {
+    let is_interactive = |pid: i64| {
+        fs::read(format!("/proc/{pid}/cmdline"))
+            .ok()
+            .and_then(|cmdline| claude_print_in(&cmdline))
+            == Some(false)
+    };
+    let mut pids: Vec<i64> = running_claudes()
+        .into_iter()
+        .filter(|claude| claude.id == id && is_interactive(claude.pid))
+        .map(|claude| claude.pid)
+        .collect();
+    for (pid, resumed) in resumes_in_proc() {
+        if resumed == id && !pids.contains(&pid) {
+            pids.push(pid);
+        }
+    }
+    pids
 }
 
 /// The claudes running on this machine.
@@ -551,6 +593,11 @@ mod tests {
             Some(false)
         );
         assert_eq!(claude_print_in(&cmdline(&["bash", "-c", "claude -p"])), None);
+        assert_eq!(
+            config_dir_in(b"HOME=/h\0CLAUDE_CONFIG_DIR=/w/claude\0").as_deref(),
+            Some("/w/claude")
+        );
+        assert_eq!(config_dir_in(b"HOME=/h\0"), None);
     }
 
     fn lines(text: &[&str]) -> Vec<String> {

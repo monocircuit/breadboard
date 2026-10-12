@@ -23,7 +23,6 @@ use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
 use breadboard_core::reader::{Model, RemoteOf};
-use breadboard_core::runs;
 use breadboard_core::time::{ago, parse_iso};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -988,7 +987,7 @@ fn prompt_for(app: &Overview, file: &Path, id: i64, answer: &str) -> Option<Prom
         answer: Some(answer.to_string()),
         ..action.clone()
     });
-    let is_headless = matches!(&item.to, Some(Target::Dir(dir)) if runs::is_headless(&app.actor.main, dir));
+    let is_headless = matches!(&item.to, Some(Target::Dir(dir)) if herdr::is_queued_for(&app.actor.main, dir));
     (is_draft && is_headless).then(|| Prompt {
         file: file.to_path_buf(),
         id,
@@ -1065,7 +1064,7 @@ fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Opt
     let line = line_of(&answered);
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
-    let is_queued = matches!(&to, Some(Target::Dir(dir)) if runs::is_headless(&main, dir));
+    let is_queued = matches!(&to, Some(Target::Dir(dir)) if herdr::is_queued_for(&main, dir));
     app.actor.queue(move || {
         if let Some(to) = &to {
             if is_draft && !is_queued {
@@ -1187,7 +1186,7 @@ fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
 /// drafts say why they wait. The ones that got in.
 fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
     if let Target::Dir(dir) = to
-        && runs::is_headless(main, dir)
+        && herdr::is_queued_for(main, dir)
     {
         return queue_answers(main, file, dir);
     }
