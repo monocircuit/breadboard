@@ -11,8 +11,8 @@
 use breadboard_core::conversations::{running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::runs::{
-    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, args_of, change_queue, denials_in, prompt_of,
-    read_or_default, room_for, status_file, write_whole,
+    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, denials_in,
+    prompt_of, read_or_default, room_for, status_file, write_whole,
 };
 use breadboard_core::time::now_ms;
 use std::collections::{HashMap, HashSet};
@@ -168,7 +168,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         let _ = std::fs::create_dir_all(folder);
     }
     let spawned = tokio::process::Command::new(CLAUDE)
-        .args(args_of(&session, &name, &prompt, is_known))
+        .args(args_of(&session, &name, &prompt, is_known, &allowed_of(&events)))
         .current_dir(&dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

@@ -63,6 +63,10 @@ pub struct Event {
     pub name: String,
     pub line: String,
     pub at: i64,
+    /// Rules allowed for the one run that takes this line (`--allowedTools`,
+    /// #360: the user's `allow once`), none for later runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<String>,
 }
 
 /// The lines waiting for a run, oldest first.
@@ -176,6 +180,11 @@ pub fn enqueue(main: &Path, event: Event) -> std::io::Result<()> {
 /// NotFound when no session is bound. The daemon is woken by the caller
 /// (`daemon::client::wake_runs`).
 pub fn enqueue_line(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> {
+    enqueue_allowing(main, dir, line, Vec::new())
+}
+
+/// `enqueue_line` with tool rules allowed for the run that takes it (#360).
+pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String>) -> std::io::Result<()> {
     let session = crate::conversations::bound_session(dir)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no session bound to the worktree"))?;
     enqueue(
@@ -186,6 +195,7 @@ pub fn enqueue_line(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> 
             name: crate::git::feature_of(main, dir),
             line: line.to_string(),
             at: crate::time::now_ms(),
+            allowed,
         },
     )
 }
@@ -260,10 +270,29 @@ pub fn waiting_in(queue: &Queue) -> Vec<(String, PathBuf, i64)> {
     found
 }
 
+/// The rules the lines of one run allow, each once, in the order they came.
+pub fn allowed_of(events: &[Event]) -> Vec<String> {
+    let mut allowed: Vec<String> = Vec::new();
+    for rule in events.iter().flat_map(|event| &event.allowed) {
+        if !allowed.contains(rule) {
+            allowed.push(rule.clone());
+        }
+    }
+    allowed
+}
+
 /// The command line of a run of `session` (claude's arguments): `--resume`
-/// a conversation that has a transcript, else `--session-id` starts it.
-pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool) -> Vec<String> {
-    let mut args: Vec<String> = vec!["-p".into()];
+/// a conversation that has a transcript, else `--session-id` starts it. The
+/// prompt comes right after `-p`: the tool lists take every word up to the
+/// next flag, a prompt after them would be one more tool.
+pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed: &[String]) -> Vec<String> {
+    // A prompt starting with `-` would read as a flag.
+    let prompt = if prompt.starts_with('-') {
+        format!(" {prompt}")
+    } else {
+        prompt.to_string()
+    };
+    let mut args: Vec<String> = vec!["-p".into(), prompt];
     args.extend([
         if is_known { "--resume" } else { "--session-id" }.into(),
         session.into(),
@@ -272,9 +301,12 @@ pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool) -> Vec<S
     args.extend(["--permission-mode".into(), "auto".into()]);
     args.extend(["--permission-prompts".into(), "none".into()]);
     args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
+    if !allowed.is_empty() {
+        args.push("--allowedTools".into());
+        args.extend(allowed.iter().cloned());
+    }
     // `-p` with stream-json needs `--verbose`.
     args.extend(["--output-format".into(), "stream-json".into(), "--verbose".into()]);
-    args.push(prompt.into());
     args
 }
 
@@ -368,6 +400,7 @@ mod tests {
             name: "1-x".into(),
             line: line.into(),
             at,
+            allowed: Vec::new(),
         }
     }
 
@@ -375,6 +408,18 @@ mod tests {
     fn batches_the_lines_of_a_run() {
         let events = [event("a", "one", 1), event("a", "two", 2), event("a", "two", 3)];
         assert_eq!(prompt_of(&events), "one\n\ntwo");
+    }
+
+    #[test]
+    fn allows_the_rules_of_its_lines_for_one_run() {
+        let mut first = event("a", "one", 1);
+        first.allowed = vec!["Bash(x)".into()];
+        let mut second = event("a", "two", 2);
+        second.allowed = vec!["Bash(x)".into(), "WebFetch".into()];
+        assert_eq!(
+            allowed_of(&[first, second, event("a", "three", 3)]),
+            ["Bash(x)", "WebFetch"]
+        );
     }
 
     #[test]
@@ -405,15 +450,20 @@ mod tests {
 
     #[test]
     fn resumes_a_known_conversation_and_starts_a_new_one() {
-        let args = args_of("abc", "1-x", "go", true);
-        assert_eq!(&args[..3], ["-p", "--resume", "abc"]);
+        let args = args_of("abc", "1-x", "go", true, &[]);
+        assert_eq!(&args[..4], ["-p", "go", "--resume", "abc"]);
         assert!(args.windows(2).any(|pair| pair == ["--permission-mode", "auto"]));
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--disallowedTools", "AskUserQuestion"])
         );
-        assert_eq!(args.last().map(String::as_str), Some("go"));
-        assert_eq!(&args_of("abc", "1-x", "go", false)[1..3], ["--session-id", "abc"]);
+        assert!(!args.contains(&"--allowedTools".to_string()));
+        assert_eq!(&args_of("abc", "1-x", "go", false, &[])[2..4], ["--session-id", "abc"]);
+        assert_eq!(args_of("abc", "1-x", "-x", true, &[])[1], " -x");
+        let rules = ["Bash(git push:*)".to_string(), "WebFetch".to_string()];
+        let allowing = args_of("abc", "1-x", "go", true, &rules);
+        let at = allowing.iter().position(|arg| arg == "--allowedTools").unwrap();
+        assert_eq!(&allowing[at + 1..at + 3], rules);
     }
 
     #[test]
