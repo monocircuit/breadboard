@@ -20,8 +20,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-/// How often the queue is looked at.
+/// How often the queue is looked at; `BREADBOARD_CI_EVERY_MS` another (the gauntlet's ticks).
 pub const EVERY: Duration = Duration::from_secs(10);
+
+fn every() -> Duration {
+    std::env::var("BREADBOARD_CI_EVERY_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(EVERY)
+}
 /// How long after making room for an MR ahead the queue makes room again:
 /// the runner's containers take a while to go, the slot shows free only then.
 const PREEMPT_EVERY: Duration = Duration::from_secs(30);
@@ -43,7 +51,7 @@ pub async fn schedule(main: PathBuf) {
     let mut preempted_at: Option<std::time::Instant> = None;
     let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
-    let mut tick = tokio::time::interval(EVERY);
+    let mut tick = tokio::time::interval(every());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
