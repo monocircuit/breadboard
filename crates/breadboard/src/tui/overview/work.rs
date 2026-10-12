@@ -32,8 +32,6 @@ use ratatui::text::Span;
 const WORK: &str = "WORK";
 /// The widest the bar of the boxes gets: past it a line of dashes says nothing more.
 const MAX_BAR: u16 = 72;
-/// The fewest columns the bar keeps (merge_requests' `MIN_BAR`).
-const MIN_BAR: u16 = 8;
 
 pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     let worktrees = match &model.worktrees {
@@ -418,16 +416,16 @@ fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx
             let mine = head(scene, block, layout, ctx);
             title(scene, block, ctx);
             if let Some(mr) = block.mr {
-                if let Some(progress) = &mr.progress
-                    && scene.width() >= MIN_BAR
-                {
-                    scene.atom_gap(mrs::bar(progress, layout.bar.min(scene.width())), 0);
-                    scene.end_line();
+                if let Some(progress) = &mr.progress {
+                    mrs::bar_line(scene, mr, progress, layout.bar.min(scene.width()), ctx);
                 }
                 if mrs::has_lacks(mr, ctx) {
                     mrs::lacks(scene, mr, ctx);
                     scene.end_line();
                 }
+            } else if let Some(node) = block.node.filter(|_| !block.is_done) {
+                // No MR, no bar: the fold of its issue's boxes on a line of its own.
+                nodes::boxes_line(scene, node, ctx);
             }
             match block.node {
                 // A done one: its MR's title said what it was, else its issue's.
@@ -580,6 +578,7 @@ mod tests {
             title: format!("the title of #{}", place + 300),
             problem: None,
             now: None,
+            boxes: vec![],
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
             } else {
@@ -1275,6 +1274,8 @@ mod tests {
                     acceptance: (0, 3),
                     ..Default::default()
                 }),
+                boxes: vec![],
+                issue: None,
             }),
         }
     }
@@ -1514,5 +1515,90 @@ mod tests {
                 "{width}: {all}"
             );
         }
+    }
+
+    /// The boxes of #346's fold: two sections, one ticked, one tried.
+    fn boxes() -> Vec<breadboard_core::model::boxes::BoxSection> {
+        use breadboard_core::model::boxes::{BoxLine, BoxSection, Check};
+        let line = |text: &str, is_ticked: bool, check: Option<(&str, Option<&str>)>| BoxLine {
+            is_ticked,
+            text: text.into(),
+            check: check.map(|(text, answer)| Check {
+                text: text.into(),
+                answer: answer.map(String::from),
+            }),
+        };
+        vec![
+            BoxSection {
+                heading: "Scope".into(),
+                boxes: vec![
+                    line(
+                        "A fold control on the MR row",
+                        true,
+                        Some(("test: boxes.rs › folds", None)),
+                    ),
+                    line("Folded by default", false, None),
+                ],
+            },
+            BoxSection {
+                heading: "Acceptance criteria".into(),
+                boxes: vec![line(
+                    "A click shows every box",
+                    false,
+                    Some(("try #12", Some("looks good"))),
+                )],
+            },
+        ]
+    }
+
+    #[test]
+    fn the_boxes_fold_under_the_bar_of_the_block_and_open_every_box() {
+        let (mut worktrees, mut merge_requests) = joined();
+        if let Some(facts) = merge_requests.open[0].mr.as_mut() {
+            facts.boxes = boxes();
+            facts.issue = Some(302);
+        }
+        let draw = |worktrees: &Worktrees, folds: Folds| {
+            draw_all(worktrees, &merge_requests, folds, 100, super::super::actor::idle())
+        };
+        let fold = Act::Fold(Fold::MrBoxes(320));
+        let folded = draw(&worktrees, Folds::default());
+        let lines = text(&folded);
+        let bar = lines.iter().position(|line| line.contains("#302: 9/12 boxes")).unwrap();
+        assert!(lines[bar].trim_start().starts_with("▸ ━"), "{lines:#?}");
+        assert!(!lines.iter().any(|line| line.contains('☐')), "{lines:#?}");
+        let region = |scene: &Scene<Act>| {
+            scene
+                .regions
+                .iter()
+                .find(|region| *region.action() == fold && !region.is_button())
+                .map(|region| (region.area.y, region.area.height))
+        };
+        assert_eq!(region(&folded), Some((bar as u16, 1)));
+
+        let mut folds = Folds::default();
+        folds.boxes.mrs.insert(320);
+        let open = draw(&worktrees, folds.clone());
+        let lines = text(&open);
+        assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
+        assert_eq!(lines[bar + 1].trim(), "Scope", "{lines:#?}");
+        assert!(lines[bar + 2].contains("☑ A fold control on the MR row"), "{lines:#?}");
+        assert!(
+            lines.iter().any(|line| line.contains("try #12 looks good")),
+            "{lines:#?}"
+        );
+        // The list is the fold's block inside the block's: a click on it folds it again.
+        let (y, height) = region(&open).unwrap();
+        assert_eq!(y as usize, bar);
+        assert!(lines[y as usize + height as usize].contains("resolve"), "{lines:#?}");
+
+        // A worktree without an MR: the fold of its issue's boxes stands where the bar would.
+        worktrees.tree.live[0].boxes = boxes();
+        let lines = text(&draw(&worktrees, Folds::default()));
+        let head = lines
+            .iter()
+            .position(|line| line.contains("1. 303-every-button"))
+            .unwrap();
+        assert_eq!(lines[head + 1].trim(), "▸ 1/3 boxes · 2 open", "{lines:#?}");
     }
 }

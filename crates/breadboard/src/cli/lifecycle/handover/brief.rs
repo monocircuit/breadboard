@@ -25,6 +25,11 @@ pub fn brief_of(
             "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
         ),
     };
+    // One issue, one MR, into its base (#349).
+    let base = breadboard_core::git::base_of(&issue.dir).local;
+    let worktree = format!(
+        "{worktree}\nIts base is `{base}`: merge it in, its MR goes into it. That MR handles exactly this one issue (`Closes #{number}`, no other)."
+    );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
         None => format!(
@@ -86,6 +91,7 @@ mod tests {
             dir: PathBuf::from("/r/p-12-a-title"),
             why: None,
             branch: "feature/12-a-title".into(),
+            milestone: None,
         }
     }
 
