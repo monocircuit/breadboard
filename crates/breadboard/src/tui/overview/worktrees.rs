@@ -1029,8 +1029,8 @@ mod tests {
             lines[at + 1..],
             [
                 "        Scope",
-                "        ☑ The same fold on the worktree node",
-                "        ☐ Gauntlet checks: fold and unfold by click and",
+                "        • The same fold on the worktree node",
+                "        • Gauntlet checks: fold and unfold by click and",
                 "          key",
             ]
         );

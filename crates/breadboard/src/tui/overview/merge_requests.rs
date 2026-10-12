@@ -980,7 +980,7 @@ mod tests {
         assert!(lines[1].trim_start().starts_with("▸ ━"), "{lines:?}");
         // The counts name the issue they are of: the MR's description has boxes of its own.
         assert!(lines[1].ends_with("  #346: 1/3 boxes"), "{lines:?}");
-        assert!(!lines.iter().any(|line| line.contains("☐")), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains("•")), "{lines:?}");
         // The bar's line is its own block in the row's, its click the fold.
         let fold = Act::Fold(Fold::MrBoxes(311));
         let region = folded
@@ -999,16 +999,30 @@ mod tests {
             lines[2..10],
             [
                 "                     Scope",
-                "                     ☑ A fold control on the MR row ·",
+                "                     • A fold control on the MR row ·",
                 "                       test: boxes.rs › folds",
-                "                     ☐ Folded by default; the state per MR",
+                "                     • Folded by default; the state per MR",
                 "                       survives refreshes and a restart",
                 "                     Acceptance criteria",
-                "                     ☐ A click shows every box ·",
+                "                     • A click shows every box ·",
                 "                       try #12 looks good",
             ],
             "{lines:?}"
         );
+        // A plain bullet, its colour the state (#370): the ticked box and its
+        // text green, the open ones yellow; no ☑/☐ left.
+        let tone_of = |row: usize, word: &str| {
+            open.lines[row]
+                .spans
+                .iter()
+                .find(|span| span.content.contains(word))
+                .and_then(|span| span.style.fg)
+        };
+        let (green, yellow) = (Some(Tone::Green.fg()), Some(Tone::Yellow.fg()));
+        assert_eq!((tone_of(3, "•"), tone_of(3, "fold")), (green, green));
+        assert_eq!((tone_of(5, "•"), tone_of(5, "Folded")), (yellow, yellow));
+        assert_eq!((tone_of(8, "•"), tone_of(8, "click")), (yellow, yellow));
+        assert!(!lines.iter().any(|line| line.contains(['☑', '☐'])), "{lines:?}");
         // The list is the fold's block: a click on it folds it again, the reasons stay under it.
         let region = open
             .regions
@@ -1033,7 +1047,7 @@ mod tests {
     fn open_boxes_show_in_full_before_any_click_until_a_click_folds_them() {
         let whole = [
             "                     Acceptance criteria",
-            "                     ☐ The orchestration overview shows the",
+            "                     • The orchestration overview shows the",
             "                       whole text of every open acceptance",
             "                       and Work box under its MR row",
         ];
@@ -1061,7 +1075,7 @@ mod tests {
         let folded = drawn_boxes(folds.clone(), false, 60, true);
         let lines = super::tests::lines(&folded);
         assert!(lines[1].trim_start().starts_with("▸ ━"), "{lines:?}");
-        assert!(!lines.iter().any(|line| line.contains('☐')), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains('•')), "{lines:?}");
         folds.boxes.fold_mr(311, true);
         let all = super::tests::lines(&drawn_boxes(folds, false, 60, true));
         assert!(all.iter().any(|line| line.contains("Scope")), "{all:?}");
