@@ -96,6 +96,8 @@ pub struct Pushed<'a> {
     pub plan: Option<&'a Plan>,
     /// Nothing changed against develop (a claim, wt:new).
     pub is_empty: bool,
+    /// What the stamp of its tree left out of what it changes (#366), when stamped.
+    pub gap: Option<&'a str>,
 }
 
 /// The tree of a record's `passed` / `failed`.
@@ -115,19 +117,25 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         record,
         plan,
         is_empty,
+        gap,
     } = pushed;
     if *is_empty {
         return None;
     }
+    let short: String = sha.chars().take(8).collect();
     if tree.is_some() && tree_of_part(record, "passed") == *tree {
-        return None;
+        return gap.map(|gap| {
+            format!(
+                "✗ push refused: {branch} at {short} isn't checked (#298), its check left out what it changes: {gap} (#366).
+  Run pnpm wt:check again: it checks every package git says the branch changes."
+            )
+        });
     }
     if let Some(Ok(planned)) = plan
         && planned.is_empty()
     {
         return None;
     }
-    let short: String = sha.chars().take(8).collect();
     let why = if tree.is_some() && tree_of_part(record, "failed") == *tree {
         let failures: Vec<Failure> = record
             .get("failed")
@@ -207,6 +215,15 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
                 check::scope_of(&turbo, dir, base, Some(sha)).and_then(|scope| check::plan_of(&turbo, dir, &scope))
             }
         });
+        // A second opinion on the stamp (#366): git's own list of what the commit changes.
+        let gap = match (&base, record.get("passed")) {
+            (Some(base), Some(passed)) if is_stamped && !is_empty => check::gap_of(
+                passed,
+                &check::changed_packages(dir, base, Some(sha)),
+                check::is_rust_changed(dir, base, Some(sha)),
+            ),
+            _ => None,
+        };
         let pushed = Pushed {
             branch,
             sha,
@@ -214,6 +231,7 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
             record: &record,
             plan: plan.as_ref(),
             is_empty,
+            gap: gap.as_deref(),
         };
         if let Some(refusal) = gate_refusal_of(&pushed) {
             refusals.push(refusal);
@@ -306,8 +324,19 @@ mod tests {
             record: &record,
             plan,
             is_empty: false,
+            gap: None,
         };
         assert_eq!(gate_refusal_of(&pushed("t1", None)), None);
+        // Stamped, but its check left out a package the commit changes (#366).
+        let gapped = Pushed {
+            gap: Some("@m/breadboard"),
+            ..pushed("t1", None)
+        };
+        assert!(
+            gate_refusal_of(&gapped)
+                .unwrap()
+                .contains("its check left out what it changes: @m/breadboard (#366).")
+        );
         let docs: Plan = Ok(Vec::new());
         assert_eq!(gate_refusal_of(&pushed("t3", Some(&docs))), None);
         let failed = gate_refusal_of(&pushed("t2", None)).unwrap();

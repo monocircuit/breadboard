@@ -108,6 +108,33 @@ fn herdr_read_at(socket: &Path, args: &[&str], wait: Duration, skipped_until: &A
     ask_at(socket, &request, wait, skipped_until)
 }
 
+/// The daemon told that lines were queued for the headless agents of
+/// `main` (#358), started when none answers; false when it can't be (the
+/// lines wait in the queue for the next daemon, an overview starts one).
+pub fn wake_runs(main: &Path) -> bool {
+    if !super::is_socket_ours() {
+        return false;
+    }
+    let request = Request::Runs {
+        main: main.to_path_buf(),
+    };
+    let ask = || ask_at::<bool>(super::socket(), &request, HERDR_WAIT, &AtomicI64::new(0)).unwrap_or(false);
+    if ask() {
+        return true;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let is_started = Command::new(exe)
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    is_started && ask()
+}
+
 /// A connection to the daemon, which is started when none answers; None when it can't be.
 pub async fn connect() -> Option<UnixStream> {
     if !super::is_socket_ours() {

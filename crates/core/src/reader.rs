@@ -627,7 +627,7 @@ impl LocalReader {
             record_file: record::record_file(&self.main, name),
             free: free_agents(record.as_ref()),
             free_memory: free_memory(),
-            agents: herdr::agents_in(&panes),
+            agents: agents_of(&self.main, &panes),
             chat,
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
@@ -968,6 +968,17 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
             Model::Everything(Box::new(everything_of(local, remote)))
         }
     }
+}
+
+/// The agents by conversation: herdr's panes, and with headless agents (#358)
+/// the run engine's status table over them (an agent without a pane is a
+/// session that runs only when something is queued for it).
+fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent> {
+    let mut agents = herdr::agents_in(panes);
+    if crate::runs::is_headless(main) {
+        agents.extend(crate::runs::agents_of(main));
+    }
+    agents
 }
 
 /// The epic branch of an orchestration's record and how far develop has gone
