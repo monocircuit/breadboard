@@ -88,6 +88,8 @@ pub struct OrchestrationLocal {
     pub setups: Vec<Setup>,
     /// The test instance's origin (`VITA_TEST_ORIGIN`).
     pub test_origin: Option<String>,
+    /// The CI queue of the repo while a daemon keeps it (#357).
+    pub ci: Option<crate::ci::Queue>,
     /// Its epic branch (#350), None for one that works on develop.
     pub epic: Option<super::epic_row::EpicLocal>,
 }
@@ -166,6 +168,8 @@ pub struct MrFacts {
     pub reasons: Vec<Reason>,
     /// Its issue's boxes, ticked of all (#294); None for a merged one or an issue without boxes.
     pub progress: Option<Progress>,
+    /// Its place in the CI queue (#357) while its newest commit waits for a pipeline: its mark says it, a click runs it now.
+    pub ci: Option<crate::ci::Place>,
     /// Its issue's boxes one by one, then its own description's, as its fold
     /// lists them (#346); none for a merged one.
     pub boxes: Vec<BoxSection>,
@@ -212,6 +216,10 @@ pub struct OrchestrationModel {
     pub holds: HashMap<PathBuf, String>,
     /// Why the plan is stale.
     pub stale: Vec<String>,
+    /// The runner's load for the band (#357): `CI 3/4 slots · 2 queued`.
+    pub ci_load: Option<String>,
+    /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
+    pub ci_published: Option<crate::ci::Published>,
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
     /// itself: the live overview writes them into the worktrees (#344).
     pub turn_records: Vec<(PathBuf, TurnRecord)>,
@@ -638,11 +646,12 @@ fn merge_requests_of(
     remote: &Remote,
     order: &MergeOrder,
     turns: &Turns,
-    agents: &HashMap<String, Agent>,
+    local: &OrchestrationLocal,
     resolves: &mut Resolves,
     done: &HashSet<i64>,
     now: i64,
 ) -> MergeRequests {
+    let (agents, queue) = (&local.agents, local.ci.as_ref());
     let with_mr = |number: i64| {
         issues
             .iter()
@@ -696,10 +705,27 @@ fn merge_requests_of(
         } else {
             None
         };
+        // Waiting in the CI queue: its place stands for the pipeline it has not got yet.
+        let ci = queue
+            .filter(|_| !is_merged)
+            .and_then(|queue| queue.places.get(&mr.iid))
+            .filter(|place| place.is_waiting())
+            .cloned();
+        let mut reasons = reasons;
+        if let Some(place) = &ci
+            && let Some(reason) = reasons.iter_mut().find(|reason| reason.text == "no pipeline yet")
+        {
+            reason.text = place.text();
+            reason.who = "breadboard".into();
+        }
         MrFacts {
             iid: mr.iid,
             url: mr.url.clone(),
-            pipeline: pipeline_mark(mr.pipeline.as_ref()),
+            pipeline: match &ci {
+                Some(place) => ci_mark(place, mr.pipeline.as_ref()),
+                None => pipeline_mark(mr.pipeline.as_ref()),
+            },
+            ci,
             title: mr.title.clone(),
             branch: issue.branch.clone(),
             dir: tree.map(|tree| tree.dir.clone()),
@@ -783,6 +809,72 @@ fn merge_requests_of(
         open,
         merged,
         counts: counts.join(" · "),
+    }
+}
+
+/// What the CI queue takes of an orchestration (#357): its open MRs in the
+/// merge order and each one's bar, its boxes (those after the deploy left
+/// out) and whether `wt:check` passed at its HEAD.
+fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> crate::ci::Published {
+    let open_iid = |issue: &Entry| of(remote, issue).mr.as_ref().filter(|mr| mr.is_open()).map(|mr| mr.iid);
+    let order_iids = order
+        .open
+        .iter()
+        .filter_map(|item| {
+            issues
+                .iter()
+                .rev()
+                .filter(|issue| issue.number == Some(item.number))
+                .find_map(open_iid)
+        })
+        .collect();
+    let bars = issues
+        .iter()
+        .filter_map(|issue| {
+            let iid = open_iid(issue)?;
+            let boxes: Vec<_> = of(remote, issue)
+                .issue
+                .as_ref()
+                .map(|found| {
+                    found
+                        .boxes
+                        .iter()
+                        .filter(|found| !super::merge::is_after_deploy(found))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Without its worktree no one can check it here: its boxes say it.
+            let is_checked = issue
+                .tree
+                .as_ref()
+                .is_none_or(|tree| matches!(tree.checked, crate::check::CheckState::Tested { .. }));
+            Some((
+                iid,
+                crate::ci::Bar {
+                    ticked: boxes.iter().filter(|found| found.is_ticked).count(),
+                    total: boxes.len(),
+                    is_checked,
+                },
+            ))
+        })
+        .collect();
+    crate::ci::Published {
+        order: order_iids,
+        bars,
+    }
+}
+
+/// The mark of an MR waiting in the CI queue: its place, a click runs it
+/// now; the page of its last pipeline stays a click away on the MR's.
+fn ci_mark(place: &crate::ci::Place, last: Option<&crate::gitlab::Pipeline>) -> Span {
+    let paint = match place {
+        crate::ci::Place::Held { .. } => super::Paint::Dim,
+        _ => super::Paint::Yellow,
+    };
+    Span {
+        text: format!("{} ▸", place.text()),
+        paint,
+        url: last.and_then(|pipeline| pipeline.web_url.clone()),
     }
 }
 
@@ -876,6 +968,8 @@ pub fn orchestration_of(
         tells: Vec::new(),
         holds: HashMap::new(),
         stale: Vec::new(),
+        ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
+        ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),
     };
@@ -920,6 +1014,9 @@ pub fn orchestration_of(
         merge_order_of(&entries, merge_plan)
     })
     .unwrap_or_default();
+    if remote.is_some() {
+        model.ci_published = Some(ci_published_of(&issues, remote, &order));
+    }
     // Conflicts and failed pipelines reach their agents by themselves, from the one live overview.
     if let Some(remote) = remote.filter(|_| state.is_deliverer) {
         model.tells = conflicts_of(&issues, remote);
@@ -1049,7 +1146,7 @@ pub fn orchestration_of(
     if let Some(remote) = remote {
         let resolves = &mut state.resolves;
         model.merge_requests = section("MERGE REQUESTS", || {
-            merge_requests_of(&issues, remote, &order, &turns, &local.agents, resolves, &done, now)
+            merge_requests_of(&issues, remote, &order, &turns, local, resolves, &done, now)
         });
     }
     model
@@ -1267,6 +1364,54 @@ mod tests {
             .find(|mr| mr.iid == 12)
             .unwrap();
         assert_eq!(row.reasons[0].who, "you");
+    }
+
+    #[test]
+    fn says_where_an_mr_stands_in_the_ci_queue_and_publishes_the_merge_order() {
+        use crate::ci::{Place, Queue};
+        let mut remote = remote();
+        remote
+            .of
+            .get_mut("feature/2-two")
+            .unwrap()
+            .mr
+            .as_mut()
+            .unwrap()
+            .pipeline = None;
+        let mut local = local();
+        let mut queue = Queue {
+            at: NOW,
+            ..Default::default()
+        };
+        queue.places.insert(12, Place::Next { at: 2 });
+        local.ci = Some(queue);
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert_eq!(model.ci_published.as_ref().unwrap().order, vec![11, 12]);
+        assert_eq!(model.ci_load.as_deref(), Some("CI 0 running · 1 queued"));
+        let mrs = model.merge_requests.unwrap();
+        let two = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert_eq!(two.pipeline.text, "CI: next (2nd) ▸");
+        assert_eq!(two.ci, Some(Place::Next { at: 2 }));
+        assert!(
+            two.reasons
+                .iter()
+                .any(|reason| reason.text == "CI: next (2nd)" && reason.who == "breadboard"),
+            "{:?}",
+            two.reasons
+        );
+        // One with its pipeline: no place, its mark as before.
+        let one = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 11)
+            .unwrap();
+        assert_eq!((one.ci.as_ref(), one.pipeline.text.as_str()), (None, "✓ passed"));
     }
 
     #[test]

@@ -42,7 +42,15 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         },
     };
     let quiet = Style::new().fg(theme::BAND_QUIET);
-    let mut header = Header::new(title).status(vec![Span::styled(ctx.gitlab.fresh(), quiet)]);
+    let mut status = Vec::new();
+    // The runner's load while the CI queue runs (#357).
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(load) = &model.ci_load
+    {
+        status.push(Span::styled(format!("{load} · "), quiet));
+    }
+    status.push(Span::styled(ctx.gitlab.fresh(), quiet));
+    let mut header = Header::new(title).status(status);
     if ctx.is_once {
         header.keys = String::new();
     }

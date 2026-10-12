@@ -212,6 +212,50 @@ on a heading or `z` folds it, `Z` folds all):
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
   new ones. The tab is in the main space, `root · overview · changelog`.
 
+## The CI queue
+
+GitLab has no job priorities: its runner takes jobs first come, first served,
+so a pipeline of an MR far back could hold up the one next to merge (#357).
+breadboard decides which pipelines exist at all:
+
+- **Pushes from a worktree skip CI while a queue runs**: `wt:new` and the
+  push guard set `git config --worktree push.pushOption ci.skip` (from the
+  push after the guard first ran) while the queue's heartbeat
+  (`.claude/ci/queue.json`, written every 10 s) is younger than a minute. When it
+  is stale (no `breadboard serve` of a build with the queue runs), the guard
+  drops the option and refuses that one push: pushed again, GitLab starts
+  the pipeline itself, so nothing stalls. The main checkout and a local
+  origin are left alone. `git config breadboard.ci push` turns it off:
+  pushes start their pipelines again, and the queue starts none.
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+  the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
+  repo is open, it reads the open MRs and the runner's free slots
+  (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job
+  containers, counted as `gitlab-runner-autoscale` counts them;
+  `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
+  per look, for the MR's newest commit, while a slot is free and no pipeline
+  waits for the runner. An older pipeline of that MR still running is
+  cancelled. While the runner is full and the first MR waits, the
+  lowest-ranked running MR pipeline behind it is cancelled to make room,
+  one per 30 s, and queued again. A pipeline into `main`, of develop or
+  of a tag is never cancelled, and neither is one a click started.
+- **No pipeline before the bar is full** (the user's rule): an
+  orchestration's MR gets one only once every box of its issue is ticked
+  (after-deploy ones excepted) and `wt:check` passed at its HEAD; its
+  live overviews write both, with the merge order, to
+  `.claude/ci/order-<name>.json`. Then the agent marks it ready and posts
+  the merge after the pipeline is green.
+- **The order**: a click on the row (run now, also before the bar is full),
+  a hotfix or anything into `main`, the MRs with a full bar in the merge
+  order, fixes after a red run; an MR of no orchestration counts as full,
+  its drafts only while no other pipeline runs. A pipeline that a person cancelled, or that GitLab
+  skipped, for the newest commit stays that way until a click.
+- **The overview** shows a waiting MR's place instead of its pipeline mark,
+  e.g. `CI: next (2nd) ▸`, `CI: after the boxes (3/7) ▸` or `CI: after wt:check ▸`; a click on it moves the MR to the front
+  (`.claude/ci/run-now.json`). The band shows the runner's load:
+  `CI 3/4 slots · 2 queued`. The queue's state is
+  `.claude/ci/queue.json`.
+
 ## Checks
 
 ```sh

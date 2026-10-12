@@ -211,6 +211,11 @@ pub fn command(args: &Args) -> ExitCode {
         "push guard: {} (#184)",
         crate::cli::write::mr::install_push_guard(&dir)
     ));
+    if breadboard_core::ci::set_push_option(&dir, breadboard_core::time::now_ms())
+        == Some(breadboard_core::ci::PushOption::Set)
+    {
+        step("CI: pushes skip CI, breadboard's queue starts the pipelines (#357)");
+    }
     step(&format!("git push -u origin {branch} (the empty claim on the issue)"));
     let pushed = proc::run(
         "git",
