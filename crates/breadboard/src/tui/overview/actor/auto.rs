@@ -58,6 +58,8 @@ pub struct Auto {
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
+    /// What the CI queue was last told of this orchestration (#357).
+    published: Option<breadboard_core::ci::Published>,
     /// MRs into an epic merged by themselves, by iid: the head each was
     /// tried at. One that failed waits for a new push (#350).
     epic_tried: HashMap<i64, String>,
@@ -126,6 +128,10 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         let dirs: Vec<PathBuf> = local.trees.iter().map(|tree| tree.dir.clone()).collect();
         super::merge::retry_lines(&app.actor, dirs);
     }
+    // Every live overview computes the same order: whichever reads first writes it.
+    if remote.is_some() {
+        publish_ci(app, &name, &model);
+    }
     if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
         tell(app, &model.tells, &local.agents);
         // herdr's sidebar reads them: it knows neither the merge order nor the boxes (#344).
@@ -148,6 +154,20 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     notify_new(app, &model);
     if is_changed {
         app.redraw();
+    }
+}
+
+/// The orchestration's merge order and bars for the CI queue (#357), written when they changed.
+fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
+    let Some(published) = model.ci_published.as_ref() else {
+        return;
+    };
+    if app.actor.auto.published.as_ref() == Some(published) {
+        return;
+    }
+    let file = breadboard_core::ci::order_file(&app.actor.main, name);
+    if breadboard_core::ci::write_whole(&file, published).is_ok() {
+        app.actor.auto.published = Some(published.clone());
     }
 }
 

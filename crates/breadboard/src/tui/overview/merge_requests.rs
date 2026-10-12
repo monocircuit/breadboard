@@ -200,9 +200,17 @@ pub(super) fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static
 
 /// An MR's pipeline mark opens its pipeline (§3: `!iid` and the mark are
 /// links), a merged one's too: a failed one's page is a click away from its
-/// row; the rest of the row opens the MR.
+/// row; the rest of the row opens the MR. One waiting in the CI queue runs now.
 pub(super) fn pipeline_region(scene: &mut Scene<Act>, mr: &MrFacts, area: Rect) {
-    let Some(url) = mr.pipeline.url.as_ref() else {
+    // Waiting in the CI queue (#357): a click moves it to the front.
+    let action = if mr.ci.is_some() {
+        Act::RunNow(mr.iid)
+    } else if let Some(url) = mr.pipeline.url.as_ref() {
+        Act::Go(Go::Show {
+            url: url.clone(),
+            dir: mr.dir.clone(),
+        })
+    } else {
         return;
     };
     let tone = match mr.pipeline.paint {
@@ -216,10 +224,7 @@ pub(super) fn pipeline_region(scene: &mut Scene<Act>, mr: &MrFacts, area: Rect) 
         target: Target::Button {
             label: mr.pipeline.text.clone(),
             tone,
-            action: Act::Go(Go::Show {
-                url: url.clone(),
-                dir: mr.dir.clone(),
-            }),
+            action,
         },
     });
 }
@@ -678,6 +683,7 @@ mod tests {
             conflict: None,
             reasons: vec![],
             progress: None,
+            ci: None,
             boxes: vec![],
             open_boxes: vec![],
             issue: None,

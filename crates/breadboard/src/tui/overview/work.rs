@@ -1274,6 +1274,7 @@ mod tests {
                     acceptance: (0, 3),
                     ..Default::default()
                 }),
+                ci: None,
                 boxes: vec![],
                 open_boxes: vec![],
                 issue: None,
@@ -1402,6 +1403,33 @@ mod tests {
         // An MR without a worktree opens the MR.
         let other = lines.iter().position(|line| line.contains("400-elsewhere")).unwrap() as u16;
         assert!(on(other).contains(&("block".into(), show("https://gitlab/mr/330"))));
+    }
+
+    #[test]
+    fn the_mark_of_an_mr_waiting_in_the_ci_queue_runs_it_now() {
+        let (worktrees, mut merge_requests) = joined();
+        if let Some(facts) = merge_requests.open[0].mr.as_mut() {
+            facts.pipeline = model::Span::new("CI: next (2nd) ▸", Paint::Yellow);
+            facts.ci = Some(breadboard_core::ci::Place::Next { at: 2 });
+        }
+        let scene = draw_all(
+            &worktrees,
+            &merge_requests,
+            Folds::default(),
+            120,
+            super::super::actor::idle(),
+        );
+        let lines = text(&scene);
+        assert!(
+            lines.iter().any(|line| line.contains("!320  CI: next (2nd) ▸")),
+            "{lines:#?}"
+        );
+        assert!(
+            scene
+                .regions
+                .iter()
+                .any(|region| region.is_button() && matches!(region.action(), Act::RunNow(320)))
+        );
     }
 
     #[test]
