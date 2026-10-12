@@ -23,7 +23,7 @@
 
 mod act;
 mod actions;
-mod actor;
+pub(crate) mod actor;
 mod agents;
 mod boxes;
 mod epic;
