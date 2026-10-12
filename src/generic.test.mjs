@@ -2,7 +2,7 @@
 // developed in comes from that repo's breadboard.toml, never from here. No
 // file of the package names that repo's products, packages or project.
 //
-// Not checked: the package's own name (`@monocircuit/breadboard`), the history of the rewrite (docs/rewrite-*, the evidence),
+// Not checked: the package's own name (`@monocircuit/breadboard`) and public repository, the licence's copyright holder, the history of the rewrite (docs/rewrite-*, the evidence),
 // the spikes, the monorepo's wiring of the package (package.json, the lint
 // config), the herdr plugin's manifest and keys (the live plugin of the repo
 // breadboard is developed in, herdr loads them as they are; breadboard init
@@ -16,8 +16,9 @@ import { test } from "node:test";
 
 const HERE = path.join(path.dirname(import.meta.filename), "..");
 const NAMES = /products\/vita|monocircuit|monolithium|keycloak/i;
-/** The package's own name in the workspace it is developed in. */
-const OWN = /@monocircuit\/breadboard(-gauntlet)?\b/g;
+/** The package's own name in the workspace it is developed in, and its public repository. */
+const OWN =
+  /@monocircuit\/breadboard(-gauntlet)?\b|github\.com\/monocircuit\/breadboard\b/g;
 const KEPT = [
   /^docs\/rewrite-/,
   /^docs\/stack-evidence\.md$/,
@@ -27,6 +28,8 @@ const KEPT = [
   /^herdr\/herdr-plugin\.toml$/,
   /^herdr\/keys\.toml$/,
   /^src\/generic\.test\.mjs$/,
+  // The copyright holder (#343).
+  /^LICENSE-MIT$/,
   // The epic and task stacks of #351 keep vita's databases and roles until #365.
   /^crates\/breadboard\/src\/cli\/setup\/epic\.rs$/,
 ];

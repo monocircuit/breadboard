@@ -9,10 +9,11 @@ a terminal workspace for agents, and comes with a herdr plugin, nvim
 integration and a Chromium extension for tab groups. One binary, written in
 Rust with [ratatui](https://ratatui.rs).
 
-**Status:** breadboard grew inside one monorepo and still assumes it in
-places (GitLab, the repo's layout and stack). Making everything
-repo-specific come from a `breadboard.toml`, set up by `breadboard init`, is
-in progress; until then, expect to read the code.
+**Status:** young. breadboard grew inside one monorepo, which is still its
+main user; everything it knows about a repository comes from that
+repository's `breadboard.toml` ([`docs/config.md`](docs/config.md)). It
+works with GitLab (through `glab`) and Linux is where it is used every day;
+macOS builds, but is less tried.
 
 ## Install
 
@@ -24,17 +25,18 @@ from source with a Rust toolchain (https://rustup.rs):
 cargo install --locked --git https://github.com/monocircuit/breadboard breadboard
 ```
 
-Then, in your repository, `breadboard init` writes its `breadboard.toml` and
-links what breadboard brings for Claude Code and herdr (coming with the
-config work above), and `breadboard herdr` starts herdr with the plugin and
-the layout of your worktrees ([`herdr/`](herdr/README.md)).
+Then, in your repository, `breadboard init` writes a `breadboard.toml`
+when there is none and brings in what breadboard adds for Claude Code and
+herdr: the skill `parallel-work`, the hooks, the herdr plugin, the nvim Lua
+and the Chromium extension. Run it again after an update. `breadboard herdr`
+starts herdr with the plugin and the layout of your worktrees
+([`herdr/`](herdr/README.md)).
 
 ## Where it is developed
 
-This repository is a read-only mirror. breadboard is developed in the
-monorepo of [monocircuit](https://github.com/monocircuit), in
-`packages/breadboard`; every change merged there shows up here within
-minutes, with the same history. Issues and pull requests are welcome here:
+This repository is a read-only mirror. breadboard is developed in a
+monorepo, in `packages/breadboard`; every change merged there shows up
+here within minutes, with the same history. Issues and pull requests are welcome here:
 how a pull request gets in is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
