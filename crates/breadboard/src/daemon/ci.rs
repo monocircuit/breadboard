@@ -26,10 +26,13 @@ const PREEMPT_EVERY: Duration = Duration::from_secs(30);
 /// How long a click keeps an MR up front when its pipeline never came.
 const RUN_NOW_HOLDS_MS: i64 = 60 * 60_000;
 
-/// Whether `main` leaves its pipelines to the queue (the default) or to the pushes.
+/// Whether `main` leaves its pipelines to the queue (the default) or to the
+/// pushes: `breadboard.ci = push`, or an origin that takes no push options
+/// (a gauntlet world's), whose pushes never skip CI (`ci::set_push_option`).
 pub fn is_queued(main: &Path) -> bool {
-    let out = breadboard_core::git::git(main, &["config", "--get", MODE_KEY]);
-    out.out() != "push"
+    let git = |args: &[&str]| breadboard_core::git::git(main, args);
+    let origin = git(&["remote", "get-url", "--push", "origin"]);
+    origin.is_ok && ci::is_network_url(origin.out()) && git(&["config", "--get", MODE_KEY]).out() != "push"
 }
 
 /// The queue of `main`, as long as the daemon runs.

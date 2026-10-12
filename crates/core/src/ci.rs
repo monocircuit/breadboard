@@ -45,7 +45,7 @@ fn is_waiting(status: &str) -> bool {
 
 /// A remote reached over the network (`git@host:p.git`, `ssh://`, `https://`):
 /// one GitLab serves, which takes push options.
-fn is_network_url(url: &str) -> bool {
+pub fn is_network_url(url: &str) -> bool {
     if url.starts_with("file://") || url.starts_with('/') || url.starts_with('.') {
         return false;
     }
