@@ -22,9 +22,8 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | `crates/breadboard/src/daemon/` | `breadboard serve`: one process per user reads herdr, GitLab and git's status once for every overview; started by the first, gone after the last |
 | `crates/breadboard/src/cli/` | `wt:*`, `stack:*`, `changelog*` in four groups: `read` (`wt:list`, `wt:plan`, `wt:issues`, `overview --once`), `write` (`wt:action`, `wt:tick`, `wt:note`, `wt:mr`, `wt:wait`), `lifecycle` (`wt:remove`, `wt:prune`, `wt:herdr`, the layout, handovers), `setup` (`wt:new`, `wt:stack`, `stack:*`, `wt:check`, `wt:orchestrate`, `commands`, `browser`, the changelogs, `hook pre-push`) |
 | `crates/breadboard/src/herdr/` | `pnpm herdr`, `pnpm herdr:install`, `--reload`, the plugin's actions, the Stop hook's `hook stop-answers` |
-| [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` (`herdr-plugin.toml`) and `breadboard.sh`, the launcher everything starts the binary through (below) |
+| [`herdr/`](herdr/README.md) | the herdr plugin of the repo breadboard is developed in (`herdr-plugin.toml`, its id `[herdr] plugin`; `breadboard init` writes another repo's) and `breadboard.sh`, the launcher everything starts the binary through (below) |
 | `hooks/` | the shims of the git pre-push hook (`wt:new` and `wt:mr` install it) and of Claude Code's Stop hook (`.claude/settings.json`) |
-| `commands.json` | the line of every script `pnpm commands` shows: a new script gets its line here |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
 | `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
@@ -32,6 +31,9 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 
 What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
+What it knows about the repo (the default branch, the stack, the MR
+template's boxes, the changelog, its name in herdr) comes from the repo's
+`breadboard.toml`: [`docs/config.md`](docs/config.md).
 The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
 
@@ -197,14 +199,14 @@ on a heading or `z` folds it, `Z` folds all):
   `.claude/orchestrations/<name>.changelog.md`, every merged MR of it, in the
   tab of its space `⇶ <title>`. `pnpm wt:orchestrate <name> --changelog`.
 - **The repo's** (the same file): `.claude/changelog.md`,
-  what got into develop, a section per product and package (`vita`,
-  `monolithium`, `breadboard`, …, `repo` for CI, `.claude` and root config).
+  what got into the default branch, a section per product and package
+  (`[changelog] area_dirs`, `repo` for CI, `.claude` and root config).
   A merged MR goes into every section whose paths it changes, a changeset
   counts for the packages it names; per section the days newest first, then
   the type (Features, Fixes, …), with `!N`, `#issue`, the orchestration it
   came from, the time, a line of its description and its changeset. Releases
-  are markers: `vX.Y.Z` in vita, `monolithium-vX.Y.Z` in monolithium and
-  utilities, with their `CHANGELOG.md` entry. The overview of the main space
+  are markers, each tag of `[[releases]]` in its paths, with their
+  `CHANGELOG.md` entry. The overview of the main space
   rewrites it when develop's head moves; `pnpm changelog [--since 30d|2w|<date>]`
   rewrites and prints it (the window sticks, default 30 days). What a merged
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
@@ -287,8 +289,8 @@ pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite 
 ```
 
 `pnpm wt:check` runs `lint:rs` and `test:rs` only when the branch changes the
-Rust sources (`crates/`, `hooks/`, the Cargo files, `rustfmt.toml`), never
+Rust sources (`crates/` and what it embeds, `breadboard.sh`'s `sources`), never
 because develop was merged in; CI (`check:breadboard-rs`) runs them on every
 MR that touches the package. Which packages it checks comes from turbo's
-`affectedPackages`, not from `...[<base>]`: the root depends on
-`@monocircuit/vita`, and turbo counts a change there as one of every package.
+`affectedPackages`, not from `...[<base>]`: where the root depends on a
+package, turbo counts a change there as one of every package.

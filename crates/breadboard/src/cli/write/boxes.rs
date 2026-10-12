@@ -144,8 +144,9 @@ pub fn box_report(top: &Path, number: &str, text: Option<&str>) -> String {
     }
     if boxes.iter().any(|b| !b.is_ticked) {
         format!(
-            "\n\n  #{number}: {} boxes ticked. Done one? pnpm wt:tick {number} lists them, pnpm wt:tick {number} <box>… ticks",
-            tally(&boxes)
+            "\n\n  #{number}: {} boxes ticked. Done one? {run} wt:tick {number} lists them, {run} wt:tick {number} <box>… ticks",
+            tally(&boxes),
+            run = breadboard_core::config::run_word()
         )
     } else {
         format!("\n\n  #{number}: all {} boxes ticked", boxes.len())

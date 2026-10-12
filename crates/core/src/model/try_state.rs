@@ -14,11 +14,6 @@ use crate::time::{parse_iso, span};
 
 /// How long Coolify gets after `deploy:develop` passed to pull and start the image.
 pub const DEPLOY_GRACE_MS: i64 = 90_000;
-/// The jobs of the develop pipeline that deploy: the others don't hold a try.
-const DEPLOY_JOBS: [&str; 3] = ["build:develop", "publish:develop", "deploy:develop"];
-const DEPLOY_JOB: &str = "deploy:develop";
-/// Without it, publishing is the last step.
-const PUBLISH_JOB: &str = "publish:develop";
 const FAILED: [&str; 2] = ["failed", "canceled"];
 const DONE: [&str; 4] = ["success", "failed", "canceled", "skipped"];
 
@@ -52,11 +47,10 @@ pub fn deploy_state_of(deploy: Option<&Deploy>, now: i64) -> DeployOf {
     let Some(pipeline) = deploy.and_then(|deploy| deploy.pipeline.as_ref()) else {
         return deploying(None, None);
     };
+    // The jobs of the default branch's pipeline that deploy (breadboard.toml's `[tries]`): the others don't hold a try.
+    let tries = crate::config::here().config.tries.clone();
     let all = &deploy.map(|deploy| &deploy.jobs[..]).unwrap_or(&[]);
-    let jobs: Vec<&Job> = all
-        .iter()
-        .filter(|job| DEPLOY_JOBS.contains(&job.name.as_str()))
-        .collect();
+    let jobs: Vec<&Job> = all.iter().filter(|job| tries.deploy_jobs.contains(&job.name)).collect();
     let since = pipeline.created_at.as_deref().and_then(parse_iso);
     if let Some(failed) = jobs.iter().find(|job| FAILED.contains(&job.status.as_str())) {
         return DeployOf {
@@ -68,17 +62,29 @@ pub fn deploy_state_of(deploy: Option<&Deploy>, now: i64) -> DeployOf {
         };
     }
     let is_done = DONE.contains(&pipeline.status.as_str());
+    // No deploy job named: the pipeline passing is the deploy.
+    let whole = Job {
+        name: "pipeline".into(),
+        status: pipeline.status.clone(),
+        url: pipeline.url.clone(),
+        finished_at: pipeline.created_at.clone(),
+        ..Default::default()
+    };
     let last = jobs
         .iter()
-        .find(|job| job.name == DEPLOY_JOB)
+        .copied()
+        .find(|job| Some(&job.name) == tries.deploy_job.as_ref())
         // No deploy job in a pipeline that has ended: publishing was the last step.
         .or_else(|| {
             if is_done {
-                jobs.iter().find(|job| job.name == PUBLISH_JOB)
+                jobs.iter()
+                    .copied()
+                    .find(|job| Some(&job.name) == tries.publish_job.as_ref())
             } else {
                 None
             }
-        });
+        })
+        .or_else(|| (tries.deploy_job.is_none() && is_done).then_some(&whole));
     if let Some(last) = last.filter(|job| job.status == "success") {
         let passed = last.finished_at.as_deref().and_then(parse_iso).unwrap_or(now);
         let is_deployed = now - passed >= DEPLOY_GRACE_MS;
@@ -88,7 +94,7 @@ pub fn deploy_state_of(deploy: Option<&Deploy>, now: i64) -> DeployOf {
             } else {
                 DeployState::Deploying
             },
-            job: Some((*last).clone()),
+            job: Some(last.clone()),
             since,
             passed: Some(passed),
             is_final: is_deployed,
@@ -233,14 +239,14 @@ pub fn try_state_of(
 }
 
 /// The app of a checkout whose stack has `offset`: `http://localhost:3002`.
-pub fn app_origin(offset: i64) -> String {
-    format!("http://localhost:{}", 3000 + offset)
+pub fn app_origin(port: i64) -> String {
+    format!("http://localhost:{port}")
 }
 
-/// The page an action names: a path on the worktree's app, anything else as it is.
-pub fn page_of(url: &str, offset: i64) -> String {
+/// The page an action names: a path on the worktree's app on `port`, anything else as it is.
+pub fn page_of(url: &str, port: i64) -> String {
     if url.starts_with('/') {
-        format!("{}{url}", app_origin(offset))
+        format!("{}{url}", app_origin(port))
     } else {
         url.to_string()
     }
@@ -271,8 +277,8 @@ pub fn try_spot(action: &Action, tree: Option<&Tree>) -> String {
     let Some(tree) = tree else {
         return format!("opens {}", short_page(url));
     };
-    let page = page_of(url, tree.offset);
-    let origin = app_origin(tree.offset);
+    let page = page_of(url, tree.app_port + tree.offset);
+    let origin = app_origin(tree.app_port + tree.offset);
     let is_on_app = page == origin || page.starts_with(&format!("{origin}/"));
     let will_start = tree.has_own_port && tree.has_env && !tree.is_up && is_on_app;
     format!(
@@ -308,6 +314,7 @@ mod tests {
             offset: 2,
             has_own_port: true,
             has_env: true,
+            app_port: 3000,
             ..Default::default()
         };
         assert_eq!(
@@ -325,17 +332,24 @@ mod tests {
     fn a_path_opens_on_the_app_of_its_own_worktree_query_and_fragment_whole() {
         // #337: try #10 of #310 (offset 4) beside #336 (offset 5).
         let url = "/v/ehrenamt?timeline=skia#pill";
-        assert_eq!(page_of(url, 4), "http://localhost:3004/v/ehrenamt?timeline=skia#pill");
-        assert_eq!(page_of(url, 5), "http://localhost:3005/v/ehrenamt?timeline=skia#pill");
-        assert_eq!(page_of("/?timeline=skia", 4), "http://localhost:3004/?timeline=skia");
         assert_eq!(
-            page_of("http://localhost:3004/v/ehrenamt?timeline=skia", 5),
+            page_of(url, 3004),
+            "http://localhost:3004/v/ehrenamt?timeline=skia#pill"
+        );
+        assert_eq!(
+            page_of(url, 3005),
+            "http://localhost:3005/v/ehrenamt?timeline=skia#pill"
+        );
+        assert_eq!(page_of("/?timeline=skia", 3004), "http://localhost:3004/?timeline=skia");
+        assert_eq!(
+            page_of("http://localhost:3004/v/ehrenamt?timeline=skia", 3005),
             "http://localhost:3004/v/ehrenamt?timeline=skia"
         );
         let tree = |offset| Tree {
             offset,
             has_own_port: true,
             has_env: true,
+            app_port: 3000,
             is_up: true,
             ..Default::default()
         };

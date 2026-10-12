@@ -64,8 +64,8 @@ pub enum Act {
         port: i64,
         is_shared: bool,
     },
-    /// Storybook in a tab of the worktree's space.
-    Storybook(PathBuf),
+    /// A tool of the stack (Storybook) in a tab of the worktree's space, by name.
+    Tool(PathBuf, String),
     /// A file in the worktree's nvim, at a line.
     OpenFile {
         dir: PathBuf,
@@ -165,7 +165,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete
         | Act::StartStack(_)
         | Act::Migrate(_)
-        | Act::Storybook(_)
+        | Act::Tool(..)
         | Act::OpenFile { .. }
         | Act::Hunks { .. } => {
             return super::worktree_view::act(app, act);
@@ -202,11 +202,16 @@ fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
         return;
     }
     // What to do first: the band shows the words before the first `: `.
+    let dev = match breadboard_core::stack::of(&main) {
+        Some(stack) if stack.dir != "." => format!("{} in {}", stack.app.dev, stack.dir),
+        Some(stack) => stack.app.dev,
+        None => "the app".into(),
+    };
     let hint = if is_shared {
-        format!("pnpm dev in products/vita/web serves the shared :{port}: nothing answers there")
+        format!("{dev} serves the shared :{port}: nothing answers there")
     } else {
         let who = breadboard_core::git::feature_of(&main, dir);
-        format!("pnpm dev in products/vita/web starts the app of {who}: nothing answers on :{port}")
+        format!("{dev} starts the app of {who}: nothing answers on :{port}")
     };
     app.actor.log(Paint::Dim, hint);
 }
@@ -337,7 +342,10 @@ fn end(app: &mut Overview) {
                 "end",
                 Paint::Yellow,
                 format!("ending ⇶ {name} …"),
-                Some(format!("pnpm wt:orchestrate {name} --end")),
+                Some(format!(
+                    "{run} wt:orchestrate {name} --end",
+                    run = breadboard_core::config::run_word()
+                )),
             );
         }
         Err(why) => {

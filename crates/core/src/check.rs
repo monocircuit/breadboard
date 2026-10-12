@@ -200,7 +200,7 @@ pub fn failures_of(output: &str) -> Vec<Failure> {
     failed.into_iter().map(|(_, failure)| failure).collect()
 }
 
-/// `@monocircuit/vita (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
+/// `@acme/web (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
 pub fn failures_text(failures: &[Failure]) -> String {
     failures_line(failures, 2)
 }

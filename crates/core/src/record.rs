@@ -17,8 +17,63 @@ use std::sync::LazyLock;
 
 /// The mark of an orchestration: its space is `⇶ <title>`.
 pub const ORCHESTRATOR: &str = "⇶";
-/// The main herdr space of the repo.
-pub const SPACE: &str = "Monocircuit/Platform";
+/// The main herdr space of the repo of the working directory (`[herdr] space`).
+pub fn space() -> String {
+    crate::config::here().space()
+}
+
+/// A name breadboard.toml gives the repo in herdr, read when it is shown:
+/// `{SPACE}` in a format string, `label == SPACE`, `SPACE.to_string()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    /// The main checkout's space (`[herdr] space`).
+    Space,
+    /// The herdr plugin's id (`[herdr] plugin`).
+    Plugin,
+    /// The session of the pinned herdr: the main checkout's folder.
+    Session,
+}
+
+/// The main herdr space of the repo (`[herdr] space`, constants.mjs `SPACE`).
+pub const SPACE: Named = Named::Space;
+/// The herdr plugin's id: the manifest's, every sidebar token's source, the
+/// block marker in configs (`[herdr] plugin`; platform's never changes, rule 5).
+pub const PLUGIN: Named = Named::Plugin;
+
+impl Named {
+    pub fn get(self) -> String {
+        let loaded = crate::config::here();
+        match self {
+            Named::Space => loaded.space(),
+            Named::Plugin => loaded.plugin(),
+            Named::Session => loaded.folder(),
+        }
+    }
+}
+
+impl std::fmt::Display for Named {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.get())
+    }
+}
+
+impl PartialEq<Named> for str {
+    fn eq(&self, named: &Named) -> bool {
+        self == named.get()
+    }
+}
+
+impl PartialEq<Named> for &str {
+    fn eq(&self, named: &Named) -> bool {
+        *self == named.get()
+    }
+}
+
+impl PartialEq<Named> for String {
+    fn eq(&self, named: &Named) -> bool {
+        *self == named.get()
+    }
+}
 /// One colour per concurrent orchestration (origins.mjs `ORIGIN_SLOTS`).
 pub const SLOTS: u32 = 3;
 
@@ -76,7 +131,7 @@ pub fn base_in(dir: &Path) -> Option<String> {
 /// Records the base of a worktree in its `.claude/origin`, next to its
 /// orchestration; develop is the default and leaves the file as it was.
 pub fn write_base(dir: &Path, base: &str) -> io::Result<()> {
-    if base == crate::git::DEVELOP {
+    if base == crate::git::branch(dir) {
         return Ok(());
     }
     let mut value = json::read_object(&origin_file(dir));
@@ -400,7 +455,7 @@ impl Record {
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
             base: str_of(&raw, "base")
-                .filter(|base| is_branch(base) && *base != crate::git::DEVELOP)
+                .filter(|base| is_branch(base) && *base != crate::git::default_branch())
                 .map(String::from),
             raw,
         })
@@ -435,11 +490,11 @@ pub fn orchestrator_label(main: &Path, name: &str) -> String {
 }
 
 /// The orchestration of a space's label `⇶ <title>` (also `⇶ <name>` and an
-/// older `Monocircuit/Platform ⇶ <name>`), None for any other. `titles`:
+/// older `<main space> ⇶ <name>`), None for any other. `titles`:
 /// `(name, title)` of every record.
 pub fn orchestration_of_label(label: &str, titles: &[(String, String)]) -> Option<String> {
     let shown = label
-        .strip_prefix(&format!("{SPACE} "))
+        .strip_prefix(&format!("{} ", space()))
         .unwrap_or(label)
         .strip_prefix(&format!("{ORCHESTRATOR} "))?;
     if shown.is_empty() {
