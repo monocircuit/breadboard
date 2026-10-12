@@ -39,7 +39,10 @@ pub fn run() -> ExitCode {
         Err(error) => {
             let (reason, hint) = gitlab::explain(&error);
             let code = fail(&format!("GitLab could not be read: {reason}"));
-            eprintln!("\n  {hint}, then pnpm wt:issues again.");
+            eprintln!(
+                "\n  {hint}, then {run} wt:issues again.",
+                run = breadboard_core::config::run_word()
+            );
             code
         }
     }

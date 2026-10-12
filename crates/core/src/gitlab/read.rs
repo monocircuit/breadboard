@@ -462,7 +462,9 @@ pub async fn deploy_of(gitlab: &Gitlab, cache: &mut Cache, sha: &str, web: &str,
     let own = match cache.get::<Deploy>("deploys", sha) {
         Some(own) => own,
         None => {
-            let project = gitlab.graphql(&deploy_query(), json!({ "sha": sha })).await?;
+            let project = gitlab
+                .graphql(&gitlab.on_branch(&deploy_query()), json!({ "sha": sha }))
+                .await?;
             let found = nodes(&project, "pipelines").into_iter().next().unwrap_or(Value::Null);
             let own = deploy_from(&found, web);
             if deploy_state_of(Some(&own), now).is_final {
@@ -486,7 +488,9 @@ pub async fn deploy_of(gitlab: &Gitlab, cache: &mut Cache, sha: &str, web: &str,
 /// The newest develop pipeline after `after` whose commit contains `sha`: one
 /// that passed, else the newest (it may still deploy).
 async fn later_deploy_of(gitlab: &Gitlab, sha: &str, after: i64, web: &str) -> Result<Option<Deploy>> {
-    let project = gitlab.graphql(&later_deploys_query(), json!({})).await?;
+    let project = gitlab
+        .graphql(&gitlab.on_branch(&later_deploys_query()), json!({}))
+        .await?;
     let all = nodes(&project, "pipelines");
     let passed = all
         .iter()
@@ -640,7 +644,7 @@ pub async fn read_orchestration(
             variables[name] = json!(values);
         }
     }
-    let project = match gitlab.graphql(&query, variables).await {
+    let project = match gitlab.graphql(&gitlab.on_branch(&query), variables).await {
         Ok(project) => project,
         // GitLab answered, its GraphQL didn't (an older GitLab, a proxy): REST, Node's route.
         Err(error) if error.status.is_some() => {
@@ -984,7 +988,7 @@ fn names_of(value: &Value, key: &str) -> Vec<String> {
 /// The open MRs and issues of the project, develop's pipeline; `heads` the
 /// branches on origin (`git ls-remote`), which claim the issues.
 pub async fn read_everything(gitlab: &Gitlab, heads: &[String]) -> Result<EverythingRemote> {
-    let project = gitlab.graphql(EVERYTHING_QUERY, json!({})).await?;
+    let project = gitlab.graphql(&gitlab.on_branch(EVERYTHING_QUERY), json!({})).await?;
     let mr_nodes = nodes(&project, "mrs");
     let web = mr_nodes
         .iter()

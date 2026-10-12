@@ -91,7 +91,8 @@ fn upgrade_hint(binary: &Path, version: &str) -> String {
     );
     if !is_omarchy_package(binary) {
         return format!(
-            "{intro} Update it (herdr update, or the package manager it came from), or use plain pnpm herdr"
+            "{intro} Update it (herdr update, or the package manager it came from), or use plain {run} herdr",
+            run = breadboard_core::config::run_word()
         );
     }
     let install = match omarchy_edge_package() {
@@ -102,8 +103,9 @@ fn upgrade_hint(binary: &Path, version: &str) -> String {
         None => "Omarchy has no newer herdr package yet: omarchy-update brings it once it has. ".into(),
     };
     format!(
-        "{intro} {install}herdr update doesn't work here, pacman owns {}. Then restart your herdr (herdr server stop, it ends its panes) and run pnpm herdr:install again",
-        binary.display()
+        "{intro} {install}herdr update doesn't work here, pacman owns {}. Then restart your herdr (herdr server stop, it ends its panes) and run {run} herdr:install again",
+        binary.display(),
+        run = breadboard_core::config::run_word()
     )
 }
 
@@ -219,8 +221,7 @@ pub fn install_into_own(session: &Session) -> Result<(), Fail> {
     let serving = session::version_after(&server).and_then(|version| version_of(&version));
     if is_serving && let Some(serving) = serving.filter(|serving| !can_load_plugin(serving)) {
         return Err(format!(
-            "your herdr is {version}, its server still runs {serving} and doesn't load the plugin. herdr server stop (it ends its panes), start herdr again, then pnpm herdr:install"
-        )
+            "your herdr is {version}, its server still runs {serving} and doesn't load the plugin. herdr server stop (it ends its panes), start herdr again, then {run} herdr:install", run = breadboard_core::config::run_word())
         .into());
     }
     let dir = session.plugin_dir.display();
@@ -235,7 +236,8 @@ pub fn install_into_own(session: &Session) -> Result<(), Fail> {
     let is_changed = write_own_status(session, &session::own_config())? || is_block_changed;
     if !is_serving {
         println!(
-            "\n✓ {PLUGIN} is ready. Your herdr doesn't run: start it (Omarchy: super+ctrl+enter), then pnpm herdr:install again for the space {SPACE}"
+            "\n✓ {PLUGIN} is ready. Your herdr doesn't run: start it (Omarchy: super+ctrl+enter), then {run} herdr:install again for the space {SPACE}",
+            run = breadboard_core::config::run_word()
         );
         return Ok(());
     }

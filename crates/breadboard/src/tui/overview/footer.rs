@@ -30,7 +30,11 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                 return;
             }
             let hint = if ctx.is_once {
-                format!("pnpm wt:orchestrate {} --end", model.name)
+                format!(
+                    "{run} wt:orchestrate {} --end",
+                    model.name,
+                    run = breadboard_core::config::run_word()
+                )
             } else {
                 "no worktree left: its space, record and checkout go".into()
             };
@@ -39,7 +43,9 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     });
     page.section(Section::new("FOOTER").plain(), |scene| {
         scene.text(
-            "SendMessage(to: \"<feature>\") reaches an agent · pnpm overview (everything)",
+            &breadboard_core::config::in_repo(
+                "SendMessage(to: \"<feature>\") reaches an agent · pnpm overview (everything)",
+            ),
             theme::dim(),
         );
     });
