@@ -56,7 +56,7 @@ repo is to it comes from its `breadboard.toml`):
 
 | Command | Does |
 | ------- | ---- |
-| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; an orchestration's task: its epic; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#epics}}. An orchestration's task gets a task stack on demand instead ([epics.md](epics.md)){{/epics}}{{/stack}} |
+| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; an orchestration's task: its epic; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#epics}}{{#epic_stack}}. An orchestration's task gets a task stack on demand instead ([epics.md](epics.md)){{/epic_stack}}{{/epics}}{{/stack}} |
 {{#stack}}
 | `{{run}} wt:new <feature> --shared` | the same but on the **shared** stack of the main checkout (copies its `{{stack.env}}`), no containers — for work that never starts the app |
 {{/stack}}
