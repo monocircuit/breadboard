@@ -336,6 +336,29 @@ fn pause(dir: &Path, until: i64) -> bool {
     }
 }
 
+/// Whether the agent of `dir` runs this open in a tab, not in a headless
+/// run: the nearest claude among this process's ancestors is interactive
+/// and runs the conversation bound to `dir` (its session file says which).
+/// Any other caller (a headless run, a shell, another claude) counts as headless.
+fn is_interactive_caller(dir: &Path) -> bool {
+    let Some(bound) = breadboard_core::conversations::bound_session(dir) else {
+        return false;
+    };
+    let claude = crate::cli::lifecycle::herdr::ancestors_of(i64::from(std::process::id()))
+        .into_iter()
+        .skip(1)
+        .find_map(|pid| {
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            Some((pid, breadboard_core::conversations::claude_print_in(&cmdline)?))
+        });
+    let Some((pid, false)) = claude else {
+        return false;
+    };
+    breadboard_core::conversations::running_claudes()
+        .iter()
+        .any(|claude| claude.pid == pid && claude.id == bound)
+}
+
 pub fn run(argv: &Argv) -> Outcome {
     match argv.check(&TAKES) {
         Ok(true) => return help(ABOUT, USAGE),
@@ -387,8 +410,11 @@ pub fn run(argv: &Argv) -> Outcome {
     wait.insert("since".into(), Value::String(to_iso(since)));
     wait.insert("until".into(), Value::String(to_iso(until)));
     // A headless agent (#359) is no process to wake: the wait is recorded
-    // without a command, and the overview queues its line as a run.
-    let is_headless = here.main.as_deref().is_some_and(|main| runs::is_headless(main, dir));
+    // without a command, and the overview queues its line as a run. Called
+    // from a claude open in a tab it waits as before: its queue is held
+    // while that claude runs, the line would wait for its end (#361).
+    let is_headless =
+        here.main.as_deref().is_some_and(|main| runs::is_headless(main, dir)) && !is_interactive_caller(dir);
     let base = base_of(dir);
     if is_headless {
         // Settled already (merged, closed): said at once, nothing waits (#361).

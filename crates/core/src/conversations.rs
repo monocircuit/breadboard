@@ -420,6 +420,19 @@ pub struct Running {
     pub cwd: PathBuf,
 }
 
+/// Whether a command line (NUL-separated) is a claude's, and whether that
+/// one is a headless run (`-p`, `--print`): Some(is_print), None for anything else.
+pub fn claude_print_in(cmdline: &[u8]) -> Option<bool> {
+    let args: Vec<String> = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect();
+    let program = Path::new(args.first()?).file_name()?.to_string_lossy().into_owned();
+    let is_claude = program == "claude" || args.iter().take(2).any(|arg| arg.ends_with("/claude"));
+    is_claude.then(|| args.iter().any(|arg| arg == "-p" || arg == "--print"))
+}
+
 /// The conversation an interactive `claude --resume <id>` command line
 /// resumes (NUL-separated, as `/proc/<pid>/cmdline` holds it); None for a
 /// headless one (`-p`, `--print`) and anything else.
@@ -528,6 +541,16 @@ mod tests {
         assert_eq!(interactive_resume_in(&cmdline(&["claude", "--resume"])), None);
         assert_eq!(interactive_resume_in(&cmdline(&["vim", "--resume", "e970"])), None);
         assert_eq!(interactive_resume_in(b""), None);
+        assert_eq!(
+            claude_print_in(&cmdline(&["claude", "-p", "x", "--resume", "e970"])),
+            Some(true)
+        );
+        assert_eq!(claude_print_in(&cmdline(&["claude", "--resume", "e970"])), Some(false));
+        assert_eq!(
+            claude_print_in(&cmdline(&["/usr/bin/node", "/opt/claude/bin/claude"])),
+            Some(false)
+        );
+        assert_eq!(claude_print_in(&cmdline(&["bash", "-c", "claude -p"])), None);
     }
 
     fn lines(text: &[&str]) -> Vec<String> {
