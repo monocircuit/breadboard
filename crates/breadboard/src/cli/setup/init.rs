@@ -228,6 +228,34 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
             ("app.port", stack.app.port.to_string()),
             ("app.port_1", (u32::from(stack.app.port) + 1).to_string()),
         ]);
+        // The epic stack's names (`[stack.epic]`, #365): its template, the cloned database, the others.
+        if let Some(epic) = &stack.epic {
+            let others: Vec<String> = epic
+                .databases
+                .iter()
+                .filter(|database| !database.is_clone)
+                .map(|database| format!("`{}_<feature>`", database.name))
+                .collect();
+            all.extend([
+                ("epic.template", epic.template.clone()),
+                ("epic.database", epic.clone_database().name.clone()),
+                (
+                    "epic.others",
+                    if others.is_empty() {
+                        "no other database".into()
+                    } else {
+                        others.join(", ")
+                    },
+                ),
+                (
+                    "epic.service",
+                    stack
+                        .service(&epic.service)
+                        .map(|service| service.label().to_string())
+                        .unwrap_or_else(|| epic.service.clone()),
+                ),
+            ]);
+        }
     }
     all
 }
@@ -304,7 +332,12 @@ pub fn render(template: &str, values: &[(&str, String)], blocks: &[(&str, bool)]
 fn skill_of(loaded: &Loaded) -> Vec<(PathBuf, String)> {
     let values = values(loaded);
     let has_epics = loaded.config.orchestration.epic_branches;
-    let blocks = [("stack", loaded.config.stack.is_some()), ("epics", has_epics)];
+    let has_epic_stack = loaded.config.stack.as_ref().is_some_and(|stack| stack.epic.is_some());
+    let blocks = [
+        ("stack", loaded.config.stack.is_some()),
+        ("epics", has_epics),
+        ("epic_stack", has_epic_stack),
+    ];
     SKILL
         .iter()
         .filter(|(name, _)| *name != "epics.md" || has_epics)
@@ -601,17 +634,44 @@ mod tests {
             "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n[[stack.services]]\nname = \"db\"\nlabel = \"DB\"\nport = 5432\nenv = \"DB_PORT\"\n[[stack.tools]]\nname = \"studio\"\nport = 4983\nrun = \"studio -p {port}\"\nis_with_stack = true\n",
         )
         .unwrap();
-        for config in [config::Config::default(), with] {
+        let stack = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n\
+                     [[stack.services]]\nname = \"db\"\nlabel = \"DB\"\nport = 5432\nenv = \"DB_PORT\"\n\
+                     [[stack.services]]\nname = \"auth\"\nlabel = \"Auth\"\nport = 8080\nenv = \"AUTH_PORT\"\n\
+                     [stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n[orchestration]\nepic_branches = true\n";
+        let epic = "[stack.epic]\nservice = \"db\"\ntemplate = \"app_tpl\"\nstamp = \"db\"\n\
+                    [[stack.epic.databases]]\nname = \"app\"\nis_clone = true\nowner = \"app\"\n\
+                    [[stack.epic.databases]]\nname = \"auth\"\nowner = \"auth\"\n";
+        let epics = config::Config::parse(stack).unwrap();
+        let epic_stack = config::Config::parse(&format!("{stack}{epic}")).unwrap();
+        let rendered = |config: config::Config| {
             let loaded = Loaded {
                 config,
                 main: "/r/app".into(),
                 branch: "main".into(),
                 error: None,
             };
-            for (path, text) in skill_of(&loaded) {
+            let skill = skill_of(&loaded);
+            for (path, text) in &skill {
                 assert!(!text.contains("{{"), "{}: {text}", path.display());
             }
+            skill
+        };
+        for config in [config::Config::default(), with] {
+            rendered(config);
         }
+        let epics_md = |skill: &[(PathBuf, String)]| {
+            skill
+                .iter()
+                .find(|(path, _)| path.ends_with("epics.md"))
+                .map(|(_, text)| text.clone())
+                .unwrap()
+        };
+        // Without [stack.epic] an orchestration's worktrees get own stacks: no epic stack to describe (#365).
+        assert!(!epics_md(&rendered(epics)).contains("The epic stack and task stacks"));
+        let text = epics_md(&rendered(epic_stack));
+        assert!(text.contains("template\n  database `app_tpl`"), "{text}");
+        assert!(text.contains("A task gets `app_<feature>`"), "{text}");
+        assert!(text.contains("and `auth_<feature>` next to"), "{text}");
     }
 
     #[test]
