@@ -6,6 +6,7 @@ use super::super::herdr::{self, did, has_agent, s};
 use super::super::proc::{quote, text};
 use super::super::repo::Repo;
 use super::nvim::{can_edit, editor_command, ide_flag, ide_for};
+use super::resume::resume;
 use super::tabs::{
     CHANGELOG, EDITOR, OVERVIEW, ROOT, View, Want, drop_duplicates, ensure_space, ensure_tab, ensure_worktree_space,
     idle_pane_of, keep_order, keep_order_except, mark_branch, overall_changelog_command, overview_command,
@@ -186,7 +187,7 @@ fn close_overview(workspace: &str, tabs: &[Value]) -> Vec<String> {
 
 /// After a restart: the conversation bound to the space runs again in its
 /// `<feature>` tab, if that idles, no claude runs in the space and the
-/// conversation doesn't run elsewhere.
+/// conversation doesn't run elsewhere nor was just typed (#368).
 pub fn resume_session(repo: &Repo, dir: &Path, workspace: &str) -> bool {
     let Some(id) = bound_session(dir) else { return false };
     if herdr::panes_of(workspace).iter().any(has_agent) || is_conversation_running(&id) {
@@ -202,12 +203,7 @@ pub fn resume_session(repo: &Repo, dir: &Path, workspace: &str) -> bool {
     } else {
         format!("cd {} && ", quote(&text(&cwd)))
     };
-    did(&[
-        "pane",
-        "run",
-        &idle,
-        &format!("{cd}claude --resume {id}{}", ide_flag(dir)),
-    ])
+    resume(&idle, &id, &format!("{cd}claude --resume {id}{}", ide_flag(dir)))
 }
 
 /// A tab that must not be closed from a script: it runs this command, holds

@@ -13,6 +13,7 @@
 
 pub mod nvim;
 pub mod orchestrations;
+pub mod resume;
 pub mod spaces;
 pub mod tabs;
 
