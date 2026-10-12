@@ -49,6 +49,8 @@ pub enum Act {
     CopyResume(String),
     /// A conflicted MR's agent merges develop in (#246).
     Resolve(i64),
+    /// An MR waiting in the CI queue goes to its front (#357).
+    RunNow(i64),
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -175,6 +177,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
+        Act::RunNow(iid) => run_now(app, iid),
     }
     app.redraw();
     Flow::Redraw
@@ -462,6 +465,21 @@ fn dismiss(app: &mut Overview, id: &str) {
 
 /// A click on an MR's resolve button (resolve.mjs `clickResolve`): the order
 /// typed into its agent's pane; nothing while the button isn't there.
+/// An MR waiting in the CI queue to its front (#357): the daemon's queue
+/// starts its pipeline as the next one, once the runner has a free slot.
+fn run_now(app: &mut Overview, iid: i64) {
+    use breadboard_core::ci::{RunNow, read_or_default, run_now_file, write_whole};
+    let file = run_now_file(&app.actor.main);
+    let mut run_now: RunNow = read_or_default(&file);
+    run_now.at.insert(iid, now_ms());
+    match write_whole(&file, &run_now) {
+        Ok(()) => app
+            .actor
+            .log(Paint::Green, format!("CI: !{iid} to the front of the queue")),
+        Err(error) => app.actor.log(Paint::Red, format!("CI: !{iid} not moved up: {error}")),
+    }
+}
+
 fn resolve(app: &mut Overview, iid: i64) {
     let Some(RemoteOf::Orchestration(remote)) = &app.remote else {
         return;
