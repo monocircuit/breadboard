@@ -246,9 +246,20 @@ fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress, columns: 
             scene.atom_gap(bar(progress, mr.issue, size), 0);
             scene.end_line();
         }
+        // A print has nothing to click: its open boxes under the bar (#354).
+        if ctx.is_once && !mr.open_boxes.is_empty() {
+            let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
+            boxes::list(scene, &mr.open_boxes, at + 2);
+        }
         return;
     }
-    let is_open = ctx.folds.boxes.mrs.contains(&mr.iid);
+    // Every box once opened; before any click the open ones, until a click folds them (#354).
+    let shown = match ctx.folds.boxes.mr_list(mr.iid, !mr.open_boxes.is_empty()) {
+        super::MrList::All => Some(&mr.boxes),
+        super::MrList::Open => Some(&mr.open_boxes),
+        super::MrList::Folded => None,
+    };
+    let is_open = shown.is_some();
     scene.block(Act::Fold(Fold::MrBoxes(mr.iid)), |scene| {
         scene.pad_to(at);
         let mut spans = vec![boxes::mark(is_open)];
@@ -259,9 +270,9 @@ fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress, columns: 
         }
         scene.atom_gap(spans, 0);
         scene.end_line();
-        if is_open {
+        if let Some(sections) = shown {
             let at = if scene.width() >= at + MIN_COLUMNS { at } else { 2 };
-            boxes::list(scene, &mr.boxes, at + 2);
+            boxes::list(scene, sections, at + 2);
         }
     });
 }
@@ -871,7 +882,8 @@ mod tests {
     }
 
     /// An open row with its boxes at `width`, their fold as `folds` has it, `--once` or not.
-    fn drawn_boxes(folds: super::super::Folds, is_once: bool, width: u16) -> Scene<Act> {
+    /// `has_open`: the MR's open boxes as core gives them (#354), else none.
+    fn drawn_boxes(folds: super::super::Folds, is_once: bool, width: u16, has_open: bool) -> Scene<Act> {
         use breadboard_core::model::boxes::{BoxLine, BoxSection, Check};
         let line = |text: &str, is_ticked: bool, check: Option<(&str, Option<&str>)>| BoxLine {
             is_ticked,
@@ -915,6 +927,18 @@ mod tests {
                     )],
                 },
             ],
+            open_boxes: if has_open {
+                vec![BoxSection {
+                    heading: "Acceptance criteria".into(),
+                    boxes: vec![line(
+                        "The orchestration overview shows the whole text of every open acceptance and Work box under its MR row",
+                        false,
+                        None,
+                    )],
+                }]
+            } else {
+                Vec::new()
+            },
             reasons: vec![reason("1 acceptance box open", "agent")],
             issue: Some(346),
             ..facts("feat(breadboard): an MR's boxes fold out", None)
@@ -946,7 +970,7 @@ mod tests {
 
     #[test]
     fn the_boxes_fold_under_the_bar_and_open_every_box_whole() {
-        let folded = drawn_boxes(Default::default(), false, 60);
+        let folded = drawn_boxes(Default::default(), false, 60, false);
         let lines = super::tests::lines(&folded);
         assert!(lines[1].trim_start().starts_with("▸ ━"), "{lines:?}");
         // The counts name the issue they are of: the MR's description has boxes of its own.
@@ -963,7 +987,7 @@ mod tests {
 
         let mut folds = super::super::Folds::default();
         folds.boxes.mrs.insert(311);
-        let open = drawn_boxes(folds, false, 60);
+        let open = drawn_boxes(folds, false, 60, false);
         let lines = super::tests::lines(&open);
         assert!(lines[1].trim_start().starts_with("▾ ━"), "{lines:?}");
         assert_eq!(
@@ -990,9 +1014,60 @@ mod tests {
         assert!(lines[10].contains("1 acceptance box open"), "{lines:?}");
 
         // `--once` draws the bar alone: nothing to click.
-        let once = drawn_boxes(Default::default(), true, 60);
+        let once = drawn_boxes(Default::default(), true, 60, false);
         assert!(super::tests::lines(&once)[1].trim_start().starts_with('━'));
-        assert!(!once.regions.iter().any(|region| *region.action() == fold));
+        assert!(
+            !once
+                .regions
+                .iter()
+                .any(|region| matches!(region.action(), Act::Fold(_)))
+        );
+    }
+
+    #[test]
+    fn open_boxes_show_in_full_before_any_click_until_a_click_folds_them() {
+        let whole = [
+            "                     Acceptance criteria",
+            "                     ☐ The orchestration overview shows the",
+            "                       whole text of every open acceptance",
+            "                       and Work box under its MR row",
+        ];
+        // Before any click: unfolded, the open boxes alone, whole, nothing cut.
+        let first = drawn_boxes(Default::default(), false, 60, true);
+        let lines = super::tests::lines(&first);
+        assert!(lines[1].trim_start().starts_with("▾ ━"), "{lines:?}");
+        assert_eq!(lines[2..6], whole, "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains('…') || line.contains("Scope")),
+            "{lines:?}"
+        );
+        // The whole list is the fold's block: a click on it folds what is shown.
+        let fold = Act::Fold(Fold::MrBoxes(311));
+        let region = first
+            .regions
+            .iter()
+            .find(|region| *region.action() == fold)
+            .expect("the fold's block");
+        assert_eq!((region.area.y, region.area.height), (1, 5), "{lines:?}");
+
+        // Folded by that click: nothing listed; the next click opens every box.
+        let mut folds = super::super::Folds::default();
+        folds.boxes.fold_mr(311, true);
+        let folded = drawn_boxes(folds.clone(), false, 60, true);
+        let lines = super::tests::lines(&folded);
+        assert!(lines[1].trim_start().starts_with("▸ ━"), "{lines:?}");
+        assert!(!lines.iter().any(|line| line.contains('☐')), "{lines:?}");
+        folds.boxes.fold_mr(311, true);
+        let all = super::tests::lines(&drawn_boxes(folds, false, 60, true));
+        assert!(all.iter().any(|line| line.contains("Scope")), "{all:?}");
+        assert!(
+            !all.iter().any(|line| line.contains("orchestration overview shows")),
+            "{all:?}"
+        );
+
+        // A print: the open boxes under the bar, nothing to click.
+        let once = drawn_boxes(Default::default(), true, 60, true);
+        assert_eq!(super::tests::lines(&once)[2..6], whole);
     }
 
     #[test]
@@ -1327,6 +1402,7 @@ mod tests {
             reasons: vec![],
             progress: None,
             boxes: vec![],
+            open_boxes: vec![],
             issue: None,
         }
     }
