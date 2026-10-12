@@ -18,6 +18,9 @@ use std::time::{Duration, Instant};
 const END_WAIT: Duration = Duration::from_secs(15);
 /// How long a new tab's shell gets to idle.
 const SHELL_WAIT: Duration = Duration::from_secs(5);
+/// How long a freed agent gets to start answering its last line, then to finish (#345).
+const START_WAIT: Duration = Duration::from_secs(3);
+const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 /// What a restart needs of the machine: herdr's in a run, a fake in the tests.
 pub trait Host {
@@ -31,6 +34,9 @@ pub trait Host {
     fn run(&self, pane: &str, command: &str) -> bool;
     /// The pane closed (its tab with it when it was its last).
     fn close(&self, pane: &str);
+    /// `line` typed into the claude of `pane`, its answer waited for (a while):
+    /// whether herdr took it.
+    fn tell(&self, pane: &str, line: &str) -> bool;
 }
 
 /// Where and as what the conversation `id` runs again.
@@ -105,6 +111,26 @@ pub fn restart(host: &dyn Host, restart: &Restart) -> Result<String, Failed> {
     })
 }
 
+/// A freed agent goes to sleep (#345): its last line told, then its claude
+/// ended (waited for) and its pane closed, its tab with it. The conversation
+/// stays on disk: the overview's record keeps its id, a next issue resumes it.
+/// Err(why) when its claude runs on; nothing else changed then but the line.
+pub fn retire(host: &dyn Host, id: &str, pane: &str, line: &str) -> Result<(), String> {
+    if !host.tell(pane, line) {
+        return Err("herdr took no line".into());
+    }
+    if let Some(pid) = host.pid_of(id)
+        && !host.end(pid)
+    {
+        return Err(format!("its claude (pid {pid}) did not end"));
+    }
+    if host.pid_of(id).is_some() {
+        return Err("another claude runs its conversation".into());
+    }
+    host.close(pane);
+    Ok(())
+}
+
 /// The machine as it is: herdr, the claudes' session files, signals.
 pub struct Machine;
 
@@ -168,6 +194,33 @@ impl Host for Machine {
     fn close(&self, pane: &str) {
         did(&["pane", "close", pane]);
     }
+
+    fn tell(&self, pane: &str, line: &str) -> bool {
+        if !did(&["agent", "prompt", pane, line]) {
+            return false;
+        }
+        let status = || {
+            herdr::all_panes()
+                .into_iter()
+                .find(|each| s(each, "pane_id") == pane)
+                .map(|each| s(&each, "agent_status").to_string())
+        };
+        // Its answer is waited for: a turn the end cuts short is lost from the conversation.
+        let started = Instant::now();
+        let mut is_started = false;
+        loop {
+            let Some(now) = status() else { return true };
+            if now == "working" {
+                is_started = true;
+            } else if is_started {
+                return true;
+            }
+            if started.elapsed() >= if is_started { ANSWER_WAIT } else { START_WAIT } {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +264,13 @@ mod tests {
         }
         fn close(&self, pane: &str) {
             self.did.borrow_mut().push(format!("close {pane}"));
+        }
+        fn tell(&self, pane: &str, line: &str) -> bool {
+            if self.refused.contains(&pane) {
+                return false;
+            }
+            self.did.borrow_mut().push(format!("tell {pane}: {line}"));
+            true
         }
     }
 
@@ -301,5 +361,57 @@ mod tests {
             ..handover()
         });
         assert!(command.ends_with(" --name 'free a' 'it'\\''s done'"), "{command}");
+    }
+
+    #[test]
+    fn a_free_agent_without_a_tab_is_resumed_and_nothing_ends() {
+        let fake = Fake {
+            pid: RefCell::new(None),
+            ..fake()
+        };
+        let free = Restart {
+            from: None,
+            ..handover()
+        };
+        assert_eq!(restart(&fake, &free), Ok("new".into()));
+        let did = fake.did.borrow();
+        assert_eq!(did.len(), 2, "{did:?}");
+        assert!(
+            did[1].starts_with("run new: cd '/r/p-7-x' && claude --resume "),
+            "{did:?}"
+        );
+    }
+
+    #[test]
+    fn a_freed_agent_is_told_then_ended_then_its_pane_closes() {
+        let fake = fake();
+        assert_eq!(retire(&fake, "id", "p1", "you are free"), Ok(()));
+        assert_eq!(
+            *fake.did.borrow(),
+            vec!["tell p1: you are free".to_string(), "end 41".into(), "close p1".into()]
+        );
+        assert!(fake.pid.borrow().is_none());
+    }
+
+    #[test]
+    fn a_freed_agent_whose_claude_runs_on_keeps_its_pane() {
+        let stubborn = Fake {
+            is_stubborn: true,
+            ..fake()
+        };
+        assert_eq!(
+            retire(&stubborn, "id", "p1", "you are free"),
+            Err("its claude (pid 41) did not end".into())
+        );
+        assert!(!stubborn.did.borrow().iter().any(|did| did.starts_with("close")));
+        let deaf = Fake {
+            refused: vec!["p1"],
+            ..fake()
+        };
+        assert_eq!(
+            retire(&deaf, "id", "p1", "you are free"),
+            Err("herdr took no line".into())
+        );
+        assert!(deaf.did.borrow().is_empty());
     }
 }

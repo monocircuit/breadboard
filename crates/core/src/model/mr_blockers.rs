@@ -6,14 +6,11 @@
 use super::Tree;
 use super::agent_state::RUNNING;
 use super::change::is_change_open;
-use super::merge::{checks_of, is_acceptance, is_work, merge_status_text, words_of};
+use super::merge::{counted_checks_of, is_acceptance, is_work, merge_status_text};
 use super::merge_order::After;
 use super::resolve::is_conflict_settled;
 use crate::gitlab::{IssueBox, Job, Mr};
 use std::collections::HashSet;
-
-/// How many open Work boxes a reason names before `+n`.
-const NAMED_BOXES: usize = 2;
 
 /// A reason an open MR can't be merged yet: what, who acts on it (`agent`,
 /// `you`, `GitLab`, or the `!N` it waits for), and whether it is about
@@ -70,21 +67,11 @@ pub fn row_blockers_of(
         .iter()
         .filter(|found| is_work(found) && !found.is_ticked)
         .collect();
+    // Counted only: the fold under the row's bar lists them whole (#346).
     if !open.is_empty() {
-        let named = open
-            .iter()
-            .take(NAMED_BOXES)
-            .map(|found| words_of(found))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = if open.len() > NAMED_BOXES {
-            format!(" +{}", open.len() - NAMED_BOXES)
-        } else {
-            String::new()
-        };
         add(
             format!(
-                "{} Work box{} open: {named}{more}",
+                "{} Work box{} open",
                 open.len(),
                 if open.len() == 1 { "" } else { "es" }
             ),
@@ -96,7 +83,7 @@ pub fn row_blockers_of(
     let (actions, answered) = tree
         .map(|tree| (&tree.actions[..], &tree.answered[..]))
         .unwrap_or((&[], &[]));
-    let checks = checks_of(boxes, actions, answered);
+    let checks = counted_checks_of(boxes, actions, answered);
     for check in &checks {
         add(
             check.clone(),
@@ -127,11 +114,19 @@ pub fn row_blockers_of(
             String::new()
         };
         add(
-            format!("conflicts with develop{behind}: merge develop in"),
+            format!(
+                "conflicts with {target}{behind}: merge {target} in",
+                target = mr.target()
+            ),
             "agent",
             true,
         );
-    } else if let Some(text) = merge_status_text(mr.merge_status.as_deref(), mr.is_draft, status != Some("success")) {
+    } else if let Some(text) = merge_status_text(
+        mr.merge_status.as_deref(),
+        mr.is_draft,
+        status != Some("success"),
+        mr.target(),
+    ) {
         let who = if text == "GitLab is checking" { "GitLab" } else { "you" };
         add(text, who, false);
     }
@@ -314,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn names_the_first_open_work_boxes_and_the_draft_once() {
+    fn counts_the_open_work_boxes_and_says_the_draft_once() {
         let boxes = [
             work("Row layout: first line as now", true),
             work("The blockers in order", false),
@@ -324,10 +319,7 @@ mod tests {
         ];
         assert_eq!(
             reasons(&draft(), &boxes, None),
-            [
-                "3 Work boxes open: The blockers in order, Say who acts +1 → agent",
-                "1 acceptance box open: Checked → agent",
-            ]
+            ["3 Work boxes open → agent", "1 acceptance box open → agent",]
         );
     }
 
@@ -359,10 +351,7 @@ mod tests {
         ];
         assert_eq!(
             reasons(&draft(), &boxes, Some(&tree)),
-            [
-                "try #1 open → you",
-                "2 acceptance boxes open: No merge while a …, Looks good unblocks → agent",
-            ]
+            ["try #1 open → you", "2 acceptance boxes open → agent",]
         );
         assert_eq!(
             reasons(&draft(), &[work("Tests", true)], Some(&Tree::default())),
