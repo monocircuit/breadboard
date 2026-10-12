@@ -588,9 +588,11 @@ impl App for Overview {
             }
             Msg::Local(local) => {
                 self.local = Some(*local);
+                // Nothing to say with `[main_checkout] follow = false`: it doesn't follow.
                 self.develop = self
                     .store
                     .as_deref()
+                    .filter(|_| breadboard_core::main_update::Settings::of(&self.actor.main).is_on)
                     .and_then(|store| breadboard_core::main_update::band(&breadboard_core::main_update::read(store)));
             }
             Msg::Gitlab(Feed::Remote { result, at, rate }) => {

@@ -1,9 +1,10 @@
-//! The daemon keeps the main checkouts of its overviews on origin/develop
+//! The daemon keeps the main checkouts of its overviews on their default branch
 //! (#348, core's `main_update`): one task per main checkout an overview
-//! asked GitLab about, looking every LOOK_EVERY whether a look is due (EVERY
-//! since the last, or a merge woke it), the steps after an update right
-//! after it. The one thing the daemon writes besides its socket: a
-//! fast-forward of a clean develop, which no overview's read could undo.
+//! asked GitLab about, looking every LOOK_EVERY whether a look is due
+//! (`[main_checkout] every_minutes` since the last, or a merge woke it), the
+//! steps after an update right after it; nothing with `follow = false`.
+//! The one thing the daemon writes besides its socket: a fast-forward of a
+//! clean default branch, which no overview's read could undo.
 
 use breadboard_core::main_update::{self, Look};
 use std::path::PathBuf;
@@ -28,8 +29,13 @@ pub async fn keep_up(main: PathBuf) {
         let (main, store) = (main.clone(), store.clone());
         // The steps run here too: the next look waits for the build of this one's sources.
         let _ = tokio::task::spawn_blocking(move || {
-            if let Some(Look::Moved(_, files)) = main_update::look_if_due(&main, &store) {
-                main_update::run_steps(&main, &store, &files);
+            // breadboard.toml's `[main_checkout]`, read again on every tick: a switch shows within one.
+            let settings = main_update::Settings::of(&main);
+            if !settings.is_on {
+                return;
+            }
+            if let Some(Look::Moved(_, files)) = main_update::look_if_due(&main, &store, &settings) {
+                main_update::run_steps(&main, &store, &files, &settings);
             }
         })
         .await;
@@ -60,8 +66,9 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A fake remote, the main checkout on develop and a colleague's clone that pushes to it.
-    fn world(root: &Path) -> (PathBuf, PathBuf) {
+    /// A fake remote, the main checkout on develop with `toml` as its
+    /// breadboard.toml, and a colleague's clone that pushes to it.
+    fn world(root: &Path, toml: &str) -> (PathBuf, PathBuf) {
         let origin = root.join("origin.git");
         let (main, other) = (root.join("platform"), root.join("other"));
         git(
@@ -80,6 +87,7 @@ mod tests {
         );
         git(&main, &["remote", "add", "origin", origin.to_str().unwrap()]);
         std::fs::write(main.join("README.md"), "# platform\n").unwrap();
+        std::fs::write(main.join("breadboard.toml"), toml).unwrap();
         git(&main, &["add", "."]);
         git(&main, &["commit", "--quiet", "-m", "chore: begin"]);
         git(&main, &["push", "--quiet", "-u", "origin", "develop"]);
@@ -116,7 +124,7 @@ mod tests {
         let root = PathBuf::from(format!("/tmp/bb-keep-up-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let (main, other) = world(&root);
+        let (main, other) = world(&root, "[repo]\ndefault_branch = \"develop\"\n");
         // The main checkout's launcher, as the step runs it: it says it ran.
         let launcher = main.join(main_update::LAUNCHER);
         std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
@@ -155,6 +163,31 @@ mod tests {
         assert!(until(15, || main_update::read(&store).skipped.is_some()));
         assert_eq!(git(&main, &["rev-parse", "HEAD"]), before);
         assert_eq!(std::fs::read_to_string(main.join("README.md")).unwrap(), "mine\n");
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn leaves_the_main_checkout_alone_when_switched_off() {
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-off-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let toml = "[repo]\ndefault_branch = \"develop\"\n\n[main_checkout]\nfollow = false\n";
+        let (main, other) = world(&root, toml);
+        let store = main_update::store_of(&main).unwrap();
+        let before = git(&main, &["rev-parse", "HEAD"]);
+        push(&other, "a.md");
+        main_update::wake(&main);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.spawn(keep_up(main.clone()));
+        // Two ticks and more: no look, nothing moved, nothing to show.
+        std::thread::sleep(LOOK_EVERY + Duration::from_secs(2));
+        assert_eq!(git(&main, &["rev-parse", "HEAD"]), before);
+        assert_eq!(main_update::read(&store).looked_at, 0);
         drop(runtime);
         let _ = std::fs::remove_dir_all(&root);
     }

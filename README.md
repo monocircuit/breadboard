@@ -121,7 +121,9 @@ changes to tracked files, `--ff-only`. Another branch, local changes, own
 commits are skipped with the reason, never stashed, reset or forced. After an
 update `pnpm install --frozen-lockfile` runs when `pnpm-lock.yaml` changed,
 and the launcher builds the binary when breadboard's sources changed; vita's
-new migrations are only named (each stack runs `pnpm pg:migrate`).
+new migrations are only named (each stack runs `pnpm pg:migrate`). Off, the
+interval and the install: `[main_checkout]` of breadboard.toml
+([`docs/config.md`](docs/config.md)).
 
 The band of the view of everything and of every orchestration says it:
 `develop updated 17:42 · +4 commits (!331, !332…)`, or `develop: not updated
