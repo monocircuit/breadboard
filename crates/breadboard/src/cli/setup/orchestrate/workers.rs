@@ -79,7 +79,7 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
         })
         .filter(|(worker, share)| {
             let pane = handover::pane_of_conversation(&worker.id).ok().flatten();
-            refusal_of(pane.as_ref(), *share, CONTEXT_LIMIT).is_none()
+            refusal_of(pane.as_ref(), worker.is_free, *share, CONTEXT_LIMIT).is_none()
         })
         .collect();
     let merged = gitlab::in_turns(&candidates, 12, |(worker, _)| {
@@ -122,7 +122,8 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
 }
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-const STACK_MEMORY: f64 = GIB;
+/// An orchestration's task stack (#351): no Postgres of its own.
+const STACK_MEMORY: f64 = 0.5 * GIB;
 const AGENT_MEMORY: f64 = 0.5 * GIB;
 
 /// The memory free for a new process: core's `MemAvailable` of Linux, else what sysconf says.
@@ -150,7 +151,7 @@ pub fn stack_for(is_shared: bool, free: f64, reserved: f64) -> (bool, Option<Str
     let threshold = STACK_MEMORY + AGENT_MEMORY;
     if left < threshold {
         let why = format!(
-            "{} free, below {} (own stack ~{} + agent ~{}): on the shared stack",
+            "{} free, below {} (task stack ~{} + agent ~{}): on the shared stack",
             gb(left.max(0.0)),
             gb(threshold),
             gb(STACK_MEMORY),
@@ -257,7 +258,7 @@ mod tests {
             &[("1".into(), String::new()), ("2".into(), String::new())],
             &[],
             false,
-            2.0 * GIB,
+            1.5 * GIB,
         );
         assert!(matches!(
             &starts[0],
@@ -267,7 +268,7 @@ mod tests {
             }
         ));
         assert!(
-            matches!(&starts[1], Start::Fresh { is_shared: true, why: Some(why) } if why == "0.5 GB free, below 1.5 GB (own stack ~1.0 GB + agent ~0.5 GB): on the shared stack")
+            matches!(&starts[1], Start::Fresh { is_shared: true, why: Some(why) } if why == "0.5 GB free, below 1.0 GB (task stack ~0.5 GB + agent ~0.5 GB): on the shared stack")
         );
     }
 }

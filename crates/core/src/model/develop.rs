@@ -1,9 +1,9 @@
 //! Two more answers for the view of one worktree (#158, develop.mjs), both
-//! local: what develop brought in since the branch started, and whether
+//! local: what its base (develop or an epic, #349) brought in since the branch started, and whether
 //! merging it would conflict; and the migrations the database of the
 //! worktree's stack lacks.
 
-use crate::git::git;
+use crate::git::{base_of, git};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +22,8 @@ pub struct Merged {
     pub branch: String,
 }
 
-/// DEVELOP of a worktree: the merges newest first, the commits that came in
-/// without one, and the files a `git merge origin/develop` would stop at
+/// DEVELOP (its base) of a worktree: the merges newest first, the commits that came in
+/// without one, and the files a `git merge` of the base would stop at
 /// (None when git can't tell, older than 2.38).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Develop {
@@ -37,9 +37,9 @@ static MR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)!(\d+)\s*$").unwr
 static TRAILER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(Closes|Refs|See merge request|Co-Authored-By)\b").unwrap());
 
-/// What came into develop since `dir` branched off (develop.mjs `developOf`).
+/// What came into its base since `dir` branched off (develop.mjs `developOf`).
 pub fn develop_of(dir: &Path) -> Develop {
-    let (merges, direct) = merges_in(dir, "HEAD..origin/develop");
+    let (merges, direct) = merges_in(dir, &format!("HEAD..{}", base_of(dir).remote));
     let is_empty = merges.is_empty() && direct == 0;
     Develop {
         merges,
@@ -73,7 +73,7 @@ pub fn merges_in(dir: &Path, range: &str) -> (Vec<Merged>, usize) {
     (merges, direct)
 }
 
-/// The files a `git merge origin/develop` in `dir` would stop at, empty when
+/// The files a `git merge` of its base in `dir` would stop at, empty when
 /// it merges cleanly; None when git can't tell (older than 2.38).
 pub fn conflicts_of(dir: &Path) -> Option<Vec<String>> {
     let tree = git(
@@ -84,7 +84,7 @@ pub fn conflicts_of(dir: &Path) -> Option<Vec<String>> {
             "--name-only",
             "--no-messages",
             "HEAD",
-            "origin/develop",
+            &base_of(dir).remote,
         ],
     );
     // 0 clean, 1 conflicts (the tree's id, then one file per line), anything else: git can't.

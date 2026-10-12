@@ -24,6 +24,8 @@ mod act;
 mod actions;
 mod actor;
 mod agents;
+mod boxes;
+mod epic;
 mod everything;
 mod footer;
 mod header;
@@ -110,7 +112,11 @@ pub fn main(args: &[String]) -> ExitCode {
         .ok()
         .and_then(|folds| serde_json::from_str(&folds).ok())
     {
-        app.folds = folds;
+        // The boxes come from their file, as the new build read them.
+        app.folds = Folds {
+            boxes: std::mem::take(&mut app.folds.boxes),
+            ..folds
+        };
     }
     let binary = crate::binary::Started::now();
     let runtime = match super::runtime() {
@@ -307,7 +313,7 @@ impl GitlabState {
 }
 
 /// The user's folds, kept over redraws and into a new build; None: the model's default.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Folds {
     pub removed: Option<bool>,
@@ -318,6 +324,43 @@ pub struct Folds {
     pub is_every_issue_shown: bool,
     /// DONE: every entry's command under it, not only a failed one's.
     pub is_every_command_shown: bool,
+    /// The boxes opened under an MR's row and a worktree's node (#346).
+    /// Not handed to a new build: it reads them from their file (`folds_file`).
+    #[serde(skip)]
+    pub boxes: BoxFolds,
+}
+
+/// The MRs (by iid) and the worktrees (by issue) whose boxes are open
+/// (#346): folded by default, kept per viewer in a file next to the
+/// orchestration's record, so they stay open over a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BoxFolds {
+    pub mrs: std::collections::BTreeSet<i64>,
+    pub worktrees: std::collections::BTreeSet<i64>,
+}
+
+impl BoxFolds {
+    /// Where an orchestration's are kept: `.claude/orchestrations/<name>.folds`,
+    /// not `.json`, or it would read as a record.
+    pub fn file(main: &Path, name: &str) -> PathBuf {
+        breadboard_core::record::records_dir(main).join(format!("{name}.folds"))
+    }
+
+    /// The folds kept in `file`; none open without one or with a broken one.
+    pub fn read(file: &Path) -> Self {
+        std::fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Kept for the next start; a write that fails costs only that.
+    pub fn write(&self, file: &Path) {
+        if let Ok(text) = serde_json::to_string(self) {
+            let _ = std::fs::write(file, text + "\n");
+        }
+    }
 }
 
 /// What every section knows besides its model.
@@ -348,6 +391,8 @@ pub struct Overview {
     /// Why the model couldn't be built: the last good one stays.
     broken: Option<String>,
     folds: Folds,
+    /// Where the boxes' folds are kept: an orchestration's view, not `--once`.
+    folds_file: Option<PathBuf>,
     refresh: Option<mpsc::UnboundedSender<()>>,
     /// Wakes the local reader: after something the actor did, its result shows at once.
     wake_local: Option<std::sync::mpsc::SyncSender<()>>,
@@ -365,6 +410,10 @@ pub struct Overview {
 
 impl Overview {
     pub fn new(args: &Args, main: &Path) -> Self {
+        let folds_file = match &args.view {
+            View::Orchestration(name) if !args.is_once => Some(BoxFolds::file(main, name)),
+            _ => None,
+        };
         Self {
             view: args.view.clone(),
             is_once: args.is_once,
@@ -381,7 +430,11 @@ impl Overview {
             state: ViewState::default(),
             model: None,
             broken: None,
-            folds: Folds::default(),
+            folds: Folds {
+                boxes: folds_file.as_deref().map(BoxFolds::read).unwrap_or_default(),
+                ..Folds::default()
+            },
+            folds_file,
             refresh: None,
             wake_local: None,
             store: breadboard_core::main_update::store_of(main),
@@ -396,7 +449,7 @@ impl Overview {
     fn ctx(&self) -> Ctx<'_> {
         Ctx {
             is_once: self.is_once,
-            folds: self.folds,
+            folds: self.folds.clone(),
             gitlab: &self.gitlab,
             now: now_ms(),
             main_name: &self.main_name,
@@ -461,6 +514,7 @@ impl App for Overview {
                     return;
                 }
                 next::build(page, model, &ctx);
+                epic::build(page, model);
                 actions::build(page, model, &ctx);
                 worktrees::build(page, model, &ctx);
                 agents::build(page, model, &ctx);

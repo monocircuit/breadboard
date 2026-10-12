@@ -1,16 +1,20 @@
 //! AGENTS (#289, free-agents.mjs): the free agents of an orchestration, their
-//! worktree gone, waiting in their tab for the next issue. A row is a table
-//! line: its state, its name (#292) and the name it goes by, aligned over
-//! the rows, the dismiss button at the right edge; its context and where it
-//! came from under the name. Two clicks anywhere on a row dismiss it. The
-//! button stays whole on one line, the text wraps before it.
+//! worktree gone, their claude ended (#345). A row is a table line: its
+//! state, its name (#292), the name it goes by and its conversation's id
+//! (#345), aligned over the rows, the dismiss button at the right edge; its
+//! context and where it came from under the name. A click on the id copies
+//! `claude --resume <id>`; two clicks anywhere else on a row dismiss it. The
+//! buttons stay whole on one line, the text wraps before them.
 
 use super::{Act, Ctx, look};
 use crate::tui::theme::Tone;
 use crate::tui::{Page, Scene};
-use breadboard_core::model::free_agents::{FreeRow, free_head};
+use breadboard_core::model::free_agents::{FreeRow, free_head, short_id};
 use breadboard_core::model::orchestration::OrchestrationModel;
 use ratatui::text::Span;
+
+/// The columns of the id's button: 8 characters (`short_id`) and its padding.
+const ID_WIDTH: u16 = 10;
 
 /// The dismiss button's label (`✕ click again to dismiss <name>` once armed: the actor's).
 const DISMISS: &str = "✕ dismiss";
@@ -58,7 +62,7 @@ impl Columns {
             state: widest(&|row| row.state.text.clone()),
             display: widest(&|row| row.display.clone()),
             name: widest(&|row| row.name.clone()),
-            button: widest(&|row| format!(" {} ", armed(row))).max(button_width(DISMISS)),
+            button: widest(&|row| format!(" {} ", armed(row))).max(button_width(DISMISS) + 1 + ID_WIDTH),
         }
     }
 
@@ -73,16 +77,18 @@ fn button_width(label: &str) -> u16 {
     Span::raw(format!(" {label} ")).width() as u16
 }
 
-/// `free  Nadia Moreau  298-breadboard-no-push     ✕ dismiss`, then dim
-/// `0 % · from !310 · 1 issue` under the name (core's text).
+/// `free  Nadia Moreau  298-breadboard-no-push    0f3c2a91  ✕ dismiss`,
+/// then dim `0 % · from !310 · 1 issue` under the name (core's text). The id
+/// stands left of the dismiss button; an armed label takes the room of both.
 /// The widest label not beside the widest name: the name and the text go
-/// under the display name, the button stays at the right edge of the first
-/// line. Not even beside the display name: the words as they
-/// come, the button after them. Nothing is cut (#304).
+/// under the display name, the buttons stay at the right edge of the first
+/// line. Not even beside the display name: the words as they come, the
+/// buttons after them. Nothing is cut (#304).
 fn row_lines(scene: &mut Scene<Act>, row: &FreeRow, columns: &Columns, label: &str) {
     let dismiss = Act::Dismiss(row.id.clone());
-    let button = button_width(label);
-    let widest = columns.button.max(button);
+    let id = (label == DISMISS).then(|| short_id(&row.id));
+    let buttons = button_width(label) + id.map_or(0, |id| button_width(id) + 1);
+    let widest = columns.button.max(buttons);
     let under = columns.under();
     scene.block(dismiss.clone(), |scene| {
         let state = look::span(&row.state.text, look::wait(row.state.tone));
@@ -90,13 +96,19 @@ fn row_lines(scene: &mut Scene<Act>, row: &FreeRow, columns: &Columns, label: &s
         let name = look::span(&row.name, look::pink());
         let is_wide = under + columns.name + 1 + widest <= scene.width();
         let is_stacked = under + 1 + widest <= scene.width();
+        let right = |scene: &mut Scene<Act>| {
+            if let Some(id) = id {
+                scene.button(id, Tone::Gray, Act::CopyResume(row.id.clone()));
+            }
+            scene.button(label, Tone::Red, dismiss.clone());
+        };
         if !is_wide && !is_stacked {
             scene.atom(vec![state]);
             scene.atom(vec![display]);
             scene.atom(vec![name]);
             let room = scene.width();
             text(scene, row, room);
-            scene.button(label, Tone::Red, dismiss);
+            right(scene);
             return;
         }
         let mut first = vec![pad(state, columns.state + 2), pad(display, columns.display + 2)];
@@ -104,8 +116,8 @@ fn row_lines(scene: &mut Scene<Act>, row: &FreeRow, columns: &Columns, label: &s
             first.push(name.clone());
         }
         scene.atom(first);
-        scene.pad_to(scene.width() - button - 1);
-        scene.button(label, Tone::Red, dismiss);
+        scene.pad_to(scene.width() - buttons - 1);
+        right(scene);
         scene.end_line();
         // Beside the name: under it. Stacked: under the display name, where the most room is.
         let indent = if is_wide { under } else { columns.state + 2 };
@@ -140,7 +152,7 @@ mod tests {
 
     fn row(id: &str, display: &str, name: &str) -> FreeRow {
         FreeRow {
-            id: id.into(),
+            id: format!("{id}-5b7e-4d0a-9c11-2e8f6a7b4c3d"),
             name: name.into(),
             display: display.into(),
             state: AgentState {
@@ -175,32 +187,41 @@ mod tests {
     #[test]
     fn a_row_is_a_table_line_with_the_button_whole_at_the_right_edge() {
         let rows = [
-            row("a", "Nadia Moreau", "298-no-push"),
-            row("b", "Emil Keller", "306-crash-row"),
+            row("0f3c2a91", "Nadia Moreau", "298-no-push"),
+            row("7d41e0b2", "Emil Keller", "306-crash-row"),
         ];
         let scene = draw(&rows, 80);
         assert_eq!(
             text(&scene),
             [
-                "free  Nadia Moreau  298-no-push                                       ✕ dismiss",
+                "free  Nadia Moreau  298-no-push                            0f3c2a91   ✕ dismiss",
                 "                    0 % · from 298-no-push (!310) · 1 issue",
-                "free  Emil Keller   306-crash-row                                     ✕ dismiss",
+                "free  Emil Keller   306-crash-row                          7d41e0b2   ✕ dismiss",
                 "                    0 % · from 306-crash-row (!310) · 1 issue",
             ]
         );
         let buttons: Vec<_> = scene.regions.iter().filter(|region| region.is_button()).collect();
-        assert_eq!(buttons[0].area, ratatui::layout::Rect::new(69, 0, 11, 1));
+        // The id's button left of the dismiss, a click on it copies (#345).
+        assert_eq!(buttons[0].area, ratatui::layout::Rect::new(58, 0, 10, 1));
+        assert_eq!(
+            buttons[0].action(),
+            &Act::CopyResume("0f3c2a91-5b7e-4d0a-9c11-2e8f6a7b4c3d".into())
+        );
+        assert_eq!(buttons[1].area, ratatui::layout::Rect::new(69, 0, 11, 1));
         // The whole row is the block a click dismisses.
         let blocks: Vec<_> = scene.regions.iter().filter(|region| !region.is_button()).collect();
         assert_eq!((blocks[0].area.y, blocks[0].area.height), (0, 2));
-        assert_eq!(blocks[0].action(), &Act::Dismiss("a".into()));
+        assert_eq!(
+            blocks[0].action(),
+            &Act::Dismiss("0f3c2a91-5b7e-4d0a-9c11-2e8f6a7b4c3d".into())
+        );
     }
 
     #[test]
     fn an_armed_row_keeps_its_table_line_and_the_button_at_the_right_edge() {
         let rows = [
-            row("a", "Elif Kowalczyk", "298-breadboard-no-push-without-passing"),
-            row("b", "Emil Keller", "306-crash-row"),
+            row("0f3c2a91", "Elif Kowalczyk", "298-breadboard-no-push-without-passing"),
+            row("7d41e0b2", "Emil Keller", "306-crash-row"),
         ];
         let label = armed(&rows[0]);
         assert_eq!(label, "✕ click again to dismiss Elif Kowalczyk");
@@ -231,7 +252,11 @@ mod tests {
 
     #[test]
     fn at_80_columns_the_name_goes_under_and_arming_moves_nothing() {
-        let rows = [row("a", "Elif Kowalczyk", "298-breadboard-no-push-without-passing")];
+        let rows = [row(
+            "0f3c2a91",
+            "Elif Kowalczyk",
+            "298-breadboard-no-push-without-passing",
+        )];
         let unarmed = draw(&rows, 78);
         let mut armed_scene = Scene::new(78);
         row_lines(&mut armed_scene, &rows[0], &Columns::of(&rows), &armed(&rows[0]));
@@ -239,7 +264,7 @@ mod tests {
         let (unarmed_text, armed_text) = (text(&unarmed), text(&armed_scene));
         assert_eq!(
             unarmed_text[0],
-            format!("free  Elif Kowalczyk{}✕ dismiss", " ".repeat(48))
+            format!("free  Elif Kowalczyk{}0f3c2a91   ✕ dismiss", " ".repeat(37))
         );
         assert_eq!(
             armed_text[0],
@@ -256,7 +281,7 @@ mod tests {
     #[test]
     fn a_row_too_narrow_for_its_armed_label_runs_on_before_it_is_armed() {
         // 60 columns hold `✕ dismiss` after the display name, not the armed label: no reflow on a click.
-        let rows = [row("a", "Elif Kowalczyk", "298-breadboard-no-push")];
+        let rows = [row("0f3c2a91", "Elif Kowalczyk", "298-breadboard-no-push")];
         let unarmed = draw(&rows, 60);
         let mut scene = Scene::new(60);
         row_lines(&mut scene, &rows[0], &Columns::of(&rows), &armed(&rows[0]));
@@ -267,7 +292,7 @@ mod tests {
 
     #[test]
     fn its_text_wraps_between_parts_never_inside_one() {
-        let rows = [row("a", "Emil Keller", "306-overview-merge-requests-crash-row")];
+        let rows = [row("0f3c2a91", "Emil Keller", "306-overview-merge-requests-crash-row")];
         let lines = text(&draw(&rows, 80));
         assert_eq!(
             lines[1..],
@@ -290,7 +315,11 @@ mod tests {
     #[test]
     fn a_narrow_pane_keeps_the_button_whole_on_one_line() {
         let scene = draw(
-            &[row("a", "Nadia Moreau", "298-breadboard-no-push-without-passing")],
+            &[row(
+                "0f3c2a91",
+                "Nadia Moreau",
+                "298-breadboard-no-push-without-passing",
+            )],
             30,
         );
         let lines = text(&scene);
