@@ -223,8 +223,11 @@ breadboard decides which pipelines exist at all:
   is stale (no `breadboard serve` of a build with the queue runs), the guard
   drops the option and refuses that one push: pushed again, GitLab starts
   the pipeline itself, so nothing stalls. The main checkout and a local
-  origin are left alone. `git config breadboard.ci push` turns it off:
-  pushes start their pipelines again, and the queue starts none.
+  origin are left alone.
+- **The kill switch**: `git config breadboard.ci push` (in the main
+  checkout) turns the queue off within 10 s: it starts and cancels nothing,
+  and pushes start their pipelines again. `git config --unset breadboard.ci`
+  turns it on.
 - **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
   the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
   repo is open, it reads the open MRs and the runner's free slots
@@ -237,16 +240,29 @@ breadboard decides which pipelines exist at all:
   lowest-ranked running MR pipeline behind it is cancelled to make room,
   one per 30 s, and queued again. A pipeline into `main`, of develop or
   of a tag is never cancelled, and neither is one a click started.
+- **One pipeline per commit** (#369): an MR's newest pipeline is the one
+  with the highest id (in a list of MRs gitlab.com gives their pipelines in
+  no order of time). Right before creating one the queue reads the MR and
+  its pipelines back over REST: pushed meanwhile, or a pipeline of that
+  commit there already (any status but cancelled or skipped; for a click,
+  any still to finish), it creates none. A commit asked for once is never
+  asked for again by itself, not even when GitLab refused it or it failed
+  at its creation. It cancels only pipelines it created itself. What it
+  asked for and created is kept in `.claude/ci/asked.json` over restarts,
+  and one daemon per checkout schedules (`.claude/ci/scheduler.pid`).
+- **Only the orchestrations' MRs**: those in an `order-<name>.json`. An MR
+  of no orchestration (vita's, a colleague's) is never touched: no
+  pipeline, no cancel.
 - **No pipeline before the bar is full** (the user's rule): an
   orchestration's MR gets one only once every box of its issue is ticked
-  (after-deploy ones excepted) and `wt:check` passed at its HEAD; its
+  (after-deploy ones excepted) and `wt:check` passed at its HEAD, the
+  commit GitLab has as the MR's newest; its
   live overviews write both, with the merge order, to
   `.claude/ci/order-<name>.json`. Then the agent marks it ready and posts
   the merge after the pipeline is green.
 - **The order**: a click on the row (run now, also before the bar is full),
   a hotfix or anything into `main`, the MRs with a full bar in the merge
-  order, fixes after a red run; an MR of no orchestration counts as full,
-  its drafts only while no other pipeline runs. A pipeline that a person cancelled, or that GitLab
+  order, fixes after a red run. A pipeline that a person cancelled, or that GitLab
   skipped, for the newest commit stays that way until a click.
 - **The overview** shows a waiting MR's place instead of its pipeline mark,
   e.g. `CI: next (2nd) ▸`, `CI: after the boxes (3/7) ▸` or `CI: after wt:check ▸`; a click on it moves the MR to the front

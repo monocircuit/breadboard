@@ -173,7 +173,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 3) { nodes { id status sha ref } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
@@ -192,15 +192,19 @@ pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
             // Its newest MR pipeline, of any commit: after a push that skipped CI
             // GitLab's head pipeline is none, and a red one before it matters.
             // A branch's (the `skipped` one a push with ci.skip leaves) isn't one.
+            // Newest by id: in a list of MRs gitlab.com gives each one's
+            // pipelines in no order of time (by sha, 2026-10-12), and the first
+            // taken for the newest started its pipelines again and again (#369).
             pipeline: nodes(node, "pipelines")
                 .iter()
                 .filter_map(|pipeline| pipeline_of(pipeline, ""))
-                .find(|pipeline| {
+                .filter(|pipeline| {
                     pipeline
                         .reference
                         .as_deref()
                         .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
-                }),
+                })
+                .max_by_key(|pipeline| pipeline.id),
         })
         .collect()
 }
@@ -1122,6 +1126,23 @@ mod tests {
         assert_eq!((pipeline.id, pipeline.status.as_str()), (2936237215, "pending"));
         assert_eq!(pipeline.reference.as_deref(), Some("refs/merge-requests/349/head"));
         assert_eq!(mrs[0].labels, vec!["enhancement".to_string()]);
+    }
+
+    #[test]
+    fn takes_the_newest_pipeline_whatever_order_gitlab_lists_them_in() {
+        // !337 on 2026-10-12 as gitlab.com listed it: by sha, the newest last.
+        let project: Value = serde_json::from_str(
+            r#"{ "mergeRequests": { "nodes": [ { "iid": "337", "draft": true,
+              "sourceBranch": "feature/337-x", "targetBranch": "develop", "diffHeadSha": "e426e44f",
+              "pipelines": { "nodes": [
+                { "id": "gid://gitlab/Ci::Pipeline/2936354816", "status": "CANCELED", "sha": "1277fb9d", "ref": "refs/merge-requests/337/head" },
+                { "id": "gid://gitlab/Ci::Pipeline/2936044899", "status": "FAILED", "sha": "1696dc83", "ref": "refs/merge-requests/337/head" },
+                { "id": "gid://gitlab/Ci::Pipeline/2939744109", "status": "RUNNING", "sha": "e426e44f", "ref": "refs/merge-requests/337/head" }
+              ] } } ] } }"#,
+        )
+        .unwrap();
+        let pipeline = open_mrs_of(&project)[0].pipeline.clone().unwrap();
+        assert_eq!((pipeline.id, pipeline.sha.as_deref()), (2939744109, Some("e426e44f")));
     }
 
     #[test]

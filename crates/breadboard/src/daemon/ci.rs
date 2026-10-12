@@ -3,12 +3,14 @@
 //! slots, creates at most one MR pipeline (core's `ci::decide`) and writes
 //! where each MR stands to `.claude/ci/queue.json` for the rows. The user
 //! asked for these writes (#357, rewrite rule 6): a pipeline created, its
-//! superseded one cancelled, nothing else. Off with `git config
-//! breadboard.ci push`: pushes start their pipelines themselves then. With
-//! `BREADBOARD_CI_DRY` set (a try) it decides and says so, and writes nothing
-//! to GitLab.
+//! superseded one cancelled, nothing else; only for the orchestrations' MRs,
+//! one per commit, read back from GitLab right before (#369). What it asked
+//! for is kept in `.claude/ci/asked.json`, one daemon per checkout schedules.
+//! Off with `git config breadboard.ci push` (the kill switch): pushes start
+//! their pipelines themselves then. With `BREADBOARD_CI_DRY` set (a try) it
+//! decides and says so, and writes nothing to GitLab.
 
-use breadboard_core::ci::{self, Decision, MODE_KEY, Queue, Ranks, RunNow, Slots};
+use breadboard_core::ci::{self, Asked, Decision, MODE_KEY, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
 use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
 use breadboard_core::time::now_ms;
@@ -38,9 +40,6 @@ pub fn is_queued(main: &Path) -> bool {
 /// The queue of `main`, as long as the daemon runs.
 pub async fn schedule(main: PathBuf) {
     let gitlab = Gitlab::new(&main);
-    let mut started: HashMap<i64, (String, i64)> = HashMap::new();
-    // The commits whose pipeline the queue cancelled for an MR ahead: queued again.
-    let mut preempted: HashMap<i64, String> = HashMap::new();
     let mut preempted_at: Option<std::time::Instant> = None;
     let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
@@ -62,13 +61,20 @@ pub async fn schedule(main: PathBuf) {
             let _ = std::fs::remove_file(ci::queue_file(&main));
             continue;
         }
+        // Another daemon schedules this checkout: it writes the queue too.
+        if !ci::holds_scheduler(&main) {
+            continue;
+        }
+        // Read anew each tick: what a daemon before asked for counts.
+        let mut asked: Asked = ci::read_or_default(&ci::asked_file(&main));
         let Ok(project) = gitlab.graphql(CI_QUERY, json!({})).await else {
             continue;
         };
         let mrs = open_mrs_of(&project);
         let main_now = main.clone();
-        let asked = std::mem::take(&mut started);
-        let cancelled = preempted.clone();
+        let started: HashMap<i64, (String, i64)> = asked.started.clone().into_iter().collect();
+        let cancelled: HashMap<i64, String> = asked.preempted.clone().into_iter().collect();
+        let ours = asked.ours.iter().copied().collect();
         let step = tokio::task::spawn_blocking(move || {
             let now = now_ms();
             let running = mrs
@@ -83,19 +89,12 @@ pub async fn schedule(main: PathBuf) {
             let run_now: RunNow = ci::read_or_default(&ci::run_now_file(&main_now));
             let mut ranks = Ranks::of(&ci::published_of(&main_now), &run_now);
             ranks.preempted = cancelled;
-            (
-                ci::decide(&mrs, &ranks, slots, &asked, now),
-                slots,
-                run_now,
-                mrs,
-                asked,
-                now,
-            )
+            ranks.ours = ours;
+            (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
         });
-        let Ok((decision, slots, run_now, mrs, was_started, now)) = step.await else {
+        let Ok((decision, slots, run_now, mrs, now)) = step.await else {
             continue;
         };
-        started = was_started;
         let Decision { places, start, preempt } = decision;
         if is_dry {
             last = start
@@ -116,8 +115,8 @@ pub async fn schedule(main: PathBuf) {
             .await;
             if let Ok(said) = said {
                 last = Some(match said {
-                    Ok(()) => {
-                        preempted.insert(iid, sha);
+                    Ok(_) => {
+                        asked.preempted.insert(iid, sha);
                         format!("!{iid} held for the MR ahead")
                     }
                     Err(error) => format!("!{iid} not held: {}", first_line(&error)),
@@ -125,7 +124,6 @@ pub async fn schedule(main: PathBuf) {
             }
         }
         if let Some(start) = start.filter(|_| !is_dry) {
-            preempted.remove(&start.iid);
             let main = main.clone();
             let done = tokio::task::spawn_blocking(move || {
                 let said = run(&main, &start);
@@ -134,10 +132,21 @@ pub async fn schedule(main: PathBuf) {
             .await;
             if let Ok((start, said)) = done {
                 // Asked for, whether GitLab took it or not: a refusal (no job for
-                // these changes) isn't asked again for the same commit.
-                started.insert(start.iid, (start.sha.clone(), now));
+                // these changes, the activity limit) isn't asked again for the
+                // same commit; a commit superseded meanwhile is decided anew.
+                if !matches!(said, Ok(Ran::Superseded)) {
+                    asked.preempted.remove(&start.iid);
+                    asked.started.insert(start.iid, (start.sha.clone(), now));
+                }
                 last = Some(match said {
-                    Ok(()) => format!("started !{}", start.iid),
+                    Ok(Ran::Created(id)) => {
+                        if let Some(id) = id {
+                            asked.add_ours(id);
+                        }
+                        format!("started !{}", start.iid)
+                    }
+                    Ok(Ran::Exists(id)) => format!("!{} has pipeline {id} of its commit", start.iid),
+                    Ok(Ran::Superseded) => format!("!{} pushed meanwhile", start.iid),
                     Err(error) => format!("!{} not started: {}", start.iid, first_line(&error)),
                 });
             }
@@ -153,8 +162,12 @@ pub async fn schedule(main: PathBuf) {
                 (mr.iid, is_live)
             })
             .collect();
-        started.retain(|iid, _| open.contains_key(iid));
-        preempted.retain(|iid, _| open.contains_key(iid));
+        asked.started.retain(|iid, _| open.contains_key(iid));
+        asked.preempted.retain(|iid, _| open.contains_key(iid));
+        if !is_dry {
+            let _ = ci::write_whole(&ci::asked_file(&main), &asked);
+        }
+        let started: HashMap<i64, (String, i64)> = asked.started.into_iter().collect();
         forget_clicks(&main, &run_now, &started, &open, now);
         let queue = Queue {
             at: now,
@@ -197,33 +210,94 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or_default()
 }
 
-/// Its superseded pipeline cancelled, then the pipeline of the MR's newest commit created.
-fn run(main: &Path, start: &ci::Start) -> Result<(), String> {
+/// What `run` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Ran {
+    /// Created, its id when GitLab said it.
+    Created(Option<i64>),
+    /// GitLab has one of that commit already: none created (#369).
+    Exists(i64),
+    /// The MR has a newer commit than the one decided for: nothing done.
+    Superseded,
+}
+
+/// GitLab read back first (#369: its list may lag or be read wrong): the MR
+/// still at the commit decided for, and no pipeline of that commit but a
+/// cancelled or skipped one (a click's: none still to finish). Then its
+/// superseded pipeline cancelled, and the pipeline of the MR's newest commit created.
+fn run(main: &Path, start: &ci::Start) -> Result<Ran, String> {
     run_with(main, start, "glab")
 }
 
-fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<(), String> {
+fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<Ran, String> {
+    let mr = glab_get(main, glab, &format!("projects/:fullpath/merge_requests/{}", start.iid))?;
+    if mr.get("sha").and_then(serde_json::Value::as_str) != Some(start.sha.as_str()) {
+        return Ok(Ran::Superseded);
+    }
+    let pipelines = glab_get(
+        main,
+        glab,
+        &format!("projects/:fullpath/merge_requests/{}/pipelines?per_page=100", start.iid),
+    )?;
+    let existing = pipelines.as_array().into_iter().flatten().find(|pipeline| {
+        let status = pipeline
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        pipeline.get("sha").and_then(serde_json::Value::as_str) == Some(start.sha.as_str())
+            && if start.is_again {
+                ci::is_live(status)
+            } else {
+                !matches!(status, "canceled" | "canceling" | "skipped")
+            }
+    });
+    if let Some(pipeline) = existing {
+        return Ok(Ran::Exists(
+            pipeline.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+        ));
+    }
     if let Some(id) = start.cancel {
         // A cancel that fails (finished meanwhile) doesn't stop the new one.
         let _ = glab_post(main, glab, &format!("projects/:fullpath/pipelines/{id}/cancel"));
     }
-    glab_post(
+    let created = glab_post(
         main,
         glab,
         &format!("projects/:fullpath/merge_requests/{}/pipelines", start.iid),
-    )
+    )?;
+    Ok(Ran::Created(created.get("id").and_then(serde_json::Value::as_i64)))
 }
 
-/// `glab api --method POST <endpoint>` as the user, from the main checkout.
-fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<(), String> {
-    let output = Command::new(glab)
-        .args(["api", "--method", "POST", endpoint])
-        .current_dir(main)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("glab: {error}"))?;
+/// `glab api <endpoint>` as the user, from the main checkout: its JSON.
+fn glab_get(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
+    glab_api(main, glab, &["api", endpoint])
+}
+
+/// `glab api --method POST <endpoint>` as the user, from the main checkout: its JSON.
+fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
+    glab_api(main, glab, &["api", "--method", "POST", endpoint])
+}
+
+fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Value, String> {
+    let spawn = || {
+        Command::new(glab)
+            .args(args)
+            .current_dir(main)
+            .stdin(Stdio::null())
+            .output()
+    };
+    // A glab just written (a test's) is busy while another thread forks: a moment later it runs.
+    let mut output = spawn();
+    for _ in 0..20 {
+        if !matches!(&output, Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        output = spawn();
+    }
+    let output = output.map_err(|error| format!("glab: {error}"))?;
     if output.status.success() {
-        return Ok(());
+        return Ok(serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null));
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(if stderr.is_empty() {
@@ -238,29 +312,101 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test]
-    fn creates_the_pipeline_after_cancelling_the_superseded_one() {
-        let scratch = std::env::temp_dir().join(format!("ci-run-test-{}", std::process::id()));
+    /// A glab answering from `answers` (`$*` → its JSON), each call logged.
+    fn fake_glab(scratch: &Path, answers: &[(&str, &str)]) -> String {
         let bin = scratch.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let log = scratch.join("glab.log");
+        let cases: String = answers
+            .iter()
+            .map(|(args, json)| format!("  '{args}') echo '{json}' ;;\n"))
+            .collect();
         let glab = bin.join("glab");
         std::fs::write(
             &glab,
-            format!("#!/bin/sh\necho \"$*\" >> '{}'\necho '{{}}'\n", log.display()),
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n{cases}  *) echo '{{}}' ;;\nesac\n",
+                log.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+        glab.to_string_lossy().into_owned()
+    }
+
+    const MR: &str = "api projects/:fullpath/merge_requests/339";
+    const PIPELINES: &str = "api projects/:fullpath/merge_requests/339/pipelines?per_page=100";
+
+    #[test]
+    fn creates_the_pipeline_after_reading_gitlab_and_cancelling_the_superseded_one() {
+        let scratch = std::env::temp_dir().join(format!("ci-run-test-{}", std::process::id()));
+        let glab = fake_glab(
+            &scratch,
+            &[
+                (MR, r#"{"sha":"a"}"#),
+                (
+                    PIPELINES,
+                    r#"[{"id":70,"sha":"old","status":"running"},{"id":60,"sha":"a","status":"canceled"}]"#,
+                ),
+                (
+                    "api --method POST projects/:fullpath/merge_requests/339/pipelines",
+                    r#"{"id":71}"#,
+                ),
+            ],
+        );
         let start = ci::Start {
             iid: 339,
             sha: "a".into(),
             cancel: Some(70),
+            is_again: false,
         };
-        assert_eq!(run_with(&scratch, &start, &glab.to_string_lossy()), Ok(()));
+        assert_eq!(run_with(&scratch, &start, &glab), Ok(Ran::Created(Some(71))));
         assert_eq!(
-            std::fs::read_to_string(&log).unwrap(),
-            "api --method POST projects/:fullpath/pipelines/70/cancel\n\
-             api --method POST projects/:fullpath/merge_requests/339/pipelines\n"
+            std::fs::read_to_string(scratch.join("glab.log")).unwrap(),
+            format!(
+                "{MR}\n{PIPELINES}\napi --method POST projects/:fullpath/pipelines/70/cancel\n\
+                 api --method POST projects/:fullpath/merge_requests/339/pipelines\n"
+            )
+        );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn creates_none_when_gitlab_has_one_of_the_commit_or_a_newer_commit() {
+        // #369: !337 got seven pipelines of e426e44f, one failed at its creation.
+        let scratch = std::env::temp_dir().join(format!("ci-exists-test-{}", std::process::id()));
+        let start = ci::Start {
+            iid: 339,
+            sha: "a".into(),
+            cancel: Some(70),
+            is_again: false,
+        };
+        for (status, ran) in [("pending", Ran::Exists(80)), ("failed", Ran::Exists(80))] {
+            let pipelines = format!(r#"[{{"id":80,"sha":"a","status":"{status}"}}]"#);
+            let glab = fake_glab(&scratch, &[(MR, r#"{"sha":"a"}"#), (PIPELINES, &pipelines)]);
+            assert_eq!(run_with(&scratch, &start, &glab), Ok(ran));
+        }
+        // A click asks again for one that ended, never while one runs.
+        let again = ci::Start {
+            is_again: true,
+            ..start.clone()
+        };
+        let glab = fake_glab(
+            &scratch,
+            &[
+                (MR, r#"{"sha":"a"}"#),
+                (PIPELINES, r#"[{"id":80,"sha":"a","status":"failed"}]"#),
+            ],
+        );
+        assert_eq!(run_with(&scratch, &again, &glab), Ok(Ran::Created(None)));
+        // Pushed meanwhile: the old commit gets nothing.
+        let glab = fake_glab(&scratch, &[(MR, r#"{"sha":"b"}"#)]);
+        assert_eq!(run_with(&scratch, &start, &glab), Ok(Ran::Superseded));
+        let log = std::fs::read_to_string(scratch.join("glab.log")).unwrap();
+        assert_eq!(
+            log.matches("POST projects/:fullpath/merge_requests").count(),
+            1,
+            "{log}"
         );
         std::fs::remove_dir_all(&scratch).unwrap();
     }
