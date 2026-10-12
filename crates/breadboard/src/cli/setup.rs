@@ -10,6 +10,7 @@ pub(in crate::cli) mod changelog;
 mod check;
 mod commands;
 mod conversations;
+pub(in crate::cli) mod epic;
 mod fragments;
 mod gitlab;
 mod herdr;
@@ -38,10 +39,16 @@ fn shape_of(command: &str) -> Option<Shape> {
         usage: usage.to_string(),
     };
     Some(match command {
-        "wt:new" => shape(&["--shared", "--fix", "--origin"], &["--origin"], Some(1), new::USAGE),
+        "wt:new" => shape(
+            &["--shared", "--fix", "--origin", "--base"],
+            &["--origin", "--base"],
+            Some(1),
+            new::USAGE,
+        ),
         "wt:orchestrate" => shape(
             &[
                 "--title",
+                "--epic",
                 "--shared",
                 "--peer",
                 "--brief",
@@ -58,7 +65,7 @@ fn shape_of(command: &str) -> Option<Shape> {
                 "--now",
                 "--cap",
             ],
-            &["--title", "--peer", "--brief", "--to", "--limit"],
+            &["--title", "--epic", "--peer", "--brief", "--to", "--limit"],
             None,
             orchestrate::USAGE,
         ),

@@ -109,6 +109,8 @@ pub struct Issue {
     /// Why it can't get a worktree: closed, there already, claimed on origin.
     pub why: Option<String>,
     pub branch: String,
+    /// Its milestone's title: which epic it belongs to (#350).
+    pub milestone: Option<String>,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -296,6 +298,10 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         is_fix,
         dir,
         why,
+        milestone: found
+            .get("milestone")
+            .and_then(|milestone| str_of(milestone, "title"))
+            .map(String::from),
     })
 }
 
@@ -408,13 +414,15 @@ fn herdr_unanswered(why: &str, worker: &str) -> Fail {
     ))
 }
 
-/// Why an agent can't take a next issue, or None: no pane runs it, it works
-/// or waits, herdr can't tell, or its context `share` is above `limit`.
-pub fn refusal_of(pane: Option<&Value>, share: Option<f64>, limit: f64) -> Option<String> {
-    let Some(pane) = pane else {
-        return Some("no claude runs it (herdr knows no pane with its conversation)".into());
+/// Why an agent can't take a next issue, or None: no pane runs it (a free
+/// agent sleeps without one, #345), it works or waits, herdr can't tell, or
+/// its context `share` is above `limit`.
+pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit: f64) -> Option<String> {
+    let status = match pane {
+        Some(pane) => pane.get("agent_status").and_then(Value::as_str).unwrap_or("unknown"),
+        None if is_free => "idle",
+        None => return Some("no claude runs it (herdr knows no pane with its conversation)".into()),
     };
-    let status = pane.get("agent_status").and_then(Value::as_str).unwrap_or("unknown");
     match status {
         "working" => return Some("it is working".into()),
         "blocked" => return Some("it waits for an answer".into()),
@@ -488,7 +496,7 @@ pub fn before_line(issues: &[(i64, Option<String>)]) -> Option<String> {
         })
         .collect();
     Some(format!(
-        "You are a reused agent: you worked on {} before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged.",
+        "You are a reused agent: you worked on {} before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged.",
         list.join(", ")
     ))
 }
@@ -631,6 +639,18 @@ impl Made {
 /// may fail after the setup (#130), so the worktree counts when it is there.
 /// The one for a fresh start (the setup group's) and a handover.
 pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) -> Made {
+    // One issue, one worktree, one MR (#349): never a branch that claims another issue.
+    let claimed = breadboard_core::git::issue_of_branch(&issue.branch);
+    if claimed.and_then(|claimed| i64::try_from(claimed).ok()) != Some(issue.number) {
+        return Made {
+            is_there: false,
+            failed: Some(format!(
+                "#{} gets a worktree of its own, {} claims another issue",
+                issue.number, issue.branch
+            )),
+            status: None,
+        };
+    }
     let mut args = vec!["wt:new", issue.feature.as_str(), "--origin", name];
     if issue.is_fix {
         args.push("--fix");
@@ -974,7 +994,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let pane =
         as_step(&idle, || pane_of_conversation(&worker.id)).map_err(|why| herdr_unanswered(&why, &worker.name))?;
     let share = context_share_of(&worker.id);
-    let refusal = refusal_of(pane.as_ref(), share, limit);
+    let refusal = refusal_of(pane.as_ref(), worker.is_free, share, limit);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
     // The handover fails: in the agent's history (not on a dry run), then said.
@@ -1089,7 +1109,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             ));
         }
     };
-    if let Some(now) = refusal_of(pane.as_ref(), None, limit) {
+    if let Some(now) = refusal_of(pane.as_ref(), worker.is_free, None, limit) {
         let why = format!(
             "after the setup, {} {}",
             worker.name,
@@ -1102,7 +1122,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             undone(is_gone, &issue)
         ));
     }
-    if pane.is_none() {
+    if pane.is_none() && !worker.is_free {
         return fail("herdr lost the agent's pane");
     }
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
@@ -1381,23 +1401,29 @@ mod tests {
     fn refuses_an_agent_at_work_or_full() {
         let pane = |status: &str| json!({ "agent_status": status });
         assert_eq!(
-            refusal_of(None, None, 0.5).unwrap(),
+            refusal_of(None, false, None, 0.5).unwrap(),
             "no claude runs it (herdr knows no pane with its conversation)"
         );
-        assert_eq!(refusal_of(Some(&pane("working")), None, 0.5).unwrap(), "it is working");
         assert_eq!(
-            refusal_of(Some(&pane("blocked")), None, 0.5).unwrap(),
+            refusal_of(Some(&pane("working")), false, None, 0.5).unwrap(),
+            "it is working"
+        );
+        assert_eq!(
+            refusal_of(Some(&pane("blocked")), false, None, 0.5).unwrap(),
             "it waits for an answer"
         );
         assert_eq!(
-            refusal_of(Some(&json!({})), None, 0.5).unwrap(),
+            refusal_of(Some(&json!({})), false, None, 0.5).unwrap(),
             "herdr can't tell what it does (unknown)"
         );
         assert_eq!(
-            refusal_of(Some(&pane("idle")), Some(0.62), 0.5).unwrap(),
+            refusal_of(Some(&pane("idle")), false, Some(0.62), 0.5).unwrap(),
             "its context is at 62 %, above the limit of 50 %"
         );
-        assert_eq!(refusal_of(Some(&pane("done")), Some(0.4), 0.5), None);
+        assert_eq!(refusal_of(Some(&pane("done")), false, Some(0.4), 0.5), None);
+        // A free agent sleeps without a pane (#345): it takes one, unless full.
+        assert_eq!(refusal_of(None, true, Some(0.4), 0.5), None);
+        assert!(refusal_of(None, true, Some(0.62), 0.5).is_some());
     }
 
     #[test]
@@ -1411,6 +1437,7 @@ mod tests {
             dir: PathBuf::from("/r/p-5-t"),
             why: None,
             branch: "feature/5-t".into(),
+            milestone: None,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1432,6 +1459,7 @@ mod tests {
             dir: PathBuf::from("/r/p-247-t"),
             why: None,
             branch: "fix/247-t".into(),
+            milestone: None,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);
@@ -1491,7 +1519,7 @@ mod tests {
         assert_eq!(before_line(&[]), None);
         assert_eq!(
             before_line(&[(3, Some("a".into())), (4, None)]).unwrap(),
-            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from develop as it is now: nothing of that work carries over but what is merged."
+            "You are a reused agent: you worked on #3 (a), #4 before. Treat this issue on its own, from its base as it is now: nothing of that work carries over but what is merged."
         );
     }
 

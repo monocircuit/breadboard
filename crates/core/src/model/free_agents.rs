@@ -1,6 +1,8 @@
 //! AGENTS of an orchestration (#289, free-agents.mjs): the free agents, their
-//! worktree gone, waiting in its space for the next issue. Each with its state
-//! (#288), its context and where it came from; two clicks on a row dismiss it.
+//! worktree gone, their claude ended and their tab closed (#345): the record
+//! keeps each by its conversation's id, a next issue resumes it. Each with
+//! its state (#288), its context, where it came from and its conversation's
+//! id; two clicks on a row dismiss it.
 
 use super::agent_state::{AgentState, Facts, agent_state_of};
 use super::display_names::Names;
@@ -14,13 +16,14 @@ use std::collections::HashMap;
 /// the worktree and MR it came from, how many issues it did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FreeRow {
+    /// Its conversation's id: `claude --resume <id>`.
     pub id: String,
     pub name: String,
     /// The person's name it is shown by (#292).
     pub display: String,
     pub state: AgentState,
     pub text: String,
-    /// Its tab, which its dismiss closes.
+    /// Its tab, which its dismiss closes: only one resumed by hand has one (#345).
     pub tab: Option<String>,
 }
 
@@ -68,12 +71,24 @@ pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>, nam
         .collect()
 }
 
-/// The AGENTS box's title: `2 free · wait in their tab …`.
+/// The AGENTS box's title: `2 free · no tab, …`.
 pub fn free_head(count: usize) -> Span {
     Span::new(
-        format!("{count} free · wait in their tab for the next issue; two clicks dismiss one"),
+        format!(
+            "{count} free · no tab, a next issue resumes one; its id copies `claude --resume`, two clicks dismiss one"
+        ),
         Paint::Dim,
     )
+}
+
+/// A conversation's id as its column shows it: its first 8 characters (#345).
+pub fn short_id(id: &str) -> &str {
+    id.char_indices().nth(8).map_or(id, |(at, _)| &id[..at])
+}
+
+/// What a click on the id copies.
+pub fn resume_command(id: &str) -> String {
+    format!("claude --resume {id}")
 }
 
 #[cfg(test)]
@@ -90,6 +105,14 @@ mod tests {
             },
         )]
         .into()
+    }
+
+    #[test]
+    fn its_id_is_short_and_resumes_whole() {
+        let id = "0f3c2a91-5b7e-4d0a-9c11-2e8f6a7b4c3d";
+        assert_eq!(short_id(id), "0f3c2a91");
+        assert_eq!(short_id("abc"), "abc");
+        assert_eq!(resume_command(id), format!("claude --resume {id}"));
     }
 
     #[test]
