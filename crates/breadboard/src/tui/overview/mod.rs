@@ -22,7 +22,7 @@
 
 mod act;
 mod actions;
-mod actor;
+pub(crate) mod actor;
 mod agents;
 mod boxes;
 mod epic;
@@ -533,6 +533,10 @@ impl App for Overview {
 
     fn picked(&mut self, picked: Option<&Act>) -> Flow {
         worktree_view::picked(self, picked)
+    }
+
+    fn is_typing(&self) -> bool {
+        self.actor.prompt.is_some()
     }
 }
 

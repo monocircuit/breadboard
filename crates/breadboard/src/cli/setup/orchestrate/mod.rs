@@ -15,6 +15,7 @@ use crate::cli::setup::herdr;
 use crate::cli::setup::proc::{self, Args, fail, name_refusal, outln, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
+use breadboard_core::runs;
 use breadboard_core::time::{now_ms, to_iso};
 use issue::{
     BRIEF_PROMPT, Brief, Item, brief_of, known_entry, make_worktree, number_of, object, read_issue, record_entry,
@@ -486,8 +487,15 @@ pub fn command(args: &Args) -> ExitCode {
                     };
                     results.push(if agent.is_started {
                         format!(
-                            "✓ #{} {}: claude started in its tab, named {}{note}",
-                            item.number, item.feature, item.feature
+                            "✓ #{} {}: claude {}, named {}{note}",
+                            item.number,
+                            item.feature,
+                            if runs::is_headless(&main) {
+                                "queued headless (breadboard runs)"
+                            } else {
+                                "started in its tab"
+                            },
+                            item.feature
                         )
                     } else {
                         format!(

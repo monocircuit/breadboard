@@ -587,7 +587,17 @@ impl Free {
     /// Ok(its name) once it sleeps, Err why not: its claude ended, its tab
     /// closed, the record keeping it by its conversation's id (#345).
     fn run(&self) -> Result<String, String> {
-        restart::retire(&restart::Machine, &self.id, &self.pane, &free_line(self.iid))?;
+        // A headless agent (#359) has nothing to end or close: free is its
+        // record entry, and its next handover is the next run.
+        if !breadboard_core::runs::is_headless(&self.main) {
+            restart::retire(&restart::Machine, &self.id, &self.pane, &free_line(self.iid))?;
+        }
+        self.record();
+        Ok(self.agent.clone())
+    }
+
+    /// The free agent in the record (its session, files, MRs, where it came from), unbound from its worktree.
+    fn record(&self) {
         let mut files: Vec<String> = self.known.clone().unwrap_or_default();
         for file in work_files(&self.dir) {
             if !files.contains(&file) {
@@ -612,7 +622,6 @@ impl Free {
         );
         // Unbound: no restart resumes it in the worktree, and wt:remove waits until it left.
         let _ = std::fs::remove_file(breadboard_core::conversations::session_file(&self.dir));
-        Ok(self.agent.clone())
     }
 }
 

@@ -12,7 +12,7 @@ mod clicks;
 mod demo;
 mod input;
 pub(crate) mod links;
-mod overview;
+pub(crate) mod overview;
 mod page;
 mod run;
 mod scene;
@@ -51,6 +51,11 @@ pub trait App {
     /// says `Show`; the page is built again with the pick kept on screen.
     fn picked(&mut self, _picked: Option<&Self::Action>) -> Flow {
         Flow::Same
+    }
+    /// A one-line prompt is open: every key is the app's, `q` and `j` too,
+    /// as typed text (Ctrl-C still quits).
+    fn is_typing(&self) -> bool {
+        false
     }
 }
 

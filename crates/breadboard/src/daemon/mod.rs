@@ -22,11 +22,14 @@
 //! programs it runs: the socket's name carries a key of them (`key`), so a
 //! build of other sources never talks to another's daemon and a gauntlet
 //! world (its own herdr, glab, HOME) never reaches the user's. It only reads (rewrite rule 6): what an overview does
-//! stays in the overview. An overview that can't reach it reads by itself.
+//! stays in the overview, but for the headless task agents the user asked
+//! for (#358, `runs`): it runs `claude -p` for their queued lines, and stays
+//! while any are queued or in flight. An overview that can't reach it reads by itself.
 
 pub mod client;
 mod feed;
 pub mod gitlab;
+pub mod runs;
 mod serve;
 
 pub use gitlab::{Feed, read_gitlab};
@@ -69,6 +72,9 @@ pub enum Request {
         view: String,
         ask: RemoteAsk,
     },
+    /// Lines were queued for the headless agents of `main` (#358): its
+    /// engine runs from now on; answered with `true`.
+    Runs { main: PathBuf },
 }
 
 /// What a client says on its GitLab feed after the request.
@@ -110,16 +116,18 @@ fn socket_in(dir: &Path, key: u64) -> PathBuf {
 const PROTOCOL: &str = env!("BREADBOARD_PROTOCOL");
 
 /// The programs the daemon's reads run, found on PATH.
-const TOOLS: [&str; 3] = ["herdr", "glab", "git"];
+const TOOLS: [&str; 4] = ["herdr", "glab", "git", "claude"];
 
 /// The environment the daemon's reads depend on besides those programs.
-const ENV: [&str; 6] = [
+const ENV: [&str; 7] = [
     "HOME",
     "XDG_CONFIG_HOME",
     "HERDR_ENV",
     "HERDR_SOCKET_PATH",
     "BREADBOARD_GITLAB_URL",
     "GITLAB_TOKEN",
+    // The run engine's memory (#358): a world's low memory never reaches the user's daemon.
+    "BREADBOARD_MEMINFO",
 ];
 
 /// What the daemon must share with its clients: its protocol, the programs
