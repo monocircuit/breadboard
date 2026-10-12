@@ -73,18 +73,29 @@ pub(super) fn show(mr: &MrFacts) -> Go {
 }
 
 /// The bar of an MR's boxes in its block, the fold of their list (#346):
-/// `▸ ━━──  #335: 2/6 boxes · …` in `width` columns, a click or Enter on it
-/// opens every box under it, one on the line or the list folds it again.
-/// `--once` has no fold.
+/// `▸ ━━──  #335: 2/6 boxes · …` in `width` columns. Before any click its
+/// open boxes show whole (#354); a click folds them, the next opens every
+/// box, one on the line or the list folds it again. `--once` has no fold:
+/// it lists the open boxes under the bar.
 pub(super) fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress, width: u16, ctx: &Ctx) {
     if ctx.is_once || mr.boxes.is_empty() {
         if width >= MIN_BAR {
             scene.atom_gap(bar(progress, mr.issue, width), 0);
             scene.end_line();
         }
+        // A print has nothing to click: its open boxes under the bar (#354).
+        if ctx.is_once && !mr.open_boxes.is_empty() {
+            boxes::list(scene, &mr.open_boxes, 2);
+        }
         return;
     }
-    let is_open = ctx.folds.boxes.mrs.contains(&mr.iid);
+    // Every box once opened; before any click the open ones, until a click folds them (#354).
+    let shown = match ctx.folds.boxes.mr_list(mr.iid, !mr.open_boxes.is_empty()) {
+        super::MrList::All => Some(&mr.boxes),
+        super::MrList::Open => Some(&mr.open_boxes),
+        super::MrList::Folded => None,
+    };
+    let is_open = shown.is_some();
     scene.block(Act::Fold(Fold::MrBoxes(mr.iid)), |scene| {
         let mut spans = vec![boxes::mark(is_open)];
         if width >= MIN_BAR + 2 {
@@ -94,8 +105,8 @@ pub(super) fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress
         }
         scene.atom_gap(spans, 0);
         scene.end_line();
-        if is_open {
-            boxes::list(scene, &mr.boxes, 2);
+        if let Some(sections) = shown {
+            boxes::list(scene, sections, 2);
         }
     });
 }
@@ -668,6 +679,7 @@ mod tests {
             reasons: vec![],
             progress: None,
             boxes: vec![],
+            open_boxes: vec![],
             issue: None,
         }
     }

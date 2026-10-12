@@ -1275,6 +1275,7 @@ mod tests {
                     ..Default::default()
                 }),
                 boxes: vec![],
+                open_boxes: vec![],
                 issue: None,
             }),
         }
@@ -1558,11 +1559,11 @@ mod tests {
             facts.boxes = boxes();
             facts.issue = Some(302);
         }
-        let draw = |worktrees: &Worktrees, folds: Folds| {
-            draw_all(worktrees, &merge_requests, folds, 100, super::super::actor::idle())
+        let draw = |worktrees: &Worktrees, merge_requests: &MergeRequests, folds: Folds| {
+            draw_all(worktrees, merge_requests, folds, 100, super::super::actor::idle())
         };
         let fold = Act::Fold(Fold::MrBoxes(320));
-        let folded = draw(&worktrees, Folds::default());
+        let folded = draw(&worktrees, &merge_requests, Folds::default());
         let lines = text(&folded);
         let bar = lines.iter().position(|line| line.contains("#302: 9/12 boxes")).unwrap();
         assert!(lines[bar].trim_start().starts_with("▸ ━"), "{lines:#?}");
@@ -1578,7 +1579,7 @@ mod tests {
 
         let mut folds = Folds::default();
         folds.boxes.mrs.insert(320);
-        let open = draw(&worktrees, folds.clone());
+        let open = draw(&worktrees, &merge_requests, folds.clone());
         let lines = text(&open);
         assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
         assert_eq!(lines[bar + 1].trim(), "Scope", "{lines:#?}");
@@ -1592,9 +1593,25 @@ mod tests {
         assert_eq!(y as usize, bar);
         assert!(lines[y as usize + height as usize].contains("resolve"), "{lines:#?}");
 
+        // Open boxes that hold the merge show whole before any click (#354), in the block.
+        if let Some(facts) = merge_requests.open[0].mr.as_mut() {
+            facts.open_boxes = vec![boxes().remove(1)];
+        }
+        let first = draw_all(
+            &worktrees,
+            &merge_requests,
+            Folds::default(),
+            100,
+            super::super::actor::idle(),
+        );
+        let lines = text(&first);
+        assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
+        assert_eq!(lines[bar + 1].trim(), "Acceptance criteria", "{lines:#?}");
+        assert!(!lines.iter().any(|line| line.contains("Scope")), "{lines:#?}");
+
         // A worktree without an MR: the fold of its issue's boxes stands where the bar would.
         worktrees.tree.live[0].boxes = boxes();
-        let lines = text(&draw(&worktrees, Folds::default()));
+        let lines = text(&draw(&worktrees, &merge_requests, Folds::default()));
         let head = lines
             .iter()
             .position(|line| line.contains("1. 303-every-button"))
