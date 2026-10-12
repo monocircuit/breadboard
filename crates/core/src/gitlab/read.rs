@@ -173,13 +173,14 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
     nodes(project, "mergeRequests")
         .iter()
         .map(|node| crate::ci::OpenMr {
+            blocked_by: blocked_by(node),
             iid: id_of(node.get("iid")),
             source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
             target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
@@ -207,6 +208,33 @@ pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
                 .max_by_key(|pipeline| pipeline.id),
         })
         .collect()
+}
+
+/// The newest MR pipeline of an MR's newest commit when it blocks the merge
+/// (#369): cancelled, or failed at its creation (a `failureReason`: GitLab's
+/// activity limit, a config error; none when its jobs failed), while an
+/// older pipeline of that commit passed. GitLab takes the newest for the MR's.
+fn blocked_by(node: &Value) -> Option<i64> {
+    let head = str_at(node, "diffHeadSha")?;
+    let mut ours: Vec<(i64, String, bool)> = nodes(node, "pipelines")
+        .iter()
+        .filter(|pipeline| str_at(pipeline, "sha") == Some(head))
+        .filter(|pipeline| {
+            str_at(pipeline, "ref").is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+        })
+        .map(|pipeline| {
+            (
+                id_of(pipeline.get("id")),
+                lower(str_at(pipeline, "status")),
+                str_at(pipeline, "failureReason").is_some(),
+            )
+        })
+        .collect();
+    ours.sort_by_key(|(id, _, _)| std::cmp::Reverse(*id));
+    let (newest, status, is_refused) = ours.first()?;
+    let is_blocking = status == "canceled" || (status == "failed" && *is_refused);
+    let has_passed = ours[1..].iter().any(|(_, status, _)| status == "success");
+    (is_blocking && has_passed).then_some(*newest)
 }
 
 pub(super) fn str_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -1126,6 +1154,52 @@ mod tests {
         assert_eq!((pipeline.id, pipeline.status.as_str()), (2936237215, "pending"));
         assert_eq!(pipeline.reference.as_deref(), Some("refs/merge-requests/349/head"));
         assert_eq!(mrs[0].labels, vec!["enhancement".to_string()]);
+    }
+
+    #[test]
+    fn says_which_pipeline_blocks_a_commit_that_passed() {
+        let mr = |pipelines: &str| -> Option<i64> {
+            let project: Value = serde_json::from_str(&format!(
+                r#"{{ "mergeRequests": {{ "nodes": [ {{ "iid": "348", "diffHeadSha": "80b8",
+                  "pipelines": {{ "nodes": [ {pipelines} ] }} }} ] }} }}"#
+            ))
+            .unwrap();
+            open_mrs_of(&project)[0].blocked_by
+        };
+        let pipeline = |id: i64, status: &str, sha: &str, reason: &str| {
+            format!(
+                r#"{{ "id": "gid://gitlab/Ci::Pipeline/{id}", "status": "{status}", "sha": "{sha}",
+                  "ref": "refs/merge-requests/348/head", "failureReason": {reason} }}"#
+            )
+        };
+        let passed = pipeline(10, "SUCCESS", "80b8", "null");
+        let refused = pipeline(
+            12,
+            "FAILED",
+            "80b8",
+            r#""The pipeline job activity limit was exceeded.""#,
+        );
+        assert_eq!(mr(&format!("{refused}, {passed}")), Some(12));
+        assert_eq!(
+            mr(&format!("{passed}, {}", pipeline(11, "CANCELED", "80b8", "null"))),
+            Some(11)
+        );
+        // Its jobs failed: a real red run, not a block.
+        assert_eq!(
+            mr(&format!("{passed}, {}", pipeline(11, "FAILED", "80b8", "null"))),
+            None
+        );
+        // Nothing of that commit passed, or the newest passed: nothing blocks.
+        assert_eq!(mr(&refused), None);
+        assert_eq!(
+            mr(&format!("{}, {passed}", pipeline(9, "CANCELED", "80b8", "null"))),
+            None
+        );
+        // An older commit's pass doesn't count.
+        assert_eq!(
+            mr(&format!("{refused}, {}", pipeline(10, "SUCCESS", "old", "null"))),
+            None
+        );
     }
 
     #[test]

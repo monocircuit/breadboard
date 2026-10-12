@@ -161,6 +161,8 @@ pub struct Asked {
     pub started: BTreeMap<i64, (String, i64)>,
     /// iid → the commit whose pipeline it cancelled for an MR ahead: queued again.
     pub preempted: BTreeMap<i64, String>,
+    /// iid → the blocking pipeline it asked a new one over (`OpenMr::blocked_by`).
+    pub rescued: BTreeMap<i64, i64>,
     /// The pipelines it created, oldest first.
     pub ours: Vec<i64>,
 }
@@ -464,6 +466,10 @@ pub struct OpenMr {
     pub sha: Option<String>,
     /// Its head pipeline: the newest GitLab has, maybe of an older commit.
     pub pipeline: Option<Pipeline>,
+    /// The newest pipeline of its newest commit, cancelled or failed at its
+    /// creation, while an older one of that commit passed: GitLab blocks the
+    /// merge on it (#369).
+    pub blocked_by: Option<i64>,
 }
 
 impl OpenMr {
@@ -508,6 +514,8 @@ pub struct Ranks {
     pub preempted: HashMap<i64, String>,
     /// The pipelines the queue created itself: the only ones it ever cancels (#369).
     pub ours: HashSet<i64>,
+    /// iid → the blocking pipeline a new one was asked for over (`OpenMr::blocked_by`).
+    pub rescued: HashMap<i64, i64>,
 }
 
 impl Ranks {
@@ -518,6 +526,7 @@ impl Ranks {
             run_now: run_now.at.clone(),
             preempted: HashMap::new(),
             ours: HashSet::new(),
+            rescued: HashMap::new(),
         }
     }
 
@@ -569,6 +578,8 @@ pub struct Start {
     pub cancel: Option<i64>,
     /// A click asks for it: a pipeline of this commit that ended doesn't hold it.
     pub is_again: bool,
+    /// The blocking pipeline it replaces (`OpenMr::blocked_by`): only a pipeline newer than it holds it.
+    pub after: Option<i64>,
 }
 
 /// What the scheduler does now and what the rows say.
@@ -592,6 +603,12 @@ fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i6
     };
     if mr.is_head_current() && mr.pipeline_status().is_some_and(is_live) {
         return false;
+    }
+    // A newer pipeline cancelled or refused blocks the merge of a commit that
+    // passed: one new pipeline, once per blocking one; never over its own
+    // (a refusal of its own again would loop).
+    if let Some(blocking) = mr.blocked_by.filter(|blocking| !ranks.ours.contains(blocking)) {
+        return ranks.rescued.get(&mr.iid) != Some(&blocking);
     }
     let clicked = ranks.run_now.get(&mr.iid).copied();
     let was_preempted = ranks.preempted.get(&mr.iid) == Some(sha);
@@ -698,6 +715,7 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
             sha: mr.sha.clone().unwrap_or_default(),
             cancel,
             is_again: ranks.run_now.contains_key(&mr.iid),
+            after: mr.blocked_by.filter(|blocking| !ranks.ours.contains(blocking)),
         }
     });
     Decision { places, start, preempt }
@@ -980,6 +998,7 @@ mod tests {
                 sha: "new".into(),
                 cancel: Some(70),
                 is_again: false,
+                after: None,
             }
         );
         // A finished one of an older commit is left alone, nothing to cancel.
@@ -1033,6 +1052,25 @@ mod tests {
         // A newer commit: asked at once.
         started.insert(1, ("old".to_string(), NOW - 10_000));
         assert!(decide(&mrs, &order(&[1]), slots(2, 0), &started).start.is_some());
+    }
+
+    #[test]
+    fn replaces_a_cancelled_or_refused_pipeline_that_blocks_a_passed_commit_once() {
+        // #369: duplicates cancelled by hand, the newest of a commit that
+        // passed is a cancelled one, GitLab's merge waits on it.
+        let mut blocked = mr(1, "a", pipeline(30, "canceled", "a", 1));
+        blocked.blocked_by = Some(30);
+        let mut ranks = order(&[1]);
+        // Asked for that commit before: still once more, over the blocking one.
+        let started = HashMap::from([(1, ("a".to_string(), NOW - 1000))]);
+        let start = decide(&[blocked.clone()], &ranks, slots(2, 0), &started).start.unwrap();
+        assert_eq!((start.iid, start.after), (1, Some(30)));
+        ranks.rescued.insert(1, 30);
+        assert_eq!(decide(&[blocked.clone()], &ranks, slots(2, 0), &started).start, None);
+        // Its own pipeline refused (the activity limit): not again by itself.
+        ranks.rescued.clear();
+        ranks.ours.insert(30);
+        assert_eq!(decide(&[blocked], &ranks, slots(2, 0), &started).start, None);
     }
 
     #[test]

@@ -83,6 +83,7 @@ pub async fn schedule(main: PathBuf) {
         let started: HashMap<i64, (String, i64)> = asked.started.clone().into_iter().collect();
         let cancelled: HashMap<i64, String> = asked.preempted.clone().into_iter().collect();
         let ours = asked.ours.iter().copied().collect();
+        let rescued = asked.rescued.clone().into_iter().collect();
         let step = tokio::task::spawn_blocking(move || {
             let now = now_ms();
             let running = mrs
@@ -98,6 +99,7 @@ pub async fn schedule(main: PathBuf) {
             let mut ranks = Ranks::of(&ci::published_of(&main_now), &run_now);
             ranks.preempted = cancelled;
             ranks.ours = ours;
+            ranks.rescued = rescued;
             (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
         });
         let Ok((decision, slots, run_now, mrs, now)) = step.await else {
@@ -145,6 +147,9 @@ pub async fn schedule(main: PathBuf) {
                 if !matches!(said, Ok(Ran::Superseded)) {
                     asked.preempted.remove(&start.iid);
                     asked.started.insert(start.iid, (start.sha.clone(), now));
+                    if let Some(blocking) = start.after {
+                        asked.rescued.insert(start.iid, blocking);
+                    }
                 }
                 last = Some(match said {
                     Ok(Ran::Created(id)) => {
@@ -172,6 +177,7 @@ pub async fn schedule(main: PathBuf) {
             .collect();
         asked.started.retain(|iid, _| open.contains_key(iid));
         asked.preempted.retain(|iid, _| open.contains_key(iid));
+        asked.rescued.retain(|iid, _| open.contains_key(iid));
         if !is_dry {
             let _ = ci::write_whole(&ci::asked_file(&main), &asked);
         }
@@ -231,7 +237,8 @@ enum Ran {
 
 /// GitLab read back first (#369: its list may lag or be read wrong): the MR
 /// still at the commit decided for, and no pipeline of that commit but a
-/// cancelled or skipped one (a click's: none still to finish). Then its
+/// cancelled or skipped one (a click's: none still to finish; one replacing
+/// a blocking pipeline: none newer than that one). Then its
 /// superseded pipeline cancelled, and the pipeline of the MR's newest commit created.
 fn run(main: &Path, start: &ci::Start) -> Result<Ran, String> {
     run_with(main, start, "glab")
@@ -252,7 +259,9 @@ fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<Ran, String> {
             .get("status")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
+        let id = pipeline.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0);
         pipeline.get("sha").and_then(serde_json::Value::as_str) == Some(start.sha.as_str())
+            && start.after.is_none_or(|blocking| id > blocking)
             && if start.is_again {
                 ci::is_live(status)
             } else {
@@ -367,6 +376,7 @@ mod tests {
             sha: "a".into(),
             cancel: Some(70),
             is_again: false,
+            after: None,
         };
         assert_eq!(run_with(&scratch, &start, &glab), Ok(Ran::Created(Some(71))));
         assert_eq!(
@@ -388,6 +398,7 @@ mod tests {
             sha: "a".into(),
             cancel: Some(70),
             is_again: false,
+            after: None,
         };
         for (status, ran) in [("pending", Ran::Exists(80)), ("failed", Ran::Exists(80))] {
             let pipelines = format!(r#"[{{"id":80,"sha":"a","status":"{status}"}}]"#);
@@ -407,13 +418,24 @@ mod tests {
             ],
         );
         assert_eq!(run_with(&scratch, &again, &glab), Ok(Ran::Created(None)));
+        // Over a blocking cancelled one: the older pass doesn't hold it, a newer one does.
+        let rescue = ci::Start {
+            after: Some(80),
+            ..start.clone()
+        };
+        let pipelines = r#"[{"id":80,"sha":"a","status":"canceled"},{"id":70,"sha":"a","status":"success"}]"#;
+        let glab = fake_glab(&scratch, &[(MR, r#"{"sha":"a"}"#), (PIPELINES, pipelines)]);
+        assert_eq!(run_with(&scratch, &rescue, &glab), Ok(Ran::Created(None)));
+        let pipelines = r#"[{"id":81,"sha":"a","status":"pending"},{"id":80,"sha":"a","status":"canceled"}]"#;
+        let glab = fake_glab(&scratch, &[(MR, r#"{"sha":"a"}"#), (PIPELINES, pipelines)]);
+        assert_eq!(run_with(&scratch, &rescue, &glab), Ok(Ran::Exists(81)));
         // Pushed meanwhile: the old commit gets nothing.
         let glab = fake_glab(&scratch, &[(MR, r#"{"sha":"b"}"#)]);
         assert_eq!(run_with(&scratch, &start, &glab), Ok(Ran::Superseded));
         let log = std::fs::read_to_string(scratch.join("glab.log")).unwrap();
         assert_eq!(
             log.matches("POST projects/:fullpath/merge_requests").count(),
-            1,
+            2,
             "{log}"
         );
         std::fs::remove_dir_all(&scratch).unwrap();

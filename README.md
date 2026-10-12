@@ -247,7 +247,12 @@ breadboard decides which pipelines exist at all:
   commit there already (any status but cancelled or skipped; for a click,
   any still to finish), it creates none. A commit asked for once is never
   asked for again by itself, not even when GitLab refused it or it failed
-  at its creation. It cancels only pipelines it created itself. What it
+  at its creation. It cancels only pipelines it created itself.
+- **A blocked merge**: GitLab's merge waits on an MR's newest pipeline.
+  When that is a cancelled one, or one GitLab refused at its creation (a
+  `failureReason`, its job activity limit), while an older pipeline of the
+  same commit passed, the queue asks for one new pipeline, once per
+  blocking one, never over a refused one of its own. What it
   asked for and created is kept in `.claude/ci/asked.json` over restarts,
   and one daemon per checkout schedules (`.claude/ci/scheduler.pid`).
 - **Only the orchestrations' MRs**: those in an `order-<name>.json`. An MR
