@@ -211,6 +211,8 @@ pub struct Orchestration {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tries {
+    /// What the test instance is called where the skill names it (`dev.example`); None: `the test instance`.
+    pub test_instance: Option<String>,
     /// The variable (the environment's, else the main checkout's env file) with the test instance's origin.
     pub test_origin_env: String,
     /// The jobs that deploy; the pipeline's others don't hold a try.
@@ -224,6 +226,7 @@ pub struct Tries {
 impl Default for Tries {
     fn default() -> Self {
         Tries {
+            test_instance: None,
             test_origin_env: "TEST_ORIGIN".into(),
             deploy_jobs: Vec::new(),
             deploy_job: None,

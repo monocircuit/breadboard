@@ -137,6 +137,14 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
         ("setup", setup),
         ("check", check),
         ("test_origin_env", config.tries.test_origin_env.clone()),
+        (
+            "test_instance",
+            config
+                .tries
+                .test_instance
+                .clone()
+                .unwrap_or_else(|| "the test instance".into()),
+        ),
     ];
     if let Some(stack) = &config.stack {
         let named: Vec<&config::Service> = stack
@@ -186,6 +194,22 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
             (
                 "stack.first",
                 first.map(|service| service.label().to_string()).unwrap_or_default(),
+            ),
+            // The database the epic's tasks clone theirs on, and the services a task stack runs.
+            (
+                "stack.database",
+                first
+                    .map(|service| service.label().to_string())
+                    .unwrap_or_else(|| "database".into()),
+            ),
+            (
+                "stack.others",
+                named
+                    .iter()
+                    .skip(1)
+                    .map(|service| service.label().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" + "),
             ),
             (
                 "stack.first_port",

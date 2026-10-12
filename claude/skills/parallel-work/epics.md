@@ -3,11 +3,11 @@
 Every orchestration (`{{run}} wt:orchestrate <name>`) is an **epic**: a branch
 of its own between `{{branch}}` and its tasks, with a stack of its own. The user
 sees the epic's result on one app, and only a finished epic reaches `{{branch}}`
-(which deploys dev.vita).
+(which deploys {{test_instance}}).
 
 ```
 main            ← production
- └─ {{branch}}     ← dev.vita (deploy)
+ └─ {{branch}}     ← {{test_instance}} (deploy)
      └─ epic/<N>-<name>        ← one per orchestration, its own epic stack
          ├─ feature/<n>-…      ← task worktrees, on demand a task stack
          └─ fix/<n>-…
@@ -45,7 +45,7 @@ the "Epic N" of its issues' milestone (`breadboard · Epic 15` →
 `epic/15-breadboard`; epics are milestones, there is no epic issue), or
 `--epic <N>` when they have none. It pushes the branch and records it.
 The orchestration's checkout `.claude/orchestrations/<name>/` stands on that
-branch (not on a detached `{{branch}}`) and has its `pnpm install`. CI runs the
+branch (not on a detached `{{branch}}`) and has its setup (`[[worktrees.setup]]`). CI runs the
 fast checks of what changed on every push to `epic/*`; deploys stay
 `{{branch}}`'s.
 
@@ -82,32 +82,35 @@ closes from the default branch), this one closes them all when it lands, and
 breadboard closes any GitLab left open. The epic branch lives on until the
 orchestration ends.
 
+{{#stack}}
 ## The epic stack and task stacks
 
-- **Epic stack** (compose project `vita-epic-<orchestration>`, its own
+- **Epic stack** (compose project `{{stack.project}}-epic-<orchestration>`, its own
   offset): made on first need, by a task's `stack:up` or by `{{run}} wt:stack` in
   the orchestration's checkout; `wt:orchestrate` starts none. It then runs for
   the whole epic and serves the epic branch's app: what the user looks at
   between milestones.
-- **Task databases live on the epic's Postgres.** The epic keeps a template
-  database `vita_tpl` (never connected to), refreshed when needed: migrated
+- **Task databases live on the epic's {{stack.database}}.** The epic keeps a template
+  database `{{stack.project}}_tpl` (never connected to), refreshed when needed: migrated
   and seeded again once the tree of the db folder differs from its stamp. The
-  epic's app runs on `vita`. A task gets `vita_<feature>`, created with
-  `CREATE DATABASE … TEMPLATE vita_tpl`, and `keycloak_<feature>` next to it
-  (the feature lower-cased, every other character `_`: `351-x-y` →
-  `vita_351_x_y`, at most 63 bytes). Postgres clones only within one server,
-  so tasks have no Postgres of their own.
-- **A task stack is Keycloak + SeaweedFS + `pnpm dev`**, about half of an own
+  epic's app runs on `{{stack.project}}`. A task gets `{{stack.project}}_<feature>`, created with
+  `CREATE DATABASE … TEMPLATE {{stack.project}}_tpl`, and the databases of the
+  other services next to it (`<service>_<feature>`; the feature lower-cased,
+  every other character `_`: `351-x-y` → `{{stack.project}}_351_x_y`, at most
+  63 bytes). {{stack.database}} clones only within one server, so tasks have
+  no {{stack.database}} of their own.
+- **A task stack is {{stack.others}} + `{{app.dev}}`**, about half of an own
   stack, and **on demand**: `wt:new` in an orchestration only writes the
-  task's `.env.local` (ports reserved, the database on the epic's port, the
+  task's `{{stack.env}}` (ports reserved, the database on the epic's port, the
   line `BREADBOARD_EPIC=<orchestration>`) and starts nothing. `{{run}} stack:up`
   (or `{{run}} wt:stack`) starts it: the epic stack up and its template current,
-  the clone, Keycloak and SeaweedFS up, `pg:migrate`, `storage:setup`,
-  `keycloak:setup`. `stack:reset` on a task: `down -v`, drop, clone again.
+  the clone, {{stack.others}} up, the migrations and the stack's setup.
+  `stack:reset` on a task: `down -v`, drop, clone again.
 - **After merging the epic in**, the next `stack:up` drops the task's database
-  and clones it again from `vita_tpl`, then its own migrations run. A task
+  and clones it again from `{{stack.project}}_tpl`, then its own migrations run. A task
   migration older than the base's newest would be skipped by drizzle:
   `wt:check` refuses it, regenerate it ([db-migration](../db-migration/SKILL.md)).
 - **`wt:remove`** of a task drops both of its databases with its containers.
 
 A worktree outside an orchestration keeps an own full stack, or `--shared`.
+{{/stack}}
