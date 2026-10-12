@@ -1,5 +1,5 @@
 //! The run engine of a repo's headless task agents (#358, core's `runs`):
-//! while `git config breadboard.agents headless`, every EVERY it takes the
+//! every EVERY it takes the
 //! queued lines of the sessions that may run now and runs `claude -p` with
 //! them, one run per session at a time, in the session's worktree. Lines
 //! queued while a run is in flight wait for the next. A session open in an
@@ -25,8 +25,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// How often the queue is looked at: a line waits at most this long for its run.
 pub const EVERY: Duration = Duration::from_millis(500);
-/// How often a repo without the switch is looked at again.
-const OFF_EVERY: Duration = Duration::from_secs(10);
 /// The program a run is: `claude` on PATH (the gauntlet's fake there).
 const CLAUDE: &str = "claude";
 
@@ -47,17 +45,6 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
         if !main.is_dir() {
             busy.store(false, Ordering::SeqCst);
             return;
-        }
-        let is_on = {
-            let main = main.clone();
-            tokio::task::spawn_blocking(move || runs::is_headless(&main))
-                .await
-                .unwrap_or(false)
-        };
-        if !is_on {
-            busy.store(!locked(&in_flight).is_empty(), Ordering::SeqCst);
-            tokio::time::sleep(OFF_EVERY).await;
-            continue;
         }
         if held.is_none() {
             held = PidFile::hold(&runs::dir_of(&main).join("engine.pid"));
@@ -269,9 +256,6 @@ pub fn cli(args: &[String]) -> ExitCode {
             let queue: Queue = read_or_default(&runs::queue_file(&main));
             let mut states: Vec<(String, Run)> = runs::states_of(&table, &queue).into_iter().collect();
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-            if !runs::is_headless(&main) {
-                println!("agents run in tabs (git config {} headless: headless)", runs::MODE_KEY);
-            }
             for (session, run) in states {
                 let queued = queue.events.iter().filter(|event| event.session == session).count();
                 println!(

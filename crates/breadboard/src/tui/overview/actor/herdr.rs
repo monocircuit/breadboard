@@ -133,10 +133,10 @@ pub fn type_into(pane: Option<&Pane>, line: &str) -> bool {
 }
 
 /// One line for the agent of the worktree `dir` (`deliverTo`); true when it
-/// got in: typed into its pane, or queued for its next run when the repo's
-/// agents run headless (#358).
+/// got in: queued for the next run of a task agent (#358, #361), typed into
+/// the pane of the claude of a worktree of your own.
 pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
-    if breadboard_core::runs::is_headless(main) {
+    if breadboard_core::runs::is_headless(main, dir) {
         return enqueue(main, dir, line);
     }
     type_into(agent_pane_of(main, &Target::Dir(dir.to_path_buf())).as_ref(), line)

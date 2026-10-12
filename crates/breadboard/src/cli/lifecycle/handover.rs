@@ -9,13 +9,11 @@
 //! overview does it once the MRs are merged (#227).
 
 mod brief;
-pub mod restart;
 
 use super::args::{Args, Takes};
 use super::claude::{bound_session, context_share_of, is_conversation_running, session_file};
 use super::gitlab;
 use super::herdr;
-use super::layout::spaces::space_of;
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
@@ -407,13 +405,9 @@ pub fn pane_of_conversation(id: &str) -> Result<Option<Value>, String> {
     }))
 }
 
-/// What the agent `id` does, as herdr's pane of it says (`agent_status`);
-/// for a headless agent (#359) the run engine's status table, where no row
-/// is an idle session that never ran.
-fn agent_of(main: &Path, id: &str, is_headless: bool) -> Result<Option<Value>, String> {
-    if !is_headless {
-        return pane_of_conversation(id);
-    }
+/// What the agent `id` does: the run engine's status table (#359), where no
+/// row is an idle session that never ran.
+fn agent_of(main: &Path, id: &str) -> Result<Option<Value>, String> {
     let status = runs::agents_of(main)
         .remove(id)
         .and_then(|agent| agent.status)
@@ -424,15 +418,15 @@ fn agent_of(main: &Path, id: &str, is_headless: bool) -> Result<Option<Value>, S
 /// A headless agent's next run (#359): bound to the issue's worktree, its
 /// line queued there. No claude may hold the conversation meanwhile: a run
 /// that started since the check would write over where it stands.
-fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Result<String, restart::Failed> {
+fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Result<(), String> {
     if is_conversation_running(&worker.id) {
-        return Err(restart::Failed::Before("a claude runs its conversation".into()));
+        return Err("a claude runs its conversation".into());
     }
     bind(worker, issue);
     if !crate::tui::overview::actor::herdr::enqueue(main, &issue.dir, line) {
-        return Err(restart::Failed::Before("its line could not be queued".into()));
+        return Err("its line could not be queued".into());
     }
-    Ok(String::new())
+    Ok(())
 }
 
 /// A handover herdr could not judge: nothing of the agent is refused or
@@ -1001,10 +995,6 @@ fn no_agent(label: &str, who: &str, workers: &[Worker]) -> Fail {
 pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let name = request.name;
     let label = repo.orchestrator_label(name);
-    let is_headless = runs::is_headless(&repo.main);
-    if !is_headless && !herdr::is_in() {
-        return fail("--to works inside herdr only: the agents are found through it");
-    }
     let limit = match request.limit {
         None => CONTEXT_LIMIT,
         Some(percent) => percent
@@ -1022,8 +1012,8 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     };
     // herdr hung or failed: no refusal of the agent, nothing read or written further.
     let idle = format!("herdr: is {} idle?", worker.name);
-    let pane = as_step(&idle, || agent_of(&repo.main, &worker.id, is_headless))
-        .map_err(|why| herdr_unanswered(&why, &worker.name))?;
+    let pane =
+        as_step(&idle, || agent_of(&repo.main, &worker.id)).map_err(|why| herdr_unanswered(&why, &worker.name))?;
     let share = context_share_of(&worker.id);
     let refusal = refusal_of(pane.as_ref(), worker.is_free, share, limit);
     let issue = read_issue(repo, request.issue)?;
@@ -1128,7 +1118,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     } else {
         ""
     };
-    let pane = match as_step(&idle, || agent_of(&repo.main, &worker.id, is_headless)) {
+    let pane = match as_step(&idle, || agent_of(&repo.main, &worker.id)) {
         Ok(pane) => pane,
         Err(why) => {
             // Not the agent's failure: its history stays as it was.
@@ -1161,43 +1151,14 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     }
     let feature = issue.feature.as_str();
     let line = next_issue_line(number, feature, &issue.dir);
-    // Ended where it runs, resumed in its worktree's tab: nothing is typed into a running claude (#335).
-    // A headless agent (#359): its next run, in the worktree under its new name.
-    let restarted = if is_headless {
-        as_step(&format!("{} queued for its next run in {feature}", worker.name), || {
-            queue_next_run(&repo.main, &worker, &issue, &line)
-        })
-    } else {
-        as_step(
-            &format!("herdr: {} restarted in the space {feature}", worker.name),
-            || {
-                let Some(workspace) = space_waited(repo, &issue.dir) else {
-                    return Err(restart::Failed::Before(format!(
-                        "herdr has no space {}",
-                        repo.space_label(&issue.dir)
-                    )));
-                };
-                bind(&worker, &issue);
-                restart::restart(
-                    &restart::Machine,
-                    &restart::Restart {
-                        id: &worker.id,
-                        workspace: &workspace,
-                        label: feature,
-                        cwd: &issue.dir,
-                        name: feature,
-                        prompt: &line,
-                        from: pane.as_ref().map(|pane| herdr::s(pane, "pane_id")),
-                        ide: super::layout::nvim::ide_flag(&issue.dir),
-                    },
-                )
-            },
-        )
-    };
-    if let Err(restart::Failed::Before(why)) = &restarted {
-        // The agent runs on where it was: its worktree goes again, the issue may be handed over anew.
+    // A headless agent (#359, #361): its next run, in the worktree under its new name; nothing is typed.
+    let queued_run = as_step(&format!("{} queued for its next run in {feature}", worker.name), || {
+        queue_next_run(&repo.main, &worker, &issue, &line)
+    });
+    if let Err(why) = &queued_run {
+        // Its conversation stays where it was: its worktree goes again, the issue may be handed over anew.
         unbind(&worker, &issue);
-        let why = format!("{} was not restarted in its worktree: {why}", worker.name);
+        let why = format!("{} got no run in its worktree: {why}", worker.name);
         let is_gone = undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
         record_failure(repo, name, &worker.id, number, &why);
         alarm(repo, name, &format!("#{number} did not go to {why}"));
@@ -1222,37 +1183,10 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     } else {
         format!(", renamed from {}", worker.name)
     };
-    match restarted {
-        Ok(_) if is_headless => {
-            done(&format!(
-                "#{number} went to the agent {feature}{renamed}: its next run is in its worktree, the next-issue line its prompt{setup_note}; breadboard runs shows it"
-            ));
-            Ok(())
-        }
-        Ok(_) => {
-            done(&format!(
-                "#{number} went to the agent {feature}{renamed}: its conversation runs again in the tab {feature} of its space, the next-issue line its first prompt{setup_note}; SendMessage(to: \"{feature}\")"
-            ));
-            Ok(())
-        }
-        Err(restart::Failed::After { why, command }) => {
-            // Its claude ended and runs nowhere: the one shell line that resumes it, into a shell.
-            step(&format!("resume it from a shell of the space {feature}:"));
-            println!("    {command}");
-            alarm(
-                repo,
-                name,
-                &format!(
-                    "{feature}'s claude ended, but {why}: its conversation runs nowhere, run in a shell of its space: {command}"
-                ),
-            );
-            fail(format!(
-                "#{number} {feature} is {}'s, its claude ended, but {why}: its conversation runs nowhere until the line above runs in a shell",
-                worker.name
-            ))
-        }
-        Err(restart::Failed::Before(_)) => unreachable!("returned above"),
-    }
+    done(&format!(
+        "#{number} went to the agent {feature}{renamed}: its next run is in its worktree, the next-issue line its prompt{setup_note}; breadboard runs shows it"
+    ));
+    Ok(())
 }
 
 /// A handover that failed after its start, in ACTIONS of the orchestration
@@ -1264,20 +1198,6 @@ fn alarm(repo: &Repo, name: &str, text: &str) {
         ..Default::default()
     };
     let _ = breadboard_core::actions::add_action(&record::record_file(&repo.main, name), action);
-}
-
-/// The space of `dir`, waited for a while: wt:new's layout may lag behind it.
-fn space_waited(repo: &Repo, dir: &Path) -> Option<String> {
-    let started = std::time::Instant::now();
-    loop {
-        if let Some(space) = space_of(repo, dir) {
-            return Some(space);
-        }
-        if started.elapsed() >= Duration::from_secs(10) {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
 }
 
 /// [`bind`] undone: the conversation stays bound where it runs.

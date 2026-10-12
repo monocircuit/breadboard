@@ -3,9 +3,7 @@
 //! worktree made by `wt:new --origin` in a child and its claude started.
 
 use crate::cli::lifecycle::handover;
-use crate::cli::lifecycle::layout::nvim::ide_flag;
 use crate::cli::setup::conversations::session_file;
-use crate::cli::setup::herdr;
 use crate::cli::setup::proc::{self, quote};
 use crate::cli::setup::repo;
 use breadboard_core::time::now_ms;
@@ -94,37 +92,12 @@ pub struct Agent {
     pub id: String,
 }
 
-/// The claude of an orchestrated worktree: its brief written, started in the
-/// idle `<feature>` tab of its space (bound before it starts), else the command to run by hand.
+/// The agent of an orchestrated worktree: its brief written, then started
+/// headless (#361), else the command that queues it by hand.
 pub fn start_agent(dir: &Path, brief: &str) -> Agent {
     let feature = repo::feature_of(dir);
     let _ = record::write_brief(dir, brief);
-    let id = new_session_id();
-    let main = repo::main_dir();
-    if runs::is_headless(&main) {
-        return start_headless(&main, dir, &feature, id);
-    }
-    let command = format!(
-        "cd {} && claude --session-id {id} --name {feature}{} {}",
-        quote(&dir.to_string_lossy()),
-        ide_flag(dir),
-        quote(BRIEF_PROMPT)
-    );
-    let workspace = if herdr::is_in_herdr() {
-        herdr::space_of(dir)
-    } else {
-        None
-    };
-    let pane = workspace.and_then(|workspace| herdr::idle_pane_of(&workspace, &feature, &herdr::tabs_of(&workspace)));
-    let is_started = pane.is_some_and(|pane| herdr::herdr_did(&["pane", "run", &pane, &command]));
-    if is_started {
-        let _ = fs::write(session_file(dir), format!("{id}\n"));
-    }
-    Agent {
-        is_started,
-        command,
-        id,
-    }
+    start_headless(&repo::main_dir(), dir, &feature, new_session_id())
 }
 
 /// A headless agent (#359): bound first, then its brief queued as the first

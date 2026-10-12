@@ -388,12 +388,31 @@ pub fn run(argv: &Argv) -> Outcome {
     wait.insert("until".into(), Value::String(to_iso(until)));
     // A headless agent (#359) is no process to wake: the wait is recorded
     // without a command, and the overview queues its line as a run.
-    let is_headless = here.main.as_deref().is_some_and(runs::is_headless);
-    if !is_headless {
+    let is_headless = here.main.as_deref().is_some_and(|main| runs::is_headless(main, dir));
+    let base = base_of(dir);
+    if is_headless {
+        // Settled already (merged, closed): said at once, nothing waits (#361).
+        let found: Vec<Facts> = first
+            .iter()
+            .filter_map(|answer| match answer {
+                Answer::Found(facts) => Some(facts.clone()),
+                _ => None,
+            })
+            .collect();
+        let verdict = verdict_of(&parsed.mrs, until, &found, now_ms(), &mut HashMap::new());
+        if verdict != Verdict::Waiting {
+            let behind = (verdict == Verdict::Merged).then(|| behind_of(dir, &base)).flatten();
+            say(&line_of(&parsed, &verdict, &base.local, behind));
+            return Ok(if verdict == Verdict::Merged {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
+    } else {
         wait.insert("pid".into(), Value::from(std::process::id()));
     }
     let file = wait_file(dir);
-    let base = base_of(dir);
     json::write_pretty(&file, &Value::Object(wait))
         .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
     if is_headless {

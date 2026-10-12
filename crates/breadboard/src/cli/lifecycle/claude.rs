@@ -212,19 +212,6 @@ pub fn left_refusal(left: &[Running], feature: &str, is_handed_over: bool) -> St
     )
 }
 
-/// The directory `claude --resume` finds a conversation from: the last one
-/// it worked in, else `dir`.
-pub fn session_cwd(id: &str, dir: &Path) -> PathBuf {
-    let text = transcript_of(id)
-        .and_then(|file| fs::read_to_string(file).ok())
-        .unwrap_or_default();
-    let last = text.rmatch_indices("\"cwd\":\"").next().and_then(|(at, found)| {
-        let rest = &text[at + found.len()..];
-        rest.find('"').map(|end| PathBuf::from(&rest[..end]))
-    });
-    last.filter(|cwd| cwd.exists()).unwrap_or_else(|| dir.to_path_buf())
-}
-
 /// A transcript written to within this time may belong to a running
 /// conversation: its project is not moved.
 const LIVE: Duration = Duration::from_secs(10 * 60);

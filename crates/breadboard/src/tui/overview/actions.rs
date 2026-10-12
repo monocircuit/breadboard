@@ -988,7 +988,7 @@ fn prompt_for(app: &Overview, file: &Path, id: i64, answer: &str) -> Option<Prom
         answer: Some(answer.to_string()),
         ..action.clone()
     });
-    let is_headless = matches!(item.to, Some(Target::Dir(_))) && runs::is_headless(&app.actor.main);
+    let is_headless = matches!(&item.to, Some(Target::Dir(dir)) if runs::is_headless(&app.actor.main, dir));
     (is_draft && is_headless).then(|| Prompt {
         file: file.to_path_buf(),
         id,
@@ -1065,7 +1065,7 @@ fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Opt
     let line = line_of(&answered);
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
-    let is_queued = matches!(to, Some(Target::Dir(_))) && runs::is_headless(&main);
+    let is_queued = matches!(&to, Some(Target::Dir(dir)) if runs::is_headless(&main, dir));
     app.actor.queue(move || {
         if let Some(to) = &to {
             if is_draft && !is_queued {
@@ -1187,7 +1187,7 @@ fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
 /// drafts say why they wait. The ones that got in.
 fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
     if let Target::Dir(dir) = to
-        && runs::is_headless(main)
+        && runs::is_headless(main, dir)
     {
         return queue_answers(main, file, dir);
     }

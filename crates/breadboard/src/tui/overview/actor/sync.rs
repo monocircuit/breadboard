@@ -14,7 +14,6 @@ use crate::cli::lifecycle::layout;
 use crate::cli::lifecycle::layout::spaces::space_of;
 use crate::cli::lifecycle::repo::Repo;
 use crate::tui::overview::Overview;
-use breadboard_core::conversations::{bound_session, session_file};
 use breadboard_core::git::feature_of;
 use breadboard_core::gitlab::{Mr, Pipeline};
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
@@ -285,7 +284,6 @@ fn tick(
         .map(|space| (space.id.clone(), space.label.clone()))
         .collect();
     let names = titles(main);
-    remember_sessions(main, trees, &panes, &all_spaces, &mut logged);
     remember_chats(main, &panes, &all_spaces, &names, &mut logged);
     let repo = Repo {
         main: main.to_path_buf(),
@@ -369,63 +367,6 @@ impl Leftovers {
     }
 }
 
-/// Each worktree's conversation bound to it (`rememberSessions`): the claude
-/// panes of its space; a bound id none of them runs is replaced by the first.
-fn remember_sessions(
-    main: &Path,
-    trees: &[Tree],
-    panes: &[Pane],
-    all_spaces: &[breadboard_core::herdr::Space],
-    logged: &mut Vec<Logged>,
-) {
-    let mut written: Vec<(String, String)> = Vec::new();
-    for tree in trees.iter().filter(|tree| tree.dir != main) {
-        // Never into a worktree being removed.
-        if !tree.dir.join(".git").exists() || !tree.dir.join(".claude").is_dir() {
-            continue;
-        }
-        let label = feature_of(main, &tree.dir);
-        let Some(space) = all_spaces.iter().find(|space| space.label == label) else {
-            continue;
-        };
-        let ids: Vec<&str> = panes
-            .iter()
-            .filter(|pane| pane.workspace == space.id && pane.agent.as_deref() == Some("claude"))
-            .filter_map(|pane| pane.session.as_deref())
-            .collect();
-        let Some(first) = ids.first() else { continue };
-        if bound_session(&tree.dir).is_some_and(|bound| ids.contains(&bound.as_str())) {
-            continue;
-        }
-        if std::fs::write(session_file(&tree.dir), format!("{first}\n")).is_ok() {
-            written.push((label, first.to_string()));
-        }
-    }
-    if written.is_empty() {
-        return;
-    }
-    let features: Vec<&str> = written.iter().map(|(label, _)| label.as_str()).collect();
-    let (what, them) = if written.len() == 1 {
-        ("conversation", "it")
-    } else {
-        ("conversations", "them")
-    };
-    logged.push(Logged::new(
-        Paint::Green,
-        format!(
-            "wrote down the {what} of {} · a restart of herdr resumes {them}",
-            features.join(", ")
-        ),
-        Some(
-            written
-                .iter()
-                .map(|(label, id)| format!("{id} → {label}/.claude/herdr-session"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        ),
-    ));
-}
-
 /// Every orchestration's chat written down (`rememberChats`): the claude of
 /// its tab `orchestrator`; a lone claude in a space without it gets that name.
 fn remember_chats(
@@ -503,13 +444,9 @@ fn report_states(
     // Panes whose line waits for GitLab's first answer: left as herdr holds them.
     let mut held: HashSet<String> = HashSet::new();
     let claudes = breadboard_core::local::claudes();
-    // A headless agent has no pane (#361): its line goes onto a pane of its
-    // worktree's space, its state the status table's.
-    let headless = if breadboard_core::runs::is_headless(main) {
-        breadboard_core::runs::agents_of(main)
-    } else {
-        HashMap::new()
-    };
+    // A headless agent has no pane (#361): its line goes onto its worktree's
+    // space, its state the status table's.
+    let headless = breadboard_core::runs::agents_of(main);
     let mut hosts: Vec<String> = Vec::new();
     for listed in trees.iter().filter(|tree| tree.dir != main) {
         let label = herdr::space_label(main, &listed.dir);
