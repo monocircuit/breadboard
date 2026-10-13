@@ -517,7 +517,10 @@ impl Config {
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
         if !(1..=100).contains(&self.agents.fresh_above) {
-            return bad("agents.fresh_above", "must be a percent of the context window, 1 to 100");
+            return bad(
+                "agents.fresh_above",
+                "must be a percent of the context window, 1 to 100",
+            );
         }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))

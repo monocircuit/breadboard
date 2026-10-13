@@ -355,16 +355,23 @@ pub fn worker_actions_of(
         .chain(facts.setups.iter().filter_map(|setup| setup.to.clone()))
         .chain(running.iter().filter_map(|run| run.to.clone()))
         .collect();
-    let free: Vec<FreeWorker> = free_workers_of(issues, remote, agents, known, facts.free, facts.limit.unwrap_or(CONTEXT_LIMIT))
-        .into_iter()
-        .filter(|worker| {
-            if worker.is_free {
-                !promised_to.contains(&worker.name)
-            } else {
-                worker.dir.as_ref().is_none_or(|dir| !promised.contains(dir))
-            }
-        })
-        .collect();
+    let free: Vec<FreeWorker> = free_workers_of(
+        issues,
+        remote,
+        agents,
+        known,
+        facts.free,
+        facts.limit.unwrap_or(CONTEXT_LIMIT),
+    )
+    .into_iter()
+    .filter(|worker| {
+        if worker.is_free {
+            !promised_to.contains(&worker.name)
+        } else {
+            worker.dir.as_ref().is_none_or(|dir| !promised.contains(dir))
+        }
+    })
+    .collect();
     let setting_up: HashSet<i64> = facts.setups.iter().map(|setup| setup.number).collect();
     // Queued again since its start failed (by hand): the old failure is over.
     let run_of = |number: Option<i64>| -> Option<&StartRun> {
