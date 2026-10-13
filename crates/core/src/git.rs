@@ -1,5 +1,5 @@
 //! git as the overview reads it: the worktrees of the repo, the main checkout,
-//! and what each worktree's branch holds against develop. Read only, and
+//! and what each worktree's branch holds against its base (develop or an epic). Read only, and
 //! without git's optional locks: a `git status` every few seconds would
 //! otherwise take the index lock under a commit of the same worktree.
 
@@ -222,26 +222,133 @@ pub fn changed_count(dir: &Path) -> usize {
         .count()
 }
 
-/// Commits of HEAD develop doesn't have.
-pub fn ahead_of_develop(dir: &Path) -> u64 {
-    count(dir, "origin/develop..HEAD").unwrap_or(0)
+/// The default branch of the repo of `dir` (breadboard.toml, #342):
+/// `develop`, `main`. The base of every worktree without another.
+pub fn branch(dir: &Path) -> String {
+    crate::config::of(dir).branch.clone()
 }
 
-/// Commits of develop HEAD doesn't have.
-pub fn behind_develop(dir: &Path) -> u64 {
-    count(dir, "HEAD..origin/develop").unwrap_or(0)
+/// The default branch of the repo of the working directory, for what names
+/// it as text that lives as long as the process (an MR's target, a diff's base).
+pub fn default_branch() -> &'static str {
+    static BRANCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BRANCH.get_or_init(|| crate::config::here().branch.clone())
 }
 
-/// Commits of `branch` develop doesn't have by patch (`git cherry`), what keeps
-/// a merged worktree from wt:remove (prune.mjs `hasOwnCommits`, counted).
+/// `origin/<the base of the worktree dir>`: its epic's or the default branch's.
+pub fn base(dir: &Path) -> String {
+    base_of(dir).remote
+}
+
+/// The branch a worktree branches off, is compared against, merges in and
+/// opens its MR into (#349): the default branch, or the epic of its orchestration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Base {
+    /// The branch: `develop`, `epic/12-name`.
+    pub local: String,
+    /// Its ref on origin: `origin/develop`.
+    pub remote: String,
+}
+
+impl Base {
+    pub fn of(branch: &str) -> Base {
+        Base {
+            local: branch.to_string(),
+            remote: format!("origin/{branch}"),
+        }
+    }
+
+    /// The default branch of the repo of the working directory (breadboard.toml).
+    pub fn develop() -> Base {
+        Base::of(&crate::config::here().branch)
+    }
+
+    /// Whether it is the default branch, no epic.
+    pub fn is_develop(&self) -> bool {
+        self.local == crate::config::here().branch
+    }
+}
+
+impl Default for Base {
+    fn default() -> Base {
+        Base::develop()
+    }
+}
+
+/// The base of the worktree `dir`: `base` of its `.claude/origin`, the
+/// repo's default branch without one (every worktree from before #349).
+pub fn base_of(dir: &Path) -> Base {
+    crate::record::base_in(dir).map_or_else(|| Base::of(&branch(dir)), |base| Base::of(&base))
+}
+
+/// Commits of HEAD its base doesn't have.
+pub fn ahead_of_base(dir: &Path) -> u64 {
+    count(dir, &format!("{}..HEAD", base_of(dir).remote)).unwrap_or(0)
+}
+
+/// Commits of its base HEAD doesn't have.
+pub fn behind_base(dir: &Path) -> u64 {
+    count(dir, &format!("HEAD..{}", base_of(dir).remote)).unwrap_or(0)
+}
+
+/// Commits of `branch` its base doesn't have by patch (`git cherry`), what
+/// keeps a merged worktree from wt:remove (prune.mjs `hasOwnCommits`,
+/// counted): a task merged into its epic has none.
 pub fn own_commits(dir: &Path, branch: &str) -> usize {
+    own_commits_on(dir, &base_of(dir), branch)
+}
+
+/// Commits of `branch` `base` doesn't have by patch.
+pub fn own_commits_on(dir: &Path, base: &Base, branch: &str) -> usize {
     if branch == "(detached)" {
         return 0;
     }
-    git(dir, &["cherry", "origin/develop", branch])
+    git(dir, &["cherry", &base.remote, branch])
         .lines()
         .filter(|line| line.starts_with('+'))
         .count()
+}
+
+/// The bases there are on origin (as of the last fetch): develop and every
+/// epic branch, for a branch whose worktree is gone and with it its base.
+pub fn bases(dir: &Path) -> Vec<Base> {
+    let epics = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=3)",
+            "refs/remotes/origin/epic/",
+        ],
+    );
+    std::iter::once(Base::of(&branch(dir)))
+        .chain(epics.lines().map(Base::of))
+        .collect()
+}
+
+/// Whether `branch` has commits its base lacks (`dir` its worktree), or,
+/// asked in a checkout based on develop (the main one), that every base lacks.
+pub fn has_own_commits(dir: &Path, branch: &str) -> bool {
+    if base_of(dir).is_develop() {
+        own_commits_anywhere(dir, branch) > 0
+    } else {
+        own_commits(dir, branch) > 0
+    }
+}
+
+/// Commits of `branch` no base has: a branch without its worktree is done
+/// once develop or any epic holds it (#349).
+pub fn own_commits_anywhere(dir: &Path, branch: &str) -> usize {
+    bases(dir)
+        .iter()
+        .map(|base| own_commits_on(dir, base, branch))
+        .min()
+        .unwrap_or(0)
+}
+
+/// The commit HEAD and its base started from, None without one.
+pub fn merge_base(dir: &Path) -> Option<String> {
+    let out = git(dir, &["merge-base", &base_of(dir).remote, "HEAD"]);
+    Some(out.out().to_string()).filter(|sha| out.is_ok && !sha.is_empty())
 }
 
 /// How much of a worktree's branch is on origin (change.mjs `pushStateOf`):
@@ -250,7 +357,7 @@ pub fn own_commits(dir: &Path, branch: &str) -> usize {
 pub struct PushState {
     /// The commit of `origin/<branch>`, None without one.
     pub pushed: Option<String>,
-    /// Commits of HEAD origin doesn't have (without a remote branch: the ones develop doesn't have).
+    /// Commits of HEAD origin doesn't have (without a remote branch: the ones its base doesn't have).
     pub unpushed: u64,
     /// When the oldest of them was made, ms since the epoch.
     pub unpushed_at: Option<i64>,
@@ -269,7 +376,7 @@ pub fn push_state(dir: &Path, branch: Option<&str>) -> PushState {
     let base = if pushed.is_some() {
         remote.clone().unwrap_or_default()
     } else {
-        "origin/develop".into()
+        base_of(dir).remote
     };
     let log = git(dir, &["log", "--format=%ct", &format!("{base}..HEAD")]);
     let times: Vec<i64> = log.lines().filter_map(|line| line.trim().parse().ok()).collect();
@@ -300,13 +407,12 @@ pub fn path_of_status(line: &str) -> String {
 }
 
 /// The files a worktree's work touches: committed since the merge base with
-/// develop, changed or new (diff.mjs `filesOf`).
+/// its base, changed or new (diff.mjs `filesOf`).
 pub fn work_files(dir: &Path) -> BTreeSet<String> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
-    if !base.is_ok || base.out().is_empty() {
+    let Some(base) = merge_base(dir) else {
         return BTreeSet::new();
-    }
-    let mut files: BTreeSet<String> = git(dir, &["diff", "--name-only", base.out()])
+    };
+    let mut files: BTreeSet<String> = git(dir, &["diff", "--name-only", &base])
         .lines()
         .map(String::from)
         .collect();
@@ -318,17 +424,16 @@ pub fn work_files(dir: &Path) -> BTreeSet<String> {
     files
 }
 
-/// Of `files`, the ones develop changed too since the merge base: where the
-/// work collides with develop (diff.mjs, DIFF's `⚠ also changed on develop`).
-pub fn on_develop(dir: &Path, files: &BTreeSet<String>) -> Vec<String> {
+/// Of `files`, the ones its base changed too since the merge base: where the
+/// work collides with it (diff.mjs, DIFF's `⚠ also changed on develop`).
+pub fn on_base(dir: &Path, files: &BTreeSet<String>) -> Vec<String> {
     if files.is_empty() {
         return Vec::new();
     }
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
-    if !base.is_ok || base.out().is_empty() {
+    let Some(base) = merge_base(dir) else {
         return Vec::new();
-    }
-    git(dir, &["diff", "--name-only", base.out(), "origin/develop"])
+    };
+    git(dir, &["diff", "--name-only", &base, &base_of(dir).remote])
         .lines()
         .filter(|file| files.contains(*file))
         .map(String::from)
@@ -337,7 +442,7 @@ pub fn on_develop(dir: &Path, files: &BTreeSet<String>) -> Vec<String> {
 
 /// The files the commits of a worktree's branch touched, from where wt:new
 /// made the branch (its reflog's oldest entry) along the first parent and
-/// without merges: what develop brought in doesn't count, and it stays the
+/// without merges: what its base brought in doesn't count, and it stays the
 /// same after the merge (worktree/workers.mjs `filesOf`).
 pub fn branch_files(dir: &Path) -> Vec<String> {
     let branch = git(dir, &["symbolic-ref", "--quiet", "HEAD"]);
@@ -438,6 +543,8 @@ pub(crate) mod fixture {
         run(&main, &["commit", "--quiet", "-m", "chore: begin"]);
         run(&main, &["push", "--quiet", "origin", "develop"]);
         run(&main, &["fetch", "--quiet", "origin"]);
+        // origin's HEAD names the default branch where no breadboard.toml does.
+        run(&main, &["remote", "set-head", "origin", "develop"]);
         main
     }
 
@@ -548,8 +655,8 @@ mod tests {
         );
         assert_eq!(main_dir(&pushed).as_deref(), Some(main.as_path()));
 
-        assert_eq!(ahead_of_develop(&pushed), 1);
-        assert_eq!(behind_develop(&pushed), 0);
+        assert_eq!(ahead_of_base(&pushed), 1);
+        assert_eq!(behind_base(&pushed), 0);
         assert_eq!(own_commits(&pushed, "feature/1-pushed"), 1);
         let state = push_state(&pushed, Some("feature/1-pushed"));
         assert!(state.has_remote_branch);
@@ -573,14 +680,14 @@ mod tests {
         );
         assert_eq!(branch_files(&local), vec!["work/2-local.md".to_string()]);
         // develop moves on with a file the work changes too: they collide there.
-        assert!(on_develop(&local, &work_files(&local)).is_empty());
+        assert!(on_base(&local, &work_files(&local)).is_empty());
         std::fs::write(main.join("new.md"), "develop's\n").unwrap();
         run(&main, &["add", "new.md"]);
         run(&main, &["commit", "--quiet", "-m", "feat: develop's new.md"]);
         run(&main, &["push", "--quiet", "origin", "develop"]);
         run(&main, &["fetch", "--quiet", "origin"]);
-        assert_eq!(on_develop(&local, &work_files(&local)), vec!["new.md".to_string()]);
-        assert_eq!(behind_develop(&local), 1);
+        assert_eq!(on_base(&local, &work_files(&local)), vec!["new.md".to_string()]);
+        assert_eq!(behind_base(&local), 1);
         assert!(
             remote_heads(&main)
                 .iter()

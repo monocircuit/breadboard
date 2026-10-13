@@ -12,7 +12,8 @@
 //! (core's `model_of`) and the page from the model, one file per section:
 //!
 //! - orchestration: `header` (the chat row, GitLab's error), `next`,
-//!   `actions` (ACTIONS, UP NEXT), `worktrees`, `agents`, `merge_requests`,
+//!   `actions` (ACTIONS, UP NEXT), `work` (the worktrees and their MRs in
+//!   one, from the pieces of `worktrees` and `merge_requests`), `agents`,
 //!   `footer` (end orchestration, the hints);
 //! - one worktree: `worktree_view`; everything: `everything`.
 //!
@@ -22,8 +23,10 @@
 
 mod act;
 mod actions;
-mod actor;
+pub(crate) mod actor;
 mod agents;
+mod boxes;
+mod epic;
 mod everything;
 mod footer;
 mod header;
@@ -31,6 +34,7 @@ mod look;
 mod merge_requests;
 mod next;
 mod overall;
+mod work;
 mod worktree_view;
 mod worktrees;
 
@@ -266,16 +270,86 @@ impl GitlabState {
 }
 
 /// The user's folds, kept over redraws; None: the model's default.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Folds {
-    pub removed: Option<bool>,
+    /// WORK's done ones (#347: the merged MRs and the removed worktrees), shown until folded.
+    pub is_done_folded: bool,
     pub is_queued_folded: bool,
-    pub is_merged_folded: bool,
     /// The view of everything: every open MR, every issue, past what fits the pane.
     pub is_every_mr_shown: bool,
     pub is_every_issue_shown: bool,
     /// DONE: every entry's command under it, not only a failed one's.
     pub is_every_command_shown: bool,
+    /// The boxes opened under an MR's row and a worktree's node (#346).
+    pub boxes: BoxFolds,
+}
+
+/// The MRs (by iid) and the worktrees (by issue) whose boxes are open
+/// (#346), and the MRs folded by a click (#354): an MR with open boxes shows
+/// those until it is folded, every other list is folded until it is opened.
+/// Kept per viewer in a file next to the orchestration's record, so they
+/// stay over a restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BoxFolds {
+    pub mrs: std::collections::BTreeSet<i64>,
+    pub worktrees: std::collections::BTreeSet<i64>,
+    pub folded_mrs: std::collections::BTreeSet<i64>,
+}
+
+impl BoxFolds {
+    /// What an MR's fold shows: every box, its open ones (#354: before any
+    /// click, when it has some), or nothing.
+    pub fn mr_list(&self, iid: i64, has_open: bool) -> MrList {
+        if self.mrs.contains(&iid) {
+            MrList::All
+        } else if has_open && !self.folded_mrs.contains(&iid) {
+            MrList::Open
+        } else {
+            MrList::Folded
+        }
+    }
+
+    /// A click on an MR's fold: a list shown (its open boxes, or all) folds,
+    /// a folded one opens every box.
+    pub fn fold_mr(&mut self, iid: i64, has_open: bool) {
+        if self.mr_list(iid, has_open) != MrList::Folded {
+            self.mrs.remove(&iid);
+            self.folded_mrs.insert(iid);
+        } else {
+            self.folded_mrs.remove(&iid);
+            self.mrs.insert(iid);
+        }
+    }
+
+    /// Where an orchestration's are kept: `.claude/orchestrations/<name>.folds`,
+    /// not `.json`, or it would read as a record.
+    pub fn file(main: &Path, name: &str) -> PathBuf {
+        breadboard_core::record::records_dir(main).join(format!("{name}.folds"))
+    }
+
+    /// The folds kept in `file`; none open without one or with a broken one.
+    pub fn read(file: &Path) -> Self {
+        std::fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Kept for the next start; a write that fails costs only that.
+    pub fn write(&self, file: &Path) {
+        if let Ok(text) = serde_json::to_string(self) {
+            let _ = std::fs::write(file, text + "\n");
+        }
+    }
+}
+
+/// What an MR's fold shows (#354).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MrList {
+    All,
+    Open,
+    Folded,
 }
 
 /// What every section knows besides its model.
@@ -304,6 +378,8 @@ pub struct Overview {
     /// Why the model couldn't be built: the last good one stays.
     broken: Option<String>,
     folds: Folds,
+    /// Where the boxes' folds are kept: an orchestration's view, not `--once`.
+    folds_file: Option<PathBuf>,
     refresh: Option<mpsc::UnboundedSender<()>>,
     /// Wakes the local reader: after something the actor did, its result shows at once.
     wake_local: Option<std::sync::mpsc::SyncSender<()>>,
@@ -315,6 +391,10 @@ pub struct Overview {
 
 impl Overview {
     pub fn new(args: &Args, main: &Path) -> Self {
+        let folds_file = match &args.view {
+            View::Orchestration(name) if !args.is_once => Some(BoxFolds::file(main, name)),
+            _ => None,
+        };
         Self {
             view: args.view.clone(),
             is_once: args.is_once,
@@ -331,7 +411,11 @@ impl Overview {
             state: ViewState::default(),
             model: None,
             broken: None,
-            folds: Folds::default(),
+            folds: Folds {
+                boxes: folds_file.as_deref().map(BoxFolds::read).unwrap_or_default(),
+                ..Folds::default()
+            },
+            folds_file,
             refresh: None,
             wake_local: None,
             worktree: worktree_view::State::default(),
@@ -343,23 +427,12 @@ impl Overview {
     fn ctx(&self) -> Ctx<'_> {
         Ctx {
             is_once: self.is_once,
-            folds: self.folds,
+            folds: self.folds.clone(),
             gitlab: &self.gitlab,
             now: now_ms(),
             main_name: &self.main_name,
             actor: &self.actor,
             words: &self.words,
-        }
-    }
-
-    /// Whether "done and removed" is folded by the model's default (past FOLD_OVER).
-    fn is_removed_folded(&self) -> bool {
-        match &self.model {
-            Some(Model::Orchestration(model)) => model
-                .worktrees
-                .as_ref()
-                .is_ok_and(|worktrees| worktrees.is_removed_folded),
-            _ => false,
         }
     }
 
@@ -407,10 +480,10 @@ impl App for Overview {
                     return;
                 }
                 next::build(page, model, &ctx);
+                epic::build(page, model);
                 actions::build(page, model, &ctx);
-                worktrees::build(page, model, &ctx);
+                work::build(page, model, &ctx);
                 agents::build(page, model, &ctx);
-                merge_requests::build(page, model, &ctx);
                 footer::build(page, model, &ctx);
                 actor::view::done(page, &ctx);
             }

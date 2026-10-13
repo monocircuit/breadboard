@@ -66,7 +66,7 @@ pub const MERGE_TURN: &str = "done: waits for its merge turn";
 /// boxes, conflicts, a change): its MR row says what.
 pub const NOT_READY: &str = "not ready to merge: its MR row says why";
 
-/// What an agent waits for, the first that holds: at work; asks you; waits
+/// What an agent waits for, the first that holds: at work; queued for a run; asks you; waits
 /// for the pipeline; pipeline failed; waits for you (its open actions, the
 /// merge while its turn offers it, #344); waits for the MRs its turn comes
 /// after; checks open; done without a known turn; waits for other MRs; the
@@ -82,6 +82,10 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
     } = facts;
     if *status == Some("working") {
         return state("working", "at work", Tone::Work);
+    }
+    // A headless agent's lines wait for a run (#358): memory, the merge order, its open tab.
+    if *status == Some("queued") {
+        return state("queued", "queued for a run", Tone::Work);
     }
     let is_asking = tree
         .claude

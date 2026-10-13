@@ -5,6 +5,7 @@
 
 mod changes;
 mod end;
+mod epic;
 mod issue;
 pub mod setups;
 mod space;
@@ -23,7 +24,7 @@ use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
@@ -91,7 +92,7 @@ fn stray_flag(args: &Args) -> Option<String> {
 pub fn command(args: &Args) -> ExitCode {
     let argv = &args.all;
     let after = after_args(argv);
-    let valued = ["--peer", "--brief", "--to", "--limit", "--title"];
+    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--epic"];
     // The words, wherever the flags stand (`--dry-run breadboard 301`): the
     // orchestration, then its issues; the MRs after `--after` are none.
     let positional: Vec<&String> = argv
@@ -111,8 +112,9 @@ pub fn command(args: &Args) -> ExitCode {
     }
     if args.has("--watch") && !args.has("--changelog") {
         fail(&format!(
-            "--watch goes with --changelog: pnpm wt:orchestrate {} --changelog --watch\n{USAGE}",
-            name.as_deref().unwrap_or("<name>")
+            "--watch goes with --changelog: {run} wt:orchestrate {} --changelog --watch\n{USAGE}",
+            name.as_deref().unwrap_or("<name>"),
+            run = breadboard_core::config::run_word()
         ));
     }
     if args.has("--cap") {
@@ -258,6 +260,12 @@ pub fn command(args: &Args) -> ExitCode {
             outln!("  #{:<4} {line}", item.number);
         }
     }
+    // The epic before anything is written: its tasks branch off it (#350).
+    match epic::ensure_epic(&name, &plan, args.value("--epic").as_deref(), is_dry) {
+        Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
+        Ok(None) => {}
+        Err(why) => fail(&format!("no epic branch: {why}")),
+    }
     if is_dry {
         let first = plan.iter().find(|item| item.why.is_none()).unwrap_or(&plan[0]);
         outln!(
@@ -344,7 +352,7 @@ pub fn command(args: &Args) -> ExitCode {
         let numbers: Vec<String> = to_start.iter().map(|at| format!("#{}", plan[*at].number)).collect();
         let mrs: Vec<String> = waits_for.iter().map(|iid| format!("!{iid}")).collect();
         step(&format!(
-            "queued {} (--queue{}). The overview of {label} hands each to a free agent{}, in the work order of wt:plan, else starts a fresh one (UP NEXT); by hand: pnpm wt:orchestrate {name} <issue> --to <agent>",
+            "queued {} (--queue{}). The overview of {label} hands each to a free agent{}, in the work order of wt:plan, else starts a fresh one (UP NEXT); by hand: {run} wt:orchestrate {name} <issue> --to <agent>",
             numbers.join(", "),
             if mrs.is_empty() {
                 String::new()
@@ -355,7 +363,8 @@ pub fn command(args: &Args) -> ExitCode {
                 ""
             } else {
                 " once those MRs are merged"
-            }
+            },
+            run = breadboard_core::config::run_word()
         ));
     }
 
@@ -393,9 +402,8 @@ pub fn command(args: &Args) -> ExitCode {
                         started.push(item.feature.clone());
                     } else {
                         results.push(format!(
-                            "✗ #{} {}: the handover to {} failed (see above); a fresh agent: pnpm wt:orchestrate {name} {} --now",
-                            item.number, item.feature, worker.name, item.number
-                        ));
+                            "✗ #{} {}: the handover to {} failed (see above); a fresh agent: {run} wt:orchestrate {name} {} --now",
+                            item.number, item.feature, worker.name, item.number, run = breadboard_core::config::run_word()));
                     }
                 }
                 Start::Fresh { is_shared, why } => {
@@ -417,9 +425,10 @@ pub fn command(args: &Args) -> ExitCode {
                     };
                     let before = known_of(number);
                     step(&format!(
-                        "pnpm wt:new {} --origin {name}{}",
+                        "{run} wt:new {} --origin {name}{}",
                         item.feature,
-                        if *is_shared { " --shared" } else { "" }
+                        if *is_shared { " --shared" } else { "" },
+                        run = breadboard_core::config::run_word()
                     ));
                     let made = make_worktree(item, &name, *is_shared);
                     if !made.is_there || made.failed.is_some() {
@@ -506,20 +515,19 @@ pub fn command(args: &Args) -> ExitCode {
         outln!(
             "
   A folder claude has not seen asks to be trusted first: answer it in the agent's tab.
-  The overview's WORKTREES shows where each agent is: look there, don't ask and don't relay it.
+  The overview's WORK shows where each agent is: look there, don't ask and don't relay it.
   An agent messages you{peer_note} only for a decision, a changed plan or another agent's work.
   Say hello first, so it has your address:
 {}
 
   The overview of {label} answers the user's \"what now?\": keep it true.
-    pnpm wt:plan {name} --work <issue>… --merge <issue>… --why \"<one line>\"
+    {run} wt:plan {name} --work <issue>… --merge <issue>… --why \"<one line>\"
                                   the order now, again whenever it changes (a dependency, a failed pipeline)
-    pnpm wt:action decide \"<what is decided>? <why the recommendation>\" --option \"<label>\" --why \"<what happens>\"… --recommend <label> --orchestration {name}
+    {run} wt:action decide \"<what is decided>? <why the recommendation>\" --option \"<label>\" --why \"<what happens>\"… --recommend <label> --orchestration {name}
                                   a step that is the user's and no agent's (--done <id> --orchestration {name} after)
   The agents leave their own actions (merge, try, decide, look, plan) whenever they wait for the user.
 ",
-            hello.join("\n")
-        );
+            hello.join("\n"), run = breadboard_core::config::run_word());
     }
     // A start that failed fails the command: a script and the overview's
     // `--now` (it reads the last line only on an exit code) see it.
@@ -553,13 +561,14 @@ fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
         herdr::mark_origins();
     }
     outln!(
-        "\n✓ {before} → {}{}; commands keep the name: pnpm wt:orchestrate {name} …\n",
+        "\n✓ {before} → {}{}; commands keep the name: {run} wt:orchestrate {name} …\n",
         record::orchestrator_label(&main, name),
         if has_space {
             ", its space and sidebar marks too"
         } else {
             ""
-        }
+        },
+        run = breadboard_core::config::run_word()
     );
     ExitCode::SUCCESS
 }

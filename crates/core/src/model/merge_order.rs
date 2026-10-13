@@ -52,13 +52,13 @@ pub struct After {
 }
 
 /// What holds an open MR up, each in a few words; none when it is ready to
-/// merge: the merge's blockers named with the draft, how far behind develop a
+/// merge: the merge's blockers named with the draft, how far behind its target a
 /// conflicting branch is, and the MRs it comes after with why.
 pub fn hold_up_of(entry: &MergeEntry, after: &[After]) -> Vec<String> {
     let blockers = blockers_of(Some(entry.mr), entry.boxes, true, entry.actions, entry.answered)
         .into_iter()
         .map(|blocker| {
-            if blocker == "conflicts with develop" && entry.behind > 0 {
+            if blocker == format!("conflicts with {}", entry.mr.target()) && entry.behind > 0 {
                 return format!("{blocker} ({} behind)", entry.behind);
             }
             // Of the open boxes the first by name, the rest counted: one line.

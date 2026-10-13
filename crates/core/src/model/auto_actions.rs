@@ -92,14 +92,14 @@ pub fn pipeline_line_of(mr: &Mr, jobs: &[Job], develop: Option<&DevelopPipeline>
         .collect::<Vec<_>>()
         .join(", ");
     let verdict = if !failed.is_empty() && own.is_empty() {
-        format!(
+        crate::config::in_repo(&format!(
             "develop fails the same job{}: not yours, waits for the fix (say so in the MR)",
             if theirs.len() == 1 { "" } else { "s" }
-        )
+        ))
     } else if theirs.is_empty() {
         "look into it".into()
     } else {
-        format!("look into it (develop fails {names} too: not yours)")
+        crate::config::in_repo(&format!("look into it (develop fails {names} too: not yours)"))
     };
     let log = own
         .first()
@@ -154,8 +154,9 @@ pub fn conflicts_of(issues: &[Entry], remote: &Remote) -> Vec<Tell> {
                 return Some(Tell::Send {
                     dir: tree.dir.clone(),
                     line: format!(
-                        "[overview] !{} has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)",
-                        mr.iid
+                        "[overview] !{} has conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target})",
+                        mr.iid,
+                        target = mr.target()
                     ),
                     key,
                     iid: mr.iid,
@@ -386,9 +387,8 @@ pub fn auto_actions_of(
                         dir: tree.dir.clone(),
                         key: boxes,
                         line: format!(
-                            "MR !{} is merged: tick the boxes of #{} that are done (pnpm wt:tick), say what stays open.",
-                            mr.iid, found.iid
-                        ),
+                            "MR !{} is merged: tick the boxes of #{} that are done ({run} wt:tick), say what stays open.",
+                            mr.iid, found.iid, run = crate::config::run_word()),
                         fallback: Box::new(Go::FocusAgent(tree.dir.clone())),
                     },
                 ));

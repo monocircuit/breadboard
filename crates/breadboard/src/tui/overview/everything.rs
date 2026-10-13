@@ -138,7 +138,9 @@ fn build_in(page: &mut Page<Act>, model: &EverythingModel, ctx: &Ctx, height: Op
     }
     page.section(Section::new("FOOTER").plain(), |scene| {
         scene.text(
-            "pnpm stack:up|down|reset --port <p> · pnpm wt:new <n-feature> · pnpm commands",
+            &breadboard_core::config::in_repo(
+                "pnpm stack:up|down|reset --port <p> · pnpm wt:new <n-feature> · pnpm commands",
+            ),
             theme::dim(),
         );
     });
@@ -204,11 +206,11 @@ fn app_cell(tree: &Tree) -> Vec<Span<'static>> {
     vec![if !tree.has_env {
         look::dim("—")
     } else if !tree.has_own_port {
-        look::dim("⇒ :3000")
+        look::dim(format!("⇒ :{}", tree.app_port))
     } else if tree.is_up {
-        look::span(format!("● :{}", 3000 + tree.offset), theme::tone(Tone::Green))
+        look::span(format!("● :{}", tree.app_port + tree.offset), theme::tone(Tone::Green))
     } else {
-        look::dim(format!("○ :{}", 3000 + tree.offset))
+        look::dim(format!("○ :{}", tree.app_port + tree.offset))
     }]
 }
 
@@ -245,8 +247,9 @@ fn usual_env(rows: &[&TreeRow]) -> Option<Env> {
 /// The title's word for the rows of `env` that say nothing about it.
 fn env_note(env: Env, count: usize, of: usize) -> String {
     match env {
-        Env::Missing if count == of => "no .env.local in any".into(),
-        Env::Missing => format!("no .env.local in {count} of {of}"),
+        Env::Missing if !breadboard_core::config::has_stack() => "no stack (breadboard.toml)".into(),
+        Env::Missing if count == of => format!("{} in any", breadboard_core::config::env_missing()),
+        Env::Missing => format!("{} in {count} of {of}", breadboard_core::config::env_missing()),
         _ => format!("{count} of {of} on the shared stack"),
     }
 }
@@ -457,7 +460,7 @@ fn work_line(scene: &mut Scene<Act>, detail: Option<Vec<Vec<Span<'static>>>>) {
 fn tree_click(row: &TreeRow, is_in_herdr: bool) -> Act {
     let tree = &row.tree;
     if !is_in_herdr && tree.is_up && tree.has_env {
-        let port = 3000 + if tree.has_own_port { tree.offset } else { 0 };
+        let port = tree.app_port + if tree.has_own_port { tree.offset } else { 0 };
         Act::Go(Go::Show {
             url: format!("http://localhost:{port}"),
             dir: Some(tree.dir.clone()),
@@ -496,7 +499,7 @@ fn env_cell(tree: &Tree) -> Vec<Span<'static>> {
 /// says its offset; `no .env.local` without one.
 fn stack_word(tree: &Tree) -> Vec<Span<'static>> {
     match env_of(tree) {
-        Env::Missing => vec![look::dim("no .env.local")],
+        Env::Missing => vec![look::dim(breadboard_core::config::env_missing())],
         _ => look::spans(&[stack_of(tree)]),
     }
 }
@@ -699,7 +702,8 @@ fn default_stack(scene: &mut Scene<Act>, start: Act, run: Option<&Run>, is_once:
         return;
     }
     scene.button("▶ start the default stack", Tone::Cyan, start);
-    scene.text(if is_once { "pnpm stack:up" } else { "click or u" }, theme::dim());
+    let up = breadboard_core::config::in_repo("pnpm stack:up");
+    scene.text(if is_once { &up } else { "click or u" }, theme::dim());
     if let Some(why) = run.and_then(|run| run.error.as_deref()) {
         gap(scene, 0);
         look::say(scene, &format!("✗ {why}"), theme::tone(Tone::Red));
@@ -1202,6 +1206,7 @@ mod tests {
     fn tree(name: &str, is_main: bool) -> Tree {
         Tree {
             dir: PathBuf::from(format!("/repo/{name}")),
+            app_port: 3000,
             name: name.into(),
             branch: if is_main {
                 "develop".into()

@@ -1,26 +1,25 @@
-//! `pnpm wt:new <feature> [--shared] [--fix] [--origin <orchestration>]`
-//! (commands/new.mjs): a worktree on a new branch from origin/develop, the
+//! `pnpm wt:new <feature> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]`
+//! (commands/new.mjs): a worktree on a new branch from its base (#349:
+//! `--base`, else its orchestration's, else develop), the
 //! empty branch pushed as the claim on its issue, installed, its own stack,
 //! its herdr space; the agent that ran it moves along.
 
 use super::conversations::{self, session_file};
+use super::epic::{self, Epic};
 use super::herdr::{self, field};
 use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
-use super::repo::{self, VITA};
+use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
 use crate::cli::lifecycle::handover::claim_on_origin;
-use breadboard_core::git::Worktree;
+use breadboard_core::git::{Base, Worktree, base_of};
 use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
 
-const INSTALL: &str = "pnpm install --frozen-lockfile";
-const PRETTIER: &str = "pnpm --filter @monocircuit/prettier-config build";
-const ESLINT: &str = "pnpm --filter @monocircuit/eslint-config build:prod";
-
-pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>]";
+pub const USAGE: &str =
+    "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
 
 /// The worktree an agent leaves for the new one: the space its tab stands
 /// in, else where it ran this. None for a human.
@@ -66,17 +65,18 @@ fn hand_over(previous: &Worktree) -> String {
         } else if is_on_origin {
             "its branch is still on origin"
         } else {
-            "commits not in develop"
+            "commits not in its base"
         };
         return format!("{feature} stays ({why}): its space keeps overview and nvim");
     }
+    let base = base_of(&previous.dir).local;
     let removed = proc::child()
         .args(["wt:remove", &feature, "--close-space"])
         .current_dir(&main)
         .stdin(Stdio::null())
         .output();
     match removed {
-        Ok(output) if output.status.success() => format!("{feature} removed, its work is in develop"),
+        Ok(output) if output.status.success() => format!("{feature} removed, its work is in {base}"),
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             format!(
@@ -89,7 +89,7 @@ fn hand_over(previous: &Worktree) -> String {
 }
 
 pub fn command(args: &Args) -> ExitCode {
-    let feature = match args.first_word(&["--origin"]) {
+    let feature = match args.first_word(&["--origin", "--base"]) {
         Some(feature) if is_name(&feature) => feature,
         given => fail(&name_refusal("the feature", given.as_deref(), USAGE)),
     };
@@ -102,6 +102,16 @@ pub fn command(args: &Args) -> ExitCode {
     if let Some(name) = origin_name.as_deref().filter(|name| !is_name(name)) {
         fail(&name_refusal("the orchestration", Some(name), USAGE));
     }
+    // The base: given, else the orchestration's record's (its epic), else develop.
+    let base = match args.value("--base") {
+        Some(base) if record::is_branch(&base) => Base::of(&base),
+        Some(base) => fail(&format!("{base} is no branch name\n{USAGE}")),
+        None => origin_name
+            .as_deref()
+            .and_then(|name| record::record_of(&repo::main_dir(), name))
+            .and_then(|found| found.base)
+            .map_or_else(Base::develop, |base| Base::of(&base)),
+    };
     super::heal_plugin();
     let origin = origin_name.map(|name| Origin {
         slot: herdr::slot_of(&name),
@@ -124,6 +134,9 @@ pub fn command(args: &Args) -> ExitCode {
     if proc::git(&["rev-parse", "--verify", "--quiet", &branch], &main).is_ok {
         fail(&format!("the branch {branch} exists already"));
     }
+    if !proc::git(&["rev-parse", "--verify", "--quiet", &base.remote], &main).is_ok {
+        fail(&format!("origin has no branch {}: nothing to start from", base.local));
+    }
     if proc::git(&["ls-remote", "--exit-code", "--heads", "origin", &branch], &main).is_ok {
         fail(&format!("origin has a branch {branch} already"));
     }
@@ -136,7 +149,7 @@ pub fn command(args: &Args) -> ExitCode {
     }
 
     let dir_text = dir.to_string_lossy().into_owned();
-    step(&format!("git worktree add {dir_text} -b {branch} origin/develop"));
+    step(&format!("git worktree add {dir_text} -b {branch} {}", base.remote));
     proc::run(
         "git",
         &[
@@ -147,7 +160,7 @@ pub fn command(args: &Args) -> ExitCode {
             &dir_text,
             "-b",
             &branch,
-            "origin/develop",
+            &base.remote,
         ],
         How {
             cwd: Some(&main),
@@ -155,36 +168,54 @@ pub fn command(args: &Args) -> ExitCode {
         },
     );
     conversations::share_conversations();
-    if let Some(origin) = &origin
-        && let Err(error) = record::write_origin(&dir, origin)
-    {
+    let written = origin
+        .as_ref()
+        .map_or(Ok(()), |origin| record::write_origin(&dir, origin))
+        .and_then(|()| record::write_base(&dir, &base.local));
+    if let Err(error) = written {
         fail(&format!(
             "couldn't write {}: {error}",
             record::origin_file(&dir).display()
         ));
     }
     // A step that fails names the commands that finish the worktree from there.
+    let loaded = breadboard_core::config::of(&main);
+    let setup = loaded.config.worktrees.setup.clone();
     let main_env = repo::env_file_of(&main);
     let stack_step = if !main_env.exists() {
         None
     } else if args.has("--shared") {
-        Some(format!("cp {} {VITA}/.env.local", main_env.display()))
+        Some(format!(
+            "cp {} {}",
+            main_env.display(),
+            repo::env_file_of(&dir).display()
+        ))
     } else {
-        Some("pnpm wt:stack".to_string())
+        Some(loaded.command("wt:stack"))
     };
-    let finish = |rest: &[&str]| {
-        let rest: Vec<&str> = rest.iter().copied().chain(stack_step.as_deref()).collect();
+    let finish = |rest: &[breadboard_core::config::Step]| {
+        let rest: Vec<&str> = rest
+            .iter()
+            .map(|step| step.run.as_str())
+            .chain(stack_step.as_deref())
+            .collect();
         format!(
-            "the worktree is only half set up: fix the cause, then finish it in {dir_text}: {}; or start over with pnpm wt:remove {feature}",
-            rest.join(" && ")
+            "the worktree is only half set up: fix the cause, then finish it in {dir_text}: {}; or start over with {} {feature}",
+            rest.join(" && "),
+            loaded.command("wt:remove")
         )
     };
-    set_hint(&finish(&[INSTALL, PRETTIER, ESLINT]));
+    set_hint(&finish(&setup));
 
     step(&format!(
         "push guard: {} (#184)",
         crate::cli::write::mr::install_push_guard(&dir)
     ));
+    if breadboard_core::ci::set_push_option(&dir, breadboard_core::time::now_ms())
+        == Some(breadboard_core::ci::PushOption::Set)
+    {
+        step("CI: pushes skip CI, breadboard's queue starts the pipelines (#357)");
+    }
     step(&format!("git push -u origin {branch} (the empty claim on the issue)"));
     let pushed = proc::run(
         "git",
@@ -200,40 +231,39 @@ pub fn command(args: &Args) -> ExitCode {
         outln!("! origin refused the branch, push it yourself: git push -u origin {branch}");
     }
 
-    step("pnpm install");
-    proc::run(
-        "pnpm",
-        &["install", "--frozen-lockfile"],
-        How {
-            cwd: Some(&dir),
-            is_quiet: proc::is_agent(),
-            ..How::default()
-        },
-    );
-    set_hint(&finish(&[PRETTIER, ESLINT]));
-    step("build the lint and format configs (lint and the hooks load them)");
-    let quiet = || How {
-        cwd: Some(&dir),
-        is_quiet: true,
-        ..How::default()
-    };
-    proc::run("pnpm", &["--filter", "@monocircuit/prettier-config", "build"], quiet());
-    proc::run(
-        "pnpm",
-        &["--filter", "@monocircuit/eslint-config", "build:prod"],
-        quiet(),
-    );
-    set_hint(&finish(&[]));
+    // breadboard.toml's `[[worktrees.setup]]` in order (the install, what lint loads); a quiet one
+    // shows its output only when it fails, every one quiet for an agent.
+    for (at, run) in setup.iter().enumerate() {
+        if let Some(says) = &run.says {
+            step(says);
+        } else if !run.is_quiet {
+            step(&run.run);
+        }
+        proc::run(
+            "sh",
+            &["-c", &run.run],
+            How {
+                cwd: Some(&dir),
+                is_quiet: run.is_quiet || proc::is_agent(),
+                ..How::default()
+            },
+        );
+        set_hint(&finish(&setup[at + 1..]));
+    }
 
-    let offset = if !main_env.exists() {
+    let has_stack = loaded.config.stack.is_some();
+    let offset = if !has_stack {
+        // No [stack] in breadboard.toml: nothing to share or own.
+        0
+    } else if !main_env.exists() {
         outln!(
-            "\n! {} is missing, the worktree has no .env.local and no stack",
+            "\n! {} is missing, the worktree has no env file and no stack",
             main_env.display()
         );
         0
     } else if args.has("--shared") {
-        step("share the dev stack of the main checkout (copy its .env.local)");
-        let target = dir.join(VITA).join(".env.local");
+        step("share the dev stack of the main checkout (copy its env file)");
+        let target = repo::env_file_of(&dir);
         if let Some(parent) = target.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -241,9 +271,18 @@ pub fn command(args: &Args) -> ExitCode {
             fail(&format!("couldn't copy {}: {error}", main_env.display()));
         }
         0
+    } else if let Some(epic) = Epic::of_task(&dir) {
+        // An orchestration's task: its stack starts when needed (#351).
+        step(&format!(
+            "task stack on the epic {}: its .env.local, started by {run} stack:up",
+            epic.name,
+            run = breadboard_core::config::run_word()
+        ));
+        epic::reserve_task(&dir, &feature, &epic)
     } else {
         stack::create_stack(&dir, &feature)
     };
+    let epic_port = epic::epic_port_of(&dir);
     // Set up: what follows only tells and arranges, nothing to finish by hand.
     set_hint("");
     // GitLab not answering costs the count, never the worktree; an orchestration's skips the sweep.
@@ -270,8 +309,9 @@ pub fn command(args: &Args) -> ExitCode {
         left,
         origin: origin.as_ref().map(|origin| origin.name.as_str()),
         is_stack_only: false,
-        is_stackless: !main_env.exists(),
+        is_stackless: has_stack && !main_env.exists(),
         is_unpushed: !pushed.is_ok,
+        epic_port,
     });
     ExitCode::SUCCESS
 }

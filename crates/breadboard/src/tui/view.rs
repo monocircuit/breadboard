@@ -20,11 +20,15 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use std::time::{Duration, Instant};
 
-/// What is lit: the block under the pointer and the button, by their region.
+/// What is lit: the block under the pointer and the button, by their region;
+/// `area` the rows lit: under the pointer the outermost block there, so a
+/// block nested in another (an MR's fold of its boxes, #346) lights the
+/// whole of the one it is in (#296), while a click runs the inner one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Lit {
     block: Option<usize>,
     button: Option<usize>,
+    area: Option<Rect>,
 }
 
 /// A section's title kept on top of the rows that scroll while the section
@@ -476,6 +480,7 @@ impl<A: Clone + PartialEq> View<A> {
             return Lit {
                 block: Some(block),
                 button: None,
+                area: self.sheet.as_ref().map(|sheet| sheet.regions[block].area),
             };
         }
         let (Some(sheet), Some((x, y))) = (&self.sheet, self.mouse) else {
@@ -486,6 +491,12 @@ impl<A: Clone + PartialEq> View<A> {
         };
         Lit {
             block: sheet.block_at(x, row).map(|(i, _)| i),
+            area: sheet
+                .regions
+                .iter()
+                .filter(|region| !region.is_button() && region.contains(x, row))
+                .max_by_key(|region| region.area.height)
+                .map(|region| region.area),
             button: sheet
                 .hit(x, row)
                 .filter(|(_, region)| region.is_button())
@@ -775,7 +786,7 @@ impl<A: Clone + PartialEq> View<A> {
             buffer.set_line(0, y as u16, line, area.width);
         }
 
-        let lit_block = lit.block.map(|i| sheet.regions[i].area);
+        let lit_block = lit.area;
         for y in window.top..window.top + window.height {
             let Some(row) = window.page_row(y) else {
                 continue;

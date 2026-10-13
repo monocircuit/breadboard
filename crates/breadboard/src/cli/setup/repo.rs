@@ -1,25 +1,26 @@
 //! The repo as the setup commands see it (worktrees.mjs, stack.mjs,
-//! constants.mjs): the main checkout, its worktrees, the vita stack of each
-//! (its `.env.local`, the ports moved by an offset).
+//! constants.mjs): the main checkout, its worktrees, the stack of each
+//! (breadboard.toml's `[stack]`: its env file, the ports moved by an offset).
 
 use super::proc::fail;
 use breadboard_core::git::{self as core_git, Worktree};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-pub use crate::cli::lifecycle::repo::{VITA, env_file_of};
+pub use crate::cli::lifecycle::repo::{env_file_of, stack_dir};
 
-/// Default port → the variable it is moved with in the `.env.local` of a
-/// worktree, in the order they are written (constants.mjs `PORTS`).
-pub const PORTS: [(u16, Option<&str>); 7] = [
-    (3000, None),
-    (4983, None),
-    (5432, Some("POSTGRES_PORT")),
-    (6006, None),
-    (8080, Some("KEYCLOAK_PORT")),
-    (8333, Some("S3_PORT")),
-    (64738, Some("VISUALIZER_PORT")),
-];
+/// The repo's stack, None without one.
+pub fn stack() -> Option<breadboard_core::config::Stack> {
+    breadboard_core::stack::of(&main_dir())
+}
+
+/// Every port of the stack → the variable it is moved with in a worktree's
+/// env file, by number (constants.mjs `PORTS`); none without a stack.
+pub fn ports() -> Vec<(u16, Option<String>)> {
+    stack()
+        .map(|stack| stack.ports().into_iter().map(|port| (port.port, port.env)).collect())
+        .unwrap_or_default()
+}
 
 /// Where the commands stand: `INIT_CWD` (pnpm keeps the place it was typed
 /// in) when it lies in the repo of the working directory, else the working
@@ -50,7 +51,7 @@ static MAIN: OnceLock<PathBuf> = OnceLock::new();
 /// where the binary lies: a binary of one checkout run outside any would act
 /// on that checkout (fetch, worktree add, push its claim).
 pub fn main_dir() -> PathBuf {
-    find_main().unwrap_or_else(|| fail("not inside the repo: run it in a checkout of monocircuit/platform"))
+    find_main().unwrap_or_else(|| fail("not inside the repo: run it in a checkout of the repo"))
 }
 
 /// The main checkout, None outside any repo (for what only helps inside one).
@@ -96,9 +97,10 @@ pub fn is_inside(here: &Path, dir: &Path) -> bool {
     core_git::is_inside(here, dir)
 }
 
-/// Commits of `branch` that develop lacks by patch.
+/// Commits of `branch` that its base lacks by patch (`cwd` its worktree; the
+/// main checkout: every base lacks them, develop and each epic).
 pub fn has_own_commits(branch: &str, cwd: &Path) -> bool {
-    core_git::own_commits(cwd, branch) > 0
+    core_git::has_own_commits(cwd, branch)
 }
 
 /// The offset of a worktree's own stack, 0 for the shared one (the lifecycle group's reading).
@@ -111,14 +113,14 @@ pub fn is_port_free(port: u32) -> bool {
     !breadboard_core::local::is_port_taken(i64::from(port))
 }
 
-/// The worktree whose stack answers on `port`: the app port or one of its
-/// services', offset 0 the main checkout.
+/// The checkout whose stack answers on `port`: the app port or one of its
+/// services', offset 0 the main checkout; an orchestration's epic stack too.
 pub fn worktree_on_port(port: u32) -> Option<Worktree> {
-    let offset = PORTS
+    let offset = ports()
         .iter()
         .map(|(base, _)| i64::from(port) - i64::from(*base))
         .find(|candidate| (0..50).contains(candidate))?;
-    let all = worktrees();
+    let all = core_git::all_worktrees(&main_dir());
     if offset == 0 {
         return all.into_iter().next();
     }

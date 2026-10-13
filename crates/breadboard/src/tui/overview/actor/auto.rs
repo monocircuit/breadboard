@@ -9,7 +9,8 @@ use super::spawn::{self, Background, error_of};
 use super::{Effect, herdr};
 use crate::cli::lifecycle::handover::restart;
 use crate::tui::overview::Overview;
-use breadboard_core::git::{behind_develop, feature_of, work_files};
+use breadboard_core::epic::auto_merge_of;
+use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
 use breadboard_core::herdr::{Agent, is_in_herdr};
 use breadboard_core::json;
@@ -57,6 +58,11 @@ pub struct Auto {
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
+    /// What the CI queue was last told of this orchestration (#357).
+    published: Option<breadboard_core::ci::Published>,
+    /// MRs into an epic merged by themselves, by iid: the head each was
+    /// tried at. One that failed waits for a new push (#350).
+    epic_tried: HashMap<i64, String>,
 }
 
 /// `key` remembered as sent in the worktree's `.claude/overview-sent.json`, newest 50.
@@ -122,6 +128,10 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         let dirs: Vec<PathBuf> = local.trees.iter().map(|tree| tree.dir.clone()).collect();
         super::merge::retry_lines(&app.actor, dirs);
     }
+    // Every live overview computes the same order: whichever reads first writes it.
+    if remote.is_some() {
+        publish_ci(app, &name, &model);
+    }
     if let Some(remote) = remote.as_ref().filter(|_| is_deliverer) {
         tell(app, &model.tells, &local.agents);
         // herdr's sidebar reads them: it knows neither the merge order nor the boxes (#344).
@@ -132,6 +142,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         }
         if is_remote {
             deliver_waits(app, &local, remote);
+            is_changed |= merge_into_epic(app, &model, remote);
         }
         for order in &model.orders {
             is_changed |= run_order(app, &name, order);
@@ -144,6 +155,73 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     if is_changed {
         app.redraw();
     }
+}
+
+/// The orchestration's merge order and bars for the CI queue (#357), written when they changed.
+fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
+    let Some(published) = model.ci_published.as_ref() else {
+        return;
+    };
+    if app.actor.auto.published.as_ref() == Some(published) {
+        return;
+    }
+    let file = breadboard_core::ci::order_file(&app.actor.main, name);
+    if breadboard_core::ci::write_whole(&file, published).is_ok() {
+        app.actor.auto.published = Some(published.clone());
+    }
+}
+
+/// A task's MR into its epic merges by itself once its turn offers it
+/// (#350): the second click's merge, one at a time, never twice at one head;
+/// into develop or main it stays the user's two clicks.
+fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
+    if app
+        .actor
+        .merges
+        .of
+        .values()
+        .any(|merge| merge.phase == super::merge::Phase::Running)
+    {
+        return false;
+    }
+    let Ok(section) = model.actions.as_ref() else {
+        return false;
+    };
+    let items: Vec<Item> = section.actions.iter().chain(&section.up_next).cloned().collect();
+    let head_of = |iid: i64| {
+        remote
+            .of
+            .values()
+            .filter_map(|part| part.mr.as_ref())
+            .find(|mr| mr.iid == iid)
+            .and_then(|mr| mr.sha.clone())
+    };
+    let tried = &app.actor.auto.epic_tried;
+    let found = auto_merge_of(
+        &items,
+        |branch| remote.of(branch).mr.as_ref().map(|mr| mr.target().to_string()),
+        |iid| tried.get(&iid).is_some_and(|sha| Some(sha) == head_of(iid).as_ref()),
+    );
+    let Some((Go::Merge { branch, action }, Some(offer))) = found.map(|item| (item.go.clone(), item.merge.clone()))
+    else {
+        return false;
+    };
+    app.actor
+        .auto
+        .epic_tried
+        .insert(offer.iid, head_of(offer.iid).unwrap_or_default());
+    let target = remote
+        .of(&branch)
+        .mr
+        .as_ref()
+        .map(|mr| mr.target().to_string())
+        .unwrap_or_default();
+    app.actor.log(
+        Paint::Yellow,
+        format!("!{} is done: it merges into {target} by itself", offer.iid),
+    );
+    super::merge::start(app, &branch, &action, &offer);
+    true
 }
 
 /// The lines core's model tells (`tellConflicts`, `tellFailedPipelines`): each
@@ -280,7 +358,7 @@ fn about_of(key: &str) -> String {
         format!("!{digits}")
     };
     if let Some(rest) = key.strip_prefix("conflicts:") {
-        format!("to merge develop in ({} conflicts with it)", iid(rest))
+        breadboard_core::config::in_repo(&format!("to merge develop in ({} conflicts with it)", iid(rest)))
     } else if let Some(rest) = key.strip_prefix("pipeline:") {
         format!("that the pipeline of {} failed", iid(rest))
     } else if key.starts_with("unpushed:") {
@@ -621,7 +699,10 @@ pub fn remove_worktree(app: &mut Overview, dir: &Path) {
     };
     app.state.removals.insert(dir.to_path_buf(), removal);
     let key = format!("remove:{feature}");
-    let command = format!("pnpm wt:remove {feature} --close-space");
+    let command = format!(
+        "{run} wt:remove {feature} --close-space",
+        run = breadboard_core::config::run_word()
+    );
     match started {
         Ok(()) => app
             .actor
@@ -753,8 +834,8 @@ fn deliver_wait(
         let mut conflicts = conflicts.lock().unwrap_or_else(|e| e.into_inner());
         verdict_of(wait, found, now_ms(), conflicts.entry(dir.to_path_buf()).or_default())
     };
-    let behind = (verdict == Verdict::Merged).then(|| behind_develop(dir));
-    let line = line_of(wait, &verdict, behind)?;
+    let behind = (verdict == Verdict::Merged).then(|| behind_base(dir));
+    let line = line_of(wait, &verdict, &base_of(dir).local, behind)?;
     // A new wt:wait may have started meanwhile.
     if wait_of(dir).and_then(|now| now.since) != wait.since || !herdr::deliver_to(main, dir, &line) {
         return None;

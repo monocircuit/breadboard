@@ -1,4 +1,4 @@
-//! The plugin after a move (#230): herdr keeps loading `monocircuit.platform`
+//! The plugin after a move (#230): herdr keeps loading the repo's plugin
 //! from the directory it was linked from. When that directory is gone (a
 //! worktree removed, the package moved as `packages/workflow` did in #219),
 //! every plugin action fails with "plugin action not found" and the tab
@@ -19,8 +19,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
-/// The plugin's id in `herdr-plugin.toml`.
-pub const PLUGIN: &str = "monocircuit.platform";
+/// The plugin's id in `herdr-plugin.toml` (`[herdr] plugin`).
+pub use breadboard_core::record::PLUGIN;
 const MANIFEST: &str = "herdr-plugin.toml";
 /// What runs the binary for herdr, beside the manifest.
 const LAUNCHER: &str = "breadboard.sh";
@@ -55,9 +55,8 @@ fn check(main: &Path) -> Vec<String> {
         lines.push(match &current {
             Some(current) => relink(&old, current),
             None => format!(
-                "plugin {PLUGIN} is linked from {}, which is gone, and this checkout has no packages/breadboard/herdr to link instead: pnpm herdr:install in one that has",
-                shown(&old)
-            ),
+                "plugin {PLUGIN} is linked from {}, which is gone, and this checkout has no packages/breadboard/herdr to link instead: {run} herdr:install in one that has",
+                shown(&old), run = breadboard_core::config::run_word()),
         });
         gone.push(old);
     }
@@ -95,14 +94,15 @@ fn check(main: &Path) -> Vec<String> {
             let mine = outside_block(&was);
             let is_outside = stale.iter().any(|dir| mine.contains(&text(dir)));
             lines.push(format!(
-                "{} still names {}, which is gone: pnpm herdr:install writes the plugin's block again{}",
+                "{} still names {}, which is gone: {run} herdr:install writes the plugin's block again{}",
                 shown(&own),
                 list(&stale),
                 if is_outside {
                     format!("; a line of your own there needs {}", shown(&current))
                 } else {
                     String::new()
-                }
+                },
+                run = breadboard_core::config::run_word()
             ));
         }
     }
@@ -110,7 +110,7 @@ fn check(main: &Path) -> Vec<String> {
 }
 
 fn relink(old: &Path, current: &Path) -> String {
-    herdr::did(&["plugin", "unlink", PLUGIN]);
+    herdr::did(&["plugin", "unlink", &PLUGIN.get()]);
     match run(&["plugin", "link", &text(current)]) {
         Some(out) if out.is_ok => format!(
             "plugin {PLUGIN} linked again from {}: {} is gone",
@@ -155,7 +155,7 @@ fn current_dir(main: &Path) -> Option<PathBuf> {
                 .filter(|dir| breadboard_core::git::main_dir(dir).as_deref() == Some(main))
         })
     };
-    let own = main.join("packages/breadboard/herdr");
+    let own = crate::cli::files_dir(main).join("herdr");
     if own.join(MANIFEST).is_file() {
         Some(own)
     } else {
@@ -177,7 +177,7 @@ fn plugin_dir_of(path: &Path) -> PathBuf {
 /// the entry that names the plugin; in text, those on its line and the
 /// indented lines under it.
 fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
-    if !listed.contains(PLUGIN) {
+    if !listed.contains(&PLUGIN.get()) {
         return None;
     }
     let mut paths = Vec::new();
@@ -187,7 +187,7 @@ fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
     }
     let mut is_ours = false;
     for line in listed.lines() {
-        if line.contains(PLUGIN) {
+        if line.contains(&PLUGIN.get()) {
             is_ours = true;
         } else if !line.starts_with(char::is_whitespace) {
             is_ours = false;
@@ -207,9 +207,9 @@ fn linked_paths(listed: &str) -> Option<Vec<PathBuf>> {
 fn entry_paths(value: &Value, paths: &mut Vec<PathBuf>) {
     match value {
         Value::Object(map) => {
-            if let Some(entry) = map.get(PLUGIN) {
+            if let Some(entry) = map.get(&PLUGIN.get()) {
                 strings_in(entry, paths);
-            } else if map.values().any(|field| field.as_str() == Some(PLUGIN)) {
+            } else if map.values().any(|field| field.as_str() == Some(PLUGIN.get().as_str())) {
                 strings_in(value, paths);
             } else {
                 map.values().for_each(|field| entry_paths(field, paths));

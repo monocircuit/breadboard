@@ -17,8 +17,63 @@ use std::sync::LazyLock;
 
 /// The mark of an orchestration: its space is `⇶ <title>`.
 pub const ORCHESTRATOR: &str = "⇶";
-/// The main herdr space of the repo.
-pub const SPACE: &str = "Monocircuit/Platform";
+/// The main herdr space of the repo of the working directory (`[herdr] space`).
+pub fn space() -> String {
+    crate::config::here().space()
+}
+
+/// A name breadboard.toml gives the repo in herdr, read when it is shown:
+/// `{SPACE}` in a format string, `label == SPACE`, `SPACE.to_string()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Named {
+    /// The main checkout's space (`[herdr] space`).
+    Space,
+    /// The herdr plugin's id (`[herdr] plugin`).
+    Plugin,
+    /// The session of the pinned herdr: the main checkout's folder.
+    Session,
+}
+
+/// The main herdr space of the repo (`[herdr] space`, constants.mjs `SPACE`).
+pub const SPACE: Named = Named::Space;
+/// The herdr plugin's id: the manifest's, every sidebar token's source, the
+/// block marker in configs (`[herdr] plugin`; platform's never changes, rule 5).
+pub const PLUGIN: Named = Named::Plugin;
+
+impl Named {
+    pub fn get(self) -> String {
+        let loaded = crate::config::here();
+        match self {
+            Named::Space => loaded.space(),
+            Named::Plugin => loaded.plugin(),
+            Named::Session => loaded.folder(),
+        }
+    }
+}
+
+impl std::fmt::Display for Named {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.get())
+    }
+}
+
+impl PartialEq<Named> for str {
+    fn eq(&self, named: &Named) -> bool {
+        self == named.get()
+    }
+}
+
+impl PartialEq<Named> for &str {
+    fn eq(&self, named: &Named) -> bool {
+        *self == named.get()
+    }
+}
+
+impl PartialEq<Named> for String {
+    fn eq(&self, named: &Named) -> bool {
+        *self == named.get()
+    }
+}
 /// One colour per concurrent orchestration (origins.mjs `ORIGIN_SLOTS`).
 pub const SLOTS: u32 = 3;
 
@@ -56,9 +111,40 @@ pub fn origin_of(dir: &Path) -> Option<Origin> {
     })
 }
 
-/// Records who started a worktree, as `JSON.stringify(origin)` and a newline.
+/// Records who started a worktree, as `JSON.stringify(origin)` and a newline;
+/// a base recorded before stays.
 pub fn write_origin(dir: &Path, origin: &Origin) -> io::Result<()> {
-    json::write_compact(&origin_file(dir), &json!({ "name": origin.name, "slot": origin.slot }))
+    let mut value = json!({ "name": origin.name, "slot": origin.slot });
+    if let Some(base) = base_in(dir) {
+        value["base"] = Value::from(base);
+    }
+    json::write_compact(&origin_file(dir), &value)
+}
+
+/// The branch a worktree is based on, `base` of its `.claude/origin` (#349):
+/// None without one, which means develop.
+pub fn base_in(dir: &Path) -> Option<String> {
+    let value = json::read(&origin_file(dir))?;
+    str_of(&value, "base").filter(|base| is_branch(base)).map(String::from)
+}
+
+/// Records the base of a worktree in its `.claude/origin`, next to its
+/// orchestration; develop is the default and leaves the file as it was.
+pub fn write_base(dir: &Path, base: &str) -> io::Result<()> {
+    if base == crate::git::branch(dir) {
+        return Ok(());
+    }
+    let mut value = json::read_object(&origin_file(dir));
+    value.insert("base".into(), Value::from(base));
+    json::write_compact(&origin_file(dir), &Value::Object(value))
+}
+
+/// A branch name a base may have: `develop`, `epic/12-name`; nothing git would
+/// read as an option or a range.
+pub fn is_branch(name: &str) -> bool {
+    static BRANCH: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$").unwrap());
+    BRANCH.is_match(name) && !name.contains("..") && !name.ends_with(".lock")
 }
 
 /// Whether the worktree `dir` belongs to an orchestration that still has its
@@ -298,6 +384,8 @@ pub struct Record {
     pub chat: Option<Chat>,
     pub brief: Option<String>,
     pub peer: Option<String>,
+    /// The branch its worktrees are based on (#349): an epic, None for develop.
+    pub base: Option<String>,
 }
 
 static SESSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f-]{36}$").unwrap());
@@ -366,6 +454,9 @@ impl Record {
             chat,
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
+            base: str_of(&raw, "base")
+                .filter(|base| is_branch(base) && *base != crate::git::default_branch())
+                .map(String::from),
             raw,
         })
     }
@@ -399,11 +490,11 @@ pub fn orchestrator_label(main: &Path, name: &str) -> String {
 }
 
 /// The orchestration of a space's label `⇶ <title>` (also `⇶ <name>` and an
-/// older `Monocircuit/Platform ⇶ <name>`), None for any other. `titles`:
+/// older `<main space> ⇶ <name>`), None for any other. `titles`:
 /// `(name, title)` of every record.
 pub fn orchestration_of_label(label: &str, titles: &[(String, String)]) -> Option<String> {
     let shown = label
-        .strip_prefix(&format!("{SPACE} "))
+        .strip_prefix(&format!("{} ", space()))
         .unwrap_or(label)
         .strip_prefix(&format!("{ORCHESTRATOR} "))?;
     if shown.is_empty() {

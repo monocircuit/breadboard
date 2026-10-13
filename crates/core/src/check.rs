@@ -122,7 +122,7 @@ pub fn check_of(dir: &Path) -> CheckState {
         }
         git::count(dir, &format!("{sha}..HEAD"))
     };
-    let ahead = git::count(dir, "origin/develop..HEAD").unwrap_or(0);
+    let ahead = git::count(dir, &format!("{}..HEAD", git::base_of(dir).remote)).unwrap_or(0);
     check_state_of(&read_check(dir), &head, tree.as_deref(), since, ahead, is_alive)
 }
 
@@ -200,7 +200,7 @@ pub fn failures_of(output: &str) -> Vec<Failure> {
     failed.into_iter().map(|(_, failure)| failure).collect()
 }
 
-/// `@monocircuit/vita (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
+/// `@acme/web (frame.test.ts > keeps …, +2 more)`: what failed, in one line.
 pub fn failures_text(failures: &[Failure]) -> String {
     failures_line(failures, 2)
 }

@@ -2,7 +2,7 @@
 //! that exist (worktree/layout.mjs). A space per purpose:
 //!
 //! ```text
-//! Monocircuit/Platform   root · overview (live, --herdr) · changelog · stack tabs
+//! <main space>          root · overview (live, --herdr) · changelog · stack tabs
 //! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim · stack tabs
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
 //! ```
@@ -21,7 +21,7 @@ use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
-use super::repo::{Repo, VITA, compose_args, env_file_of, offset_of};
+use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
 use breadboard_core::record::SPACE;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
 use serde_json::Value;
@@ -39,7 +39,7 @@ const TAKES: Takes = Takes {
     valued: &[],
     lists: &[],
     words: 0,
-    about: "Lays out herdr: Monocircuit/Platform and a space per worktree, its tabs in order, the agents resumed (the way back after a herdr restart). --no-focus leaves the focus where it is.",
+    about: "Lays out herdr: the main space and a space per worktree, its tabs in order, the agents resumed (the way back after a herdr restart). --no-focus leaves the focus where it is.",
     usage: "usage: pnpm wt:herdr [--no-focus]",
 };
 
@@ -62,8 +62,9 @@ pub fn command(args: &Args) -> Done {
     let Some((main, report)) = exclusive(|| layout(&repo, true)) else {
         return fail(if herdr::is_silent() {
             format!(
-                "herdr did not answer in {} s: nothing was laid out; pnpm wt:herdr again once it answers",
-                herdr::LIMIT.as_secs()
+                "herdr did not answer in {} s: nothing was laid out; {run} wt:herdr again once it answers",
+                herdr::LIMIT.as_secs(),
+                run = breadboard_core::config::run_word()
             )
         } else {
             "herdr did not answer, is its server running? (herdr status)".into()
@@ -217,7 +218,12 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
     for name in orchestrations {
-        orchestrator_space(repo, &name);
+        let workspace = orchestrator_space(repo, &name);
+        // Its epic stack's tabs (#351), in the orchestration's space.
+        let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
+        if !changed.is_empty() {
+            report.push(format!("{}: {}", repo.orchestrator_label(&name), changed.join(" ")));
+        }
         if let Some(resumed) = should_resume.then(|| restore_chat(repo, &name)).flatten() {
             report.push(format!("{}: {resumed}", repo.orchestrator_label(&name)));
         }
@@ -266,8 +272,6 @@ fn is_port_free(port: i64) -> bool {
 
 /// The tab of a checkout's app (`pnpm dev`) and drizzle studio's.
 const DEV: &str = "dev";
-const STUDIO: &str = "studio";
-const STUDIO_PORT: i64 = 4983;
 
 /// While the stack of `dir` runs, its space shows it: a tab per container
 /// following its logs, `dev` and `studio` while their port is free; when it
@@ -282,23 +286,45 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
     if !is_main && offset == 0 {
         return Vec::new();
     }
-    let vita = dir.join(VITA);
-    let compose = |args: &[&str]| super::proc::output("docker", &compose_args(args), &vita, None);
-    let services: Vec<String> = compose(&["config", "--services"]).lines().map(String::from).collect();
+    let Some(stack) = breadboard_core::stack::of(dir) else {
+        return Vec::new();
+    };
+    let vita = stack_dir(dir);
+    let compose = |args: &[&str]| {
+        let all = compose_args(dir, args).unwrap_or_default();
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        super::proc::output("docker", &all, &vita, None)
+    };
+    // A service the env file scales to nothing (`<SERVICE>_SCALE=0`: a task stack's
+    // Postgres, #351) has no container: no tab follows one.
+    let env = breadboard_core::stack::env_of(dir).unwrap_or_default();
+    let services: Vec<String> = compose(&["config", "--services"])
+        .lines()
+        .filter(|service| {
+            let scale = format!("{}_SCALE", service.to_uppercase().replace('-', "_"));
+            env.get(&scale).is_none_or(|value| value.trim() != "0")
+        })
+        .map(String::from)
+        .collect();
     let is_up = !compose(&["ps", "--status", "running", "-q"]).out().is_empty();
     let tabs = herdr::tabs_of(workspace);
     let mut changed = Vec::new();
     if is_up {
-        let logs = "docker compose --env-file .env.local -f docker-compose.local.yml logs -f --tail 200";
+        let logs = format!(
+            "docker {}",
+            breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]).join(" ")
+        );
         let mut wanted: Vec<(String, String)> = services
             .iter()
             .map(|service| (service.clone(), format!("{logs} {service}")))
             .collect();
-        if is_port_free(3000 + offset) {
-            wanted.push((DEV.into(), "pnpm dev".into()));
+        if is_port_free(i64::from(stack.app.port) + offset) {
+            wanted.push((DEV.into(), stack.app.dev.clone()));
         }
-        if is_port_free(STUDIO_PORT + offset) {
-            wanted.push((STUDIO.into(), format!("pnpm pg:studio --port {}", STUDIO_PORT + offset)));
+        for tool in stack.tools.iter().filter(|tool| tool.is_with_stack) {
+            if is_port_free(i64::from(tool.port) + offset) {
+                wanted.push((tool.name.clone(), tool.command(u16::try_from(offset).unwrap_or(0))));
+            }
         }
         let mut empty = Vec::new();
         for (label, command) in wanted {
@@ -323,7 +349,18 @@ pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<
         }
         return changed;
     }
-    let ours: BTreeSet<&str> = services.iter().map(String::as_str).chain([DEV, STUDIO]).collect();
+    let ours: BTreeSet<&str> = services
+        .iter()
+        .map(String::as_str)
+        .chain([DEV])
+        .chain(
+            stack
+                .tools
+                .iter()
+                .filter(|tool| tool.is_with_stack)
+                .map(|tool| tool.name.as_str()),
+        )
+        .collect();
     // The panes and the one running this are read only when there is a tab to close (a read per pane).
     if !tabs.iter().any(|tab| ours.contains(s(tab, "label"))) {
         return changed;

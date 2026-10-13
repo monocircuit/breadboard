@@ -5,6 +5,7 @@
 
 use super::super::boxes::{box_of, heading_of, is_fence};
 use super::super::common::Here;
+use breadboard_core::config::TestBox;
 use breadboard_core::git::{git, tree_of};
 use breadboard_core::json;
 use regex::Regex;
@@ -14,15 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// A change here needs vita's integration tests (`pnpm test:int`).
-static SERVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^products/vita/(?:[^/]+/)*src/server/").unwrap());
-/// A change here is seen in the browser: vita's pages and components, its screens, monolithium.
-static BROWSER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:products/vita/web/src/(?:app|components)/|products/vita/ui/src/|packages/monolithium/src/)")
-        .unwrap()
-});
-/// A template box the pre-fill decides on: the package checks, test:int, the browser.
-static PREFILLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"pnpm --filter|wt:check|test:int|browser").unwrap());
+/// A template box the pre-fill decides on besides breadboard.toml's `[[mr.tests]]`: the package checks.
+static PREFILLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"pnpm --filter|wt:check").unwrap());
 /// What a box says when it doesn't apply: `: no browser change`, `n/a`. `\b` as JavaScript's, ASCII.
 static NOT_APPLYING: LazyLock<[Regex; 2]> = LazyLock::new(|| {
     [
@@ -117,9 +111,10 @@ pub fn inapplicable(text: &str) -> Vec<String> {
 }
 
 /// The template with its Tests section replaced by `lines` under a comment
-/// that says what to do with them; its other boxes (the changelog) stay.
+/// that says what to do with them; its other boxes (the changelog) stay,
+/// those of `decided` (breadboard.toml's test boxes) only in `lines`.
 /// Nothing applies: an empty bullet, which wt:mr refuses until someone says why.
-pub fn with_tests(text: &str, lines: &[String]) -> String {
+pub fn with_tests(text: &str, lines: &[String], decided: &[TestBox]) -> String {
     let all: Vec<&str> = text.split('\n').collect();
     let Some(from) = all.iter().position(|line| TESTS_HEADING.is_match(line)) else {
         return text.to_string();
@@ -127,9 +122,11 @@ pub fn with_tests(text: &str, lines: &[String]) -> String {
     let to = (from + 1..all.len())
         .find(|&at| SECTION_END.is_match(all[at]))
         .unwrap_or(all.len());
-    let kept = all[from + 1..to]
-        .iter()
-        .filter(|line| EMPTY_BOX.is_match(line) && !PREFILLED.is_match(line));
+    let kept = all[from + 1..to].iter().filter(|line| {
+        EMPTY_BOX.is_match(line)
+            && !PREFILLED.is_match(line)
+            && !decided.iter().any(|test| test.line.trim() == line.trim())
+    });
     let mut boxes: Vec<&str> = lines.iter().map(String::as_str).chain(kept.copied()).collect();
     if boxes.is_empty() {
         boxes.push("-");
@@ -152,9 +149,9 @@ pub fn with_tests(text: &str, lines: &[String]) -> String {
         .join("\n")
 }
 
-/// The files the branch changes against develop, committed or not, untracked included.
+/// The files the branch changes against its base, committed or not, untracked included.
 fn changed_files(top: &Path) -> Vec<String> {
-    let base = git(top, &["merge-base", "origin/develop", "HEAD"]);
+    let base = git(top, &["merge-base", &breadboard_core::git::base_of(top).remote, "HEAD"]);
     let mut files = BTreeSet::new();
     if base.is_ok && !base.out().is_empty() {
         files.extend(git(top, &["diff", "--name-only", base.out()]).lines().map(String::from));
@@ -205,20 +202,23 @@ fn check_line(passed: Option<(&Value, &str)>, packages: &[String]) -> Option<Str
             });
         let sha: String = sha.chars().take(8).collect();
         return Some(format!(
-            "- [x] `pnpm wt:check` passed on {sha}: {what}{}",
-            duration.unwrap_or_default()
+            "- [x] `{run} wt:check` passed on {sha}: {what}{}",
+            duration.unwrap_or_default(),
+            run = breadboard_core::config::run_word()
         ));
     }
     (!packages.is_empty()).then(|| {
         format!(
-            "- [ ] `pnpm wt:check`: lint / typecheck / test of {} and what depends on them",
-            packages.join(", ")
+            "- [ ] `{run} wt:check`: lint / typecheck / test of {} and what depends on them",
+            packages.join(", "),
+            run = breadboard_core::config::run_word()
         )
     })
 }
 
-/// The box lines of the Tests section for the branch in `top`.
-fn test_lines_of(top: &Path) -> Vec<String> {
+/// The box lines of the Tests section for the branch in `top`: the check's,
+/// then each of `tests` whose paths a changed file is on.
+fn test_lines_of(top: &Path, tests: &[TestBox]) -> Vec<String> {
     let files = changed_files(top);
     let name_at = |dir: &str| {
         json::read(&top.join(dir).join("package.json"))
@@ -233,13 +233,22 @@ fn test_lines_of(top: &Path) -> Vec<String> {
     let mut lines: Vec<String> = check_line(passed.map(|passed| (passed, sha.as_str())), &packages)
         .into_iter()
         .collect();
-    if files.iter().any(|file| SERVER.is_match(file)) {
-        lines.push("- [ ] `pnpm test:int` (`src/server` changed)".into());
-    }
-    if files.iter().any(|file| BROWSER.is_match(file)) {
-        lines.push("- [ ] clicked through in the browser".into());
-    }
+    lines.extend(tests_of(&files, tests));
     lines
+}
+
+/// The lines of `tests` a changed file is on (their paths checked when breadboard.toml was read).
+fn tests_of(files: &[String], tests: &[TestBox]) -> Vec<String> {
+    tests
+        .iter()
+        .filter(|test| {
+            test.paths
+                .iter()
+                .filter_map(|path| Regex::new(path).ok())
+                .any(|path| files.iter().any(|file| path.is_match(file)))
+        })
+        .map(|test| test.line.clone())
+        .collect()
 }
 
 /// No description written yet: the template goes into the worktree, so the
@@ -249,13 +258,17 @@ pub fn to_fill(here: &Here, top: &Path, number: &str) -> String {
     let file = description_file(top);
     let shown = here.shown(&file.to_string_lossy());
     if !file.exists() {
-        let source = top.join(".gitlab").join("merge_request_templates").join("Default.md");
+        let loaded = breadboard_core::config::of(top);
+        let mr = &loaded.config.mr;
+        let source = top.join(&mr.template);
         let Ok(template) = fs::read_to_string(&source) else {
             return format!(
-                "{shown} doesn't exist, and neither does the template it starts from (.gitlab/merge_request_templates/Default.md): write the description into {shown}, then run pnpm wt:mr again."
+                "{shown} doesn't exist, and neither does the template it starts from ({}): write the description into {shown}, then run {} again.",
+                mr.template,
+                loaded.command("wt:mr")
             );
         };
-        let filled = with_tests(&template, &test_lines_of(top));
+        let filled = with_tests(&template, &test_lines_of(top, &mr.tests), &mr.tests);
         let filled = filled.trim_end();
         let filled = filled.strip_suffix("Refs #").unwrap_or(filled);
         let written = fs::create_dir_all(file.parent().unwrap_or(top))
@@ -265,7 +278,8 @@ pub fn to_fill(here: &Here, top: &Path, number: &str) -> String {
         }
     }
     format!(
-        "a merge request needs a description written for this branch — the template is waiting in\n\n  {shown}\n\n  Fill every section (no empty bullets, no <!-- comments -->), then run pnpm wt:mr again."
+        "a merge request needs a description written for this branch — the template is waiting in\n\n  {shown}\n\n  Fill every section (no empty bullets, no <!-- comments -->), then run {run} wt:mr again.",
+        run = breadboard_core::config::run_word()
     )
 }
 
@@ -303,16 +317,37 @@ mod tests {
     #[test]
     fn fills_the_tests_section_from_the_branch() {
         let template = "## Changes\n-\n\n## Tests\n\n<!-- what can apply -->\n- [ ] `pnpm wt:check` passed on <sha>\n- [ ] `pnpm test:int` (`src/server` changed)\n- [ ] clicked through in the browser\n- [ ] changelog entry in `.changelog/`\n\nRefs #";
+        let decided = [
+            TestBox {
+                paths: vec!["^web/src/server/".into()],
+                line: "- [ ] `pnpm test:int` (`src/server` changed)".into(),
+            },
+            TestBox {
+                paths: vec!["^web/src/app/".into(), "^lib/src/".into()],
+                line: "- [ ] clicked through in the browser".into(),
+            },
+        ];
         let filled = with_tests(
             template,
             &["- [ ] `pnpm wt:check`: lint / typecheck / test of a and what depends on them".into()],
+            &decided,
         );
         assert_eq!(
             filled,
             "## Changes\n-\n\n## Tests\n\n<!-- Pre-filled from the branch's changes: only what applies. Tick what ran,\n     with its result; delete a line that doesn't apply. Something that\n     applies but didn't run goes into a sentence below, not an empty box. -->\n- [ ] `pnpm wt:check`: lint / typecheck / test of a and what depends on them\n- [ ] changelog entry in `.changelog/`\n\nRefs #"
         );
-        assert!(with_tests("## Tests\n- [ ] browser\n", &[]).contains("box. -->\n-\n"));
-        assert_eq!(with_tests("no tests", &[]), "no tests");
+        assert!(
+            with_tests("## Tests\n- [ ] clicked through in the browser\n", &[], &decided).contains("box. -->\n-\n")
+        );
+        // A box no test box decides on stays for the author.
+        assert!(with_tests("## Tests\n- [ ] browser\n", &[], &decided).contains("box. -->\n- [ ] browser\n"));
+        assert_eq!(with_tests("no tests", &[], &decided), "no tests");
+        let files = ["web/src/server/a.ts".to_string(), "README.md".into()];
+        assert_eq!(
+            tests_of(&files, &decided),
+            ["- [ ] `pnpm test:int` (`src/server` changed)"]
+        );
+        assert!(tests_of(&["README.md".to_string()], &decided).is_empty());
     }
 
     #[test]

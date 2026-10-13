@@ -87,6 +87,13 @@ pub struct Mr {
     /// Its source branch; not in Node's shape, which ignores it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub branch: String,
+    /// The branch it merges into (#349): develop, or an epic; empty when
+    /// GitLab didn't say, which means develop.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub target: String,
+    /// The boxes of its own description (its Tests), apart from its issue's (#346).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boxes: Vec<IssueBox>,
 }
 
 impl Mr {
@@ -99,6 +106,14 @@ impl Mr {
     }
     pub fn is_open(&self) -> bool {
         self.state == "opened"
+    }
+    /// The branch it merges into: develop unless GitLab names another.
+    pub fn target(&self) -> &str {
+        if self.target.is_empty() {
+            crate::git::default_branch()
+        } else {
+            &self.target
+        }
     }
     pub fn is_merged(&self) -> bool {
         self.state == "merged"
@@ -181,8 +196,21 @@ pub struct Remote {
     /// iid → state of the MRs handovers, waits and queued issues wait for.
     pub awaited: HashMap<i64, String>,
     pub develop: Option<DevelopPipeline>,
+    /// Its epic branch's last pipeline and open MR into develop (#350).
+    #[serde(default)]
+    pub epic: Option<Box<EpicRemote>>,
     /// When it was read, ms since the epoch.
     pub at: i64,
+}
+
+/// The GitLab side of an orchestration's epic branch (#350): its last
+/// finished pipeline (jobs only when it failed) and its open MR into develop.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EpicRemote {
+    pub branch: String,
+    pub pipeline: Option<DevelopPipeline>,
+    pub mr: Option<Mr>,
 }
 
 impl Remote {

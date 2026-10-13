@@ -33,7 +33,7 @@ use crate::model::everything::{EverythingLocal, EverythingModel, everything_of};
 use crate::model::memory::free_memory;
 use crate::model::orchestration::{OrchestrationLocal, OrchestrationModel, ViewState, orchestration_of};
 use crate::model::waiting::{Waiting, waiting_for};
-use crate::model::worktree::{STORYBOOK_PORT, STUDIO_PORT, WorktreeLocal, WorktreeModel, worktree_of};
+use crate::model::worktree::{WorktreeLocal, WorktreeModel, worktree_of};
 use crate::model::{Docker, Tree, develop, diff};
 use crate::record::{self, record_of};
 use crate::setups::live_setups_of;
@@ -353,11 +353,12 @@ impl LocalReader {
                     .iter()
                     .map(|name| own.join(name)),
             );
-            files.git.extend(
-                ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
-                    .iter()
-                    .map(|name| common.join(name)),
-            );
+            files
+                .git
+                .extend(["packed-refs", "FETCH_HEAD"].iter().map(|name| common.join(name)));
+            files
+                .git
+                .push(common.join("refs/remotes").join(&git::base_of(dir).remote));
             files.git.push(common.join("refs/remotes/origin").join(branch));
             files.git.push(common.join("refs/heads").join(branch));
         }
@@ -626,10 +627,12 @@ impl LocalReader {
             record_file: record::record_file(&self.main, name),
             free: free_agents(record.as_ref()),
             free_memory: free_memory(),
-            agents: herdr::agents_in(&panes),
+            agents: agents_of(&self.main, &panes),
             chat,
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
+            ci: crate::ci::Queue::read(&self.main, now),
+            epic: epic_local(&self.main, record.as_ref()),
             record,
         }
     }
@@ -694,6 +697,7 @@ impl LocalReader {
                 .and_then(|pane| pane.status)
         });
         let offset = if tree.has_own_port { tree.offset } else { 0 };
+        let stack = crate::stack::of(dir);
         // git's facts of the view besides the tree, from the tree's memo while its key holds.
         let memo = memo_of(dir, self.known[dir].key);
         let (own_commits, own_diff, develop) = if is_main {
@@ -767,9 +771,13 @@ impl LocalReader {
             } else {
                 None
             },
-            is_app_up: is_port_taken(3000 + offset),
-            is_studio_up: is_port_taken(STUDIO_PORT + offset),
-            is_storybook_up: is_port_taken(STORYBOOK_PORT + offset),
+            is_app_up: tree.app_port > 0 && is_port_taken(tree.app_port + offset),
+            tools_up: stack
+                .iter()
+                .flat_map(|stack| &stack.tools)
+                .map(|tool| (tool.name.clone(), is_port_taken(i64::from(tool.port) + offset)))
+                .collect(),
+            stack,
             tree: Some(tree),
         }
     }
@@ -783,7 +791,11 @@ impl LocalReader {
             .map(|(at, worktree)| (worktree, at == 0))
             .collect();
         let trees = self.trees(&list, projects.as_ref(), false, &[], now);
-        EverythingLocal { trees, projects }
+        let epics = git::orchestrator_checkouts(&self.main)
+            .iter()
+            .filter_map(|dir| local::read_env(&env_file_of(dir))?.get("COMPOSE_PROJECT_NAME").cloned())
+            .collect();
+        EverythingLocal { trees, projects, epics }
     }
 
     /// What a GitLab read of the view asks for, from a local read.
@@ -835,6 +847,10 @@ impl LocalReader {
                     branches,
                     awaited,
                     deploys,
+                    epic: local
+                        .record
+                        .as_ref()
+                        .and_then(|record| crate::epic::epic_of(&record.raw)),
                 })
             }
             Local::Worktree(local) => RemoteAsk::Worktree {
@@ -888,9 +904,10 @@ impl RemoteReader {
                 let refs = tokio::task::spawn_blocking(move || git::remote_heads(&main))
                     .await
                     .unwrap_or_default();
+                let develop = git::branch(&self.main);
                 let head = refs
                     .iter()
-                    .find(|(_, branch)| branch == "develop")
+                    .find(|(_, branch)| *branch == develop)
                     .map(|(sha, _)| sha.clone());
                 let heads: Vec<String> = refs.into_iter().map(|(_, branch)| branch).collect();
                 read::read_everything(&self.gitlab, &heads)
@@ -902,31 +919,29 @@ impl RemoteReader {
 }
 
 /// The open MRs `dir` builds on (`waiting_for`), its git answers kept while
-/// the refs they read hold (HEAD, develop's and each MR branch's): the model
+/// the refs they read hold (HEAD, its base's and each MR branch's): the model
 /// is built again on every read and GitLab answer, git asked only when one moved.
 fn waiting_of(dir: &Path, branch: &str, open: &[OpenMr]) -> Vec<Waiting> {
     /// The git dirs of each worktree and its answers, by dir.
     type Held = (HashMap<PathBuf, Option<(PathBuf, PathBuf)>>, Memos);
     static HELD: std::sync::LazyLock<Mutex<Held>> = std::sync::LazyLock::new(Mutex::default);
+    let base = git::base_of(dir).remote;
     let memo = {
         let mut held = HELD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (dirs, memos) = &mut *held;
         let Some((own, common)) = dirs.entry(dir.to_path_buf()).or_insert_with(|| git_dirs(dir)).clone() else {
-            return waiting_for(dir, Some(branch), open, "origin/develop");
+            return waiting_for(dir, Some(branch), open, &base);
         };
         let mut files: Vec<PathBuf> = ["HEAD", "logs/HEAD"].iter().map(|name| own.join(name)).collect();
-        files.extend(
-            ["packed-refs", "FETCH_HEAD", "refs/remotes/origin/develop"]
-                .iter()
-                .map(|name| common.join(name)),
-        );
+        files.extend(["packed-refs", "FETCH_HEAD"].iter().map(|name| common.join(name)));
+        files.push(common.join("refs/remotes").join(&base));
         files.extend(
             open.iter()
                 .map(|mr| common.join("refs/remotes/origin").join(&mr.branch)),
         );
         memos.of(dir, stamp_of(&files))
     };
-    git::remembered(&memo, || waiting_for(dir, Some(branch), open, "origin/develop"))
+    git::remembered(&memo, || waiting_for(dir, Some(branch), open, &base))
 }
 
 /// The model of a view from what was read; `remote` None until GitLab answers.
@@ -959,6 +974,37 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
             Model::Everything(Box::new(everything_of(local, remote)))
         }
     }
+}
+
+/// The agents by conversation: herdr's panes, and with headless agents (#358)
+/// the run engine's status table over them (an agent without a pane is a
+/// session that runs only when something is queued for it).
+fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent> {
+    let mut agents = herdr::agents_in(panes);
+    if crate::runs::is_headless(main) {
+        agents.extend(crate::runs::agents_of(main));
+    }
+    agents
+}
+
+/// The epic branch of an orchestration's record and how far develop has gone
+/// on since it (#350), from what origin was last fetched.
+fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::model::epic_row::EpicLocal> {
+    let branch = crate::epic::epic_of(&record?.raw)?;
+    let behind = git::git(
+        main,
+        &[
+            "rev-list",
+            "--count",
+            &format!("origin/{branch}..{}", git::Base::of(&git::branch(main)).remote),
+        ],
+    );
+    Some(crate::model::epic_row::EpicLocal {
+        behind: (behind.status == 0)
+            .then(|| behind.stdout.trim().parse().ok())
+            .flatten(),
+        branch,
+    })
 }
 
 #[cfg(test)]

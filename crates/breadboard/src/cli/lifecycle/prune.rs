@@ -11,7 +11,7 @@ use super::plugin;
 use super::proc::{Done, done, fail, git, paint, step, text, tone};
 use super::remove::{self, Options};
 use super::repo::Repo;
-use breadboard_core::git::{is_inside, own_commits};
+use breadboard_core::git::is_inside;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,9 +33,10 @@ fn pend(changelogs: &mut Vec<remove::Pending>, pending: remove::Pending) {
     }
 }
 
-/// Commits of `rev` that origin/develop doesn't have, by patch (`cwd`: a checkout of its repo).
+/// Commits of `rev` that the base of `cwd` doesn't have, by patch (`cwd`:
+/// its worktree; the main checkout: any base, develop or an epic).
 pub fn has_own_commits(rev: &str, cwd: &Path) -> bool {
-    own_commits(cwd, rev) > 0
+    breadboard_core::git::has_own_commits(cwd, rev)
 }
 
 /// The files of a leftover folder that may be someone's work. Not counted:
@@ -151,7 +152,10 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
                 {
                     Some("its branch is still on origin".into())
                 }
-                Some(branch) if has_own_commits(branch, dir) => Some("commits that are not in develop".into()),
+                Some(branch) if has_own_commits(branch, dir) => Some(format!(
+                    "commits that are not in {}",
+                    breadboard_core::git::base_of(dir).local
+                )),
                 Some(_) if !git(dir, &["status", "--porcelain"], None).out().is_empty() => {
                     Some("uncommitted changes".into())
                 }
@@ -191,13 +195,17 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
         .filter_map(|line| {
             let mut parts = line.split('|');
             let (name, track, worktree) = (parts.next()?, parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            let is_gone =
-                !name.is_empty() && worktree.is_empty() && track == "[gone]" && name != "develop" && name != "main";
+            let is_gone = !name.is_empty()
+                && worktree.is_empty()
+                && track == "[gone]"
+                && name != "develop"
+                && name != "main"
+                && name != breadboard_core::git::branch(&repo.main);
             is_gone.then(|| Entry {
                 name: name.to_string(),
                 dir: repo.main.clone(),
                 why: has_own_commits(name, &repo.main)
-                    .then(|| "gone from origin but not in develop — the only copy of that work".to_string()),
+                    .then(|| "gone from origin but not in develop or an epic — the only copy of that work".to_string()),
             })
         })
         .collect();
@@ -290,7 +298,10 @@ pub fn command(args: &Args) -> Done {
             Some(why) => format!("kept, {why}"),
             None if is_dry => "would be removed".into(),
             None => {
-                step(&format!("pnpm wt:remove {name}"));
+                step(&format!(
+                    "{run} wt:remove {name}",
+                    run = breadboard_core::config::run_word()
+                ));
                 // A remove that fails is said on its line and the prune goes on: the
                 // others are independent (today's stopped the whole prune there).
                 match remove::remove(

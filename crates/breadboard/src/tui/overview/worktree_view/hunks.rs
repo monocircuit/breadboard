@@ -13,7 +13,7 @@ use super::super::{Act, look};
 use crate::tui::Scene;
 use crate::tui::scene::{Region, Target};
 use crate::tui::theme::{self, Tone};
-use breadboard_core::git::{Out, git};
+use breadboard_core::git::{Out, base_of, git};
 use breadboard_core::model::diff::stamp_of;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -134,13 +134,10 @@ impl Shown {
     }
 }
 
-/// Where the branch left develop.
+/// Where the branch left its base.
 fn merge_base(dir: &Path) -> Result<String, Read> {
-    let base = git(dir, &["merge-base", "origin/develop", "HEAD"]);
-    if !base.is_ok || base.out().is_empty() {
-        return Err(Read::Failed("no merge base with origin/develop".into()));
-    }
-    Ok(base.out().to_string())
+    breadboard_core::git::merge_base(dir)
+        .ok_or_else(|| Read::Failed(format!("no merge base with {}", base_of(dir).remote)))
 }
 
 /// `git diff -U3 <merge base> -- <file>`, from /dev/null for a file git doesn't track.
@@ -153,15 +150,16 @@ fn read_hunks(dir: &Path, file: &str, is_untracked: bool) -> Read {
             Err(why) => return why,
         }
     };
-    lines_of(&out, "no lines changed against develop")
+    lines_of(&out, &format!("no lines changed against {}", base_of(dir).local))
 }
 
-/// `git diff -U3 <merge base> origin/develop -- <file>`: what develop did to it since.
+/// `git diff -U3 <merge base> origin/<base> -- <file>`: what its base did to it since.
 fn read_develop(dir: &Path, file: &str) -> Read {
+    let against = base_of(dir);
     match merge_base(dir) {
         Ok(base) => lines_of(
-            &git(dir, &["diff", "-U3", &base, "origin/develop", "--", file]),
-            "develop changed no line of it",
+            &git(dir, &["diff", "-U3", &base, &against.remote, "--", file]),
+            &format!("{} changed no line of it", against.local),
         ),
         Err(why) => why,
     }
@@ -290,7 +288,7 @@ pub fn draw(scene: &mut Scene<Act>, shown: &Shown, dir: &Path, key: Key, is_untr
         Some(develop) => {
             heading(scene, "here");
             side.draw(scene, &sides.here, !is_gone);
-            heading(scene, "on develop");
+            heading(scene, &format!("on {}", base_of(dir).local));
             side.draw(scene, develop, false);
         }
     }
@@ -673,6 +671,8 @@ mod tests {
         let develop = parse("@@ -1 +1 @@\n-# platform\n+# platform (develop)\n");
         let dir = std::env::temp_dir().join(format!("breadboard-sides-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        // The heading names the base: the repo's default branch, breadboard.toml's.
+        std::fs::write(dir.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
         std::fs::write(dir.join("README.md"), "# platform (this branch)\nmore\n").unwrap();
         stored(
             &shown,

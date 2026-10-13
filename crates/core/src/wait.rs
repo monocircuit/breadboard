@@ -225,8 +225,8 @@ pub fn verdict_of(wait: &Wait, found: &[Awaited], now: i64, conflicts_since: &mu
 }
 
 /// The line the agent goes on with, for a verdict that ends the wait;
-/// `behind` how many commits of develop the worktree lacks, None unknown.
-pub fn line_of(wait: &Wait, verdict: &Verdict, behind: Option<u64>) -> Option<String> {
+/// `behind` how many commits of its base (`develop`, an epic) the worktree lacks, None unknown.
+pub fn line_of(wait: &Wait, verdict: &Verdict, base: &str, behind: Option<u64>) -> Option<String> {
     let all = list_of(&wait.mrs);
     let then = wait
         .then
@@ -236,9 +236,9 @@ pub fn line_of(wait: &Wait, verdict: &Verdict, behind: Option<u64>) -> Option<St
     Some(match verdict {
         Verdict::Merged => {
             let merge = match behind {
-                Some(0) => "develop is in already".to_string(),
-                Some(behind) => format!("merge develop in ({behind} behind)"),
-                None => "merge develop in".to_string(),
+                Some(0) => format!("{base} is in already"),
+                Some(behind) => format!("merge {base} in ({behind} behind)"),
+                None => format!("merge {base} in"),
             };
             format!(
                 "{all} {} merged: {merge}{then}",
@@ -249,15 +249,16 @@ pub fn line_of(wait: &Wait, verdict: &Verdict, behind: Option<u64>) -> Option<St
             "!{mr} was closed without a merge: the wait for {all} ends, find out what replaces it (glab mr view {mr}) before you go on"
         ),
         Verdict::Conflicts(mr) => format!(
-            "!{mr} has had conflicts with develop for {} min: the wait for {all} ends, tell the orchestrator (SendMessage) instead of waiting on",
+            "!{mr} has had conflicts with {base} for {} min: the wait for {all} ends, tell the orchestrator (SendMessage) instead of waiting on",
             CONFLICT_MS / 60_000
         ),
         Verdict::Timeout(open) => {
             let hours = wait.hours.unwrap_or(DEFAULT_HOURS);
             format!(
-                "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again (pnpm wt:wait)",
+                "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again ({run} wt:wait)",
                 format_number(hours),
-                list_of(open)
+                list_of(open),
+                run = crate::config::run_word()
             )
         }
         Verdict::Waiting(_) => return None,
@@ -414,7 +415,7 @@ mod tests {
         merged.insert(273);
         assert_eq!(waits_text(&six, &merged), "waits: all merged, wakes up");
         assert_eq!(
-            line_of(&wait(), &Verdict::Merged, Some(3)).unwrap(),
+            line_of(&wait(), &Verdict::Merged, "develop", Some(3)).unwrap(),
             "!213 and !217 are merged: merge develop in (3 behind), then open the MR"
         );
         let five = Wait {
@@ -422,29 +423,29 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            line_of(&five, &Verdict::Merged, Some(0)).unwrap(),
+            line_of(&five, &Verdict::Merged, "develop", Some(0)).unwrap(),
             "!5 is merged: develop is in already"
         );
         assert_eq!(
-            line_of(&five, &Verdict::Merged, None).unwrap(),
+            line_of(&five, &Verdict::Merged, "develop", None).unwrap(),
             "!5 is merged: merge develop in"
         );
         assert!(
-            line_of(&wait(), &Verdict::Closed(217), None)
+            line_of(&wait(), &Verdict::Closed(217), "develop", None)
                 .unwrap()
                 .starts_with("!217 was closed without a merge")
         );
         assert!(
-            line_of(&wait(), &Verdict::Conflicts(213), None)
+            line_of(&wait(), &Verdict::Conflicts(213), "develop", None)
                 .unwrap()
                 .starts_with("!213 has had conflicts")
         );
         assert!(
-            line_of(&wait(), &Verdict::Timeout(vec![217]), None)
+            line_of(&wait(), &Verdict::Timeout(vec![217]), "develop", None)
                 .unwrap()
                 .starts_with("waited 8 h for !213 and !217, !217 not merged yet")
         );
-        assert_eq!(line_of(&wait(), &Verdict::Waiting(vec![217]), None), None);
+        assert_eq!(line_of(&wait(), &Verdict::Waiting(vec![217]), "develop", None), None);
     }
 
     #[test]

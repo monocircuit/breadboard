@@ -6,13 +6,12 @@ use crate::actions::{actions_file, actions_of, answered_of, change_of};
 use crate::check::check_of;
 use crate::conversations::{bound_session, context_share_of, left_in, pending_of_file, read_claude, running_claudes};
 use crate::git::{
-    self, Worktree, ahead_of_develop, behind_develop, branch_files, changed_count, feature_of, is_inside, own_commits,
+    self, Worktree, ahead_of_base, behind_base, branch_files, changed_count, feature_of, is_inside, own_commits,
     push_state, work_files,
 };
 use crate::herdr;
 use crate::model::Tree;
 use crate::model::auto_actions::sent_of;
-use crate::model::develop::VITA;
 use crate::model::orchestration::{Chat, ChatState};
 use crate::record::{self, Chat as RecordChat, origin_of};
 use crate::wait::wait_of;
@@ -22,37 +21,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The .env.local of a checkout (stack.mjs `envFileOf`; an older one in products/vita is left where it is).
+/// The env file of a checkout's stack (breadboard.toml's `[stack]`); a
+/// path nothing is at without a stack, so every reader finds none.
 pub fn env_file_of(dir: &Path) -> PathBuf {
-    dir.join(VITA).join(".env.local")
+    crate::stack::env_file(dir).unwrap_or_else(|| dir.join(".breadboard").join("no-stack"))
 }
 
-/// `KEY=value` lines of an env file, None without one (stack.mjs `readEnv`).
-pub fn read_env(file: &Path) -> Option<BTreeMap<String, String>> {
-    let text = std::fs::read_to_string(file).ok()?;
-    Some(
-        text.split('\n')
-            .filter(|line| line.contains('=') && !line.trim_start().starts_with('#'))
-            .filter_map(|line| {
-                line.split_once('=')
-                    .map(|(key, value)| (key.to_string(), value.to_string()))
-            })
-            .collect(),
-    )
-}
-
-/// The offset of a checkout's own stack, 0 for the shared one.
-pub fn offset_of(env: Option<&BTreeMap<String, String>>) -> i64 {
-    let Some(env) = env else { return 0 };
-    match (
-        env.get("COMPOSE_PROJECT_NAME"),
-        env.get("POSTGRES_PORT")
-            .and_then(|port| port.trim().parse::<i64>().ok()),
-    ) {
-        (Some(_), Some(port)) => port - 5432,
-        _ => 0,
-    }
-}
+pub use crate::stack::read_env;
 
 /// Whether something answers on the port: it can't be bound (stack.mjs `isPortFree`, negated).
 pub fn is_port_taken(port: i64) -> bool {
@@ -448,13 +423,16 @@ pub fn tree_of(
     projects: Option<&BTreeMap<String, String>>,
 ) -> Tree {
     let dir = &worktree.dir;
+    let stack = crate::stack::of(dir);
     let env = read_env(&env_file_of(dir));
-    let offset = if is_main { 0 } else { offset_of(env.as_ref()) };
+    let offset = if is_main {
+        0
+    } else {
+        crate::stack::offset_in(stack.as_ref(), env.as_ref())
+    };
     let has_own_port = is_main || offset > 0;
-    let project = env
-        .as_ref()
-        .and_then(|env| env.get("COMPOSE_PROJECT_NAME").cloned())
-        .unwrap_or_else(|| "vita".into());
+    let project = crate::stack::project_in(stack.as_ref(), env.as_ref());
+    let app_port = stack.as_ref().map_or(0, |stack| i64::from(stack.app.port));
     Tree {
         dir: dir.clone(),
         name: if is_main {
@@ -466,17 +444,19 @@ pub fn tree_of(
         },
         branch: worktree.branch.clone().unwrap_or_else(|| "(detached)".into()),
         origin: if is_main { None } else { origin_of(dir) },
+        base: git::base_of(dir),
         is_here: is_inside(here, dir),
         is_main,
         has_env: env.is_some(),
-        is_up: env.is_some() && has_own_port && is_app_of(3000 + offset, dir),
+        is_up: env.is_some() && has_own_port && is_app_of(app_port + offset, dir),
+        app_port,
         stack: projects.and_then(|projects| projects.get(&project).cloned()),
         project,
         env: env.unwrap_or_default(),
         offset,
         has_own_port,
         changed: changed_count(dir),
-        ahead: ahead_of_develop(dir),
+        ahead: ahead_of_base(dir),
         checked: check_of(dir),
         ..Default::default()
     }
@@ -495,13 +475,13 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.answered = answered_of(&file);
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
-    tree.on_develop = git::on_develop(&dir, &tree.files);
-    // Whether a merge of develop would conflict (#332): only where both changed a file, else it can't.
-    tree.conflicts = (!tree.on_develop.is_empty())
+    tree.on_base = git::on_base(&dir, &tree.files);
+    // Whether a merge of its base would conflict (#332): only where both changed a file, else it can't.
+    tree.conflicts = (!tree.on_base.is_empty())
         .then(|| crate::model::develop::conflicts_of(&dir))
         .flatten();
     tree.branch_files = branch_files(&dir);
-    tree.behind = behind_develop(&dir);
+    tree.behind = behind_base(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
     tree.wait = wait_of(&dir);
     tree.merge_turn = crate::model::merge_turn::turn_record_of(&dir);
@@ -603,12 +583,13 @@ pub fn free_agents(record: Option<&record::Record>) -> Vec<(record::Worker, f64)
         .unwrap_or_default()
 }
 
-/// The origin of the test instance: `$VITA_TEST_ORIGIN`, else in the main checkout's .env.local (try.mjs `testOrigin`).
+/// The origin of the test instance: `$<[tries] test_origin_env>`, else in the main checkout's env file (try.mjs `testOrigin`).
 pub fn test_origin(main: &Path) -> Option<String> {
-    let origin = std::env::var("VITA_TEST_ORIGIN")
+    let variable = crate::config::of(main).config.tries.test_origin_env.clone();
+    let origin = std::env::var(&variable)
         .ok()
         .filter(|origin| !origin.is_empty())
-        .or_else(|| read_env(&env_file_of(main)).and_then(|env| env.get("VITA_TEST_ORIGIN").cloned()))?;
+        .or_else(|| read_env(&env_file_of(main)).and_then(|env| env.get(&variable).cloned()))?;
     Some(origin.trim().trim_end_matches('/').to_string()).filter(|origin| !origin.is_empty())
 }
 
@@ -875,20 +856,24 @@ mod tests {
     }
 
     #[test]
-    fn reads_env_and_the_offset_of_a_stack() {
+    fn reads_the_env_and_the_offset_of_a_stack_where_breadboard_toml_puts_it() {
         let scratch = Scratch::new();
-        let file = scratch.join("products/vita/web/.env.local");
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // No [stack]: no env file, whatever lies around.
+        std::fs::write(scratch.join(".env.local"), "COMPOSE_PROJECT_NAME=p-2\n").unwrap();
+        assert!(read_env(&env_file_of(scratch.path())).is_none());
         std::fs::write(
-            &file,
-            "# a comment\nCOMPOSE_PROJECT_NAME=vita-2\nPOSTGRES_PORT=5434\nURL=a=b\n",
+            scratch.join(crate::config::FILE),
+            "[stack]\ndir = \"web\"\nenv_file = \".env\"\nproject = \"p\"\n[stack.app]\nport = 3000\n\
+             [[stack.services]]\nname = \"db\"\nport = 5432\nenv = \"DB_PORT\"\n",
         )
         .unwrap();
-        let env = read_env(&env_file_of(scratch.path())).unwrap();
+        let file = scratch.join("web/.env");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "# a comment\nCOMPOSE_PROJECT_NAME=p-2\nDB_PORT=5434\nURL=a=b\n").unwrap();
+        assert_eq!(env_file_of(scratch.path()), file);
+        let env = read_env(&file).unwrap();
         assert_eq!(env["URL"], "a=b");
-        assert_eq!(offset_of(Some(&env)), 2);
-        assert_eq!(offset_of(None), 0);
-        assert!(read_env(&scratch.join("none")).is_none());
+        assert_eq!(crate::stack::offset(scratch.path()), 2);
     }
 
     #[test]

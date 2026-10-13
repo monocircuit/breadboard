@@ -33,11 +33,12 @@ pub fn has_settled_conflicts(mr: &Mr, tree: Option<&Tree>) -> bool {
     mr.has_conflicts && is_conflict_settled(mr, tree)
 }
 
-/// The line its agent gets: merge develop in, resolve, check, push.
+/// The line its agent gets: merge its target in, resolve, check, push.
 pub fn resolve_line(mr: &Mr) -> String {
     format!(
-        "[overview] !{} has merge conflicts with develop: merge develop in (git fetch origin, git merge origin/develop), resolve the conflicts, run lint, typecheck and test of the packages they touch, commit the merge and push.",
-        mr.iid
+        "[overview] !{} has merge conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target}), resolve the conflicts, run lint, typecheck and test of the packages they touch, commit the merge and push.",
+        mr.iid,
+        target = mr.target()
     )
 }
 
@@ -45,7 +46,9 @@ pub fn resolve_line(mr: &Mr) -> String {
 /// `agents`: outside herdr, nothing is known then).
 pub fn no_agent_of(tree: Option<&Tree>, agents: &HashMap<String, Agent>) -> Option<String> {
     let Some(tree) = tree else {
-        return Some("no worktree, so no agent: merge develop in yourself".into());
+        return Some(crate::config::in_repo(
+            "no worktree, so no agent: merge develop in yourself",
+        ));
     };
     let Some(claude) = &tree.claude else {
         return Some("no agent in its worktree".into());
@@ -184,7 +187,8 @@ fn has_started(mr: &Mr, tree: Option<&Tree>, click: &ResolveClick) -> bool {
         return false;
     };
     let prompt = claude.prompt.as_deref().unwrap_or("");
-    let is_line = prompt.contains("has conflicts with develop") || prompt.contains("has merge conflicts with develop");
+    let is_line = prompt.contains(&format!("has conflicts with {}", mr.target()))
+        || prompt.contains(&format!("has merge conflicts with {}", mr.target()));
     is_line && prompt.contains(&format!("!{} ", mr.iid)) && claude.at.is_some_and(|at| at >= click.at)
 }
 
@@ -205,22 +209,19 @@ fn progress_of(
             .unwrap_or("");
         let is_working = agents.get(id).and_then(|agent| agent.status.as_deref()) == Some("working");
         if is_working {
-            "◐ queued for its agent (at work)"
+            "◐ queued for its agent (at work)".to_string()
         } else {
-            "◐ sent to its agent"
+            "◐ sent to its agent".to_string()
         }
     } else {
         let is_pushed = tree.is_some_and(|tree| tree.unpushed == 0 && behind == 0 && tree.pushed != click.pushed);
         if is_pushed {
-            "◐ pushed, GitLab checks"
+            "◐ pushed, GitLab checks".to_string()
         } else {
-            "◐ its agent merges develop in"
+            format!("◐ its agent merges {} in", mr.target())
         }
     };
-    Conflict::Sent {
-        text: text.into(),
-        at: click.at,
-    }
+    Conflict::Sent { text, at: click.at }
 }
 
 #[cfg(test)]

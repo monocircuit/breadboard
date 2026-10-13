@@ -5,13 +5,16 @@
 //! one the template is put down (its Tests section filled from the branch,
 //! #302) and nothing is sent. `--update` sends the description again, the
 //! same body, so a later one can't drop the `Closes #<n>` of the work item.
+//! One MR handles exactly one issue (#349): a description that closes
+//! another is refused. It merges into the worktree's base: develop, or the
+//! epic of its orchestration.
 
 mod template;
 
 use super::boxes::box_report;
 use super::common::{Argv, Here, Outcome, Takes, help, number_of, plural, say, temp_dir};
 use super::glab;
-use breadboard_core::git::{git, issue_of_branch};
+use breadboard_core::git::{base_of, git, issue_of_branch};
 use regex::Regex;
 use serde_json::Value;
 use std::fs;
@@ -22,7 +25,8 @@ use std::sync::LazyLock;
 const USAGE: &str = "usage: pnpm wt:mr [<issue>] [--update] [--dry-run] [--description-file <f>]";
 const ABOUT: &str = "pnpm wt:mr opens the draft merge request of this worktree: the title from the last commit,
 the description from .claude/mr-description.md (put down from the template when there is none),
-Closes #<issue>, the issue's labels and milestone. It installs the push guard (#184) too.
+Closes #<issue>, the issue's labels and milestone, into the worktree's base (develop or its epic).
+One merge request handles exactly one issue. It installs the push guard (#184) too.
 
   <issue>                   the work item, when the branch name carries none (34-…)
   --update                  send the description of the open MR again
@@ -42,6 +46,41 @@ const NO_CHANGELOG: &str = "no-changelog";
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #(\d+)").unwrap());
 static HAS_CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #\d").unwrap());
 static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$").unwrap());
+/// GitLab's closing pattern: a keyword, then the issues it closes (`#1, #2 and #3`).
+static CLOSING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:clos(?:e|es|ed|ing)|fix(?:|es|ed|ing)|resolv(?:e|es|ed|ing)|implement(?:s|ed|ing)?)\b:?\s+((?:[\w./-]*#\d+(?:\s*,\s*|\s+and\s+|,?\s+and\s+)?)+)").unwrap()
+});
+static ISSUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#(\d+)").unwrap());
+
+/// The issues a description closes when its MR is merged, as GitLab reads it.
+fn closed_by(body: &str) -> Vec<u64> {
+    let mut numbers: Vec<u64> = CLOSING
+        .captures_iter(body)
+        .flat_map(|found| {
+            ISSUE
+                .captures_iter(&found[1])
+                .filter_map(|issue| issue[1].parse().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+}
+
+/// Why `body` is no MR of the one issue `number` (#349), None when it is.
+fn second_issue(body: &str, number: &str) -> Option<String> {
+    let others: Vec<String> = closed_by(body)
+        .into_iter()
+        .filter(|closed| closed.to_string() != number)
+        .map(|closed| format!("#{closed}"))
+        .collect();
+    (!others.is_empty()).then(|| {
+        format!(
+            "the description closes {} besides #{number}: one merge request handles exactly one issue. Another issue gets its own branch and MR ({run} wt:new <n>-<feature>); to mention one, write Refs #<n>",
+            others.join(", "), run = breadboard_core::config::run_word())
+    })
+}
 
 /// The push guard (#184, #298) wt:new and wt:mr put into the shared hooks
 /// folder: the binary's shim (`packages/breadboard/hooks/pre-push`), which
@@ -50,7 +89,8 @@ static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$")
 /// refuses when there is none. Node's shim (`exec node …pre-push.mjs`,
 /// `exit 0` without one) is replaced where found: same marker (rule 8).
 pub const SHIM: &str = crate::herdr::hook::PRE_PUSH_SHIM;
-const MARKER: &str = "monocircuit push guard (#184)";
+/// What every version of the shim says of itself (before #342 it named the repo: `<repo> push guard (#184)`).
+const MARKER: &str = "push guard (#184)";
 
 /// Puts the hook into the hooks folder all worktrees share; one that isn't
 /// ours stays. The answer says what happened (push-guard.mjs `installPushGuard`).
@@ -156,7 +196,8 @@ pub fn run(argv: &Argv) -> Outcome {
         }
     }
     let branch = here.branch();
-    if branch.is_empty() || branch == "develop" || branch == "main" {
+    let base = base_of(top);
+    if branch.is_empty() || branch == "develop" || branch == "main" || branch == base.local {
         return Err(format!(
             "{} gets no merge request",
             if branch.is_empty() { "a detached HEAD" } else { &branch }
@@ -176,7 +217,10 @@ pub fn run(argv: &Argv) -> Outcome {
         .as_ref()
         .is_some_and(|mr| matches!(glab::text_of(mr, "state"), "opened" | "merged"));
     if is_update && !has_one {
-        return Err(format!("no open MR of {branch} to update: pnpm wt:mr opens it"));
+        return Err(format!(
+            "no open MR of {branch} to update: {run} wt:mr opens it",
+            run = breadboard_core::config::run_word()
+        ));
     }
 
     // Worktrees made before the guard existed get it here (#184).
@@ -189,9 +233,10 @@ pub fn run(argv: &Argv) -> Outcome {
     let state = newest.as_ref().map(|mr| glab::text_of(mr, "state"));
     if let Some(mr) = newest.as_ref().filter(|_| state == Some("merged")) {
         return Err(format!(
-            "!{} of {branch} is merged already: new work goes on a new branch, its own issue first (glab issue create), then pnpm wt:new <n>-<feature>\n  {}",
+            "!{} of {branch} is merged already: new work goes on a new branch, its own issue first (glab issue create), then {run} wt:new <n>-<feature>\n  {}",
             glab::shown(mr.get("iid")),
-            glab::text_of(mr, "web_url")
+            glab::text_of(mr, "web_url"),
+            run = breadboard_core::config::run_word()
         ));
     }
     let closed = newest.as_ref().filter(|_| state != Some("opened"));
@@ -216,9 +261,10 @@ pub fn run(argv: &Argv) -> Outcome {
             .map(|n| box_report(top, n, None))
             .unwrap_or_default();
         say(&format!(
-            "\n✓ the merge request is open already\n  {}\n  {}\n\n  Its description grew out of date? pnpm wt:mr --update{report}\n",
+            "\n✓ the merge request is open already\n  {}\n  {}\n\n  Its description grew out of date? {run} wt:mr --update{report}\n",
             glab::text_of(mr, "title"),
-            glab::text_of(mr, "web_url")
+            glab::text_of(mr, "web_url"),
+            run = breadboard_core::config::run_word()
         ));
         return Ok(ExitCode::SUCCESS);
     }
@@ -226,6 +272,13 @@ pub fn run(argv: &Argv) -> Outcome {
     let Some(number) = number.filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) else {
         return Err("a merge request needs its work item: pnpm wt:mr <issue>, or a worktree named after the issue (34-…). No issue yet: glab issue create".into());
     };
+    // The branch is the claim on its issue: an MR of it is of that one (#349).
+    if let Some(claimed) = issue_of_branch(&branch).filter(|claimed| claimed.to_string() != number) {
+        return Err(format!(
+            "{branch} claims #{claimed}, not #{number}: one merge request handles exactly one issue, the one its branch claims. #{number} gets its own branch and MR ({run} wt:new {number}-<feature>)",
+            run = breadboard_core::config::run_word()
+        ));
+    }
 
     // The labels and the milestone of the work item are those of its merge
     // request. Labels fall back to the kind of the branch; the milestone does not.
@@ -269,10 +322,11 @@ pub fn run(argv: &Argv) -> Outcome {
     let unwritten = template::unfilled(&written);
     if !unwritten.is_empty() {
         return Err(format!(
-            "{} is still the template, {} unwritten:\n{}\n\n  Say per section what this branch changes and why, then run pnpm wt:mr again.",
+            "{} is still the template, {} unwritten:\n{}\n\n  Say per section what this branch changes and why, then run {run} wt:mr again.",
             here.shown(&given),
             plural(unwritten.len(), "place"),
-            unwritten.join("\n")
+            unwritten.join("\n"),
+            run = breadboard_core::config::run_word()
         ));
     }
     // A box that doesn't apply is deleted, not kept empty: an unticked box reads as open work (#302).
@@ -280,7 +334,7 @@ pub fn run(argv: &Argv) -> Outcome {
     if !not_applying.is_empty() {
         let is_one = not_applying.len() == 1;
         return Err(format!(
-            "{} keeps {} that {} apply:\n{}\n\n  Delete {}: Tests lists only what applies. Something that applies but didn't run goes into a sentence under the boxes. Then run pnpm wt:mr again.",
+            "{} keeps {} that {} apply:\n{}\n\n  Delete {}: Tests lists only what applies. Something that applies but didn't run goes into a sentence under the boxes. Then run {run} wt:mr again.",
             here.shown(&given),
             if is_one {
                 "a Tests box".to_string()
@@ -289,10 +343,14 @@ pub fn run(argv: &Argv) -> Outcome {
             },
             if is_one { "says it doesn't" } else { "say they don't" },
             not_applying.join("\n"),
-            if is_one { "that line" } else { "those lines" }
+            if is_one { "that line" } else { "those lines" },
+            run = breadboard_core::config::run_word()
         ));
     }
     let body = body_of(&written, &number);
+    if let Some(why) = second_issue(&body, &number) {
+        return Err(format!("{}: {why}", here.shown(&given)));
+    }
     let title = git(top, &["log", "-1", "--format=%s"]).out().to_string();
 
     // The closed one stays closed: say that this is a new one, not it reopened.
@@ -380,7 +438,7 @@ pub fn run(argv: &Argv) -> Outcome {
         .filter(|id| !id.is_empty());
     let mut fields = vec![
         glab::Field::Raw("source_branch", &branch),
-        glab::Field::Raw("target_branch", "develop"),
+        glab::Field::Raw("target_branch", &base.local),
         glab::Field::Raw("title", &draft),
         glab::Field::Text("description", &description),
         glab::Field::Raw("labels", &label),
@@ -434,7 +492,8 @@ pub fn run(argv: &Argv) -> Outcome {
     // check:changelog fails the MR until it has an entry: say so now, not at the pipeline.
     if !has_fragment(top, &number) {
         say(&format!(
-            "  No changelog entry yet: pnpm changelog:add \"<what users notice>\" (or the label {NO_CHANGELOG})\n"
+            "  No changelog entry yet: {run} changelog:add \"<what users notice>\" (or the label {NO_CHANGELOG})\n",
+            run = breadboard_core::config::run_word()
         ));
     }
     Ok(ExitCode::SUCCESS)
@@ -451,6 +510,21 @@ mod tests {
         assert_eq!(body_of("Text\n\nRefs #\n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nRefs #12  \n", "7"), "Text\n\nCloses #7");
         assert_eq!(body_of("Text\nCloses #3\n\n", "7"), "Text\nCloses #3");
+    }
+
+    #[test]
+    fn refuses_a_second_issue_in_one_merge_request() {
+        assert_eq!(closed_by("x\n\nCloses #349"), vec![349]);
+        assert_eq!(closed_by("Fixes #1, #2 and #3. Refs #4"), vec![1, 2, 3]);
+        assert_eq!(closed_by("resolves monocircuit/platform#7"), vec![7]);
+        assert_eq!(second_issue("x\n\nCloses #349", "349"), None);
+        assert_eq!(second_issue("Refs #350\n\nCloses #349", "349"), None);
+        assert!(
+            second_issue("Closes #349, #350", "349")
+                .unwrap()
+                .starts_with("the description closes #350 besides #349")
+        );
+        assert!(second_issue("Fixes #12\n\nCloses #349", "349").is_some());
     }
 
     #[test]
@@ -490,6 +564,9 @@ mod tests {
         assert_eq!(fs::read_to_string(&hook).unwrap(), SHIM);
         assert_eq!(install_into(&hooks), "installed");
         fs::write(&hook, format!("{SHIM}# old\n")).unwrap();
+        assert_eq!(install_into(&hooks), "updated");
+        // The shim from before #342 named the repo: still ours, updated.
+        fs::write(&hook, "#!/bin/sh\n# platform push guard (#184)\nexit 1\n").unwrap();
         assert_eq!(install_into(&hooks), "updated");
         fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
         assert!(install_into(&hooks).ends_with("is someone else's hook, the push guard is not installed"));

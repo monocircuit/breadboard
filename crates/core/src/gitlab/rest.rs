@@ -10,7 +10,7 @@
 use super::cache::Cache;
 use super::client::{Gitlab, Result};
 use super::read::{Ask, DRAFT, FINISHED, Final, Memory, id_of, lower, settle_jobs, str_at};
-use super::{BranchRemote, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, number_of};
+use super::{BranchRemote, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, boxes_of, number_of};
 use crate::time::now_ms;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -49,6 +49,8 @@ fn mr_of(value: &Value) -> (Mr, Option<String>) {
         pipeline: value.get("head_pipeline").and_then(pipeline_of),
         deploy: None,
         branch: str_at(value, "source_branch").unwrap_or_default().to_string(),
+        target: str_at(value, "target_branch").unwrap_or_default().to_string(),
+        boxes: boxes_of(str_at(value, "description").unwrap_or_default()),
     };
     (mr, merge_sha_of(value))
 }
@@ -247,8 +249,9 @@ pub async fn read_orchestration(
     }
 
     // develop's last finished pipeline, its jobs only when it failed.
+    let branch = gitlab.branch();
     let develop = match pipelines.iter().find(|pipeline| {
-        pipeline.reference.as_deref() == Some("develop") && FINISHED.contains(&pipeline.status.as_str())
+        pipeline.reference.as_deref() == Some(branch.as_str()) && FINISHED.contains(&pipeline.status.as_str())
     }) {
         Some(pipeline) => Some(DevelopPipeline {
             id: pipeline.id,
@@ -288,6 +291,8 @@ pub async fn read_orchestration(
         of,
         awaited,
         develop,
+        // The epic's row waits for GraphQL (#350): REST is the fallback only.
+        epic: None,
         at: now_ms(),
     })
 }

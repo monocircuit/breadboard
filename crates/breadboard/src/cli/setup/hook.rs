@@ -2,11 +2,13 @@
 //! check.mjs `checkGate`): the git pre-push hook in Rust. It refuses a push
 //! to the branch of a merged or closed MR (#184) and one of a commit
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
-//! Same texts as the Node hook: an agent reads them and acts on them.
+//! Same texts as the Node hook: an agent reads them and acts on them. It
+//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`).
 
 use super::check::{self, Failure};
 use super::gitlab;
 use super::proc::{errln, fail, git};
+use breadboard_core::ci::PushOption;
 use breadboard_core::json::str_of;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Value, json};
@@ -48,9 +50,10 @@ pub fn refusal_of(branch: &str, mrs: &[Value]) -> Option<String> {
     let text = format!(
         "✗ push refused: !{iid} of {branch} is {state}, so no merge request points at this branch any more (#184).
   The push would recreate {branch} on origin, and what it carries would reach no one.
-  New work goes on a new branch: file a follow-up issue and start it with pnpm wt:new <n>-<feature>.
+  New work goes on a new branch: file a follow-up issue and start it with {run} wt:new <n>-<feature>.
   {}",
-        str_of(last, "web_url").unwrap_or_default()
+        str_of(last, "web_url").unwrap_or_default(),
+        run = breadboard_core::config::run_word()
     );
     Some(text.trim_end().to_string())
 }
@@ -94,6 +97,8 @@ pub struct Pushed<'a> {
     pub plan: Option<&'a Plan>,
     /// Nothing changed against develop (a claim, wt:new).
     pub is_empty: bool,
+    /// What the stamp of its tree left out of what it changes (#366), when stamped.
+    pub gap: Option<&'a str>,
 }
 
 /// The tree of a record's `passed` / `failed`.
@@ -113,19 +118,25 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         record,
         plan,
         is_empty,
+        gap,
     } = pushed;
     if *is_empty {
         return None;
     }
+    let short: String = sha.chars().take(8).collect();
     if tree.is_some() && tree_of_part(record, "passed") == *tree {
-        return None;
+        return gap.map(|gap| {
+            format!(
+                "✗ push refused: {branch} at {short} isn't checked (#298), its check left out what it changes: {gap} (#366).
+  Run pnpm wt:check again: it checks every package git says the branch changes."
+            )
+        });
     }
     if let Some(Ok(planned)) = plan
         && planned.is_empty()
     {
         return None;
     }
-    let short: String = sha.chars().take(8).collect();
     let why = if tree.is_some() && tree_of_part(record, "failed") == *tree {
         let failures: Vec<Failure> = record
             .get("failed")
@@ -135,20 +146,23 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
             .unwrap_or_default();
         format!(
             "its last check failed: {}.
-  Fix it, commit, run pnpm wt:check again. Red on develop too: it is fixed once, in its own fix MR,
-  and you wait for that with pnpm wt:wait !<mr>.",
-            breadboard_core::check::failures_text(&failures)
+  Fix it, commit, run {run} wt:check again. Red on develop too: it is fixed once, in its own fix MR,
+  and you wait for that with {run} wt:wait !<mr>.",
+            breadboard_core::check::failures_text(&failures),
+            run = breadboard_core::config::run_word()
         )
     } else if let Some(Err(error)) = plan {
         format!(
             "which packages it changes can't be told ({error}).
-  Run pnpm install, then pnpm wt:check."
+  Run pnpm install, then {run} wt:check.",
+            run = breadboard_core::config::run_word()
         )
     } else if let Some(passed) = record.get("passed") {
         let checked: String = str_of(passed, "sha").unwrap_or_default().chars().take(8).collect();
         format!(
             "the last check that passed was of {checked}, not of this commit.
-  Run pnpm wt:check (it runs only what changed, a second run is quick)."
+  Run {run} wt:check (it runs only what changed, a second run is quick).",
+            run = breadboard_core::config::run_word()
         )
     } else {
         let packages = match plan {
@@ -161,7 +175,8 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         };
         format!(
             "no check of it ran in this worktree yet.
-  Run pnpm wt:check: lint, typecheck and test of {packages}."
+  Run {run} wt:check: lint, typecheck and test of {packages}.",
+            run = breadboard_core::config::run_word()
         )
     };
     Some(format!(
@@ -189,20 +204,43 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
     let text_of = |args: &[&str]| Some(git(args, dir).text().to_string()).filter(|text| !text.is_empty());
     let tree_of = |rev: &str| text_of(&["rev-parse", "--verify", "--quiet", &format!("{rev}^{{tree}}")]);
     let mut refusals = Vec::new();
+    // Empty against the worktree's base: the claim of a task off an epic is empty against the epic (#349).
+    let remote = breadboard_core::git::base_of(dir).remote;
     for (branch, sha) in refs {
         let tree = tree_of(sha);
-        let base = text_of(&["merge-base", "origin/develop", sha]);
+        let base = text_of(&["merge-base", &remote, sha]);
         let is_empty = base
             .as_ref()
             .is_some_and(|base| git(&["diff", "--quiet", base, sha], dir).is_ok);
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
-            (None, _) => Err("no merge base with origin/develop: git fetch origin".to_string()),
-            (Some(_), None) => Err("turbo isn't installed here: pnpm install first".to_string()),
+            (None, _) => Err(format!("no merge base with {remote}: git fetch origin")),
+            (Some(_), None) => {
+                let loaded = breadboard_core::config::of(dir);
+                let check = &loaded.config.check;
+                if check.turbo {
+                    Err("turbo isn't installed here: pnpm install first".to_string())
+                } else {
+                    // One command checks the branch, or nothing does (no [check] in breadboard.toml).
+                    Ok(check
+                        .plain()
+                        .map(|run| vec![("the branch".to_string(), vec![run.to_string()])])
+                        .unwrap_or_default())
+                }
+            }
             (Some(base), Some(turbo)) => {
                 check::scope_of(&turbo, dir, base, Some(sha)).and_then(|scope| check::plan_of(&turbo, dir, &scope))
             }
         });
+        // A second opinion on the stamp (#366): git's own list of what the commit changes.
+        let gap = match (&base, record.get("passed")) {
+            (Some(base), Some(passed)) if is_stamped && !is_empty => check::gap_of(
+                passed,
+                &check::changed_packages(dir, base, Some(sha)),
+                check::is_rust_changed(dir, base, Some(sha)),
+            ),
+            _ => None,
+        };
         let pushed = Pushed {
             branch,
             sha,
@@ -210,6 +248,7 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
             record: &record,
             plan: plan.as_ref(),
             is_empty,
+            gap: gap.as_deref(),
         };
         if let Some(refusal) = gate_refusal_of(&pushed) {
             refusals.push(refusal);
@@ -244,6 +283,15 @@ pub fn command(words: &[String]) -> ExitCode {
         .text()
         .to_string();
     let mut refusals = check_push(&refs);
+    // git read this push's options before the hook ran: a change counts from the next push.
+    match breadboard_core::ci::set_push_option(Path::new(&dir), now_ms()) {
+        Some(PushOption::Set) => errln!("breadboard: pushes skip CI from the next one on, breadboard's queue starts the pipelines (#357)"),
+        // This push would skip CI with no queue to start its pipeline: once more, without the option.
+        Some(PushOption::Dropped(why)) => refusals.push(format!(
+            "✗ push refused: it would skip CI, and {why} (#357).\n  The option is dropped now: push again, and GitLab starts the pipeline itself."
+        )),
+        None => {}
+    }
     refusals.extend(check_gate(&refs, Path::new(&dir)));
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
@@ -293,8 +341,19 @@ mod tests {
             record: &record,
             plan,
             is_empty: false,
+            gap: None,
         };
         assert_eq!(gate_refusal_of(&pushed("t1", None)), None);
+        // Stamped, but its check left out a package the commit changes (#366).
+        let gapped = Pushed {
+            gap: Some("@m/breadboard"),
+            ..pushed("t1", None)
+        };
+        assert!(
+            gate_refusal_of(&gapped)
+                .unwrap()
+                .contains("its check left out what it changes: @m/breadboard (#366).")
+        );
         let docs: Plan = Ok(Vec::new());
         assert_eq!(gate_refusal_of(&pushed("t3", Some(&docs))), None);
         let failed = gate_refusal_of(&pushed("t2", None)).unwrap();

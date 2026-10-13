@@ -14,8 +14,9 @@ use super::plugin;
 use super::proc::{
     Done, Fail, Wait, as_step, done, exe, fail, git, output_within, run_inherit, step, text, wait_within,
 };
-use super::prune::{has_own_commits, own_files};
-use super::repo::{Repo, VITA, compose_args, offset_of};
+use super::prune::own_files;
+use super::repo::{Repo, compose_args, offset_of, stack_dir};
+use crate::cli::setup::epic;
 use crate::cli::typo::nearest;
 use breadboard_core::git::{is_inside, own_commits};
 use breadboard_core::json::str_of;
@@ -95,11 +96,18 @@ fn not_a_worktree(dir: &str, feature: &str, names: &[String]) -> String {
         .copied()
         .or_else(|| nearest(feature, &all));
     match meant {
-        Some(name) => format!("{dir} is not a worktree: did you mean {name}? (pnpm wt:remove {name})"),
-        None if all.is_empty() => format!("{dir} is not a worktree, and there is none (pnpm wt:list)"),
+        Some(name) => format!(
+            "{dir} is not a worktree: did you mean {name}? ({run} wt:remove {name})",
+            run = breadboard_core::config::run_word()
+        ),
+        None if all.is_empty() => format!(
+            "{dir} is not a worktree, and there is none ({run} wt:list)",
+            run = breadboard_core::config::run_word()
+        ),
         None => format!(
-            "{dir} is not a worktree (pnpm wt:list); the worktrees: {}",
-            all.join(", ")
+            "{dir} is not a worktree ({run} wt:list); the worktrees: {}",
+            all.join(", "),
+            run = breadboard_core::config::run_word()
         ),
     }
 }
@@ -107,7 +115,7 @@ fn not_a_worktree(dir: &str, feature: &str, names: &[String]) -> String {
 /// Whether the claim of `branch` on origin can go with its worktree (#272):
 /// nothing on it develop lacks and no open MR builds on it; the reason it goes.
 pub fn empty_claim(is_on_origin: bool, has_own: bool, open_mrs: Option<usize>) -> Option<&'static str> {
-    (is_on_origin && !has_own && open_mrs == Some(0)).then_some("nothing on it develop lacks, no open MR")
+    (is_on_origin && !has_own && open_mrs == Some(0)).then_some("nothing on it its base lacks, no open MR")
 }
 
 /// `rm -rf`, again if a writer strikes once more in between. Err: why it
@@ -183,9 +191,9 @@ fn mrs_of(repo: &Repo, branch: &str, limit: Duration) -> Option<Vec<Value>> {
 /// The uncommitted files a refusal lists.
 const SHOWN: usize = 10;
 
-/// Why a branch with `own` commits develop lacks stays, and what to do,
+/// Why a branch with `own` commits its base lacks stays, and what to do,
 /// by its MRs (None: GitLab didn't answer).
-fn not_in_develop(branch: &str, own: usize, mrs: Option<&[Value]>) -> String {
+fn not_in_base(branch: &str, own: usize, base: &str, mrs: Option<&[Value]>) -> String {
     let commits = if own == 1 {
         "1 commit that is".to_string()
     } else {
@@ -197,18 +205,22 @@ fn not_in_develop(branch: &str, own: usize, mrs: Option<&[Value]>) -> String {
     let keep = "or keep the branch with --keep-branch";
     match (mrs, open, merged) {
         (_, Some(mr), _) => format!(
-            "{branch} has {commits} not in develop, its MR !{} is open. Merge its MR first, {keep}",
+            "{branch} has {commits} not in {base}, its MR !{} is open. Merge its MR first, {keep}",
             iid(mr)
         ),
         (_, None, Some(mr)) => format!(
-            "{branch} has {commits} not in develop, its MR !{} is merged without them. An MR of their own (pnpm wt:mr), {keep}",
-            iid(mr)
+            "{branch} has {commits} not in {base}, its MR !{} is merged without them. An MR of their own ({run} wt:mr), {keep}",
+            iid(mr),
+            run = breadboard_core::config::run_word()
         ),
         (Some(_), None, None) => {
-            format!("{branch} has {commits} not in develop and no MR. pnpm wt:mr, {keep}")
+            format!(
+                "{branch} has {commits} not in {base} and no MR. {run} wt:mr, {keep}",
+                run = breadboard_core::config::run_word()
+            )
         }
         (None, ..) => format!(
-            "{branch} has {commits} not in develop (GitLab did not answer which MR it has). Merge its MR first, {keep}"
+            "{branch} has {commits} not in {base} (GitLab did not answer which MR it has). Merge its MR first, {keep}"
         ),
     }
 }
@@ -302,7 +314,8 @@ fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
     step(&format!("add !{iid} to the changelog of {name}"));
     if let Err(error) = write_atomic(&file, &added) {
         step(&format!(
-            "the changelog of {name} could not be written: {error}; pnpm wt:orchestrate {name} --changelog tries again"
+            "the changelog of {name} could not be written: {error}; {run} wt:orchestrate {name} --changelog tries again",
+            run = breadboard_core::config::run_word()
         ));
     }
     true
@@ -310,7 +323,10 @@ fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
 
 /// The step that says an orchestration's changelog stays as it is.
 pub fn not_rewritten(name: &str, reason: &str) -> String {
-    format!("the changelog of {name} is not rewritten: {reason}; pnpm wt:orchestrate {name} --changelog tries again")
+    format!(
+        "the changelog of {name} is not rewritten: {reason}; {run} wt:orchestrate {name} --changelog tries again",
+        run = breadboard_core::config::run_word()
+    )
 }
 
 /// Why a changelog stays: GitLab gave nothing to rewrite it from.
@@ -402,7 +418,8 @@ impl Rewrite {
                 }
                 if let Err(error) = write_atomic(&self.file, before) {
                     step(&format!(
-                        "the changelog of {name} lost merges GitLab did not answer for, and could not be put back: {error}; pnpm wt:orchestrate {name} --changelog tries again"
+                        "the changelog of {name} lost merges GitLab did not answer for, and could not be put back: {error}; {run} wt:orchestrate {name} --changelog tries again",
+                        run = breadboard_core::config::run_word()
                     ));
                     return;
                 }
@@ -481,6 +498,8 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     }
 
     let branch = worktree.branch.clone();
+    // Read before the worktree goes, its `.claude/origin` with it (#349).
+    let base = breadboard_core::git::base_of(&dir);
     let mut is_merged = false;
     if let Some(branch) = &branch {
         if !options.is_fetched {
@@ -493,15 +512,20 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
             let mrs = as_step(&format!("GitLab: which MR {branch} has"), || {
                 mrs_of(repo, branch, gitlab::NAMING)
             });
-            return fail(not_in_develop(branch, own, mrs.as_deref()));
+            return fail(not_in_base(branch, own, &base.local, mrs.as_deref()));
         }
     }
 
     if offset_of(&dir) != 0 {
         step(&format!("stop the own stack of {feature} and delete its data"));
-        let args = compose_args(&["down", "-v"]);
-        if !run_inherit("docker", &args, &dir.join(VITA)) {
+        let args = compose_args(&dir, &["down", "-v"]).unwrap_or_default();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        if !run_inherit("docker", &args, &stack_dir(&dir)) {
             return fail(format!("docker {} failed", args.join(" ")));
+        }
+        // A task stack's databases lie on its epic's Postgres (#351).
+        if let Some(epic) = epic::epic_of_stack(&dir) {
+            epic::drop_task(feature, &epic);
         }
     }
     step(&format!("git worktree remove {dir_text}"));
@@ -549,14 +573,14 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         )
     };
     if let Some(branch) = branch.as_deref().filter(|_| is_merged && !options.is_keeping_branch) {
-        step(&format!("delete {branch} (all of it is in develop)"));
+        step(&format!("delete {branch} (all of it is in {})", base.local));
         if !run_inherit("git", &["branch", "-D", branch], &repo.main) {
             return fail(format!("git branch -D {branch} failed"));
         }
         // Its claim on origin too, while empty: the issue can start again (#272).
         let remote = format!("refs/remotes/origin/{branch}");
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;
-        if is_on_origin && !has_own_commits(&remote, &repo.main) {
+        if is_on_origin && breadboard_core::git::own_commits_on(&repo.main, &base, &remote) == 0 {
             let open_mrs = mrs.get_or_init(|| read_mrs(branch)).as_deref().map(open_count);
             if let Some(claim) = empty_claim(true, false, open_mrs) {
                 step(&format!("delete {branch} on origin ({claim})"));
@@ -655,8 +679,9 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
     });
     if herdr::is_silent() {
         step(&format!(
-            "herdr did not answer in {} s: the tabs of {feature} stay; pnpm wt:herdr tidies up once it answers",
-            herdr::LIMIT.as_secs()
+            "herdr did not answer in {} s: the tabs of {feature} stay; {run} wt:herdr tidies up once it answers",
+            herdr::LIMIT.as_secs(),
+            run = breadboard_core::config::run_word()
         ));
     }
     // The plugin may have been linked from the tree that just went (#230);
@@ -754,16 +779,16 @@ mod tests {
         let mr = |iid: i64, state: &str| serde_json::json!({ "iid": iid, "state": state });
         let b = "feature/4-x";
         assert_eq!(
-            not_in_develop(b, 2, Some(&[mr(9, "opened"), mr(7, "merged")])),
+            not_in_base(b, 2, "develop", Some(&[mr(9, "opened"), mr(7, "merged")])),
             "feature/4-x has 2 commits that are not in develop, its MR !9 is open. Merge its MR first, or keep the branch with --keep-branch"
         );
         assert!(
-            not_in_develop(b, 1, Some(&[mr(7, "merged")]))
+            not_in_base(b, 1, "develop", Some(&[mr(7, "merged")]))
                 .contains("1 commit that is not in develop, its MR !7 is merged without them")
         );
-        assert!(not_in_develop(b, 1, Some(&[])).contains("and no MR. pnpm wt:mr"));
+        assert!(not_in_base(b, 1, "develop", Some(&[])).contains("and no MR. pnpm wt:mr"));
         assert!(
-            not_in_develop(b, 3, None).ends_with(
+            not_in_base(b, 3, "develop", None).ends_with(
                 "3 commits that are not in develop (GitLab did not answer which MR it has). Merge its MR first, or keep the branch with --keep-branch"
             )
         );
@@ -801,7 +826,7 @@ mod tests {
     fn an_empty_claim_goes_only_without_work_and_mrs() {
         assert_eq!(
             empty_claim(true, false, Some(0)),
-            Some("nothing on it develop lacks, no open MR")
+            Some("nothing on it its base lacks, no open MR")
         );
         assert_eq!(empty_claim(true, true, Some(0)), None);
         assert_eq!(empty_claim(true, false, Some(1)), None);

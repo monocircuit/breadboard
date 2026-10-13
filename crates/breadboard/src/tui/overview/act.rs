@@ -49,6 +49,8 @@ pub enum Act {
     CopyResume(String),
     /// A conflicted MR's agent merges develop in (#246).
     Resolve(i64),
+    /// An MR waiting in the CI queue goes to its front (#357).
+    RunNow(i64),
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -62,8 +64,8 @@ pub enum Act {
         port: i64,
         is_shared: bool,
     },
-    /// Storybook in a tab of the worktree's space.
-    Storybook(PathBuf),
+    /// A tool of the stack (Storybook) in a tab of the worktree's space, by name.
+    Tool(PathBuf, String),
     /// A file in the worktree's nvim, at a line.
     OpenFile {
         dir: PathBuf,
@@ -79,16 +81,27 @@ pub enum Act {
     },
 }
 
-/// What folds: the removed worktrees, the queue, the merged MRs; in the
-/// view of everything the open MRs and issues the pane cut; DONE's commands.
+/// What folds: WORK's done ones (`Removed`: merged and removed) and its queue; in the
+/// view of everything the open MRs and issues the pane cut; DONE's commands;
+/// the boxes of an MR (#346).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
     Queued,
-    Merged,
     Mrs,
     Issues,
     Done,
+    /// The boxes under an MR's row, by its iid (#346).
+    MrBoxes(i64),
+    /// The boxes under a worktree's node, by its issue (#346).
+    TreeBoxes(i64),
+}
+
+/// Opens what was folded, folds what was open.
+fn toggle(open: &mut std::collections::BTreeSet<i64>, key: i64) {
+    if !open.remove(&key) {
+        open.insert(key);
+    }
 }
 
 /// How long a first click keeps the end armed.
@@ -99,15 +112,35 @@ const DISMISS_ARM: Duration = Duration::from_millis(4000);
 pub fn act(app: &mut Overview, act: Act) -> Flow {
     match act {
         Act::Fold(fold) => {
-            let is_removed_folded = app.is_removed_folded();
+            // Whether the MR shows its open boxes before any click (#354).
+            let has_open_boxes = |iid: i64| {
+                app.orchestration()
+                    .and_then(|model| model.merge_requests.as_ref().ok())
+                    .is_some_and(|mrs| {
+                        mrs.open
+                            .iter()
+                            .filter_map(|row| row.mr.as_ref())
+                            .any(|mr| mr.iid == iid && !mr.open_boxes.is_empty())
+                    })
+            };
+            let has_open = match fold {
+                Fold::MrBoxes(iid) => has_open_boxes(iid),
+                _ => false,
+            };
             let folds = &mut app.folds;
             match fold {
-                Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
+                Fold::Removed => folds.is_done_folded = !folds.is_done_folded,
                 Fold::Queued => folds.is_queued_folded = !folds.is_queued_folded,
-                Fold::Merged => folds.is_merged_folded = !folds.is_merged_folded,
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
+                Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
+                Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
+            }
+            if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
+                && let Some(file) = &app.folds_file
+            {
+                app.folds.boxes.write(file);
             }
             return Flow::Redraw;
         }
@@ -129,7 +162,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete
         | Act::StartStack(_)
         | Act::Migrate(_)
-        | Act::Storybook(_)
+        | Act::Tool(..)
         | Act::OpenFile { .. }
         | Act::Hunks { .. } => {
             return super::worktree_view::act(app, act);
@@ -141,6 +174,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
+        Act::RunNow(iid) => run_now(app, iid),
     }
     app.redraw();
     Flow::Redraw
@@ -165,11 +199,16 @@ fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
         return;
     }
     // What to do first: the band shows the words before the first `: `.
+    let dev = match breadboard_core::stack::of(&main) {
+        Some(stack) if stack.dir != "." => format!("{} in {}", stack.app.dev, stack.dir),
+        Some(stack) => stack.app.dev,
+        None => "the app".into(),
+    };
     let hint = if is_shared {
-        format!("pnpm dev in products/vita/web serves the shared :{port}: nothing answers there")
+        format!("{dev} serves the shared :{port}: nothing answers there")
     } else {
         let who = breadboard_core::git::feature_of(&main, dir);
-        format!("pnpm dev in products/vita/web starts the app of {who}: nothing answers on :{port}")
+        format!("{dev} starts the app of {who}: nothing answers on :{port}")
     };
     app.actor.log(Paint::Dim, hint);
 }
@@ -300,7 +339,10 @@ fn end(app: &mut Overview) {
                 "end",
                 Paint::Yellow,
                 format!("ending ⇶ {name} …"),
-                Some(format!("pnpm wt:orchestrate {name} --end")),
+                Some(format!(
+                    "{run} wt:orchestrate {name} --end",
+                    run = breadboard_core::config::run_word()
+                )),
             );
         }
         Err(why) => {
@@ -420,6 +462,21 @@ fn dismiss(app: &mut Overview, id: &str) {
 
 /// A click on an MR's resolve button (resolve.mjs `clickResolve`): the order
 /// typed into its agent's pane; nothing while the button isn't there.
+/// An MR waiting in the CI queue to its front (#357): the daemon's queue
+/// starts its pipeline as the next one, once the runner has a free slot.
+fn run_now(app: &mut Overview, iid: i64) {
+    use breadboard_core::ci::{RunNow, read_or_default, run_now_file, write_whole};
+    let file = run_now_file(&app.actor.main);
+    let mut run_now: RunNow = read_or_default(&file);
+    run_now.at.insert(iid, now_ms());
+    match write_whole(&file, &run_now) {
+        Ok(()) => app
+            .actor
+            .log(Paint::Green, format!("CI: !{iid} to the front of the queue")),
+        Err(error) => app.actor.log(Paint::Red, format!("CI: !{iid} not moved up: {error}")),
+    }
+}
+
 fn resolve(app: &mut Overview, iid: i64) {
     let Some(RemoteOf::Orchestration(remote)) = &app.remote else {
         return;
@@ -452,7 +509,7 @@ fn resolve(app: &mut Overview, iid: i64) {
         let who = breadboard_core::git::feature_of(&main, &tree.dir);
         Some(Box::new(move |app: &mut Overview| {
             app.state.resolves.clicked(&mr, Some(&tree), is_sent, now_ms());
-            let about = format!("to merge develop in and resolve the conflicts of !{}", mr.iid);
+            let about = format!("to merge {} in and resolve the conflicts of !{}", mr.target(), mr.iid);
             if is_sent {
                 app.actor.told(&who, &about, &line, true);
             } else {

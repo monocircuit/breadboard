@@ -38,6 +38,10 @@ struct State {
     status: Mutex<HashMap<std::path::PathBuf, Status>>,
     /// The feeds followed now, by view.
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
+    /// The repos whose CI queue runs (`ci`), one each.
+    queues: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// The run engines of the repos (`runs`), each busy while lines are queued or runs in flight.
+    engines: Mutex<HashMap<std::path::PathBuf, Arc<std::sync::atomic::AtomicBool>>>,
     /// The last answer of a feed that ended, by view, for GRACE.
     kept: Mutex<HashMap<String, (Instant, Arc<str>)>>,
 }
@@ -186,7 +190,17 @@ async fn serve(listener: UnixListener, socket: &Path) -> std::io::Result<()> {
                     Ok(held) => held.as_ref().is_none_or(|(_, at, _)| *at > old),
                 });
                 let idle = *state.idle_since.lock().unwrap_or_else(|e| e.into_inner());
-                if state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
+                // A run queued or in flight keeps it: nothing else would start or watch it.
+                let is_running = state
+                    .engines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .values()
+                    .any(|busy| busy.load(Ordering::SeqCst));
+                if is_running {
+                    *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+                }
+                if !is_running && state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
                     let _ = std::fs::remove_file(socket);
                     return Ok(());
                 }
@@ -213,7 +227,23 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             line.push('\n');
             write.write_all(line.as_bytes()).await
         }
+        Ok(Request::Runs { main }) => {
+            start_engine(state, &main);
+            write.write_all(b"true\n").await
+        }
         Ok(Request::Gitlab { main, view, ask }) => {
+            // The first overview of a repo starts its CI queue, for as long as the daemon runs.
+            if main.is_absolute()
+                && state
+                    .queues
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(main.clone())
+            {
+                tokio::spawn(super::ci::schedule(main.clone()));
+            }
+            // An overview of a repo starts its run engine: lines left queued by a daemon before run.
+            start_engine(state, &main);
             let key = serde_json::to_string(&(&main, &view)).unwrap_or_default();
             let (feed, said, last) = {
                 let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
@@ -244,6 +274,20 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
         }
         Err(_) => Ok(()),
     }
+}
+
+/// The run engine of `main` (`runs`), once per daemon.
+fn start_engine(state: &State, main: &Path) {
+    if !main.is_absolute() {
+        return;
+    }
+    let mut engines = state.engines.lock().unwrap_or_else(|e| e.into_inner());
+    if engines.contains_key(main) {
+        return;
+    }
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    engines.insert(main.to_path_buf(), busy.clone());
+    tokio::spawn(super::runs::schedule(main.to_path_buf(), busy));
 }
 
 /// herdr's answer to `args`, read once for every overview that asks within HERDR_FRESH; only reads are ever made.
