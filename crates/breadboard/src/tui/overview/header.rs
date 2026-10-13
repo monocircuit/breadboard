@@ -107,7 +107,7 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     }
     let journal = &model.orchestrator.journal;
     if !journal.is_empty() {
-        page.section(Section::new("JOURNAL").plain(), |scene| {
+        page.section(Section::new("JOURNAL"), |scene| {
             for entry in journal {
                 look::say(scene, entry, theme::dim());
             }
