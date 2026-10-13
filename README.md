@@ -105,6 +105,12 @@ checkout turns it on (tabs stay the default until #361).
   leaves 0.5 GB. Waiting sessions go in the merge order of their
   orchestration's plan (`wt:plan`), then by age. `BREADBOARD_MEMINFO` names
   another `/proc/meminfo` (the gauntlet's low memory).
+- **The daily limit** (#372), `[agents] daily_limit` in breadboard.toml
+  ([`docs/config.md`](docs/config.md)): once the repo's claudes spent it
+  since midnight (`breadboard_core::spend`, from their transcripts) no run
+  starts, the lines wait and the overview says why. Its `continue anyway`,
+  or `breadboard runs continue`, lifts it until midnight
+  (`.claude/runs/limit.json`).
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
   `asks` (the run was denied a tool, its `permission_denials`), and
   `queued` from the queue. The overview reads it as herdr's agent states

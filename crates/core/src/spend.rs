@@ -7,6 +7,8 @@
 //!
 //! - `today_of`: the repo's agents today (local midnight on), all and per session;
 //! - `of_session`: one session's, between two times (an issue's share of it);
+//! - `spent_of`: an orchestration's, as its overview shows them: today's,
+//!   each issue's (its agents' answers while they worked on it), its own;
 //! - `Limit`: `[agents] daily_limit`, in tokens or dollars.
 //!
 //! Tokens are what an answer read and wrote anew: its input, what it wrote
@@ -153,7 +155,7 @@ pub fn tokens_text(tokens: u64) -> String {
         if millions >= 100.0 {
             format!("{} M", millions.round() as u64)
         } else {
-            format!("{:.1} M", millions)
+            format!("{} M", format!("{millions:.1}").trim_end_matches(".0"))
         }
     } else if tokens >= 1000 {
         format!("{} k", (tokens as f64 / 1000.0).round() as u64)
@@ -301,22 +303,31 @@ pub fn project_name(dir: &Path) -> String {
 }
 
 /// claude's projects of the repo of `main`: the main checkout's and its
-/// worktrees' (`<main>-<feature>`, removed ones included).
+/// worktrees' (`<main>-<feature>`, removed ones included), each once: a
+/// worktree's is mostly a link to the main checkout's (a conversation
+/// resumes in any of them), read through it would count it again.
 pub fn projects_of(main: &Path) -> Vec<PathBuf> {
+    projects_in(&claude_dir().join("projects"), main)
+}
+
+/// `projects_of` in claude's folder of projects `folder`.
+fn projects_in(folder: &Path, main: &Path) -> Vec<PathBuf> {
     let name = project_name(main);
     let prefix = format!("{name}-");
-    fs::read_dir(claude_dir().join("projects"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|entry| {
-                    let found = entry.file_name().to_string_lossy().into_owned();
-                    found == name || found.starts_with(&prefix)
-                })
-                .map(|entry| entry.path())
-                .collect()
-        })
-        .unwrap_or_default()
+    let mut projects: Vec<PathBuf> = Vec::new();
+    for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
+        let found = entry.file_name().to_string_lossy().into_owned();
+        if found != name && !found.starts_with(&prefix) {
+            continue;
+        }
+        let Ok(real) = fs::canonicalize(entry.path()) else {
+            continue;
+        };
+        if !projects.contains(&real) {
+            projects.push(real);
+        }
+    }
+    projects
 }
 
 /// Local midnight before `now` (ms).
@@ -380,6 +391,111 @@ pub fn today_of(main: &Path, now: i64) -> Today {
         }
     }
     today
+}
+
+/// The times a worker worked on each of its issues (#372), from the starts
+/// of its history: `(issue, from, to)`, `to` the next start's time. Its
+/// first issue from the beginning of its conversation; a later start without
+/// a time leaves its time with the issue before.
+pub fn spans_of(worker: &crate::record::Worker) -> Vec<(i64, i64, i64)> {
+    let mut spans: Vec<(i64, i64, i64)> = Vec::new();
+    for (i, start) in crate::model::history::history_of(worker).iter().enumerate() {
+        let at = match start.at.as_deref().and_then(parse_iso) {
+            _ if i == 0 => i64::MIN,
+            Some(at) => at,
+            None => continue,
+        };
+        if let Some(last) = spans.last_mut() {
+            last.2 = at;
+        }
+        spans.push((start.number, at, i64::MAX));
+    }
+    spans
+}
+
+/// What the agents of an orchestration's `record` spent on each issue: every
+/// worker's answers while it worked on it (`spans_of`).
+pub fn by_issue_of(record: &crate::record::Record) -> HashMap<i64, Spend> {
+    let mut by_issue: HashMap<i64, Spend> = HashMap::new();
+    for worker in &record.workers {
+        for (number, from, to) in spans_of(worker) {
+            by_issue
+                .entry(number)
+                .or_default()
+                .add(of_session(&worker.id, from, to));
+        }
+    }
+    by_issue
+}
+
+/// What an orchestration's agents spent (#372), as its overview shows it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Spent {
+    /// The repo's claudes today, all and per session: the band, AGENTS.
+    pub today: Today,
+    pub daily_limit: Option<Limit>,
+    /// Why no run starts: the daily limit reached (`runs::held_by`).
+    pub held: Option<String>,
+    /// Each issue's, over every agent that worked on it.
+    pub by_issue: HashMap<i64, Spend>,
+    /// The orchestration's: its agents' and its orchestrator's, all time.
+    pub total: Spend,
+    pub budget: Option<Limit>,
+}
+
+/// How long `spent_of` holds before it reads the transcripts again.
+const SPENT_FOR_MS: i64 = 10_000;
+
+/// `Spent` of the orchestration `name` (its `record`) in the repo of
+/// `main`, read again once SPENT_FOR_MS passed.
+pub fn spent_of(main: &Path, name: &str, record: Option<&crate::record::Record>, now: i64) -> Spent {
+    type Held = HashMap<(PathBuf, String), (i64, Spent)>;
+    static HELD: Mutex<Option<Held>> = Mutex::new(None);
+    let key = (main.to_path_buf(), name.to_string());
+    // A `continue anyway` shows at once: only the transcripts wait SPENT_FOR_MS.
+    let lifted = crate::runs::read_or_default(&crate::runs::limit_file(main));
+    if let Some((at, mut spent)) = HELD.lock().ok().and_then(|held| held.as_ref()?.get(&key).cloned())
+        && now - at < SPENT_FOR_MS
+    {
+        spent.held = crate::runs::held_by(spent.daily_limit, &spent.today, &lifted);
+        return spent;
+    }
+    let config = crate::config::of_main(main);
+    let today = today_of(main, now);
+    let mut spent = Spent {
+        held: crate::runs::held_by(config.config.agents.daily_limit, &today, &lifted),
+        today,
+        daily_limit: config.config.agents.daily_limit,
+        budget: config.config.agents.orchestration_budget,
+        ..Spent::default()
+    };
+    if let Some(record) = record {
+        spent.by_issue = by_issue_of(record);
+        for used in spent.by_issue.values() {
+            spent.total.add(*used);
+        }
+        if let Some(chat) = &record.chat {
+            spent.total.add(of_session(&chat.session_id, i64::MIN, i64::MAX));
+        }
+    }
+    if let Ok(mut held) = HELD.lock() {
+        held.get_or_insert_with(HashMap::new).insert(key, (now, spent.clone()));
+    }
+    spent
+}
+
+/// The band's line of `spent` (#372): `today 4.2 M tokens · ≈ $12`, with
+/// the daily limit (`of $40 a day`) and the orchestration's budget
+/// (`budget $80 of $200`); None while nothing was spent and no limit is set.
+pub fn band_text(spent: &Spent) -> Option<String> {
+    let mut text = format!("today {}", spent.today.total.text());
+    if let Some(limit) = spent.daily_limit {
+        text.push_str(&format!(" of {} a day", limit.text()));
+    }
+    if let Some(budget) = spent.budget {
+        text.push_str(&format!(" · budget {}", budget.against(&spent.total)));
+    }
+    (!spent.today.total.is_empty() || spent.daily_limit.is_some() || spent.budget.is_some()).then_some(text)
 }
 
 /// A limit in tokens or dollars (`[agents] daily_limit`, `orchestration_budget`):
@@ -523,7 +639,7 @@ mod tests {
         assert!(!Limit::Dollars(40.0).is_reached(&spend));
         assert!(Limit::Tokens(4_000_000).is_reached(&spend));
         assert_eq!(Limit::Dollars(40.0).against(&spend), "$12 of $40");
-        assert_eq!(Limit::Tokens(20_000_000).against(&spend), "4.2 M of 20.0 M tokens");
+        assert_eq!(Limit::Tokens(20_000_000).against(&spend), "4.2 M of 20 M tokens");
         assert_eq!(spend.text(), "4.2 M tokens · ≈ $12");
         assert_eq!(dollars_text(0.034), "$0.03");
         assert_eq!(tokens_text(830_400), "830 k");
@@ -542,6 +658,57 @@ mod tests {
         assert_eq!(answers_of_file(&file).len(), 1);
         std::io::Write::write_all(&mut opened, format!("{}\n", &other[20..]).as_bytes()).unwrap();
         assert_eq!(answers_of_file(&file).len(), 2);
+    }
+
+    #[test]
+    fn splits_a_workers_time_by_its_issues() {
+        let worker = crate::record::Worker::from_value(
+            "a",
+            &serde_json::json!({ "history": [
+                { "number": 1, "how": "fresh", "at": "2026-10-13T08:00:00Z" },
+                { "number": 2, "how": "handover" },
+                { "number": 3, "how": "handover", "at": "2026-10-13T12:00:00Z" },
+            ] }),
+        );
+        let noon = parse_iso("2026-10-13T12:00:00Z").unwrap();
+        assert_eq!(spans_of(&worker), [(1, i64::MIN, noon), (3, noon, i64::MAX)]);
+        let old = crate::record::Worker::from_value("b", &serde_json::json!({ "issues": [7] }));
+        assert_eq!(spans_of(&old), [(7, i64::MIN, i64::MAX)]);
+    }
+
+    #[test]
+    fn says_in_the_band_what_was_spent_against_the_limits() {
+        let mut spent = Spent::default();
+        assert_eq!(band_text(&spent), None);
+        spent.today.total = Spend {
+            tokens: 4_200_000,
+            dollars: 12.4,
+        };
+        assert_eq!(band_text(&spent).as_deref(), Some("today 4.2 M tokens · ≈ $12"));
+        spent.daily_limit = Some(Limit::Dollars(40.0));
+        spent.budget = Some(Limit::Tokens(200_000_000));
+        spent.total.tokens = 80_000_000;
+        assert_eq!(
+            band_text(&spent).as_deref(),
+            Some("today 4.2 M tokens · ≈ $12 of $40 a day · budget 80 M of 200 M tokens")
+        );
+    }
+
+    #[test]
+    fn reads_a_project_linked_to_another_once() {
+        let scratch = crate::lock::scratch::Scratch::new();
+        let projects = scratch.path().join("projects");
+        let main = project_name(Path::new("/r/platform"));
+        fs::create_dir_all(projects.join(&main)).unwrap();
+        fs::create_dir_all(projects.join(format!("{main}-12-own"))).unwrap();
+        std::os::unix::fs::symlink(projects.join(&main), projects.join(format!("{main}-11-linked"))).unwrap();
+        fs::create_dir_all(projects.join(format!("{main}x"))).unwrap();
+        let mut found: Vec<String> = projects_in(&projects, Path::new("/r/platform"))
+            .iter()
+            .map(|project| project.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        found.sort();
+        assert_eq!(found, [main.clone(), format!("{main}-12-own")]);
     }
 
     #[test]
