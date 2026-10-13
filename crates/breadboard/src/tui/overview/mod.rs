@@ -633,7 +633,12 @@ impl App for Overview {
     }
 
     fn is_over(&self) -> bool {
-        self.is_replaced && !self.actor.is_busy()
+        // Not while a merge runs on its thread, nor while a prompt is typed into: both would be lost.
+        self.is_replaced && !self.actor.is_busy() && !self.is_typing()
+    }
+
+    fn is_typing(&self) -> bool {
+        self.actor.prompt.is_some()
     }
 }
 

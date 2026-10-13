@@ -17,6 +17,20 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 
+/// A key pressed while a prompt is open: the app's, but Ctrl-C, which still quits.
+fn typed_key(event: &Event) -> Option<crossterm::event::KeyEvent> {
+    match event {
+        Event::Key(key)
+            if key.kind != crossterm::event::KeyEventKind::Release
+                && !(key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)) =>
+        {
+            Some(*key)
+        }
+        _ => None,
+    }
+}
+
 /// At most one draw per this, about a frame of the screen.
 pub const FRAME: Duration = Duration::from_millis(16);
 /// How often the pane's size is asked for: a pane resized while its tab
@@ -72,6 +86,18 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                 // The input is gone (the pane closed): so is the view.
                 let Some(event) = event else { return Ok(()) };
                 for event in rejoin.feed(event?) {
+                    if let Some(key) = typed_key(&event).filter(|_| app.is_typing()) {
+                        match app.act(Input::Key(key, None)) {
+                            Flow::Quit => return Ok(()),
+                            Flow::Same => {}
+                            // Built again, not only drawn: the prompt's text is in the page.
+                            Flow::Redraw | Flow::Show => {
+                                view.acted(None);
+                                is_dirty = true;
+                            }
+                        }
+                        continue;
+                    }
                     let Some(command) = command_of(&event) else { continue };
                     // The block a click or Enter runs: it keeps its place over the rebuild.
                     let mut held = None;

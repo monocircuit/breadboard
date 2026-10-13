@@ -57,6 +57,11 @@ pub trait App {
     fn is_over(&self) -> bool {
         false
     }
+    /// A one-line prompt is open: every key is the app's, `q` and `j` too,
+    /// as typed text (Ctrl-C still quits).
+    fn is_typing(&self) -> bool {
+        false
+    }
 }
 
 /// What the app is asked to do.
