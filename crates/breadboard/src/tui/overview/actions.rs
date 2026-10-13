@@ -965,7 +965,16 @@ fn line_of(action: &Action) -> String {
 /// to draft (#280). The log under the band says where it went.
 pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
     if let Some(prompt) = prompt_for(app, file, id, answer) {
-        app.actor.prompt = Some(prompt);
+        // The same prompt opened again (a click's report coming late, a
+        // second click on the button) keeps what is typed into it.
+        let is_open = app
+            .actor
+            .prompt
+            .as_ref()
+            .is_some_and(|open| open.file == prompt.file && open.id == prompt.id && open.answer == prompt.answer);
+        if !is_open {
+            app.actor.prompt = Some(prompt);
+        }
         return Flow::Redraw;
     }
     answer_with(app, file, id, answer, None)
