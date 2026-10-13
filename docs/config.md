@@ -213,6 +213,31 @@ What `wt:check` runs and the pre-push gate waits for.
 | `run` | none | else one command over the branch (`cargo test`, `npm test`); with neither there is nothing to check and every push passes |
 | `[[check.stack_tests]]` | none | `package` and `says`: what `wt:check` says of a package whose tests need the stack instead of running them |
 
+## `[ci.watch]`
+
+The CI job watcher (#379): `breadboard serve` reads every finished job of the
+project's pipelines into `.claude/ci/jobs.json` (14 days), samples the CPU and
+memory of the jobs the local runner runs (`docker stats`), and flags a job
+that holds pipelines up. The overview shows it under its band; a slow job
+becomes a `plan` to file an issue, a hung one a `decide` (retry, cancel, let
+it run), both in every orchestration's ACTIONS.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `is_on` | `true` | off: nothing read, nothing flagged |
+| `window` | `10` | the newest pipelines of a job the critical path and idle count over |
+| `min_runs` | `5` | runs a job needs before it is flagged |
+| `min_seconds` | `120` | a job whose median is shorter holds nothing up |
+| `critical_margin_seconds` | `60` | the last job of a pipeline is its critical path when the one before ended this much earlier |
+| `critical_share` | `0.5` | flagged when it is the critical path of more than this share of its pipelines |
+| `slowdown` | `0.3` | flagged when its median of the last `slowdown_days` grew this much over the days before |
+| `slowdown_days` | `7` | |
+| `hang_factor` | `2.0` | a running job past this many times its median is hung (and marked on its MR's row) |
+| `hang_seconds` | `120` | … and past this many seconds |
+| `idle_seconds` | `300` | a job whose median run is this long … |
+| `idle_cores` | `0.5` | … on fewer cores than this mostly waits |
+| `history_days` | `14` | how long a run is kept |
+
 ## `[changelog]`
 
 The fragments `changelog:*` folds into `CHANGELOG.md` at a release (Keep a
