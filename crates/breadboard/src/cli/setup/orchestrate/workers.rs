@@ -62,7 +62,6 @@ pub struct Idle {
     pub name: String,
     pub share: f64,
     pub files: Vec<String>,
-    pub is_merged: bool,
 }
 
 /// The agents of `name` free for a next issue now: idle, context below the limit, MR merged (or free).
@@ -116,7 +115,6 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
                 name: worker.name,
                 share: share.unwrap_or(0.0),
                 files: unique(known.into_iter().chain(own)),
-                is_merged: true,
             }
         })
         .collect()
@@ -229,7 +227,6 @@ mod tests {
             name: name.into(),
             share,
             files: files.iter().map(|f| f.to_string()).collect(),
-            is_merged: true,
         }
     }
 
