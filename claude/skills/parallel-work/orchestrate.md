@@ -370,7 +370,9 @@ starts only once the old process is gone. Without a space or an idle tab
 nothing ends and the handover fails, its worktree removed again. The old
 worktree keeps its space until its clean-up. `--to` takes the old name too.
 Refused while the agent works or waits for an answer, or above `--limit`
-(50 %) of its context.
+(`[agents] fresh_above` of `breadboard.toml`, 40 %) of its context. An issue
+no free agent shares a file with goes to a fresh agent: another issue's
+context buys it nothing.
 
 **A merged agent stays free** (#289), without a tab (#345): before the
 clean-up of its worktree the live overview types its last line, `[overview]
@@ -382,8 +384,20 @@ binding goes with the worktree's, and the worktree goes once its claude
 ended. A herdr restart changes nothing, there is no tab to restore. Its next
 issue resumes it (`claude --resume <id> --name <feature> '<line>'`) in the
 new worktree's tab, the path of every handover; never two claudes on one
-id. Above `--limit` (50 %) of its context it isn't freed and goes with the
-worktree. While the record keeps a free agent, the space `⇶ <name>` stays.
+id. While the record keeps a free agent, the space `⇶ <name>` stays.
+
+**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
+context window) it isn't freed but retires at its merge, never mid-issue:
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` ends its claude,
+gives its conversation one last run that writes `.claude/handoff.md` (a page
+at most: what it learned about the files it changed), keeps it next to the
+record (`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then
+its worktree goes. A fresh agent on those files gets the handoff of the
+retired agent sharing the most of them as its own `.claude/handoff.md`, its
+brief's `## Handoff` says whose it is. The overview says it in advance: the
+agent's node `fresh start at its next issue`, UP NEXT `#380 → fresh agent
+(Mira retires, 47 %)`, and the changelog notes the retirement under its
+merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
