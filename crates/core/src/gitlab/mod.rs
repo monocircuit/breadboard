@@ -320,9 +320,11 @@ pub fn needs_of(text: &str) -> Vec<i64> {
     needs
 }
 
-/// A file path an issue names, with an extension of the repo's files (fit.mjs `PATH`).
+/// A file path an issue names, with an extension of the repo's files (fit.mjs
+/// `PATH`; Rust and shell since breadboard is, #381: an issue on them shares
+/// files with the agent that knows them).
 static PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:[A-Za-z0-9_@.-]+/)*[A-Za-z0-9_@-][A-Za-z0-9_@.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|json|md|css|scss|sql|toml|ya?ml)\b").unwrap()
+    Regex::new(r"(?:[A-Za-z0-9_@.-]+/)*[A-Za-z0-9_@-][A-Za-z0-9_@.-]*\.(?:mjs|cjs|js|jsx|ts|tsx|json|md|css|scss|sql|toml|ya?ml|rs|sh)\b").unwrap()
 });
 
 /// The file paths a description names, each once.
@@ -344,6 +346,14 @@ pub fn number_of(branch: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_rust_and_shell_files_too() {
+        assert_eq!(
+            paths_of("fix `crates/core/src/git.rs` and herdr/cargo.sh, not rust.rsx"),
+            ["crates/core/src/git.rs", "herdr/cargo.sh"]
+        );
+    }
 
     #[test]
     fn reads_every_box_with_its_state_text_and_heading() {
