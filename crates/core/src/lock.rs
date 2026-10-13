@@ -20,7 +20,7 @@ pub fn is_alive(pid: i64) -> bool {
 }
 
 /// How old the lock directory is, None when it is gone.
-fn age_of(lock: &Path) -> Option<Duration> {
+pub fn age_of(lock: &Path) -> Option<Duration> {
     let modified = fs::metadata(lock).ok()?.modified().ok()?;
     Some(SystemTime::now().duration_since(modified).unwrap_or_default())
 }

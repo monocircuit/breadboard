@@ -83,9 +83,17 @@ counts as none, so every checkout takes a checked binary once.
 
 ## Headless agents
 
-A task agent can be a Claude Code session instead of a process (#358,
-rollout #359–#362): `git config breadboard.agents headless` in the main
-checkout turns it on (tabs stay the default until #361).
+A task agent is a Claude Code session, not a process (#358, rollout
+#359–#362): every agent of an orchestration runs headless, and a worktree
+of your own keeps its claude in a tab (#361).
+
+- **A click opens one in a tab** (its node, an action that opens it, the
+  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
+  the tab `<feature>` of its worktree's space, once no run of it is in
+  flight; its queue waits until that claude ends.
+- **The sidebar and the tab bar read the status table**: the space of a
+  worktree shows what its agent waits for (`$wt_state`, the space's third
+  row), and "N need you" counts its `asks`.
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
@@ -110,6 +118,32 @@ checkout turns it on (tabs stay the default until #361).
   `queued` from the queue. The overview reads it as herdr's agent states
   (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
   prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
+
+## The main checkout follows develop
+
+The main checkout keeps itself on `origin/develop` (#348). `breadboard
+serve`, the daemon of the overviews, fetches every 2 minutes and right after
+a merge it saw (the overview's own, or develop's head or pipeline moving on
+GitLab), and fast-forwards develop only when that is safe: on `develop`, no
+changes to tracked files, `--ff-only`. Another branch, local changes, own
+commits are skipped with the reason, never stashed, reset or forced. After an
+update `pnpm install --frozen-lockfile` runs when `pnpm-lock.yaml` changed,
+and the launcher builds the binary when breadboard's sources changed; vita's
+new migrations are only named (each stack runs `pnpm pg:migrate`). Off, the
+interval and the install: `[main_checkout]` of breadboard.toml
+([`docs/config.md`](docs/config.md)).
+
+The band of the view of everything and of every orchestration says it:
+`develop updated 17:42 · +4 commits (!331, !332…)`, or `develop: not updated
+(↓3), local changes in …` in yellow. What happened is in `<git common
+dir>/breadboard/develop.json`, the steps' output in `develop-*.log` beside it.
+
+A build installed over the binary a live overview or the daemon runs (the
+launcher renames it over the old file) makes it go on in the new one: the
+overview ends once no merge of its own runs and starts the new binary with
+the same arguments and its folds (the scroll starts at the top); the daemon,
+once no headless run is queued or in flight, gives up its socket and starts
+the new binary in its place.
 
 ## The nvim tab
 

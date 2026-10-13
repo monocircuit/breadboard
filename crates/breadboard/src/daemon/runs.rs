@@ -1,5 +1,5 @@
 //! The run engine of a repo's headless task agents (#358, core's `runs`):
-//! while `git config breadboard.agents headless`, every EVERY it takes the
+//! every EVERY it takes the
 //! queued lines of the sessions that may run now and runs `claude -p` with
 //! them, one run per session at a time, in the session's worktree. Lines
 //! queued while a run is in flight wait for the next. A session open in an
@@ -8,11 +8,12 @@
 //! merge order, then by age. One engine per repo across daemons of other
 //! builds: `.claude/runs/engine.pid`.
 
-use breadboard_core::conversations::{running_claudes, transcript_of};
+use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
+use breadboard_core::permissions;
 use breadboard_core::runs::{
-    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, denials_in,
-    prompt_of, read_or_default, room_for, status_file, write_whole,
+    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, prompt_of,
+    read_or_default, room_for, status_file, write_whole,
 };
 use breadboard_core::time::now_ms;
 use std::collections::{HashMap, HashSet};
@@ -25,8 +26,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// How often the queue is looked at: a line waits at most this long for its run.
 pub const EVERY: Duration = Duration::from_millis(500);
-/// How often a repo without the switch is looked at again.
-const OFF_EVERY: Duration = Duration::from_secs(10);
 /// The program a run is: `claude` on PATH (the gauntlet's fake there).
 const CLAUDE: &str = "claude";
 
@@ -47,17 +46,6 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
         if !main.is_dir() {
             busy.store(false, Ordering::SeqCst);
             return;
-        }
-        let is_on = {
-            let main = main.clone();
-            tokio::task::spawn_blocking(move || runs::is_headless(&main))
-                .await
-                .unwrap_or(false)
-        };
-        if !is_on {
-            busy.store(!locked(&in_flight).is_empty(), Ordering::SeqCst);
-            tokio::time::sleep(OFF_EVERY).await;
-            continue;
         }
         if held.is_none() {
             held = PidFile::hold(&runs::dir_of(&main).join("engine.pid"));
@@ -100,11 +88,14 @@ fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
     let table: Table = read_or_default(&status_file(main));
     let flying = locked(in_flight).clone();
     let ours: HashSet<i64> = flying.values().map(|(pid, _)| *pid).collect();
-    let open: HashSet<String> = running_claudes()
+    let mut open: HashSet<String> = running_claudes()
         .into_iter()
         .filter(|claude| !ours.contains(&claude.pid))
         .map(|claude| claude.id)
         .collect();
+    // One opened in a tab and still at its folder's trust question has no
+    // session file yet: its command line holds the queue too (#361's probe).
+    open.extend(interactive_resumes());
     let states = runs::states_of(&table, &queue);
     let now = now_ms();
     let starting = flying.values().filter(|(_, at)| now - at < STARTING_MS).count();
@@ -224,7 +215,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         read.runs
             .insert(session.clone(), row(State::Running, Some(pid), None, Vec::new()));
     });
-    let mut denials = Vec::new();
+    let mut lines = Vec::new();
     if let Ok(mut file) = tokio::fs::File::create(&log).await {
         let mut stdout = child.stdout.take().map(|out| BufReader::new(out).lines());
         let mut stderr = child.stderr.take().map(|err| BufReader::new(err).lines());
@@ -241,16 +232,36 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
                 else => break,
             };
             let Some(line) = line else { continue };
-            denials.extend(denials_in(&line));
             let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+            lines.push(line);
         }
     }
     let code = child.wait().await.ok().and_then(|status| status.code());
+    let denials = asked_of(&dir, &name, &lines);
     let state = if denials.is_empty() { State::Idle } else { State::Asks };
     change_table(&main, &table, |read| {
         read.runs.insert(session.clone(), row(state, None, code, denials));
     });
     locked(&in_flight).remove(&session);
+}
+
+/// What a run that ended was denied that a tab would have asked the user
+/// (#360), each posted as a `permission` action in its worktree; a block
+/// by the classifier or a deny rule stays the refusal the agent was told.
+fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let asked: Vec<_> = permissions::denials_of(lines, &permissions::deny_rules(dir, &home))
+        .into_iter()
+        .filter(|denial| denial.why == permissions::Why::Asked)
+        .collect();
+    let _ = permissions::post_denials(dir, name, &asked);
+    asked
+        .into_iter()
+        .map(|denial| runs::Denial {
+            tool: denial.tool,
+            input: denial.input,
+        })
+        .collect()
 }
 
 /// `breadboard runs [tell <dir> <line…>]`: the status table of the repo's
@@ -269,9 +280,6 @@ pub fn cli(args: &[String]) -> ExitCode {
             let queue: Queue = read_or_default(&runs::queue_file(&main));
             let mut states: Vec<(String, Run)> = runs::states_of(&table, &queue).into_iter().collect();
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-            if !runs::is_headless(&main) {
-                println!("agents run in tabs (git config {} headless: headless)", runs::MODE_KEY);
-            }
             for (session, run) in states {
                 let queued = queue.events.iter().filter(|event| event.session == session).count();
                 println!(

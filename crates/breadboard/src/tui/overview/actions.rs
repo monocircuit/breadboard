@@ -22,8 +22,8 @@ use breadboard_core::model::Paint;
 use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
+use breadboard_core::permissions;
 use breadboard_core::reader::{Model, RemoteOf};
-use breadboard_core::runs;
 use breadboard_core::time::{ago, parse_iso};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -966,7 +966,16 @@ fn line_of(action: &Action) -> String {
 /// to draft (#280). The log under the band says where it went.
 pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
     if let Some(prompt) = prompt_for(app, file, id, answer) {
-        app.actor.prompt = Some(prompt);
+        // The same prompt opened again (a click's report coming late, a
+        // second click on the button) keeps what is typed into it.
+        let is_open = app
+            .actor
+            .prompt
+            .as_ref()
+            .is_some_and(|open| open.file == prompt.file && open.id == prompt.id && open.answer == prompt.answer);
+        if !is_open {
+            app.actor.prompt = Some(prompt);
+        }
         return Flow::Redraw;
     }
     answer_with(app, file, id, answer, None)
@@ -991,7 +1000,7 @@ fn prompt_for(app: &Overview, file: &Path, id: i64, answer: &str) -> Option<Prom
         answer: Some(answer.to_string()),
         ..action.clone()
     });
-    let is_headless = matches!(item.to, Some(Target::Dir(_))) && runs::is_headless(&app.actor.main);
+    let is_headless = matches!(&item.to, Some(Target::Dir(dir)) if herdr::is_queued_for(&app.actor.main, dir));
     (is_draft && is_headless).then(|| Prompt {
         file: file.to_path_buf(),
         id,
@@ -1068,7 +1077,7 @@ fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Opt
     let line = line_of(&answered);
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
-    let is_queued = matches!(to, Some(Target::Dir(_))) && runs::is_headless(&main);
+    let is_queued = matches!(&to, Some(Target::Dir(dir)) if herdr::is_queued_for(&main, dir));
     app.actor.queue(move || {
         if let Some(to) = &to {
             if is_draft && !is_queued {
@@ -1190,7 +1199,7 @@ fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
 /// drafts say why they wait. The ones that got in.
 fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
     if let Target::Dir(dir) = to
-        && runs::is_headless(main)
+        && herdr::is_queued_for(main, dir)
     {
         return queue_answers(main, file, dir);
     }
@@ -1249,7 +1258,13 @@ fn queue_answers(main: &Path, file: &Path, dir: &Path) -> Vec<Action> {
         let Ok(Some(action)) = stored::claim_answer(file, id) else {
             continue;
         };
-        let is_in = herdr::enqueue(main, dir, &stored::answer_line(&action));
+        // A `permission` answer runs with its rule allowed for that run (#360).
+        let is_in = match permissions::delivery_of(dir, &action) {
+            Ok(Some((line, allowed))) => herdr::enqueue_allowing(main, dir, &line, allowed),
+            Ok(None) => herdr::enqueue(main, dir, &stored::answer_line(&action)),
+            // `allow always` couldn't write the worktree's settings: it stays answered, tried again.
+            Err(_) => false,
+        };
         let _ = if is_in {
             stored::done_action(file, id).map(|_| ())
         } else {
@@ -1378,6 +1393,7 @@ mod tests {
             main_name: "platform",
             actor,
             words: actor::view::no_words(),
+            develop: None,
         };
         let mut scene = Scene::new(width);
         action_block(&mut scene, item, &ctx, false);
@@ -1627,6 +1643,7 @@ mod tests {
             main_name: "platform",
             actor: actor::idle(),
             words: actor::view::no_words(),
+            develop: None,
         };
         action_block(&mut scene, &try_item, &ctx, true);
         scene.finish();

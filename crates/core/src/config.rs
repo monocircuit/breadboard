@@ -28,6 +28,7 @@ pub struct Config {
     pub orchestrator: Orchestrator,
     pub tries: Tries,
     pub check: Check,
+    pub main_checkout: MainCheckout,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
     pub changelog: Option<Changelog>,
     /// Release tags and the paths each one releases.
@@ -311,6 +312,31 @@ pub struct Tries {
     pub publish_job: Option<String>,
 }
 
+/// The main checkout keeps itself on the default branch (#348): the daemon
+/// of the overviews fetches and fast-forwards it when that is safe.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MainCheckout {
+    /// Off: it stays where it is until someone pulls.
+    pub follow: bool,
+    /// How often it looks when no merge woke it, in minutes.
+    pub every_minutes: u64,
+    /// What runs in it after an update that changed a file of `install_when`.
+    pub install: Option<String>,
+    pub install_when: Vec<String>,
+}
+
+impl Default for MainCheckout {
+    fn default() -> Self {
+        MainCheckout {
+            follow: true,
+            every_minutes: 2,
+            install: None,
+            install_when: Vec::new(),
+        }
+    }
+}
+
 impl Default for Tries {
     fn default() -> Self {
         Tries {
@@ -548,6 +574,12 @@ impl Config {
             if let Some(epic) = &stack.epic {
                 epic.validate(stack)?;
             }
+        }
+        if self.main_checkout.every_minutes == 0 {
+            return bad("main_checkout.every_minutes", "must be 1 or more");
+        }
+        if !self.main_checkout.install_when.is_empty() && self.main_checkout.install.is_none() {
+            return bad("main_checkout.install_when", "needs an `install` to run");
         }
         for (at, test) in self.mr.tests.iter().enumerate() {
             for path in &test.paths {
@@ -984,6 +1016,27 @@ mod tests {
         );
         let error = Config::parse("[stack]\nproject = \"a b\"\n[stack.app]\nport = 1\nenv = \"P\"\n").unwrap_err();
         assert!(error.starts_with("stack.project:"), "{error}");
+        let error = Config::parse("[main_checkout]\nevery_minutes = 0\n").unwrap_err();
+        assert_eq!(error, "main_checkout.every_minutes: must be 1 or more");
+        let error = Config::parse("[main_checkout]\ninstall_when = [\"x.lock\"]\n").unwrap_err();
+        assert_eq!(error, "main_checkout.install_when: needs an `install` to run");
+    }
+
+    #[test]
+    fn the_main_checkout_follows_by_default_and_platform_installs_on_its_lockfile() {
+        let config = Config::parse("").unwrap();
+        assert!(config.main_checkout.follow && config.main_checkout.every_minutes == 2);
+        assert!(config.main_checkout.install.is_none());
+        assert!(
+            !Config::parse("[main_checkout]\nfollow = false\n")
+                .unwrap()
+                .main_checkout
+                .follow
+        );
+        let Some(text) = platform() else { return };
+        let main = Config::parse(&text).unwrap().main_checkout;
+        assert_eq!(main.install.as_deref(), Some("pnpm install --frozen-lockfile"));
+        assert_eq!(main.install_when, ["pnpm-lock.yaml"]);
     }
 
     #[test]

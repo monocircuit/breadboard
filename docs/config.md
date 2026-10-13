@@ -222,6 +222,23 @@ What `wt:check` runs and the pre-push gate waits for.
 | `run` | none | else one command over the branch (`cargo test`, `npm test`); with neither there is nothing to check and every push passes |
 | `[[check.stack_tests]]` | none | `package` and `says`: what `wt:check` says of a package whose tests need the stack instead of running them |
 
+## `[main_checkout]`
+
+The main checkout keeps itself on the default branch (#348): the daemon of
+the overviews fetches and fast-forwards it only when that is safe (on the
+branch, no changes to tracked files, `--ff-only`), and the overviews' band
+says when it last did or why it didn't.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `follow` | `true` | off: the main checkout stays where it is until someone pulls |
+| `every_minutes` | `2` | how often it looks when no merge woke it (the overview's own merges and the branch moving on GitLab wake it at once) |
+| `install` | none | what runs in it after an update that changed a file of `install_when` (`pnpm install --frozen-lockfile`) |
+| `install_when` | none | the files whose change runs `install` (`pnpm-lock.yaml`) |
+
+New migrations (`[stack.migrations]`'s journal changed) are only named in
+the band with their command: each stack runs them itself.
+
 ## `[changelog]`
 
 The fragments `changelog:*` folds into `CHANGELOG.md` at a release (Keep a
