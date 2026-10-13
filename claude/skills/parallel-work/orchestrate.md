@@ -82,11 +82,11 @@ every agent has its address.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
-An agent reports nothing to the chat: its node in WORKTREES shows herdr's
-state of it and what it waits for, with commits, MR and pipeline, the
-problem it works on and what it is on now (its `{{run}} wt:action note "<one
-line>"`, asked for at every stage, or its last answer's first line); boxes
-show in MERGE REQUESTS. The brief asks for `SendMessage`
+An agent reports nothing to the chat: its block in WORK shows herdr's
+state of it and what it waits for, with commits, MR, pipeline and boxes,
+the problem it works on and what it is on now (its `{{run}} wt:action note
+"<one line>"`, asked for at every stage, or its last answer's first line).
+The brief asks for `SendMessage`
 only for:
 
 - its plan, when it differs from the issue;
@@ -95,7 +95,7 @@ only for:
 - what concerns another agent's work (an order, a conflict, a dependency).
 
 The orchestrator relays nothing the overview shows, and doesn't ask an agent
-where it stands: WORKTREES says it. **A decision with a `decide` (or `plan`)
+where it stands: WORK says it. **A decision with a `decide` (or `plan`)
 action is the overview's**: the agent's message is only context. Messages
 arrive late, often after the user clicked. So before it asks the user
 anything an agent brought, the orchestrator checks the action:
@@ -179,40 +179,59 @@ why: no agent, blocked at a question, herdr refused; the click tries again), `or
 is stale: an issue in it closed or gone, its why names one done, or the
 merge order left it; the click writes the computed order, the why dropped
 when it names a done issue), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
-worktree. WORKTREES, a tree: the orchestration at the root, a
-branch per worktree in the work order with where it stands in its life:
-`merged: will be removed`, `merged: kept` with the reason, else what its
-agent waits for (#288, never a bare `idle`; the same words in herdr's
-sidebar), the first that holds: `at work`, `asks you` (blocked, or stopped
-on a question), `waits for the pipeline` (running, or none yet for its
-push), `pipeline failed`, `waits for you: merge, try #4, decide` (its open
-actions, a merge once its MR's pipeline passed and no try or acceptance
-box is open, else `checks open: …`), `waits for !N` (wt:wait),
-`→ next #N after !M` (an announced handover), `change requested`, `not
-pushed: N commits`, else `free` (or `no agent`). Coloured by whom it waits
-for, in herdr's theme colours: at work yellow, GitLab blue, you red, free
-teal; under its name its agent (#292): `● Mira Albrecht · 3 issues · 2 MRs
-merged`, the dot in the colour of its state, the issues it worked on (this
-one included) and how many of their MRs are merged; below that its issue,
-MR, work, whether its HEAD passed `{{run}} wt:check` (`✓ tested <sha>`,
-`untested: N commits`, `checking…`, `✗ tests failed: <package> (<tests>)`,
-#298: an untested commit can't be pushed), its agent (`agent <name>` when it
-isn't the worktree's, after a handover) and its context, `change requested: <what>` and `N commits not pushed`; then its title and, in plain words (#341), `problem`: the first sentences of its issue's `## Goal` (or `## Bug`), and `now`: its agent's latest note (`.claude/note.json`), or `said`: the first line of its last answer when that is newer, with how long ago; a node without either shows only what it has; an issue that got no worktree says why; "done and removed" lists the
-gone ones with their times (`wt:remove` notes `removedAt` and `mergedAt` in the
-record), folded into one line when long. MERGE REQUESTS, theirs in the merge
-order with draft / ready / merged and the pipeline; an open one's second line
-starts with `no merge conflicts`, `checking for conflicts…` (GitLab's check
-runs, or it hasn't seen the last push), or with the button `resolve merge
-conflicts` while GitLab reports some, settled: its click types the order to
-merge its base in, resolve, check and push into the MR's agent. It is grey
-with the reason when the click can't reach it (no agent, at a question,
-`conflicts as of the pushed commits · N not pushed`); after a click, or the
-automatic line, the row says where it stands (`queued for its agent (at
-work)`, `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
-resolved`) instead of offering a second click (#290). A click
-on a worktree goes to its space (on a removed one to its issue), on an MR
-elsewhere opens it. Look
-here before asking an agent where it stands.
+worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
+under the orchestration's record and how reuse went, one block per piece
+of work: the open MRs in the merge order, the MR graph's lanes in front
+("side by side where independent"), then the worktrees without one in the
+work order, the queue folded, and one `done (N)` fold for the merged,
+closed and removed (`wt:remove` notes `removedAt` and `mergedAt`; shown
+until folded). Its title counts the agents by whom they wait for and the MRs
+(open, merged, without one yet). A block, line by line:
+
+- **head**: its number in the work order, the feature, `!M` and its
+  pipeline mark, the app (`● :3002`) and stack (`▶ stack down` starts it),
+  and at the right where it stands in its life: `merged: will be removed`,
+  `merged: kept` with the reason, else what its agent waits for (#288,
+  never a bare `idle`; the same words in herdr's sidebar), the first that
+  holds: `at work`, `asks you` (blocked, or stopped on a question), `waits
+  for the pipeline` (running, or none yet for its push), `pipeline failed`,
+  `waits for you: merge, try #4, decide` (its open actions, a merge once its
+  MR's pipeline passed and no try or acceptance box is open, else `checks
+  open: …`), `waits for !N` (wt:wait), `→ next #N after !M` (an announced
+  handover), `change requested`, `not pushed: N commits`, else `free` (or
+  `no agent`). Coloured by whom it waits for, in herdr's theme colours: at
+  work yellow, GitLab blue, you red, free teal;
+- **title**: the MR's, with `ready to merge` (`merging …`, `merged`) or a
+  merged one's age at the right;
+- **bar** of its issue's boxes (#294): `9/12 boxes · work 9/9 · acceptance 0/3`;
+- **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`):
+  the button `resolve merge conflicts` while GitLab reports some (its click
+  types the order to merge its base in, resolve, check and push into the
+  MR's agent; grey with the reason when the click can't reach it; after a
+  click the block says where it stands: `queued for its agent (at work)`,
+  `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
+  resolved`, #290), `checking for conflicts …`, the reasons; nothing when
+  nothing lacks;
+- **facts**: its issue, work, whether its HEAD passed `{{run}} wt:check`
+  (`✓ tested <sha>`, `untested: N commits`, `checking…`, `✗ tests failed:
+  <package> (<tests>)`, #298), its agent (`agent <name>` when it isn't the
+  worktree's, after a handover) and its context, `change requested: <what>`
+  and `N commits not pushed`; at their right its agent (#292): `● Mira
+  Albrecht · 3 issues · 2 MRs merged`, the dot in the colour of its state;
+- where it collides with develop and the other worktrees, whether a merge
+  of develop conflicts, the migrations its database lacks, why its stack
+  didn't start;
+- its issue's title and, in plain words (#341), `problem`: the first
+  sentences of its issue's `## Goal` (or `## Bug`), and `now`: its agent's
+  latest note (`.claude/note.json`), or `said`: the first line of its last
+  answer when that is newer, with how long ago; a block without either
+  shows only what it has.
+
+An issue that got no worktree says why; an MR without a worktree gets a
+block of the same shape. A click on a block goes to its worktree's space
+(without one to its MR, else its issue), on `!M` to the MR, on the mark to
+its pipeline; hover lights the whole block. Look here before asking an
+agent where it stands.
 
 ## Merging
 
@@ -289,7 +308,7 @@ precisely and refuses one that lacks a part:
 ```sh
 {{run}} wt:action decide "Which line of the merge hint stays? The new one says what the two clicks do." \
   --option "Both" --why "the row keeps the old and the new line" \
-  --option "New only" --why "the row says what the two clicks do, MERGE REQUESTS the rest" \
+  --option "New only" --why "the row says what the two clicks do, WORK the rest" \
   --recommend 2
 ``` The answer is stored with the action
 (`answer`, `answeredAt`), and the overview types it into the agent's pane
@@ -369,7 +388,7 @@ worktree. While the record keeps a free agent, the space `⇶ <name>` stays.
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
 records it (the record's `handovers`, the issue queued), the agent's node
-in WORKTREES says `→ next #226 after !232` and UP NEXT lists it. The live
+in WORK says `→ next #226 after !232` and UP NEXT lists it. The live
 overview hands the issue over by itself once the MRs are merged and the
 agent is idle, free or still in its worktree; nothing holds the clean-up
 for it but the move itself: `wt:remove` and `wt:prune` refuse a worktree a
@@ -382,7 +401,7 @@ in a free or idle agent that fits (the one sharing the most files, else the
 one with the least context used) or a fresh one. A queue only where it buys
 something: an issue that builds on another MR (or whose files move, like a
 rename) starts all the same, and its agent waits with `{{run}} wt:wait !N`,
-pushed and visible. `--queue` queues on purpose (WORKTREES shows them
+pushed and visible. `--queue` queues on purpose (WORK shows them
 `queued`): for each queued issue UP NEXT suggests the idle agent whose
 worktrees share the most files with the paths its description names, else
 (#265) the merged one with the most room in its context (`#N → <agent>
@@ -407,7 +426,7 @@ worktree stays without its agent. `wt:remove` of a worktree whose branch
 carries nothing its base lacks also deletes the empty claim on origin, so the
 issue can start again.
 
-WORKTREES' head line counts the agents by whom they wait for and the rest
+WORK's title counts the agents by whom they wait for and the rest
 (`1 at work · 2 wait for GitLab · 3 wait for you · 1 free · 1 queued · 14
 removed`) and names the
 free memory against the 1.5 GB threshold (`12.9 GB free (shared stack below
@@ -416,7 +435,7 @@ node says who takes it (`→ <agent> after !232`, `→ <agent> (free, 18 %)`,
 `→ <agent> once its MR is merged`, else `starts a fresh agent` or what it
 waits for).
 
-AGENTS, below WORKTREES while there is one, lists the free agents (#289,
+AGENTS, below WORK while there is one, lists the free agents (#289,
 `core/src/model/free_agents.rs`): their state in #288's words and colours
 (`free`, `at work` while it takes its line, `asks you`), their context, the
 worktree and MR they came from and how many issues they did, and their
@@ -479,7 +498,7 @@ branch against where it left its base: not what the base got meanwhile.
 
 Each worktree goes with `wt:remove` / `wt:prune` after its merge, as always,
 its origin with it, its agent free. Once none is left and all is merged, UP NEXT (and so NEXT)
-has the row `end`, and `✕ end orchestration` under MERGE REQUESTS ends
+has the row `end`, and `✕ end orchestration` at the overview's end ends
 it with two clicks (greyed out while a worktree is left, naming it; free
 agents don't hold it):
 the space `⇶ <name>` closes, the orchestrator's claude, its free agents

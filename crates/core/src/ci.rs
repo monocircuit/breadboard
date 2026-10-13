@@ -19,8 +19,6 @@ use std::path::{Path, PathBuf};
 pub const SKIP_OPTION: &str = "ci.skip";
 /// `git config breadboard.ci push`: pushes start their pipelines again, as before #357.
 pub const MODE_KEY: &str = "breadboard.ci";
-/// How long a pipeline asked for counts as on its way: GitLab's head pipeline may lag.
-pub const STARTED_HOLDS_MS: i64 = 5 * 60_000;
 /// How old a queue may be before the rows stop showing it: no scheduler runs.
 pub const QUEUE_STALE_MS: i64 = 60_000;
 /// Runner slots assumed when its config can't be read.
@@ -142,21 +140,90 @@ pub fn queue_file(main: &Path) -> PathBuf {
     dir_of(main).join("queue.json")
 }
 
+pub fn asked_file(main: &Path) -> PathBuf {
+    dir_of(main).join("asked.json")
+}
+
+pub fn scheduler_file(main: &Path) -> PathBuf {
+    dir_of(main).join("scheduler.pid")
+}
+
+/// How many of its own pipelines the queue remembers: enough for every open MR's last few.
+const OURS_KEPT: usize = 500;
+
+/// What the queue asked GitLab for (#369), kept in `asked.json` over its
+/// ticks and a daemon's restart: a commit asked for once is never asked
+/// for again by itself, and only a pipeline it created is ever cancelled.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Asked {
+    /// iid → the commit asked for and when (ms).
+    pub started: BTreeMap<i64, (String, i64)>,
+    /// iid → the commit whose pipeline it cancelled for an MR ahead: queued again.
+    pub preempted: BTreeMap<i64, String>,
+    /// iid → the blocking pipeline it asked a new one over (`OpenMr::blocked_by`).
+    pub rescued: BTreeMap<i64, i64>,
+    /// The pipelines it created, oldest first.
+    pub ours: Vec<i64>,
+}
+
+impl Asked {
+    /// A pipeline it created, the oldest forgotten past OURS_KEPT.
+    pub fn add_ours(&mut self, id: i64) {
+        if !self.ours.contains(&id) {
+            self.ours.push(id);
+        }
+        let over = self.ours.len().saturating_sub(OURS_KEPT);
+        self.ours.drain(..over);
+    }
+}
+
+/// Whether this process schedules `main`'s queue: one per checkout (#369,
+/// two daemons each started their own pipelines). The first one alive keeps
+/// it; a dead one's is taken over.
+pub fn holds_scheduler(main: &Path) -> bool {
+    let file = scheduler_file(main);
+    let own = i64::from(std::process::id());
+    let held = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| text.trim().parse::<i64>().ok());
+    match held {
+        Some(pid) if pid == own => true,
+        Some(pid) if crate::lock::is_alive(pid) => false,
+        _ => {
+            let _ = std::fs::create_dir_all(dir_of(main));
+            let beside = file.with_extension(format!("pid.{own}"));
+            std::fs::write(&beside, format!("{own}\n")).is_ok() && std::fs::rename(&beside, &file).is_ok()
+        }
+    }
+}
+
 /// Where an MR's work stands (#357, the user's rule: no pipeline before the
 /// bar is full): its issue's boxes, those after the deploy left out, and
 /// whether `wt:check` passed at its HEAD.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Bar {
     pub ticked: usize,
     pub total: usize,
     pub is_checked: bool,
+    /// The commit `wt:check` passed at; None without a worktree here (its boxes say it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
 }
 
 impl Bar {
     /// Every box ticked and checked: its pipeline may start.
     pub fn is_full(&self) -> bool {
         self.ticked >= self.total && self.is_checked
+    }
+
+    /// Full, and checked at `sha` (#369): a check of another commit doesn't start this one.
+    pub fn is_full_at(&self, sha: Option<&str>) -> bool {
+        self.is_full()
+            && self.sha.as_deref().is_none_or(|checked| {
+                sha.is_some_and(|sha| !sha.is_empty() && (sha.starts_with(checked) || checked.starts_with(sha)))
+            })
     }
 }
 
@@ -187,8 +254,6 @@ pub enum Place {
     Pending,
     /// Next to start; `at` 1 the very next.
     Next { at: usize },
-    /// A draft at work: it starts once the slots are idle; `after` the MR ahead.
-    Held { after: Option<i64> },
     /// Its bar isn't full: no pipeline before it is (a click starts one anyway).
     Boxes(Bar),
 }
@@ -196,7 +261,7 @@ pub enum Place {
 impl Place {
     /// Waiting for its pipeline: next or held.
     pub fn is_waiting(&self) -> bool {
-        matches!(self, Place::Next { .. } | Place::Held { .. } | Place::Boxes(_))
+        matches!(self, Place::Next { .. } | Place::Boxes(_))
     }
 
     /// `CI: running`, `CI: next (2nd)`, `CI: held, after !339`.
@@ -206,8 +271,6 @@ impl Place {
             Place::Pending => "CI: pending".into(),
             Place::Next { at: 1 } => "CI: next".into(),
             Place::Next { at } => format!("CI: next ({})", ordinal(*at)),
-            Place::Held { after: Some(iid) } => format!("CI: held, after !{iid}"),
-            Place::Held { after: None } => "CI: held till a slot is idle".into(),
             Place::Boxes(bar) if bar.ticked < bar.total => {
                 format!("CI: after the boxes ({}/{})", bar.ticked, bar.total)
             }
@@ -335,7 +398,7 @@ impl Queue {
         let waiting = self
             .places
             .values()
-            .filter(|place| matches!(place, Place::Next { .. } | Place::Held { .. }))
+            .filter(|place| matches!(place, Place::Next { .. }))
             .count();
         let slots = if self.slots.is_known {
             format!("CI {}/{} slots", self.slots.running, self.slots.concurrent)
@@ -403,6 +466,10 @@ pub struct OpenMr {
     pub sha: Option<String>,
     /// Its head pipeline: the newest GitLab has, maybe of an older commit.
     pub pipeline: Option<Pipeline>,
+    /// The newest pipeline of its newest commit, cancelled or failed at its
+    /// creation, while an older one of that commit passed: GitLab blocks the
+    /// merge on it (#369).
+    pub blocked_by: Option<i64>,
 }
 
 impl OpenMr {
@@ -433,8 +500,6 @@ pub enum Class {
     Ready,
     /// Its last pipeline failed and it has a fix pushed.
     Fix,
-    /// A draft at work: only when the slots are idle.
-    Idle,
 }
 
 /// What the ranking knows besides the MRs.
@@ -447,6 +512,10 @@ pub struct Ranks {
     pub run_now: BTreeMap<i64, i64>,
     /// The commits whose pipeline the queue cancelled for an MR ahead, by iid: queued again.
     pub preempted: HashMap<i64, String>,
+    /// The pipelines the queue created itself: the only ones it ever cancels (#369).
+    pub ours: HashSet<i64>,
+    /// iid → the blocking pipeline a new one was asked for over (`OpenMr::blocked_by`).
+    pub rescued: HashMap<i64, i64>,
 }
 
 impl Ranks {
@@ -456,7 +525,14 @@ impl Ranks {
             bars: published.iter().flat_map(|one| one.bars.clone()).collect(),
             run_now: run_now.at.clone(),
             preempted: HashMap::new(),
+            ours: HashSet::new(),
+            rescued: HashMap::new(),
         }
+    }
+
+    /// An MR of an orchestration whose order the queue reads: the only ones it touches (#369).
+    pub fn is_member(&self, iid: i64) -> bool {
+        self.bars.contains_key(&iid) || self.place_in_order(iid).is_some()
     }
 
     /// Where `iid` stands in the merge orders: the same place in two orchestrations ranks the same.
@@ -468,13 +544,14 @@ impl Ranks {
     }
 }
 
-/// Its class; None while its bar isn't full (no click asked for it).
+/// Its class; None while its bar isn't full at its newest commit, or it has
+/// no bar (no click asked for it).
 pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
     if ranks.run_now.contains_key(&mr.iid) {
         return Some(Class::RunNow);
     }
     let bar = ranks.bars.get(&mr.iid);
-    if bar.is_some_and(|bar| !bar.is_full()) {
+    if bar.is_none_or(|bar| !bar.is_full_at(mr.sha.as_deref())) {
         return None;
     }
     let is_fix = mr.pipeline_status() == Some("failed") && !mr.is_head_current();
@@ -486,11 +563,9 @@ pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
             Class::Hotfix
         } else if is_fix {
             Class::Fix
-        } else if bar.is_some() || !mr.is_draft {
+        } else {
             // An orchestration's MR with its bar full is marked ready only after its green pipeline.
             Class::Ready
-        } else {
-            Class::Idle
         },
     )
 }
@@ -501,6 +576,10 @@ pub struct Start {
     pub iid: i64,
     pub sha: String,
     pub cancel: Option<i64>,
+    /// A click asks for it: a pipeline of this commit that ended doesn't hold it.
+    pub is_again: bool,
+    /// The blocking pipeline it replaces (`OpenMr::blocked_by`): only a pipeline newer than it holds it.
+    pub after: Option<i64>,
 }
 
 /// What the scheduler does now and what the rows say.
@@ -516,25 +595,29 @@ pub struct Decision {
 /// Whether `mr` waits for a pipeline of its newest commit: none yet, a
 /// click asks for one again, or the queue cancelled it for an MR ahead. A
 /// pipeline of that commit that ended, or that a person cancelled or GitLab
-/// skipped, stays so without a click.
-fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i64)>, now: i64) -> bool {
+/// skipped, stays so without a click. Asked for once, a commit is never
+/// asked for again by itself (#369): GitLab may not show it, or refuse it.
+fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i64)>) -> bool {
     let Some(sha) = &mr.sha else {
         return false;
     };
     if mr.is_head_current() && mr.pipeline_status().is_some_and(is_live) {
         return false;
     }
+    // A newer pipeline cancelled or refused blocks the merge of a commit that
+    // passed: one new pipeline, once per blocking one; never over its own
+    // (a refusal of its own again would loop).
+    if let Some(blocking) = mr.blocked_by.filter(|blocking| !ranks.ours.contains(blocking)) {
+        return ranks.rescued.get(&mr.iid) != Some(&blocking);
+    }
     let clicked = ranks.run_now.get(&mr.iid).copied();
     let was_preempted = ranks.preempted.get(&mr.iid) == Some(sha);
     if let Some((asked, at)) = started.get(&mr.iid)
         && asked == sha
         && !clicked.is_some_and(|clicked| clicked > *at)
+        && !(was_preempted && mr.is_head_current())
     {
-        // On its way while GitLab doesn't show it yet; shown, once is enough.
-        let is_on_its_way = !mr.is_head_current() && now - at < STARTED_HOLDS_MS;
-        if is_on_its_way || (mr.is_head_current() && !was_preempted) {
-            return false;
-        }
+        return false;
     }
     if mr.is_head_current() {
         return clicked.is_some() || was_preempted;
@@ -547,27 +630,19 @@ fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i6
 /// - one start per call, and only while the runner has a free slot and no
 ///   pipeline waits for it (a waiting one says the runner is full);
 /// - always for the newest commit; its MR's older live pipeline is cancelled
-///   first, never one into `main`;
-/// - a draft at work (`Class::Idle`) only while no other pipeline runs.
+///   first when the queue created it, never one into `main`;
+/// - only for an orchestration's MR (one with a bar or a place in an order);
 ///
 /// `started`: what was asked for, iid → (sha, when), so a lagging read doesn't start it twice.
-pub fn decide(
-    mrs: &[OpenMr],
-    ranks: &Ranks,
-    slots: Slots,
-    started: &HashMap<i64, (String, i64)>,
-    now: i64,
-) -> Decision {
+pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64, (String, i64)>) -> Decision {
     let mut places = BTreeMap::new();
     let mut is_runner_full = false;
-    let mut busy = 0usize;
     for mr in mrs {
         let Some(status) = mr.pipeline_status().filter(|status| is_live(status)) else {
             continue;
         };
-        busy += 1;
         is_runner_full |= is_waiting(status);
-        if mr.is_head_current() {
+        if mr.is_head_current() && ranks.is_member(mr.iid) {
             let place = if is_waiting(status) {
                 Place::Pending
             } else {
@@ -577,11 +652,14 @@ pub fn decide(
         }
     }
     let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
-    for mr in mrs.iter().filter(|mr| wants_pipeline(mr, ranks, started, now)) {
+    // An MR of no orchestration is never touched: no place, no start, no cancel (#369).
+    let members = mrs.iter().filter(|mr| ranks.is_member(mr.iid));
+    for mr in members.filter(|mr| wants_pipeline(mr, ranks, started)) {
         match class_of(mr, ranks) {
             Some(class) => waiting.push((class, key_of(class, mr, ranks), mr)),
             None => {
-                places.insert(mr.iid, Place::Boxes(ranks.bars[&mr.iid]));
+                let bar = ranks.bars.get(&mr.iid).cloned().unwrap_or_default();
+                places.insert(mr.iid, Place::Boxes(bar));
             }
         }
     }
@@ -606,62 +684,51 @@ pub fn decide(
         _ => (a.0, a.1) > (b.0, b.1),
     };
     waiting.sort_by_key(|a| (a.0, a.1));
-    let mut ahead: Option<i64> = None;
-    for (at, (class, _, mr)) in waiting.iter().enumerate() {
-        let place = if *class == Class::Idle {
-            Place::Held { after: ahead }
-        } else {
-            Place::Next { at: at + 1 }
-        };
-        places.insert(mr.iid, place);
-        ahead = Some(mr.iid);
+    for (at, (_, _, mr)) in waiting.iter().enumerate() {
+        places.insert(mr.iid, Place::Next { at: at + 1 });
     }
     let is_full = is_runner_full || slots.free() == 0;
     // The runner full and the first MR waiting: the live pipeline ranked lowest
-    // behind it makes room, one a look, never one into `main` or of a branch.
-    let preempt = waiting
-        .first()
-        .filter(|(class, _, _)| is_full && *class != Class::Idle)
-        .and_then(|(class, key, first)| {
-            let first_rank = (Some(*class), *key);
-            mrs.iter()
-                .filter(|mr| mr.iid != first.iid && !mr.is_into_main())
-                .filter_map(|mr| {
-                    let pipeline = mr.pipeline.as_ref()?;
-                    (is_live(&pipeline.status) && is_mr_ref(pipeline.reference.as_deref()))
-                        .then(|| (rank_of(mr), mr, pipeline))
-                })
-                .filter(|(rank, _, _)| worse(rank, &first_rank))
-                .reduce(|a, b| if worse(&b.0, &a.0) { b } else { a })
-                .map(|(_, mr, pipeline)| (mr.iid, pipeline.id, pipeline.sha.clone().unwrap_or_default()))
-        });
-    let start = waiting.first().and_then(|(class, _, mr)| {
-        if is_full {
-            return None;
-        }
-        // A draft at work waits for slots no one else uses: its own superseded pipeline aside.
-        let others = busy - usize::from(mr.pipeline_status().is_some_and(is_live));
-        if *class == Class::Idle && others > 0 {
-            return None;
-        }
+    // behind it makes room, one a look, only one the queue created itself
+    // for an orchestration's MR, never one into `main` or of a branch.
+    let preempt = waiting.first().filter(|_| is_full).and_then(|(class, key, first)| {
+        let first_rank = (Some(*class), *key);
+        mrs.iter()
+            .filter(|mr| mr.iid != first.iid && !mr.is_into_main() && ranks.is_member(mr.iid))
+            .filter_map(|mr| {
+                let pipeline = mr.pipeline.as_ref()?;
+                (is_live(&pipeline.status) && is_ours(pipeline, ranks)).then(|| (rank_of(mr), mr, pipeline))
+            })
+            .filter(|(rank, _, _)| worse(rank, &first_rank))
+            .reduce(|a, b| if worse(&b.0, &a.0) { b } else { a })
+            .map(|(_, mr, pipeline)| (mr.iid, pipeline.id, pipeline.sha.clone().unwrap_or_default()))
+    });
+    let start = waiting.first().filter(|_| !is_full).map(|(_, _, mr)| {
         let cancel = mr
             .pipeline
             .as_ref()
             .filter(|pipeline| is_live(&pipeline.status) && !mr.is_head_current() && !mr.is_into_main())
-            .filter(|pipeline| is_mr_ref(pipeline.reference.as_deref()))
+            .filter(|pipeline| is_ours(pipeline, ranks))
             .map(|pipeline| pipeline.id);
-        Some(Start {
+        Start {
             iid: mr.iid,
             sha: mr.sha.clone().unwrap_or_default(),
             cancel,
-        })
+            is_again: ranks.run_now.contains_key(&mr.iid),
+            after: mr.blocked_by.filter(|blocking| !ranks.ours.contains(blocking)),
+        }
     });
     Decision { places, start, preempt }
 }
 
-/// An MR pipeline's ref (`refs/merge-requests/12/head`); a branch or tag pipeline is never ours to cancel.
-fn is_mr_ref(reference: Option<&str>) -> bool {
-    reference.is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+/// A pipeline the queue may cancel: one it created (an MR pipeline, never a
+/// branch's or a tag's), not one a person or a push started.
+fn is_ours(pipeline: &Pipeline, ranks: &Ranks) -> bool {
+    ranks.ours.contains(&pipeline.id)
+        && pipeline
+            .reference
+            .as_deref()
+            .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
 }
 
 #[cfg(test)]
@@ -695,9 +762,17 @@ mod tests {
             ..mr(iid, sha, pipeline)
         }
     }
+    /// An orchestration's order, each MR's bar full.
     fn order(iids: &[i64]) -> Ranks {
+        let full = Bar {
+            ticked: 1,
+            total: 1,
+            is_checked: true,
+            sha: None,
+        };
         Ranks {
             orders: vec![iids.to_vec()],
+            bars: iids.iter().map(|&iid| (iid, full.clone())).collect(),
             ..Default::default()
         }
     }
@@ -709,7 +784,7 @@ mod tests {
         }
     }
     fn decide_now(mrs: &[OpenMr], ranks: &Ranks, slots: Slots) -> Decision {
-        decide(mrs, ranks, slots, &HashMap::new(), NOW)
+        decide(mrs, ranks, slots, &HashMap::new())
     }
 
     #[test]
@@ -755,18 +830,17 @@ mod tests {
     }
 
     #[test]
-    fn ranks_run_now_then_hotfix_then_ready_then_fix_then_idle() {
+    fn ranks_run_now_then_hotfix_then_ready_then_fix() {
         let mut hotfix = mr(5, "h", None);
         hotfix.target = "main".into();
         let mrs = [
-            draft(1, "i", None),
             draft(2, "f", pipeline(20, "failed", "old", 2)),
             draft(3, "t", None),
             mr(4, "r", None),
             hotfix,
             draft(6, "n", None),
         ];
-        let mut ranks = order(&[4]);
+        let mut ranks = order(&[4, 2, 5, 6, 3]);
         // An orchestration's draft whose boxes are open: no pipeline yet.
         ranks.bars.insert(
             3,
@@ -774,6 +848,7 @@ mod tests {
                 ticked: 2,
                 total: 5,
                 is_checked: true,
+                sha: None,
             },
         );
         ranks.run_now.insert(6, NOW - 1000);
@@ -784,9 +859,30 @@ mod tests {
         };
         assert_eq!([at(6), at(5), at(4), at(2)], [1, 2, 3, 4]);
         assert_eq!(decision.places[&3].text(), "CI: after the boxes (2/5)");
-        assert_eq!(decision.places[&1], Place::Held { after: Some(2) });
-        assert_eq!(decision.places[&1].text(), "CI: held, after !2");
         assert_eq!(decision.start.unwrap().iid, 6);
+    }
+
+    #[test]
+    fn never_touches_an_mr_of_no_orchestration() {
+        // #369: vita's !184 (ready), !186 (a draft), a colleague's hotfix: none of the orders.
+        let mut hotfix = mr(9, "h", pipeline(90, "running", "old", 9));
+        hotfix.target = "main".into();
+        let mrs = [
+            mr(184, "a", None),
+            draft(186, "b", pipeline(86, "running", "old", 186)),
+            hotfix,
+            mr(1, "c", None),
+        ];
+        let mut ranks = order(&[1]);
+        ranks.ours.extend([86, 90]);
+        // A click on its row in the view of everything doesn't make it one either.
+        ranks.run_now.insert(184, NOW);
+        let decision = decide_now(&mrs, &ranks, slots(4, 2));
+        assert_eq!(decision.places.keys().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(decision.start.map(|start| start.iid), Some(1));
+        // The runner full: still nothing of theirs cancelled.
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 2)).preempt, None);
+        assert_eq!(decide_now(&mrs[..3], &ranks, slots(4, 0)).start, None);
     }
 
     #[test]
@@ -798,6 +894,7 @@ mod tests {
             ticked,
             total,
             is_checked,
+            sha: None,
         };
         ranks.bars.insert(349, bar(0, 11, true));
         ranks.bars.insert(351, bar(8, 8, false));
@@ -824,6 +921,13 @@ mod tests {
             mr(347, "c", pipeline(47, "running", "c", 347)),
         ];
         let mut ranks = order(&[339, 342, 347]);
+        // Only a pipeline the queue created is cancelled: 47 one a push started, 342's goes.
+        ranks.ours.insert(42);
+        assert_eq!(
+            decide_now(&mrs, &ranks, slots(2, 2)).preempt,
+            Some((342, 42, "b".into()))
+        );
+        ranks.ours.insert(47);
         let decision = decide_now(&mrs, &ranks, slots(2, 2));
         assert_eq!(decision.start, None);
         assert_eq!(decision.preempt, Some((347, 47, "c".into())));
@@ -841,11 +945,11 @@ mod tests {
     }
 
     #[test]
-    fn never_preempts_for_a_draft_at_work_or_with_room_left() {
-        let mrs = [draft(1, "i", None), mr(2, "r", pipeline(20, "running", "r", 2))];
-        assert_eq!(decide_now(&mrs, &order(&[2]), slots(1, 1)).preempt, None);
+    fn never_preempts_with_room_left() {
         let mrs = [mr(1, "a", None), mr(2, "b", pipeline(20, "running", "b", 2))];
-        let decision = decide_now(&mrs, &order(&[1, 2]), slots(3, 1));
+        let mut ranks = order(&[1, 2]);
+        ranks.ours.insert(20);
+        let decision = decide_now(&mrs, &ranks, slots(3, 1));
         assert_eq!(
             (decision.start.map(|start| start.iid), decision.preempt),
             (Some(1), None)
@@ -854,34 +958,47 @@ mod tests {
 
     #[test]
     fn asks_once_for_a_commit_that_got_its_pipeline() {
-        // Its pipeline came and passed: not again, not even after STARTED_HOLDS_MS.
+        // Its pipeline came and passed: not again, however long ago.
         let mrs = [mr(1, "a", pipeline(10, "success", "a", 1))];
-        let started = HashMap::from([(1, ("a".to_string(), NOW - STARTED_HOLDS_MS * 2))]);
+        let started = HashMap::from([(1, ("a".to_string(), NOW - 3_600_000))]);
         let mut ranks = order(&[1]);
-        assert_eq!(decide(&mrs, &ranks, slots(2, 0), &started, NOW).start, None);
+        assert_eq!(decide(&mrs, &ranks, slots(2, 0), &started).start, None);
         // A click after it: again.
         ranks.run_now.insert(1, NOW - 1000);
-        assert!(decide(&mrs, &ranks, slots(2, 0), &started, NOW).start.is_some());
+        assert!(decide(&mrs, &ranks, slots(2, 0), &started).start.is_some());
     }
 
     #[test]
-    fn starts_a_draft_at_work_only_while_no_other_pipeline_runs() {
-        let mrs = [draft(1, "i", None), mr(2, "r", pipeline(20, "running", "r", 2))];
-        assert_eq!(decide_now(&mrs, &order(&[2]), slots(4, 1)).start, None);
-        let mrs = [draft(1, "i", None), mr(2, "r", pipeline(20, "success", "r", 2))];
-        assert_eq!(decide_now(&mrs, &order(&[2]), slots(4, 0)).start.unwrap().iid, 1);
+    fn starts_no_pipeline_for_a_commit_wt_check_did_not_pass_at() {
+        let mrs = [draft(1, "pushed", None)];
+        let mut ranks = order(&[1]);
+        ranks.bars.get_mut(&1).unwrap().sha = Some("local".into());
+        let decision = decide_now(&mrs, &ranks, slots(4, 0));
+        assert_eq!(decision.start, None);
+        assert_eq!(decision.places[&1].text(), "CI: after wt:check");
+        ranks.bars.get_mut(&1).unwrap().sha = Some("pushed".into());
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start.unwrap().iid, 1);
+        // An MR in an order without a bar: nothing known, nothing started.
+        ranks.bars.clear();
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start, None);
     }
 
     #[test]
     fn starts_only_the_newest_commit_and_cancels_the_superseded_pipeline() {
         let mrs = [mr(337, "new", pipeline(70, "running", "old", 337))];
-        let start = decide_now(&mrs, &order(&[337]), slots(2, 1)).start.unwrap();
+        let mut ranks = order(&[337]);
+        // One the queue didn't create (a push's, a person's) is left running.
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 1)).start.unwrap().cancel, None);
+        ranks.ours.insert(70);
+        let start = decide_now(&mrs, &ranks, slots(2, 1)).start.unwrap();
         assert_eq!(
             start,
             Start {
                 iid: 337,
                 sha: "new".into(),
-                cancel: Some(70)
+                cancel: Some(70),
+                is_again: false,
+                after: None,
             }
         );
         // A finished one of an older commit is left alone, nothing to cancel.
@@ -894,18 +1011,14 @@ mod tests {
 
     #[test]
     fn never_cancels_a_pipeline_into_main_or_of_a_branch() {
+        let mut ranks = order(&[1, 2]);
+        ranks.ours.extend([10, 11]);
         let mut release = mr(1, "new", pipeline(10, "running", "old", 1));
         release.target = "main".into();
-        assert_eq!(
-            decide_now(&[release], &order(&[]), slots(3, 1)).start.unwrap().cancel,
-            None
-        );
+        assert_eq!(decide_now(&[release], &ranks, slots(3, 1)).start.unwrap().cancel, None);
         let mut branch = mr(2, "new", pipeline(11, "running", "old", 2));
         branch.pipeline.as_mut().unwrap().reference = Some("develop".into());
-        assert_eq!(
-            decide_now(&[branch], &order(&[2]), slots(3, 1)).start.unwrap().cancel,
-            None
-        );
+        assert_eq!(decide_now(&[branch], &ranks, slots(3, 1)).start.unwrap().cancel, None);
     }
 
     #[test]
@@ -925,17 +1038,39 @@ mod tests {
     }
 
     #[test]
-    fn never_asks_twice_for_the_same_commit_while_gitlab_lags() {
+    fn never_asks_twice_for_the_same_commit() {
         let mrs = [mr(1, "a", None)];
         let mut started = HashMap::new();
         started.insert(1, ("a".to_string(), NOW - 10_000));
-        assert_eq!(decide(&mrs, &order(&[1]), slots(2, 0), &started, NOW).start, None);
-        // Long enough ago: GitLab took none, ask again.
-        started.insert(1, ("a".to_string(), NOW - STARTED_HOLDS_MS));
-        assert!(decide(&mrs, &order(&[1]), slots(2, 0), &started, NOW).start.is_some());
+        assert_eq!(decide(&mrs, &order(&[1]), slots(2, 0), &started).start, None);
+        // An hour on, GitLab still shows none (it refused it, #369): not asked again.
+        started.insert(1, ("a".to_string(), NOW - 3_600_000));
+        assert_eq!(decide(&mrs, &order(&[1]), slots(2, 0), &started).start, None);
+        // Failed at its creation (no jobs): not again either.
+        let failed = [mr(1, "a", pipeline(10, "failed", "a", 1))];
+        assert_eq!(decide(&failed, &order(&[1]), slots(2, 0), &started).start, None);
         // A newer commit: asked at once.
         started.insert(1, ("old".to_string(), NOW - 10_000));
-        assert!(decide(&mrs, &order(&[1]), slots(2, 0), &started, NOW).start.is_some());
+        assert!(decide(&mrs, &order(&[1]), slots(2, 0), &started).start.is_some());
+    }
+
+    #[test]
+    fn replaces_a_cancelled_or_refused_pipeline_that_blocks_a_passed_commit_once() {
+        // #369: duplicates cancelled by hand, the newest of a commit that
+        // passed is a cancelled one, GitLab's merge waits on it.
+        let mut blocked = mr(1, "a", pipeline(30, "canceled", "a", 1));
+        blocked.blocked_by = Some(30);
+        let mut ranks = order(&[1]);
+        // Asked for that commit before: still once more, over the blocking one.
+        let started = HashMap::from([(1, ("a".to_string(), NOW - 1000))]);
+        let start = decide(&[blocked.clone()], &ranks, slots(2, 0), &started).start.unwrap();
+        assert_eq!((start.iid, start.after), (1, Some(30)));
+        ranks.rescued.insert(1, 30);
+        assert_eq!(decide(&[blocked.clone()], &ranks, slots(2, 0), &started).start, None);
+        // Its own pipeline refused (the activity limit): not again by itself.
+        ranks.rescued.clear();
+        ranks.ours.insert(30);
+        assert_eq!(decide(&[blocked], &ranks, slots(2, 0), &started).start, None);
     }
 
     #[test]
@@ -1052,6 +1187,7 @@ mod tests {
                     ticked: 1,
                     total: 2,
                     is_checked: true,
+                    sha: Some("abc".into()),
                 },
             )]),
         };

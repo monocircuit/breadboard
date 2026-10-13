@@ -1,7 +1,7 @@
 //! `wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]`
 //! (plan.mjs): the order the orchestrator works and merges its issues in,
-//! printed, and set with the flags. The overview's NEXT, WORKTREES and MERGE
-//! REQUESTS and herdr's space order read it from the record.
+//! printed, and set with the flags. The overview's NEXT and WORK and herdr's
+//! space order read it from the record.
 
 use super::args::{Takes, fail, first, flag_value, main_dir};
 use breadboard_core::lock::{lock_of, with_dir_lock};
