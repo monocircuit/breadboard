@@ -17,8 +17,9 @@ use super::{SPACE, USAGE};
 use breadboard_core::git::{self, git};
 use breadboard_core::herdr::{plugin_context, plugin_id, save_context, where_from};
 use breadboard_core::local::{self, StackContainer};
+use breadboard_core::runs;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -232,7 +233,7 @@ fn status() -> ExitCode {
     let main = status_main();
     let waiting = needs_you(main.as_deref(), ask(&["workspace", "list"]).as_ref(), || {
         ask(&["pane", "list"])
-    });
+    }) + main.as_deref().map_or(0, headless_asks);
     let project = main
         .as_deref()
         .and_then(breadboard_core::stack::of)
@@ -321,6 +322,18 @@ fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -
         })
 }
 
+/// The headless agents of `main` that ask (#361): no pane of theirs is
+/// blocked, the status table's `asks` says it (a denied tool, #360).
+fn headless_asks(main: &Path) -> usize {
+    let table: runs::Table = runs::read_or_default(&runs::status_file(main));
+    let queue: runs::Queue = runs::read_or_default(&runs::queue_file(main));
+    asks_in(&runs::states_of(&table, &queue))
+}
+
+fn asks_in(states: &HashMap<String, runs::Run>) -> usize {
+    states.values().filter(|run| run.state == runs::State::Asks).count()
+}
+
 /// `⬢ 2 stacks · 1 needs you`, `⬡ no stack`.
 fn status_line(stacks: usize, waiting: usize) -> String {
     let stacks = match stacks {
@@ -339,6 +352,29 @@ fn status_line(stacks: usize, waiting: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn counts_the_headless_agents_that_ask() {
+        let run = |state| runs::Run {
+            dir: PathBuf::from("/r/p-1"),
+            name: "1-x".into(),
+            state,
+            since: 0,
+            pid: None,
+            lines: 0,
+            denials: Vec::new(),
+            code: None,
+        };
+        let states = [
+            ("a", runs::State::Asks),
+            ("b", runs::State::Idle),
+            ("c", runs::State::Asks),
+        ]
+        .into_iter()
+        .map(|(session, state)| (session.to_string(), run(state)))
+        .collect();
+        assert_eq!(asks_in(&states), 2);
+    }
 
     #[test]
     fn says_the_stacks_and_who_needs_you() {
