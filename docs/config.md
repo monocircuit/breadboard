@@ -125,6 +125,55 @@ WHERE and a herdr tab of its name.
 | `url` | `http://localhost:{port}` | where it is looked at |
 | `is_with_stack` | `false` | its tab opens while the stack runs, as `dev` does; else WHERE has a button that starts it |
 
+### `[stack.epic]`
+
+An orchestration's epic stack and the task stacks on it. The orchestration's
+checkout runs a full stack. Its database service keeps a template database,
+migrated and seeded, that nothing connects to. A worktree of the orchestration
+gets a task stack: its own stack without that service, on the epic's compose
+network, with its databases made on the epic's service. A task stack starts on
+demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.epic]`, an
+orchestration's worktrees get own stacks like any other. It needs
+`[stack.migrations]`, whose `run` migrates the template.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `service` | `postgres` | the `[[stack.services]]` the task stacks share (it needs an `env`); `psql` runs in its container |
+| `superuser` | `postgres` | `psql`'s user there |
+| `template` | (required) | the template database |
+| `stamp` | (required) | a folder in `dir` whose git tree the template is made from: when it changes, the template is made again, and a task's clone is made again once its branch has the same tree |
+| `template_sql` | none | statements run in a new template before its migrations (schema grants) |
+| `seed` | none | what seeds the template after its migrations, in `dir` |
+| `task_setup` | none | what a task stack runs, in order, after its containers are up and its migrations applied |
+| `env` | none | a table of what a task stack's env file sets besides; `{network}` is the epic's compose network |
+
+`[[stack.epic.databases]]` are the databases a task gets, `<name>_<feature>`:
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `name` | (required) | the name before `_<feature>` |
+| `is_clone` | `false` | cloned from the template; exactly one database is, the others are made empty |
+| `owner` | (required) | the role that owns it (and the template, for the clone) |
+| `connect` | none | the roles that may connect besides its owner |
+| `urls` | none | the env file's variables whose URL points at it (on the epic's port); the template's migrations and seed get them pointed at the template |
+| `name_env` | none | the env file's variable set to its name |
+
+```toml
+[stack.epic]
+template = "app_tpl"
+stamp = "db"
+seed = "npm run seed"
+
+[stack.epic.env]
+NETWORK = "{network}"
+
+[[stack.epic.databases]]
+name = "app"
+is_clone = true
+owner = "app"
+urls = ["DATABASE_URL"]
+```
+
 ## `[mr]`
 
 | Key | Default | What it does |

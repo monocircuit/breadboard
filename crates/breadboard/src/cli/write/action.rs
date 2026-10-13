@@ -24,7 +24,7 @@ pub const USAGE: &str = r#"usage: pnpm wt:action <kind> <text> [--url <url>]   k
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action try <what to check> --on test --url <path>   on the test instance, ready once the MR is merged and deployed
        pnpm wt:action merge <what is in it> --orchestration <name> --mr !N   the orchestrator's merge of an MR
-       pnpm wt:action note <one line>   what you are on, in plain words, under your node in WORKTREES
+       pnpm wt:action note <one line>   what you are on, in plain words, in your block in WORK
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list   the open actions, then the answered ones (a decision answered is taken)
        pnpm wt:action --done <id>
@@ -254,7 +254,7 @@ fn change_text(argv: &Argv) -> Result<String, String> {
 }
 
 /// `wt:action note <one line>` (#341): what the agent is on, in plain words,
-/// under its node in WORKTREES; no action, nothing for the human to click.
+/// in its block in WORK; no action, nothing for the human to click.
 fn note(argv: &Argv, here: &Here) -> Outcome {
     let Some(dir) = here.worktree() else {
         return Err("a note is for a worktree's agent: run it inside its worktree".into());
@@ -266,7 +266,7 @@ fn note(argv: &Argv, here: &Here) -> Outcome {
     set_note(dir, line, now_ms())
         .map_err(|error| format!("{} could not be written: {error}", note_file(dir).display()))?;
     let shown = match origin_of(dir) {
-        Some(origin) => format!("under its node in WORKTREES of ⇶ {}", origin.name),
+        Some(origin) => format!("in its block in WORK of ⇶ {}", origin.name),
         None => "noted (no orchestration shows it)".into(),
     };
     say(&format!("\n✓ {shown}: {line}\n"));

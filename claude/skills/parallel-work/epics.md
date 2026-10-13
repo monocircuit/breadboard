@@ -82,7 +82,7 @@ closes from the default branch), this one closes them all when it lands, and
 breadboard closes any GitLab left open. The epic branch lives on until the
 orchestration ends.
 
-{{#stack}}
+{{#epic_stack}}
 ## The epic stack and task stacks
 
 - **Epic stack** (compose project `{{stack.project}}-epic-<orchestration>`, its own
@@ -90,15 +90,14 @@ orchestration ends.
   the orchestration's checkout; `wt:orchestrate` starts none. It then runs for
   the whole epic and serves the epic branch's app: what the user looks at
   between milestones.
-- **Task databases live on the epic's {{stack.database}}.** The epic keeps a template
-  database `{{stack.project}}_tpl` (never connected to), refreshed when needed: migrated
+- **Task databases live on the epic's {{epic.service}}.** The epic keeps a template
+  database `{{epic.template}}` (never connected to), refreshed when needed: migrated
   and seeded again once the tree of the db folder differs from its stamp. The
-  epic's app runs on `{{stack.project}}`. A task gets `{{stack.project}}_<feature>`, created with
-  `CREATE DATABASE … TEMPLATE {{stack.project}}_tpl`, and the databases of the
-  other services next to it (`<service>_<feature>`; the feature lower-cased,
-  every other character `_`: `351-x-y` → `{{stack.project}}_351_x_y`, at most
-  63 bytes). {{stack.database}} clones only within one server, so tasks have
-  no {{stack.database}} of their own.
+  epic's app runs on `{{epic.database}}`. A task gets `{{epic.database}}_<feature>`, created with
+  `CREATE DATABASE … TEMPLATE {{epic.template}}`, and {{epic.others}} next to
+  it (the feature lower-cased, every other character `_`: `351-x-y` → `{{epic.database}}_351_x_y`, at most
+  63 bytes). {{epic.service}} clones only within one server, so tasks have
+  no {{epic.service}} of their own.
 - **A task stack is {{stack.others}} + `{{app.dev}}`**, about half of an own
   stack, and **on demand**: `wt:new` in an orchestration only writes the
   task's `{{stack.env}}` (ports reserved, the database on the epic's port, the
@@ -107,10 +106,10 @@ orchestration ends.
   the clone, {{stack.others}} up, the migrations and the stack's setup.
   `stack:reset` on a task: `down -v`, drop, clone again.
 - **After merging the epic in**, the next `stack:up` drops the task's database
-  and clones it again from `{{stack.project}}_tpl`, then its own migrations run. A task
+  and clones it again from `{{epic.template}}`, then its own migrations run. A task
   migration older than the base's newest would be skipped by drizzle:
   `wt:check` refuses it, regenerate it ([db-migration](../db-migration/SKILL.md)).
-- **`wt:remove`** of a task drops both of its databases with its containers.
+- **`wt:remove`** of a task drops its databases with its containers.
 
 A worktree outside an orchestration keeps an own full stack, or `--shared`.
-{{/stack}}
+{{/epic_stack}}
