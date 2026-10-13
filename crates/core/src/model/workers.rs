@@ -126,6 +126,7 @@ pub fn free_workers_of(
     agents: &HashMap<String, Agent>,
     known: &Known,
     free: &[(Worker, f64)],
+    limit: f64,
 ) -> Vec<FreeWorker> {
     let is_idle = |id: &str| {
         matches!(
@@ -147,7 +148,7 @@ pub fn free_workers_of(
             } else {
                 0.0
             };
-            if share > CONTEXT_LIMIT {
+            if share > limit {
                 return None;
             }
             let record = worker_of(known, &claude.id);
@@ -172,7 +173,7 @@ pub fn free_workers_of(
         .collect();
     workers.extend(
         free.iter()
-            .filter(|(worker, share)| is_idle(&worker.id) && *share <= CONTEXT_LIMIT)
+            .filter(|(worker, share)| is_idle(&worker.id) && *share <= limit)
             .map(|(worker, share)| FreeWorker {
                 name: worker.name.clone().unwrap_or_default(),
                 share: *share,
@@ -313,6 +314,8 @@ pub struct WorkerFacts<'a> {
     /// What this overview started, by issue number.
     pub runs: Option<&'a HashMap<i64, StartRun>>,
     pub now: i64,
+    /// The share of its context above which an agent retires (#381); None: `CONTEXT_LIMIT`.
+    pub limit: Option<f64>,
 }
 
 /// How the text of a start that failed ends: the queued node paints it red.
@@ -352,7 +355,7 @@ pub fn worker_actions_of(
         .chain(facts.setups.iter().filter_map(|setup| setup.to.clone()))
         .chain(running.iter().filter_map(|run| run.to.clone()))
         .collect();
-    let free: Vec<FreeWorker> = free_workers_of(issues, remote, agents, known, facts.free)
+    let free: Vec<FreeWorker> = free_workers_of(issues, remote, agents, known, facts.free, facts.limit.unwrap_or(CONTEXT_LIMIT))
         .into_iter()
         .filter(|worker| {
             if worker.is_free {
@@ -1083,7 +1086,7 @@ mod tests {
             ..Default::default()
         }];
         let (entry, remote) = issue(merged(), 40_000);
-        let workers = free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &known, &[]);
+        let workers = free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &known, &[], CONTEXT_LIMIT);
         assert_eq!(
             (workers[0].name.as_str(), workers[0].share, workers[0].files.clone()),
             ("3-first", 0.2, vec!["src/a.mjs".to_string()])
@@ -1098,15 +1101,15 @@ mod tests {
         });
         let (entry, remote) = issue(ready.clone(), 40_000);
         assert_eq!(
-            free_workers_of(&[entry], Some(&remote), &idle("c1", "done"), &[], &[]).len(),
+            free_workers_of(&[entry], Some(&remote), &idle("c1", "done"), &[], &[], CONTEXT_LIMIT).len(),
             1
         );
         let (entry, remote) = issue(merged(), 40_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "working"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "working"), &[], &[], CONTEXT_LIMIT).is_empty());
         let draft = ready.map(|mr| Mr { is_draft: true, ..mr });
         let (entry, remote) = issue(draft, 40_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[], CONTEXT_LIMIT).is_empty());
         let (entry, remote) = issue(merged(), 150_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[], CONTEXT_LIMIT).is_empty());
     }
 }

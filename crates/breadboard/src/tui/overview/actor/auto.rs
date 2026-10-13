@@ -17,7 +17,7 @@ use breadboard_core::json;
 use breadboard_core::model::auto_actions::{Removal, Tell, sent_file};
 use breadboard_core::model::clean_up::{CleanUp, clean_up_of};
 use breadboard_core::model::display_names::names_of;
-use breadboard_core::model::handovers::{CONTEXT_LIMIT, agent_name_of};
+use breadboard_core::model::handovers::agent_name_of;
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
@@ -500,6 +500,7 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
+    let limit = breadboard_core::config::of_main(&app.actor.main).config.agents.limit();
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
@@ -513,7 +514,7 @@ fn remove_merged(
             continue;
         }
         if let (Some(claude), Some(agent), Some(mr)) = (&tree.claude, agent, mr)
-            && claude.share() <= CONTEXT_LIMIT
+            && claude.share() <= limit
         {
             free_then_remove(app, name, local, tree, claude.id.clone(), agent.pane.clone(), mr.iid);
             continue;

@@ -25,6 +25,7 @@ pub struct Config {
     pub stack: Option<Stack>,
     pub mr: Mr,
     pub orchestration: Orchestration,
+    pub agents: Agents,
     pub tries: Tries,
     pub check: Check,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
@@ -274,6 +275,34 @@ pub struct Orchestration {
     pub epic_branches: bool,
 }
 
+/// An orchestration's agents (#381).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agents {
+    /// The share of its context window, in percent, above which an agent
+    /// retires at its merge instead of taking a next issue: its next one
+    /// goes to a fresh agent with its written handoff.
+    pub fresh_above: u8,
+}
+
+/// `[agents] fresh_above` when the file says nothing.
+pub const FRESH_ABOVE: u8 = 40;
+
+impl Default for Agents {
+    fn default() -> Self {
+        Agents {
+            fresh_above: FRESH_ABOVE,
+        }
+    }
+}
+
+impl Agents {
+    /// `fresh_above` as a share of the window, 0.4.
+    pub fn limit(&self) -> f64 {
+        f64::from(self.fresh_above) / 100.0
+    }
+}
+
 /// A `try --on test`: the test instance a merge deploys to, and the jobs of
 /// the default branch's pipeline that deploy it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -487,6 +516,9 @@ impl Config {
     /// What serde can't say: names and ports that must be there and apart.
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
+        if !(1..=100).contains(&self.agents.fresh_above) {
+            return bad("agents.fresh_above", "must be a percent of the context window, 1 to 100");
+        }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))
         {

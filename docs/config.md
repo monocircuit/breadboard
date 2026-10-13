@@ -187,6 +187,12 @@ urls = ["DATABASE_URL"]
 | --- | ------- | ------------ |
 | `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
 
+## `[agents]`
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+
 ## `[tries]`
 
 A `try --on test` waits for the merge's deployment to the test instance, then

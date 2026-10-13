@@ -82,6 +82,8 @@ pub struct OrchestrationLocal {
     /// Its free agents (#289) with the share of their context used.
     pub free: Vec<(Worker, f64)>,
     pub free_memory: Option<u64>,
+    /// breadboard.toml's `[agents] fresh_above` as a share (#381); None: the default.
+    pub context_limit: Option<f64>,
     /// What herdr says each agent does, by conversation; empty outside herdr.
     pub agents: HashMap<String, Agent>,
     pub chat: Option<Chat>,
@@ -1047,6 +1049,7 @@ pub fn orchestration_of(
                 free: &local.free,
                 runs: Some(&state.runs),
                 now,
+                limit: local.context_limit,
             },
         )
     })

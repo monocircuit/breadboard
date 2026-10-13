@@ -2,7 +2,7 @@
 //! the next issue goes to an idle agent that knows its files, else to the one
 //! with the most room, else to a fresh one on a stack the memory allows.
 
-use crate::cli::lifecycle::handover::{self, CONTEXT_LIMIT, Worker, refusal_of, with_start};
+use crate::cli::lifecycle::handover::{self, Worker, context_limit, refusal_of, with_start};
 use crate::cli::setup::gitlab;
 use crate::cli::setup::repo;
 use breadboard_core::conversations::context_share_of;
@@ -71,6 +71,7 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
         .into_iter()
         .map(|tree| (tree.dir, tree.branch))
         .collect();
+    let limit = context_limit(&repo::main_dir());
     let candidates: Vec<(Worker, Option<f64>)> = workers_of(name)
         .into_iter()
         .map(|worker| {
@@ -79,7 +80,7 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
         })
         .filter(|(worker, share)| {
             let pane = handover::pane_of_conversation(&worker.id).ok().flatten();
-            refusal_of(pane.as_ref(), worker.is_free, *share, CONTEXT_LIMIT).is_none()
+            refusal_of(pane.as_ref(), worker.is_free, *share, limit).is_none()
         })
         .collect();
     let merged = gitlab::in_turns(&candidates, 12, |(worker, _)| {

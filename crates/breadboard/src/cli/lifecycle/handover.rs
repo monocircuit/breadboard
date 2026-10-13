@@ -38,7 +38,11 @@ use std::time::Duration;
 const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
 const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]";
 /// The share of its context above which an agent gets no next issue: it would run out in the middle of it.
-pub const CONTEXT_LIMIT: f64 = 0.5;
+/// The share of its context above which an agent gets no next issue but
+/// retires (#381): breadboard.toml's `[agents] fresh_above`.
+pub fn context_limit(main: &Path) -> f64 {
+    breadboard_core::config::of_main(main).config.agents.limit()
+}
 /// The flags whose next word is their value, not an issue.
 const VALUED: [&str; 4] = ["--peer", "--brief", "--to", "--limit"];
 const TAKES: Takes = Takes {
@@ -47,7 +51,7 @@ const TAKES: Takes = Takes {
     lists: &["--after"],
     // `--to hands over one issue at a time` says more than "one argument too many".
     words: usize::MAX,
-    about: "Hands the issue to an idle agent of the orchestration <name> instead of a fresh one: its worktree is made, the agent moves into it, is renamed after it and told in its prompt. --after !<mr>… only announces it: the overview hands it over once those MRs are merged. --limit: the share of its context (default 50 %) above which the agent gets no next issue. --dry-run shows the brief and changes nothing.",
+    about: "Hands the issue to an idle agent of the orchestration <name> instead of a fresh one: its worktree is made, the agent moves into it, is renamed after it and told in its prompt. --after !<mr>… only announces it: the overview hands it over once those MRs are merged. --limit: the share of its context (default breadboard.toml's [agents] fresh_above, 40 %) above which the agent gets no next issue. --dry-run shows the brief and changes nothing.",
     usage: USAGE,
 };
 /// The flags of `wt:orchestrate` that start or queue fresh agents: none of them goes with `--to`.
@@ -1010,7 +1014,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         return fail("--to works inside herdr only: the agents are found through it");
     }
     let limit = match request.limit {
-        None => CONTEXT_LIMIT,
+        None => context_limit(&repo.main),
         Some(percent) => percent
             .trim()
             .parse::<f64>()
