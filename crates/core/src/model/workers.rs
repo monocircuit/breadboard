@@ -1,6 +1,6 @@
 //! Agents are workers (#217, overview/workers.mjs, worktree/fit.mjs): under UP
 //! NEXT, for each queued issue the free agent that knows its code best, else
-//! the one with the most room, else a fresh one (#265). The live overview
+//! a fresh one (#265, #381). The live overview
 //! does it by itself: this says what is due (`orders`), the writing side runs
 //! it and keeps what runs (`StartRun`).
 
@@ -53,8 +53,8 @@ pub struct Suggestion {
 
 /// For each issue (`(number, paths)`, in the order they wait), the free worker
 /// that shares the most of its paths, the one with the most room on a tie;
-/// each worker one issue. One nothing shares goes to the merged worker with
-/// the most room left (#265); one only ready waits for an issue it knows.
+/// each worker one issue. One no worker shares a path with goes to a fresh
+/// agent (#381): a context of other files buys it nothing.
 pub fn suggestions_of(issues: &[(i64, Vec<String>)], workers: &[FreeWorker]) -> HashMap<i64, Suggestion> {
     let mut taken: HashSet<usize> = HashSet::new();
     let mut suggested: HashMap<i64, Suggestion> = HashMap::new();
@@ -76,27 +76,6 @@ pub fn suggestions_of(issues: &[(i64, Vec<String>)], workers: &[FreeWorker]) -> 
             .enumerate()
             .map(|(at, worker)| (at, shared_of(paths, &worker.files)))
             .filter(|(_, shared)| !shared.is_empty())
-            .collect();
-        if let Some((at, shared)) = best_of(candidates, &taken) {
-            taken.insert(at);
-            suggested.insert(
-                *number,
-                Suggestion {
-                    worker: workers[at].clone(),
-                    shared,
-                },
-            );
-        }
-    }
-    for (number, _) in issues {
-        if suggested.contains_key(number) {
-            continue;
-        }
-        let candidates = workers
-            .iter()
-            .enumerate()
-            .filter(|(_, worker)| worker.is_merged)
-            .map(|(at, _)| (at, Vec::new()))
             .collect();
         if let Some((at, shared)) = best_of(candidates, &taken) {
             taken.insert(at);
@@ -720,10 +699,8 @@ mod tests {
             &[full, knows, roomy],
         );
         assert_eq!(suggested[&2].worker.name, "c");
-        assert_eq!(suggested[&1].worker.name, "roomy");
-        assert!(suggested[&1].shared.is_empty());
-        assert_eq!(suggested[&3].worker.name, "full");
-        assert!(!suggested.contains_key(&4));
+        // Sharing no file: a fresh agent, never a merged one's unrelated context (#381).
+        assert!(![1, 3, 4].iter().any(|number| suggested.contains_key(number)));
     }
 
     #[test]
@@ -799,6 +776,8 @@ mod tests {
                 dir: format!("/nonexistent/platform-{feature}").into(),
                 name: feature.into(),
                 claude: Some(with_claude(id, used)),
+                // What it worked on: a queued issue naming it shares a file with it (#381).
+                branch_files: vec!["src/shared.rs".into()],
                 ..Default::default()
             }),
             ..Default::default()
@@ -945,9 +924,9 @@ mod tests {
     }
 
     #[test]
-    fn hands_a_queued_issue_nothing_shares_to_the_free_agent() {
+    fn hands_a_queued_issue_sharing_a_file_to_the_free_agent() {
         let issues = [merged_tree(30, "30-done", "c1", 36_000), queued(31, "31-new")];
-        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec![])]);
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["shared.rs"])]);
         let facts = WorkerFacts {
             should_hand_out: true,
             memory: 0,
@@ -963,8 +942,15 @@ mod tests {
             }]
         );
         let shown = crate::model::display_names::display_names_of(&[], &["c1"])["c1"].clone();
-        assert_eq!(found.actions[0].text, format!("#31 → {shown} (free, 18 %)"));
+        assert_eq!(
+            found.actions[0].text,
+            format!("#31 → {shown} (free, shares shared.rs, 18 %)")
+        );
         assert!(found.holds.is_empty());
+        // Sharing no file: nothing for the free agent, a fresh one (#381).
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["other.rs"])]);
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &facts);
+        assert!(found.orders.is_empty() && found.suggested.is_empty());
     }
 
     #[test]
@@ -994,7 +980,12 @@ mod tests {
             queued(267, "267-q"),
             queued(269, "269-q"),
         ];
-        let remote = remote_of(vec![("268-tokens", merged(), vec![])]);
+        let remote = remote_of(vec![
+            ("268-tokens", merged(), vec![]),
+            ("194-q", None, vec!["shared.rs"]),
+            ("267-q", None, vec!["shared.rs"]),
+            ("269-q", None, vec!["shared.rs"]),
+        ]);
         let facts = WorkerFacts {
             should_hand_out: true,
             ..Default::default()
@@ -1044,7 +1035,12 @@ mod tests {
             after(269, "269-q"),
             queued(194, "194-q"),
         ];
-        let remote = remote_of(vec![("268-tokens", merged(), vec![])]);
+        let remote = remote_of(vec![
+            ("268-tokens", merged(), vec![]),
+            ("194-q", None, vec!["shared.rs"]),
+            ("267-q", None, vec!["shared.rs"]),
+            ("269-q", None, vec!["shared.rs"]),
+        ]);
         let facts = WorkerFacts {
             should_hand_out: true,
             memory: 4 * GIB,
@@ -1096,7 +1092,11 @@ mod tests {
         let workers = free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &known, &[], CONTEXT_LIMIT);
         assert_eq!(
             (workers[0].name.as_str(), workers[0].share, workers[0].files.clone()),
-            ("3-first", 0.2, vec!["src/a.mjs".to_string()])
+            (
+                "3-first",
+                0.2,
+                vec!["src/a.mjs".to_string(), "src/shared.rs".to_string()]
+            )
         );
         let ready = Some(Mr {
             state: "opened".into(),

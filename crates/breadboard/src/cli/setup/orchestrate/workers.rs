@@ -202,15 +202,7 @@ pub fn starts_of(items: &[(String, String)], idle: &[Idle], is_shared: bool, fre
             .collect();
         suggested[at] = pick(candidates, &mut taken);
     }
-    for slot in suggested.iter_mut().filter(|slot| slot.is_none()) {
-        let candidates = idle
-            .iter()
-            .enumerate()
-            .filter(|(_, idle)| idle.is_merged)
-            .map(|(worker, _)| (worker, Vec::new()))
-            .collect();
-        *slot = pick(candidates, &mut taken);
-    }
+    // One no agent shares a file with goes to a fresh agent (#381): another's context buys it nothing.
     let mut reserved = 0.0;
     suggested
         .into_iter()
@@ -250,7 +242,8 @@ mod tests {
         ];
         let starts = starts_of(&items, &workers, false, 64.0 * GIB);
         assert!(matches!(&starts[0], Start::Worker { worker, shared } if worker.name == "b" && shared == &["z.mjs"]));
-        assert!(matches!(&starts[1], Start::Worker { worker, shared } if worker.name == "a" && shared.is_empty()));
+        // Sharing no file with any agent: a fresh one, never a's unrelated context (#381).
+        assert!(matches!(&starts[1], Start::Fresh { .. }));
     }
 
     #[test]
