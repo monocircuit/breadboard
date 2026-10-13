@@ -15,6 +15,7 @@ pub mod local;
 pub mod lock;
 pub mod main_update;
 pub mod model;
+pub mod permissions;
 pub mod reader;
 pub mod record;
 pub mod runs;
