@@ -90,10 +90,9 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                         match app.act(Input::Key(key, None)) {
                             Flow::Quit => return Ok(()),
                             Flow::Same => {}
-                            // The typed text is the app's: the page is built again
-                            // with it, not drawn from the scene before the key.
-                            _ => {
-                                view.stale();
+                            // Built again, not only drawn: the prompt's text is in the page.
+                            Flow::Redraw | Flow::Show => {
+                                view.acted(None);
                                 is_dirty = true;
                             }
                         }

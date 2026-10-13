@@ -11,7 +11,7 @@
 mod brief;
 
 use super::args::{Args, Takes};
-use super::claude::{bound_session, context_share_of, is_conversation_running, session_file};
+use super::claude::{bound_session, context_share_of, is_conversation_running, leave_worktree, session_file};
 use super::gitlab;
 use super::herdr;
 use super::plugin;
@@ -434,6 +434,8 @@ fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Re
     if is_conversation_running(&worker.id) {
         return Err("a claude runs its conversation".into());
     }
+    // Out of the worktree it entered: a resumed run starts where its transcript last stood (#363).
+    leave_worktree(&worker.id);
     bind(worker, issue);
     if !crate::tui::overview::actor::herdr::enqueue(main, &issue.dir, line) {
         return Err("its line could not be queued".into());
@@ -492,11 +494,12 @@ pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit
 }
 
 /// The first prompt of an agent resumed in the worktree of its next issue;
-/// its new name comes with it (#251, #335).
+/// its new name comes with it (#251, #335). The restart takes it out of its
+/// old worktree (#363); should it still stand there, it moves itself.
 pub fn next_issue_line(number: i64, feature: &str, dir: &Path) -> String {
+    let dir = text(dir);
     format!(
-        "[overview] next issue #{number}, your name is {feature} now: your conversation runs again in its worktree {}, read .claude/brief.md",
-        text(dir)
+        "[overview] next issue #{number}, your name is {feature} now: your conversation runs again in its worktree {dir}. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"{dir}\")`. Then read .claude/brief.md"
     )
 }
 
