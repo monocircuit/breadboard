@@ -10,6 +10,7 @@ pub mod epic;
 pub mod git;
 pub mod gitlab;
 pub mod herdr;
+pub mod journal;
 pub mod json;
 pub mod local;
 pub mod lock;
