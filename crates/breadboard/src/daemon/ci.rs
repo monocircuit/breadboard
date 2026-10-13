@@ -84,6 +84,7 @@ pub async fn schedule(main: PathBuf) {
         let cancelled: HashMap<i64, String> = asked.preempted.clone().into_iter().collect();
         let ours = asked.ours.iter().copied().collect();
         let rescued = asked.rescued.clone().into_iter().collect();
+        let own_cancels = asked.cancelled.iter().copied().collect();
         let step = tokio::task::spawn_blocking(move || {
             let now = now_ms();
             let running = mrs
@@ -100,6 +101,7 @@ pub async fn schedule(main: PathBuf) {
             ranks.preempted = cancelled;
             ranks.ours = ours;
             ranks.rescued = rescued;
+            ranks.cancelled = own_cancels;
             (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
         });
         let Ok((decision, slots, run_now, mrs, now)) = step.await else {
@@ -127,6 +129,7 @@ pub async fn schedule(main: PathBuf) {
                 last = Some(match said {
                     Ok(_) => {
                         asked.preempted.insert(iid, sha);
+                        asked.add_cancelled(id);
                         format!("!{iid} held for the MR ahead")
                     }
                     Err(error) => format!("!{iid} not held: {}", first_line(&error)),
@@ -141,6 +144,10 @@ pub async fn schedule(main: PathBuf) {
             })
             .await;
             if let Ok((start, said)) = done {
+                // Its superseded pipeline, cancelled by the queue: no person's cancel (#383).
+                if let (Some(id), false) = (start.cancel, matches!(said, Ok(Ran::Superseded | Ran::Exists(_)))) {
+                    asked.add_cancelled(id);
+                }
                 // Asked for, whether GitLab took it or not: a refusal (no job for
                 // these changes, the activity limit) isn't asked again for the
                 // same commit; a commit superseded meanwhile is decided anew.
