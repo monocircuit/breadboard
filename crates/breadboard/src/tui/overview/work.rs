@@ -562,6 +562,7 @@ mod tests {
                 dot: Paint::Wait(Tone::Gitlab),
                 issues: 3,
                 merged: 2,
+                today: None,
             }),
             facts: vec![
                 vec![model::Span::plain(format!("#{} open", place + 300))],
@@ -1281,6 +1282,7 @@ mod tests {
                 boxes: vec![],
                 open_boxes: vec![],
                 issue: None,
+                spent: None,
             }),
         }
     }
