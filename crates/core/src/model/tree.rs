@@ -14,7 +14,7 @@ use super::develop::Migrations;
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
-use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
+use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
@@ -218,7 +218,9 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
 }
 
 /// How full an agent's context is and when it last answered.
-pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
+/// `limit`: the share of its context above which it retires at its merge
+/// (#381): said in advance, `fresh start at its next issue`.
+pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
     let Some(at) = claude.at else {
         return vec![Span::dim("no answer yet")];
     };
@@ -230,10 +232,14 @@ pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
     } else {
         Paint::Green
     };
-    vec![
+    let mut fact = vec![
         Span::new(format!("{}%", (share * 100.0).round() as i64), paint),
         Span::dim(format!(" of {} · {}", tokens(claude.window), ago(at, now))),
-    ]
+    ];
+    if share > limit {
+        fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
+    }
+    fact
 }
 
 /// The name an agent had before its last handover, for a day.
@@ -394,6 +400,8 @@ pub struct TreeFacts<'a> {
     pub turns: Option<&'a super::orchestration::Turns>,
     pub setups: &'a [Setup],
     pub now: i64,
+    /// `[agents] fresh_above` as a share (#381); None: `CONTEXT_LIMIT`.
+    pub limit: Option<f64>,
 }
 
 /// The tree of the issues: `live`, the worktrees there and the issues that
@@ -568,7 +576,7 @@ fn facts_of(
     }
     if let Some(tree) = tree {
         if let Some(claude) = &tree.claude {
-            all.push(agent_fact(claude, now));
+            all.push(agent_fact(claude, now, facts.limit.unwrap_or(CONTEXT_LIMIT)));
         }
         if let Some(wait) = tree.wait.as_ref().filter(|_| state.key != "waitsForMr") {
             let none = HashSet::new();
@@ -954,6 +962,19 @@ pub fn facts_text(facts: &[Fact]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_a_full_agent_starts_fresh_at_its_next_issue() {
+        let claude = Claude {
+            at: Some(0),
+            used: 94_000,
+            window: 200_000,
+            ..crate::model::handovers::tests::claude_of("c1")
+        };
+        let text = |fact: Fact| fact.iter().map(|span| span.text.clone()).collect::<String>();
+        assert!(text(agent_fact(&claude, 0, 0.4)).ends_with(" · fresh start at its next issue"));
+        assert!(!text(agent_fact(&claude, 0, 0.5)).contains("fresh start"));
+    }
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
     use crate::model::display_names::{display_names_of, pick_name};

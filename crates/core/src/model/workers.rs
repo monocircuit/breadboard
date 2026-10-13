@@ -30,6 +30,56 @@ pub fn shared_of(paths: &[String], files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// For each issue (`(number, paths)`) no free agent takes, the agent of a
+/// worktree above `limit` that knows its files best (#381): it retires at its
+/// merge, so the issue goes to a fresh agent with its handoff. By issue
+/// number: its name and its share of context.
+pub fn retiring_of(
+    asked: &[(i64, Vec<String>)],
+    suggested: &HashMap<i64, Suggestion>,
+    issues: &[Entry],
+    known: &Known,
+    limit: f64,
+) -> HashMap<i64, (String, f64)> {
+    let full: Vec<(String, f64, Vec<String>)> = issues
+        .iter()
+        .filter_map(|issue| {
+            let tree = issue.tree.as_ref()?;
+            let claude = tree.claude.as_ref()?;
+            let share = claude.share();
+            if share <= limit {
+                return None;
+            }
+            let record = worker_of(known, &claude.id);
+            let mut files: Vec<String> = record.map(|worker| worker.files.clone()).unwrap_or_default();
+            files.extend(
+                tree.branch_files
+                    .iter()
+                    .filter(|file| !files.contains(file))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let name = record
+                .and_then(|worker| worker.name.clone())
+                .unwrap_or_else(|| tree.name.clone());
+            Some((name, share, files))
+        })
+        .collect();
+    asked
+        .iter()
+        .filter(|(number, _)| !suggested.contains_key(number))
+        .filter_map(|(number, paths)| {
+            let (name, share, _) = full
+                .iter()
+                .map(|agent| (agent, shared_of(paths, &agent.2).len()))
+                .filter(|(_, shared)| *shared > 0)
+                .max_by_key(|(_, shared)| *shared)?
+                .0;
+            Some((*number, (name.clone(), *share)))
+        })
+        .collect()
+}
+
 /// The retired agent whose handoff a fresh agent on `paths` reads (#381):
 /// the one sharing the most of them, the one retired last on a tie; None
 /// when no handoff shares a path. With the paths it shares.
@@ -405,6 +455,7 @@ pub fn worker_actions_of(
         .filter_map(|issue| Some((issue.number?, paths_of(issue))))
         .collect();
     let suggested = suggestions_of(&asked, &free);
+    let retiring = retiring_of(&asked, &suggested, issues, known, facts.limit.unwrap_or(CONTEXT_LIMIT));
     // Not one started already, nor one that failed: a click retries it.
     let waiting: Vec<i64> = queued
         .iter()
@@ -563,14 +614,28 @@ pub fn worker_actions_of(
             continue;
         }
         let Some(found) = suggested.get(&number) else {
+            let fresh_text = fresh.get(&number).cloned().unwrap_or_default();
+            let text = match retiring.get(&number) {
+                // Visible in advance (#381): who would have taken it, and why it starts fresh.
+                Some((name, share)) => {
+                    let rest = if fresh_text.is_empty() || fresh_text == "starts a fresh agent" {
+                        String::new()
+                    } else {
+                        format!(": {fresh_text}")
+                    };
+                    format!(
+                        "#{number} → fresh agent ({} retires, {} %){rest}",
+                        names.shown(name),
+                        (share * 100.0).round() as i64
+                    )
+                }
+                None => format!("#{number} queued (--queue), no agent free: {fresh_text}"),
+            };
             actions.push(item(
                 format!("start:#{number}"),
                 &issue.feature,
                 number,
-                format!(
-                    "#{number} queued (--queue), no agent free: {}",
-                    fresh.get(&number).cloned().unwrap_or_default()
-                ),
+                text,
                 run.is_some_and(|run| run.is_running),
                 String::new(),
                 Go::StartFresh(number),
@@ -671,6 +736,45 @@ mod tests {
             ),
             ["overview/boxes.mjs", "tty.mjs"]
         );
+    }
+
+    #[test]
+    fn says_in_advance_who_retires_for_a_queued_issue() {
+        // 30-done is at 60 %, above the 40 % default: its issue's follow-up goes fresh.
+        let issues = [merged_tree(30, "30-done", "c1", 120_000), queued(31, "31-new")];
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["shared.rs"])]);
+        let facts = WorkerFacts {
+            should_hand_out: true,
+            memory: 0,
+            ..Default::default()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &facts);
+        assert!(found.suggested.is_empty());
+        let shown = crate::model::display_names::display_names_of(&[], &["c1"])["c1"].clone();
+        assert!(
+            found.actions[0].text.starts_with(&format!(
+                "#31 → fresh agent ({shown} retires, 60 %): waits for an agent to get free"
+            )),
+            "{}",
+            found.actions[0].text
+        );
+        // With room for it: just who retires.
+        let roomy = WorkerFacts {
+            memory: 8 * GIB,
+            ..facts.clone()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &roomy);
+        assert_eq!(
+            found.actions[0].text,
+            format!("#31 → fresh agent ({shown} retires, 60 %)")
+        );
+        // Below the limit set in breadboard.toml: it takes the issue itself.
+        let high = WorkerFacts {
+            limit: Some(0.7),
+            ..facts
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &high);
+        assert_eq!(found.suggested[&31].worker.name, "30-done");
     }
 
     #[test]

@@ -1137,6 +1137,7 @@ pub fn orchestration_of(
                 turns: Some(&turns),
                 setups: &local.setups,
                 now,
+                limit: local.context_limit,
             },
             local.free_memory,
         )
