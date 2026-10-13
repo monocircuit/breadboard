@@ -102,36 +102,8 @@ fn leave_worktree_in(file: &Path, id: &str) -> bool {
         .is_ok();
     if !success {
         let _ = fs::remove_file(&backup);
-    } else {
-        cleanup_old_backups(file);
     }
     success
-}
-
-/// Remove backup files older than 24 hours to prevent accumulation (#363).
-fn cleanup_old_backups(transcript: &Path) {
-    let Some(dir) = transcript.parent() else { return };
-    let now = std::time::SystemTime::now();
-    let stale = std::time::Duration::from_secs(24 * 60 * 60);
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if !name.contains(".before-leave-") {
-                    continue;
-                }
-                if let Ok(metadata) = fs::metadata(&path) {
-                    if let Ok(modified) = metadata.modified() {
-                        if let Ok(age) = now.duration_since(modified)
-                            && age > stale
-                        {
-                            let _ = fs::remove_file(&path);
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// The context window: 1M with a `[1m]` model in claude's settings, else 200k.
