@@ -439,11 +439,12 @@ pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit
 }
 
 /// The first prompt of an agent resumed in the worktree of its next issue;
-/// its new name comes with it (#251, #335).
+/// its new name comes with it (#251, #335). The restart takes it out of its
+/// old worktree (#363); should it still stand there, it moves itself.
 pub fn next_issue_line(number: i64, feature: &str, dir: &Path) -> String {
+    let dir = text(dir);
     format!(
-        "[overview] next issue #{number}, your name is {feature} now: your conversation runs again in its worktree {}, read .claude/brief.md",
-        text(dir)
+        "[overview] next issue #{number}, your name is {feature} now: your conversation runs again in its worktree {dir}. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"{dir}\")`. Then read .claude/brief.md"
     )
 }
 
