@@ -49,6 +49,17 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
     {
         status.push(Span::styled(format!("{load} · "), quiet));
     }
+    // The orchestrator's context (#382): `orchestrator 62 % · restart at a quiet point`.
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(band) = model.orchestrator.band()
+    {
+        let style = if model.orchestrator.is_due() {
+            theme::tone(Tone::Yellow)
+        } else {
+            quiet
+        };
+        status.push(Span::styled(format!("{band} · "), style));
+    }
     status.push(Span::styled(ctx.gitlab.fresh(), quiet));
     let mut header = Header::new(title).status(status);
     if ctx.is_once {
@@ -75,6 +86,31 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     look::flow(scene, &[look::dim(chat.text())]);
                 }
             });
+            // Its fresh start at a quiet point (#382), by a click unless the overview makes it itself.
+            let fresh = &model.orchestrator;
+            let is_running = ctx.actor.fresh.as_ref().is_some_and(|run| run.is_running);
+            if fresh.is_ready() && (!fresh.is_auto || is_running) {
+                scene.block(Act::Fresh, |scene| {
+                    scene.pad_to(1);
+                    scene.indent(2);
+                    if !super::actor::view::button(scene, ctx, "↻ fresh start", Tone::Yellow, Act::Fresh) {
+                        look::flow(
+                            scene,
+                            &[look::dim(
+                                "a quiet point: the chat writes its journal entry, then a fresh one starts from the journal; the old stays in /resume",
+                            )],
+                        );
+                    }
+                });
+            }
+        });
+    }
+    let journal = &model.orchestrator.journal;
+    if !journal.is_empty() {
+        page.section(Section::new("JOURNAL").plain(), |scene| {
+            for entry in journal {
+                look::say(scene, entry, theme::dim());
+            }
         });
     }
     if let Some(error) = &ctx.gitlab.error {
