@@ -1309,6 +1309,7 @@ mod tests {
             main_name: "platform",
             actor: super::super::actor::idle(),
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         let mut page = Page::new(width);
         page.section(Section::new("TOP").plain(), |_| {});

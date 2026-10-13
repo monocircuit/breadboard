@@ -27,11 +27,15 @@
 //! queued lines it runs with `claude -p`, staying while any are queued or in
 //! flight; and the CI queue (`ci`, #357), which creates the MR pipelines of a
 //! repo in their order. An overview that can't reach it reads by itself.
+//! And one more (#348, `keep_up`): it fast-forwards the main checkouts of
+//! its overviews to origin/develop, when that is safe, and goes on in a
+//! build installed over its binary.
 
 mod ci;
 pub mod client;
 mod feed;
 pub mod gitlab;
+mod keep_up;
 pub mod runs;
 mod serve;
 

@@ -1385,6 +1385,7 @@ mod tests {
             main_name: "platform",
             actor,
             words: actor::view::no_words(),
+            develop: None,
         };
         let mut scene = Scene::new(width);
         action_block(&mut scene, item, &ctx, false);
@@ -1634,6 +1635,7 @@ mod tests {
             main_name: "platform",
             actor: actor::idle(),
             words: actor::view::no_words(),
+            develop: None,
         };
         action_block(&mut scene, &try_item, &ctx, true);
         scene.finish();
