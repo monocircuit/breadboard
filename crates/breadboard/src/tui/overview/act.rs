@@ -494,6 +494,10 @@ fn lift_limit(app: &mut Overview) {
     match breadboard_core::runs::lift_limit(&main, &breadboard_core::time::day(now_ms())) {
         Ok(()) => {
             crate::daemon::client::wake_runs(&main);
+            // Read again now: the LIMIT row goes without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
             app.actor
                 .log(Paint::Green, "daily limit lifted until midnight: the queued runs start");
         }
