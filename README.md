@@ -119,6 +119,32 @@ of your own keeps its claude in a tab (#361).
   (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
   prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
+## The main checkout follows develop
+
+The main checkout keeps itself on `origin/develop` (#348). `breadboard
+serve`, the daemon of the overviews, fetches every 2 minutes and right after
+a merge it saw (the overview's own, or develop's head or pipeline moving on
+GitLab), and fast-forwards develop only when that is safe: on `develop`, no
+changes to tracked files, `--ff-only`. Another branch, local changes, own
+commits are skipped with the reason, never stashed, reset or forced. After an
+update `pnpm install --frozen-lockfile` runs when `pnpm-lock.yaml` changed,
+and the launcher builds the binary when breadboard's sources changed; vita's
+new migrations are only named (each stack runs `pnpm pg:migrate`). Off, the
+interval and the install: `[main_checkout]` of breadboard.toml
+([`docs/config.md`](docs/config.md)).
+
+The band of the view of everything and of every orchestration says it:
+`develop updated 17:42 · +4 commits (!331, !332…)`, or `develop: not updated
+(↓3), local changes in …` in yellow. What happened is in `<git common
+dir>/breadboard/develop.json`, the steps' output in `develop-*.log` beside it.
+
+A build installed over the binary a live overview or the daemon runs (the
+launcher renames it over the old file) makes it go on in the new one: the
+overview ends once no merge of its own runs and starts the new binary with
+the same arguments and its folds (the scroll starts at the top); the daemon,
+once no headless run is queued or in flight, gives up its socket and starts
+the new binary in its place.
+
 ## The nvim tab
 
 A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)
