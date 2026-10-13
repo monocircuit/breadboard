@@ -22,6 +22,7 @@ use breadboard_core::model::Paint;
 use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
+use breadboard_core::permissions;
 use breadboard_core::reader::{Model, RemoteOf};
 use breadboard_core::runs;
 use breadboard_core::time::{ago, parse_iso};
@@ -1249,7 +1250,13 @@ fn queue_answers(main: &Path, file: &Path, dir: &Path) -> Vec<Action> {
         let Ok(Some(action)) = stored::claim_answer(file, id) else {
             continue;
         };
-        let is_in = herdr::enqueue(main, dir, &stored::answer_line(&action));
+        // A `permission` answer runs with its rule allowed for that run (#360).
+        let is_in = match permissions::delivery_of(dir, &action) {
+            Ok(Some((line, allowed))) => herdr::enqueue_allowing(main, dir, &line, allowed),
+            Ok(None) => herdr::enqueue(main, dir, &stored::answer_line(&action)),
+            // `allow always` couldn't write the worktree's settings: it stays answered, tried again.
+            Err(_) => false,
+        };
         let _ = if is_in {
             stored::done_action(file, id).map(|_| ())
         } else {
@@ -1378,6 +1385,7 @@ mod tests {
             main_name: "platform",
             actor,
             words: actor::view::no_words(),
+            develop: None,
         };
         let mut scene = Scene::new(width);
         action_block(&mut scene, item, &ctx, false);
@@ -1627,6 +1635,7 @@ mod tests {
             main_name: "platform",
             actor: actor::idle(),
             words: actor::view::no_words(),
+            develop: None,
         };
         action_block(&mut scene, &try_item, &ctx, true);
         scene.finish();

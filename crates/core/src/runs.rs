@@ -30,8 +30,6 @@ pub const RESERVE: u64 = 6 << 30;
 pub const STARTING_MS: i64 = 15_000;
 /// A lock of the queue older than this belongs to a process that died.
 const STALE: Duration = Duration::from_secs(10);
-/// The tools a run may never use: no one sees its questions (#360 makes them actions).
-pub const DISALLOWED: &str = "AskUserQuestion";
 
 /// Whether `main` runs its task agents headless.
 pub fn is_headless(main: &Path) -> bool {
@@ -298,41 +296,11 @@ pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed:
         session.into(),
     ]);
     args.extend(["--name".into(), name.into()]);
-    args.extend(["--permission-mode".into(), "auto".into()]);
-    args.extend(["--permission-prompts".into(), "none".into()]);
-    args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
-    if !allowed.is_empty() {
-        args.push("--allowedTools".into());
-        args.extend(allowed.iter().cloned());
-    }
+    // Auto mode as in a tab, what would ask denied, the user's allows of this run (#360).
+    args.extend(crate::permissions::run_flags(allowed));
     // `-p` with stream-json needs `--verbose`.
     args.extend(["--output-format".into(), "stream-json".into(), "--verbose".into()]);
     args
-}
-
-/// The tools a stream's line says were denied: the `permission_denials` of its `result`.
-pub fn denials_in(line: &str) -> Vec<Denial> {
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return Vec::new();
-    };
-    if value.get("type").and_then(Value::as_str) != Some("result") {
-        return Vec::new();
-    }
-    value
-        .get("permission_denials")
-        .and_then(Value::as_array)
-        .map(|denials| {
-            denials
-                .iter()
-                .filter_map(|denial| {
-                    Some(Denial {
-                        tool: denial.get("tool_name")?.as_str()?.to_string(),
-                        input: denial.get("tool_input").cloned().unwrap_or(Value::Null),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// What each session's run does now: the table, a run whose claude is gone
@@ -464,20 +432,6 @@ mod tests {
         let allowing = args_of("abc", "1-x", "go", true, &rules);
         let at = allowing.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(&allowing[at + 1..at + 3], rules);
-    }
-
-    #[test]
-    fn reads_the_denials_of_a_result() {
-        let line = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Bash","tool_use_id":"t","tool_input":{"command":"rm -rf x"}}]}"#;
-        assert_eq!(
-            denials_in(line),
-            [Denial {
-                tool: "Bash".into(),
-                input: serde_json::json!({ "command": "rm -rf x" }),
-            }]
-        );
-        assert!(denials_in(r#"{"type":"assistant"}"#).is_empty());
-        assert!(denials_in("no json").is_empty());
     }
 
     #[test]
