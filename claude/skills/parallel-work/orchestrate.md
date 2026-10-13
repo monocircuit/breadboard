@@ -117,7 +117,13 @@ when the command is gone (the agent restarted) the overview types the line.
 **The overview answers "what now?"**, so the user never has to ask. The
 orchestrator sets the order right after the start and again whenever it
 changes: `{{run}} wt:plan <name> --work <issue>… --merge <issue>… --why "…"`
-(`wt:plan <name>` alone prints it). A step that is the user's and no agent's
+(`wt:plan <name>` alone prints it). The live overview keeps the plan in step
+with the merge order it computes, by itself (#376): when an issue in it is
+merged, closed or gone, its why names one done, or the merge order left it,
+it writes the computed order (done and gone issues out, new ones at their
+place, the why kept unless it names a done issue, a line `updated from the
+merge order <time>` under it). A hand-set order of independent MRs holds:
+the computed order follows the plan where nothing decides otherwise. A step that is the user's and no agent's
 it leaves as `{{run}} wt:action <kind> "<text>" --orchestration <name>`; a
 merge names its MR (`--mr !N`), so its click merges that one. Each
 agent leaves an action whenever it waits for the user (its brief says so).
@@ -175,10 +181,7 @@ Sorted by what blocks most: `waits`, `decide`, `plan`, `push`, `merge`,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
 the worktree, have its agent tick the done boxes), `pipeline` (a failed
 MR pipeline whose line the live overview couldn't send its agent yet, with
-why: no agent, blocked at a question, herdr refused; the click tries again), `order` (the plan
-is stale: an issue in it closed or gone, its why names one done, or the
-merge order left it; the click writes the computed order, the why dropped
-when it names a done issue), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
+why: no agent, blocked at a question, herdr refused; the click tries again), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
 under the orchestration's record and how reuse went, one block per piece
 of work: the open MRs in the merge order, the MR graph's lanes in front

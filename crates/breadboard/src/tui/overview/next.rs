@@ -8,7 +8,6 @@ use crate::tui::theme::{self, Tone};
 use crate::tui::{Page, Scene, Section};
 use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{GITLAB_PENDING, NextBand, OrchestrationModel};
-use breadboard_core::model::order::Item;
 use ratatui::style::Style;
 use ratatui::text::Span;
 
@@ -52,11 +51,9 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     });
                 }
             }
-            // Its click did it (the plan written): the next row of UP NEXT, at once.
-            NextBand::UpNext(item) => match up_next_of(model, item) {
-                Some(item) => look::gutter(scene, label, under(), |scene| actions::next_row(scene, item, ctx)),
-                None => look::say(scene, "what comes next shows with the next read", theme::dim()),
-            },
+            NextBand::UpNext(item) => {
+                look::gutter(scene, label, under(), |scene| actions::next_row(scene, item, ctx));
+            }
             NextBand::Merge(merge) => {
                 look::gutter(scene, label, under(), |scene| {
                     scene.block(Act::Open(merge.url.clone()), |scene| {
@@ -81,16 +78,6 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             look::gutter(scene, under(), under(), |scene| look::say(scene, why, theme::dim()));
         }
     });
-}
-
-/// The row of UP NEXT that NEXT shows: `item`, or once its click did it,
-/// the first of UP NEXT that is still to do.
-fn up_next_of<'a>(model: &'a OrchestrationModel, item: &'a Item) -> Option<&'a Item> {
-    if !actions::is_done(item) {
-        return Some(item);
-    }
-    let section = model.actions.as_ref().ok()?;
-    section.up_next.iter().find(|other| !actions::is_done(other))
 }
 
 /// An orchestration without issues: how to give it one, nothing else.

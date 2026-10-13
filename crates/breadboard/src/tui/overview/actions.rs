@@ -41,8 +41,7 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
     let in_next = in_next(model).map(|item| item.key.as_str());
     let pick = pick_of(model, page.picked());
     page.section("ACTIONS", |scene| actions(scene, section, in_next, &pick, ctx));
-    forget_done(&section.up_next);
-    let up_next: Vec<&Item> = section.up_next.iter().filter(|item| !is_done(item)).collect();
+    let up_next: Vec<&Item> = section.up_next.iter().collect();
     if !up_next.is_empty() {
         page.section("UP NEXT", |scene| {
             scene.note(format!(
@@ -54,28 +53,6 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             }
         });
     }
-}
-
-/// The rows of UP NEXT whose click did all they do (the plan written):
-/// gone from the click on, as an answer shows at once, until a read has
-/// them gone, at most CLICKED_FOR.
-static DONE: LazyLock<Mutex<Vec<(Go, Instant)>>> = LazyLock::new(Mutex::default);
-
-/// The row that does `go` did it: it goes at once (`act`, the plan written).
-pub fn did(go: &Go) {
-    locked(&DONE).push((go.clone(), Instant::now()));
-}
-
-/// Whether `item`'s click did it and a read hasn't caught up.
-pub fn is_done(item: &Item) -> bool {
-    locked(&DONE)
-        .iter()
-        .any(|(go, at)| *go == item.go && at.elapsed() <= CLICKED_FOR)
-}
-
-/// A read without the rows: their record goes, so the same row read again later shows.
-fn forget_done(up_next: &[Item]) {
-    locked(&DONE).retain(|(go, at)| at.elapsed() <= CLICKED_FOR && up_next.iter().any(|item| item.go == *go));
 }
 
 /// What Tab picked, as the digit keys see it (lazygit: keys act on the
@@ -1338,24 +1315,6 @@ mod tests {
             .collect();
         assert_eq!(lines[0].trim_end(), "the page opened");
         assert_eq!(lines[1].trim_end(), ":3000/x");
-    }
-
-    #[test]
-    fn an_up_next_row_its_click_did_goes_at_once_until_a_read_drops_it() {
-        let go = Go::FocusSpace(PathBuf::from("/nowhere/done-by-click"));
-        let row = Item {
-            key: "order".into(),
-            go: go.clone(),
-            ..Default::default()
-        };
-        assert!(!is_done(&row));
-        did(&go);
-        assert!(is_done(&row), "gone from the click on");
-        // A read that still has it keeps it gone; one without it forgets the click.
-        forget_done(std::slice::from_ref(&row));
-        assert!(is_done(&row));
-        forget_done(&[]);
-        assert!(!is_done(&row), "the same row read again later shows");
     }
 
     #[test]
