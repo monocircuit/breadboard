@@ -394,8 +394,12 @@ pub fn auto_actions_of(
                 ));
             }
         }
+        // A headless agent at a would-be question has its `permission` action
+        // (#360): that is what it waits for, no `waits` beside it.
+        let is_asking = tree.is_some_and(|tree| tree.actions.iter().any(|action| action.kind == "permission"));
         if let (Some(agent), Some(tree)) = (agent, tree)
             && let Some(claude) = &tree.claude
+            && !is_asking
         {
             let answer = claude.answer.as_deref().unwrap_or("");
             let question = match agent.status.as_deref() {
@@ -789,9 +793,17 @@ mod tests {
         );
         asking.tree.as_mut().unwrap().pending = Some("may it run Bash: git push?".into());
         assert_eq!(
-            kinds_with(&[asking], &none, &agents("blocked"), &facts),
+            kinds_with(std::slice::from_ref(&asking), &none, &agents("blocked"), &facts),
             [pair("waits", "may it run Bash: git push?")]
         );
+        // Headless (#360): its `permission` action asks, no `waits` beside it.
+        asking.tree.as_mut().unwrap().actions = vec![Action {
+            id: 1,
+            kind: "permission".into(),
+            text: "may 12-x run Bash: docker system prune?".into(),
+            ..Default::default()
+        }];
+        assert!(kinds_with(&[asking], &none, &agents("blocked"), &facts).is_empty());
     }
 
     #[test]
