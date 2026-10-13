@@ -184,6 +184,13 @@ pub fn record_file(main: &Path, name: &str) -> PathBuf {
     records_dir(main).join(format!("{name}.json"))
 }
 
+/// The handoff a retired agent wrote (#381), next to the record: kept after its worktree went.
+pub fn handoff_file(main: &Path, name: &str, id: &str) -> PathBuf {
+    records_dir(main)
+        .join(format!("{name}.handoffs"))
+        .join(format!("{id}.md"))
+}
+
 /// What the orchestration got done (#248), next to its record.
 pub fn changelog_file(main: &Path, name: &str) -> PathBuf {
     records_dir(main).join(format!("{name}.changelog.md"))
@@ -281,6 +288,20 @@ pub struct Freed {
     pub mr: Option<i64>,
 }
 
+/// An agent that retired at its merge (#381): above `[agents] fresh_above`,
+/// it wrote a handoff and takes no next issue; a fresh agent reads it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Retired {
+    pub at: Option<String>,
+    /// The worktree it left.
+    pub from: Option<String>,
+    pub mr: Option<i64>,
+    /// The share of its context then.
+    pub context: Option<f64>,
+    /// Its handoff, next to the record (`handoff_file`); None when it wrote none.
+    pub handoff: Option<String>,
+}
+
 /// An agent of the orchestration (#217), by its conversation's id.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Worker {
@@ -299,6 +320,7 @@ pub struct Worker {
     pub history: Option<Vec<Start>>,
     pub failed: Vec<Failure>,
     pub free: Option<Freed>,
+    pub retired: Option<Retired>,
 }
 
 impl Worker {
@@ -337,6 +359,16 @@ impl Worker {
             from: str_of(free, "from").map(String::from),
             mr: int_of(free, "mr"),
         });
+        let retired = value
+            .get("retired")
+            .filter(|retired| retired.is_object())
+            .map(|retired| Retired {
+                at: str_of(retired, "at").map(String::from),
+                from: str_of(retired, "from").map(String::from),
+                mr: int_of(retired, "mr"),
+                context: retired.get("context").and_then(Value::as_f64),
+                handoff: str_of(retired, "handoff").map(String::from),
+            });
         Worker {
             id: id.to_string(),
             name: str_of(value, "name").map(String::from),
@@ -349,6 +381,7 @@ impl Worker {
             history,
             failed,
             free,
+            retired,
         }
     }
 }
@@ -468,7 +501,18 @@ impl Record {
 
     /// The free agents (#289, free.mjs `freeAgentsOf`).
     pub fn free_agents(&self) -> Vec<&Worker> {
-        self.workers.iter().filter(|worker| worker.free.is_some()).collect()
+        self.workers
+            .iter()
+            .filter(|worker| worker.free.is_some() && worker.retired.is_none())
+            .collect()
+    }
+
+    /// The agents that retired with a handoff (#381), the latest last.
+    pub fn retired(&self) -> Vec<&Worker> {
+        self.workers
+            .iter()
+            .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+            .collect()
     }
 }
 
