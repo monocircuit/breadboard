@@ -178,7 +178,7 @@ fn middle_of(values: &mut [f64]) -> Option<f64> {
     }
     values.sort_by(|a, b| a.total_cmp(b));
     let middle = values.len() / 2;
-    Some(if values.len() % 2 == 0 {
+    Some(if values.len().is_multiple_of(2) {
         (values[middle - 1] + values[middle]) / 2.0
     } else {
         values[middle]
@@ -205,7 +205,10 @@ pub fn median_of(runs: &[Run], job: &str, window: usize) -> Option<f64> {
 /// before it ended `margin` seconds earlier or more. pipeline → job.
 pub fn critical_paths(runs: &[Run], margin: f64) -> BTreeMap<i64, String> {
     let mut by_pipeline: BTreeMap<i64, Vec<&Run>> = BTreeMap::new();
-    for run in runs.iter().filter(|run| run.status != "skipped" && run.status != "manual") {
+    for run in runs
+        .iter()
+        .filter(|run| run.status != "skipped" && run.status != "manual")
+    {
         by_pipeline.entry(run.pipeline).or_default().push(run);
     }
     by_pipeline
@@ -475,7 +478,11 @@ mod tests {
                 now: 300.0
             }]
         );
-        assert!(flags[0].line().ends_with("median 5:00, +50 % (3:20 → 5:00)"), "{}", flags[0].line());
+        assert!(
+            flags[0].line().ends_with("median 5:00, +50 % (3:20 → 5:00)"),
+            "{}",
+            flags[0].line()
+        );
         // +10 %: no flag.
         for run in runs.iter_mut().filter(|run| run.duration == 300.0) {
             run.duration = 220.0;
@@ -514,7 +521,10 @@ mod tests {
         assert!(hung_of(&[running(1200.0)], &runs, &watch).is_empty());
         let hung = hung_of(&[running(1500.0)], &runs, &watch);
         assert_eq!(hung.len(), 1);
-        assert_eq!(hung[0].line(), "check:gauntlet of !353 runs 25:00, 2.4× its median 10:38");
+        assert_eq!(
+            hung[0].line(),
+            "check:gauntlet of !353 runs 25:00, 2.4× its median 10:38"
+        );
         // A job without enough history: nothing to compare with.
         let new = Running {
             name: "check:new".into(),
