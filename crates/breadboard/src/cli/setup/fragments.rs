@@ -1,10 +1,12 @@
-//! The platform's CHANGELOG.md (#291, platform-changelog.mjs): Keep a
+//! The repo's CHANGELOG.md (#291, platform-changelog.mjs): Keep a
 //! Changelog from `.changelog/<issue>-<slug>.md` fragments, one per MR,
+//! as breadboard.toml's `[changelog]` describes it (areas, libraries),
 //! folded into a section at the release. `pnpm changelog:add|unreleased|
 //! release|notes|check`. Plain git, glab only for the MR links of a release:
 //! CI checks the fragments without an install and without glab.
 
 use super::proc::{Args, fail, git, outln};
+use breadboard_core::config::{Changelog, Library};
 use breadboard_core::json::{int_of, str_of};
 use regex::Regex;
 use serde_json::Value;
@@ -44,37 +46,62 @@ pub struct Entry {
     pub mr: Option<(i64, String)>,
 }
 
-/// The areas an entry may name: products, packages (without `monocircuit-`), then ci and repo.
+/// The repo's `[changelog]`, refused without one.
+fn changelog_of(root: &Path) -> Changelog {
+    breadboard_core::config::of(root)
+        .config
+        .changelog
+        .clone()
+        .unwrap_or_else(|| fail("breadboard.toml has no [changelog]: the repo keeps no changelog of fragments"))
+}
+
+/// The areas an entry may name: the folders of `area_dirs` (`strip` taken off), then `areas`.
 pub fn areas_of(root: &Path) -> Vec<String> {
+    let changelog = breadboard_core::config::of(root)
+        .config
+        .changelog
+        .clone()
+        .unwrap_or_default();
+    areas_in(root, &changelog)
+}
+
+fn areas_in(root: &Path, changelog: &Changelog) -> Vec<String> {
     let dirs = |parent: &str| -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(root.join(parent))
             .map(|entries| {
                 entries
                     .flatten()
                     .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .map(|entry| {
-                        let name = entry.file_name().to_string_lossy().into_owned();
-                        name.strip_prefix("monocircuit-").map(String::from).unwrap_or(name)
-                    })
+                    .map(|entry| stripped(changelog, &entry.file_name().to_string_lossy()))
                     .collect()
             })
             .unwrap_or_default();
         names.sort();
         names
     };
-    let mut areas = dirs("products");
-    areas.extend(dirs("packages"));
-    areas.extend(["ci".to_string(), "repo".to_string()]);
+    let mut areas: Vec<String> = changelog.area_dirs.iter().flat_map(|parent| dirs(parent)).collect();
+    areas.extend(changelog.areas.iter().cloned());
     areas
 }
 
-/// The area of a changed path.
-pub fn area_of_path(file: &str) -> String {
-    for prefix in ["products/", "packages/"] {
-        if let Some(rest) = file.strip_prefix(prefix)
+/// A folder's name as an area: `strip` taken off its front.
+fn stripped(changelog: &Changelog, name: &str) -> String {
+    changelog
+        .strip
+        .as_deref()
+        .and_then(|strip| name.strip_prefix(strip))
+        .unwrap_or(name)
+        .to_string()
+}
+
+/// The area of a changed path: its folder under one of `area_dirs`, `ci`
+/// for the pipeline, else `repo`.
+pub fn area_of_path(changelog: &Changelog, file: &str) -> String {
+    for parent in &changelog.area_dirs {
+        if let Some(rest) = file.strip_prefix(&format!("{parent}/"))
             && let Some((name, _)) = rest.split_once('/')
         {
-            return name.strip_prefix("monocircuit-").unwrap_or(name).to_string();
+            return stripped(changelog, name);
         }
     }
     if file == ".gitlab-ci.yml" || file.starts_with(".gitlab/ci/") {
@@ -311,18 +338,18 @@ pub fn section_body(entries: &[Entry], areas: &[String], url: Option<&str>) -> S
     lines.join("\n").trim_end().to_string()
 }
 
-/// The file a first release starts from.
-pub fn empty_changelog(url: Option<&str>) -> String {
+/// The file a first release starts from, `branch` the one unreleased work is on.
+pub fn empty_changelog(changelog: &Changelog, branch: &str, url: Option<&str>) -> String {
     let references = url
-        .map(|url| format!("\n[Unreleased]: {url}/-/commits/develop\n"))
+        .map(|url| format!("\n[Unreleased]: {url}/-/commits/{branch}\n"))
         .unwrap_or_default();
+    let Changelog { title, versions, .. } = changelog;
     format!(
         "# Changelog
 
-All notable changes to Monocircuit/Platform are documented in this file. The
+All notable changes to {title} are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and the versions are those of vita's releases (`vX.Y.Z`, [Semantic
-Versioning](https://semver.org/spec/v2.0.0.html)). Entries are collected in
+and the versions are those of {versions}. Entries are collected in
 [`.changelog/`](.changelog/README.md) until the release folds them in here.
 
 ## [Unreleased]
@@ -337,12 +364,18 @@ static NEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(## \[|\[[^\]]
 /// What is wrong with the version `changelog:<command>` got: missing, a
 /// `v` too many (the tag's, not the section's), or no X.Y.Z.
 fn version_refusal(version: &str, command: &str) -> String {
-    let usage = format!("pnpm changelog:{command} <X.Y.Z>");
+    let usage = format!(
+        "{run} changelog:{command} <X.Y.Z>",
+        run = breadboard_core::config::run_word()
+    );
     if version.is_empty() {
         return format!("the version is missing: {usage}");
     }
     match version.strip_prefix('v').filter(|plain| VERSION.is_match(plain)) {
-        Some(plain) => format!("{version} is the tag, the version is {plain}: pnpm changelog:{command} {plain}"),
+        Some(plain) => format!(
+            "{version} is the tag, the version is {plain}: {run} changelog:{command} {plain}",
+            run = breadboard_core::config::run_word()
+        ),
         None => format!("{version} is no X.Y.Z version: {usage}"),
     }
 }
@@ -353,7 +386,14 @@ pub fn versions_of(text: &str) -> Vec<String> {
 }
 
 /// The changelog with the new section below `## [Unreleased]` and the link references at its end.
-pub fn fold_into(text: &str, version: &str, date: &str, body: &str, url: Option<&str>) -> Result<String, String> {
+pub fn fold_into(
+    text: &str,
+    version: &str,
+    date: &str,
+    body: &str,
+    url: Option<&str>,
+    branch: &str,
+) -> Result<String, String> {
     if !VERSION.is_match(version) {
         return Err(format!("\"{version}\" is no X.Y.Z"));
     }
@@ -382,7 +422,7 @@ pub fn fold_into(text: &str, version: &str, date: &str, body: &str, url: Option<
         return Ok(format!("{}\n", result.trim_end()));
     };
     let references = [
-        format!("[Unreleased]: {url}/-/compare/v{version}...develop"),
+        format!("[Unreleased]: {url}/-/compare/v{version}...{branch}"),
         match &previous {
             Some(previous) => format!("[{version}]: {url}/-/compare/v{previous}...v{version}"),
             None => format!("[{version}]: {url}/-/tags/v{version}"),
@@ -435,8 +475,6 @@ fn mr_of_fragment(root: &Path, file: &str) -> Option<(i64, String)> {
     ))
 }
 
-const LIBRARY: &str = "packages/monolithium";
-
 fn version_at(root: &Path, reference: &str, file: &str) -> Option<String> {
     let shown = git(&["show", &format!("{reference}:{file}")], root);
     if !shown.is_ok {
@@ -446,25 +484,31 @@ fn version_at(root: &Path, reference: &str, file: &str) -> Option<String> {
     str_of(&value, "version").map(String::from)
 }
 
-/// The entry of a monolithium release since the vita release `previous`.
-fn library_entry_of(root: &Path, previous: Option<&str>, url: Option<&str>) -> Option<Entry> {
+/// The entry of a library's release since the release `previous` (`[[changelog.libraries]]`).
+fn library_entry_of(root: &Path, library: &Library, previous: Option<&str>, url: Option<&str>) -> Option<Entry> {
     let previous = previous?;
-    let file = format!("{LIBRARY}/package.json");
+    let path = &library.path;
+    let file = format!("{path}/package.json");
     let before = version_at(root, &format!("v{previous}"), &file)?;
     let now: Value = serde_json::from_str(&fs::read_to_string(root.join(&file)).ok()?).ok()?;
     let now = str_of(&now, "version").unwrap_or_default().to_string();
     if before == now {
         return None;
     }
-    let changelog = format!("{LIBRARY}/CHANGELOG.md");
+    let changelog = format!("{path}/CHANGELOG.md");
     let link = match url {
-        Some(url) => format!("[{changelog}]({url}/-/blob/monolithium-v{now}/{changelog})"),
+        Some(url) => format!("[{changelog}]({url}/-/blob/{}{now}/{changelog})", library.tag),
         None => changelog,
     };
+    let with = library
+        .with
+        .as_ref()
+        .map(|with| format!(" (with {with})"))
+        .unwrap_or_default();
     Some(Entry {
         kind: "changed".into(),
-        area: "monolithium".into(),
-        text: format!("released {now} (with utilities), see {link}"),
+        area: library.name.clone(),
+        text: format!("released {now}{with}, see {link}"),
         ..Entry::default()
     })
 }
@@ -519,6 +563,7 @@ fn base_of(root: &Path) -> Option<String> {
 }
 
 fn add(root: &Path, args: &Args) {
+    let changelog = changelog_of(root);
     let text = args.words(&["--type", "--area"]).join(" ").trim().to_string();
     if text.is_empty() {
         fail("the sentence is missing: pnpm changelog:add \"<what changed, for a user>\"");
@@ -555,7 +600,7 @@ fn add(root: &Path, args: &Args) {
         .iter()
         .filter(|file| !file.is_empty() && !file.starts_with(&format!("{FRAGMENTS}/")))
     {
-        let area = area_of_path(file);
+        let area = area_of_path(&changelog, file);
         if !areas.contains(&area) {
             areas.push(area);
         }
@@ -637,7 +682,9 @@ fn release(root: &Path, args: &Args) {
     }
     let url = project_url(root);
     let file = root.join(CHANGELOG);
-    let text = fs::read_to_string(&file).unwrap_or_else(|_| empty_changelog(url.as_deref()));
+    let changelog = changelog_of(root);
+    let branch = breadboard_core::git::branch(root);
+    let text = fs::read_to_string(&file).unwrap_or_else(|_| empty_changelog(&changelog, &branch, url.as_deref()));
     let entries = entries_of(root);
     let with_links: Vec<Entry> = super::gitlab::in_turns(&entries, 8, |entry| Entry {
         mr: entry.file.as_deref().and_then(|file| mr_of_fragment(root, file)),
@@ -645,9 +692,11 @@ fn release(root: &Path, args: &Args) {
     });
     let mut all = with_links.clone();
     let versions = versions_of(&text);
-    if let Some(library) = library_entry_of(root, versions.first().map(String::as_str), url.as_deref()) {
-        all.push(library);
-    }
+    all.extend(
+        changelog.libraries.iter().filter_map(|library| {
+            library_entry_of(root, library, versions.first().map(String::as_str), url.as_deref())
+        }),
+    );
     if all.is_empty() {
         fail(&format!("no fragments in {FRAGMENTS}/: nothing to release"));
     }
@@ -658,6 +707,7 @@ fn release(root: &Path, args: &Args) {
         &breadboard_core::time::day(breadboard_core::time::now_ms()),
         &body,
         url.as_deref(),
+        &branch,
     )
     .unwrap_or_else(|error| fail(&error));
     if let Err(error) = fs::write(&file, folded) {
@@ -668,16 +718,26 @@ fn release(root: &Path, args: &Args) {
             let _ = fs::remove_file(root.join(fragment));
         }
     }
-    let vita = root.join("products/vita/web/package.json");
-    if let Ok(json) = fs::read_to_string(&vita) {
-        static FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""version": "[^"]*""#).unwrap());
-        let _ = fs::write(
-            &vita,
-            FIELD
-                .replacen(&json, 1, format!("\"version\": \"{version}\"").as_str())
-                .as_ref(),
-        );
+    // The package.json files the release sets to its version (`version_files`).
+    let mut set = Vec::new();
+    for name in &changelog.version_files {
+        let path = root.join(name);
+        if let Ok(json) = fs::read_to_string(&path) {
+            static FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""version": "[^"]*""#).unwrap());
+            let _ = fs::write(
+                &path,
+                FIELD
+                    .replacen(&json, 1, format!("\"version\": \"{version}\"").as_str())
+                    .as_ref(),
+            );
+            set.push(name.as_str());
+        }
     }
+    let set = if set.is_empty() {
+        String::new()
+    } else {
+        format!(", {} at {version}", set.join(", "))
+    };
     let unlinked = with_links.iter().filter(|entry| entry.mr.is_none()).count();
     let note = if unlinked > 0 {
         format!("\n  {unlinked} without an MR link (not merged yet, or glab couldn't say)")
@@ -685,7 +745,7 @@ fn release(root: &Path, args: &Args) {
         String::new()
     };
     outln!(
-        "✓ {CHANGELOG}: [{version}] with {}, {} deleted, vita at {version}{note}\n  Read it, then commit: chore(release): v{version}",
+        "✓ {CHANGELOG}: [{version}] with {}, {} deleted{set}{note}\n  Read it, then commit: chore(release): v{version}",
         counted(all.len(), "entry", "entries"),
         counted(entries.len(), "fragment", "fragments")
     );
@@ -738,7 +798,8 @@ fn check(root: &Path, args: &Args) {
     let (is_ok, reason) = verdict_of(&changed, &labels);
     if !is_ok {
         fail(&format!(
-            "{reason}. Add one (pnpm changelog:add \"<sentence>\", {FRAGMENTS}/README.md),\n  or label the MR {NO_CHANGELOG} when nobody would miss it in the changelog, then retry this job."
+            "{reason}. Add one ({run} changelog:add \"<sentence>\", {FRAGMENTS}/README.md),\n  or label the MR {NO_CHANGELOG} when nobody would miss it in the changelog, then retry this job.",
+            run = breadboard_core::config::run_word()
         ));
     }
     outln!("✓ {reason}");
@@ -787,6 +848,17 @@ mod tests {
         );
     }
 
+    /// A `[changelog]` as platform's.
+    fn platform() -> Changelog {
+        Changelog {
+            title: "Monocircuit/Platform".into(),
+            versions: "vita's releases (`vX.Y.Z`)".into(),
+            area_dirs: vec!["products".into(), "packages".into()],
+            strip: Some("monocircuit-".into()),
+            ..Changelog::default()
+        }
+    }
+
     fn areas() -> Vec<String> {
         ["vita", "breadboard", "ci", "repo"]
             .iter()
@@ -810,8 +882,13 @@ mod tests {
             problems_of("f", "no", &areas()),
             vec!["f: starts with a frontmatter block (--- type: … area: … ---)"]
         );
-        assert_eq!(area_of_path("packages/monocircuit-keycloak-theme/a"), "keycloak-theme");
-        assert_eq!(area_of_path(".gitlab/ci/x.yml"), "ci");
+        assert_eq!(
+            area_of_path(&platform(), "packages/monocircuit-keycloak-theme/a"),
+            "keycloak-theme"
+        );
+        assert_eq!(area_of_path(&platform(), "products/web/x/a.ts"), "web");
+        assert_eq!(area_of_path(&Changelog::default(), "products/web/x/a.ts"), "repo");
+        assert_eq!(area_of_path(&platform(), ".gitlab/ci/x.yml"), "ci");
         assert_eq!(issue_of_name(".changelog/291-x.md"), Some(291));
     }
 
@@ -843,19 +920,37 @@ mod tests {
 
     #[test]
     fn folds_a_release_in() {
-        let text = empty_changelog(Some("https://g/p"));
-        let folded = fold_into(&text, "1.0.0", "2026-10-01", "### Added\n\n- x", Some("https://g/p")).unwrap();
+        let text = empty_changelog(&platform(), "develop", Some("https://g/p"));
+        assert!(text.contains("All notable changes to Monocircuit/Platform are documented"));
+        assert!(text.contains("the versions are those of vita's releases (`vX.Y.Z`)."));
+        let folded = fold_into(
+            &text,
+            "1.0.0",
+            "2026-10-01",
+            "### Added\n\n- x",
+            Some("https://g/p"),
+            "develop",
+        )
+        .unwrap();
         assert!(folded.contains("## [Unreleased]\n\n## [1.0.0] - 2026-10-01\n\n### Added\n\n- x\n"));
         assert!(
             folded.ends_with(
                 "[Unreleased]: https://g/p/-/compare/v1.0.0...develop\n[1.0.0]: https://g/p/-/tags/v1.0.0\n"
             )
         );
-        let again = fold_into(&folded, "1.1.0", "2026-10-02", "### Fixed\n\n- y", Some("https://g/p")).unwrap();
+        let again = fold_into(
+            &folded,
+            "1.1.0",
+            "2026-10-02",
+            "### Fixed\n\n- y",
+            Some("https://g/p"),
+            "develop",
+        )
+        .unwrap();
         assert!(again.contains("[1.1.0]: https://g/p/-/compare/v1.0.0...v1.1.0\n[1.0.0]:"));
         assert_eq!(notes_of(&again, "1.0.0").as_deref(), Some("### Added\n\n- x"));
         assert_eq!(
-            fold_into(&again, "1.1.0", "d", "b", None),
+            fold_into(&again, "1.1.0", "d", "b", None, "develop"),
             Err("CHANGELOG.md has a section 1.1.0 already".into())
         );
     }

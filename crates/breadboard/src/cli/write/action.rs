@@ -188,7 +188,8 @@ fn where_of(argv: &Argv, here: &Here) -> Result<(PathBuf, Option<String>), Strin
         // A name outside NAME would reach outside the records (`../x`); said as wt:plan says it.
         if !is_name(name) {
             return Err(format!(
-                "{name} is no orchestration's name: names are kebab-case (pnpm wt:orchestrate <name> <issue>…)"
+                "{name} is no orchestration's name: names are kebab-case ({run} wt:orchestrate <name> <issue>…)",
+                run = breadboard_core::config::run_word()
             ));
         }
         let Some(main) = here.main.as_deref().filter(|main| record_of(main, name).is_some()) else {
@@ -346,7 +347,10 @@ pub fn run(argv: &Argv) -> Outcome {
         let is_done = *result.as_ref().unwrap_or(&false);
         written(result, &file)?;
         if !is_done {
-            return Err(format!("no open action {id} (pnpm wt:action --list)"));
+            return Err(format!(
+                "no open action {id} ({run} wt:action --list)",
+                run = breadboard_core::config::run_word()
+            ));
         }
         say(&format!("\n✓ action {id} done\n"));
         return Ok(ExitCode::SUCCESS);
@@ -494,8 +498,12 @@ fn posted(action: &Action, name: Option<&str>, is_orchestrator: bool) -> String 
         _ => String::new(),
     };
     format!(
-        "\n✓ action {} ({}): {}\n{spot}  {place}\n{answer}  done by hand: pnpm wt:action --done {}{by_hand}\n",
-        action.id, action.kind, action.text, action.id
+        "\n✓ action {} ({}): {}\n{spot}  {place}\n{answer}  done by hand: {run} wt:action --done {}{by_hand}\n",
+        action.id,
+        action.kind,
+        action.text,
+        action.id,
+        run = breadboard_core::config::run_word()
     )
 }
 

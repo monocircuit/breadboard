@@ -21,7 +21,14 @@ fn install_dir() -> PathBuf {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local").join("share"))
-        .join("monocircuit")
+        // Named after the plugin's id (its part before the first dot), where it was installed before #342.
+        .join(
+            breadboard_core::record::PLUGIN
+                .get()
+                .split('.')
+                .next()
+                .unwrap_or("breadboard"),
+        )
         .join("chromium-extension")
 }
 

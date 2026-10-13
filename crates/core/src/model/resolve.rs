@@ -46,7 +46,9 @@ pub fn resolve_line(mr: &Mr) -> String {
 /// `agents`: outside herdr, nothing is known then).
 pub fn no_agent_of(tree: Option<&Tree>, agents: &HashMap<String, Agent>) -> Option<String> {
     let Some(tree) = tree else {
-        return Some("no worktree, so no agent: merge develop in yourself".into());
+        return Some(crate::config::in_repo(
+            "no worktree, so no agent: merge develop in yourself",
+        ));
     };
     let Some(claude) = &tree.claude else {
         return Some("no agent in its worktree".into());

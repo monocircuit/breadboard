@@ -32,11 +32,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The plugin's id: the manifest's, every sidebar token's source, the block
-/// marker in configs (rule 5: never changes).
-pub const PLUGIN: &str = "monocircuit.platform";
-/// The herdr space of the repo's main checkout (constants.mjs `SPACE`).
-pub const SPACE: &str = "Monocircuit/Platform";
+pub use breadboard_core::record::{PLUGIN, SPACE};
 
 const USAGE: &str = "usage: breadboard herdr [--here | --no-attach | --reload | --stop]   (pnpm herdr)
        breadboard herdr:install                              (pnpm herdr:install)
@@ -79,8 +75,9 @@ fn painted(code: &str, text: &str, is_on: bool) -> String {
 /// (session.mjs `step`, tighter than the CLI's).
 pub fn step(message: &str) {
     println!(
-        "{} {message}",
-        painted("36", "▸", is_coloured(std::io::stdout().is_terminal()))
+        "{} {}",
+        painted("36", "▸", is_coloured(std::io::stdout().is_terminal())),
+        breadboard_core::config::in_repo(message)
     );
 }
 
@@ -97,7 +94,14 @@ pub fn finish(done: Done) -> ExitCode {
         Ok(code) => code,
         Err(Fail(reason)) => {
             let is_on = is_coloured(std::io::stderr().is_terminal());
-            eprintln!("\n{}", painted("1;31", &format!("✗ {reason}"), is_on));
+            eprintln!(
+                "\n{}",
+                painted(
+                    "1;31",
+                    &format!("✗ {}", breadboard_core::config::in_repo(&reason)),
+                    is_on
+                )
+            );
             ExitCode::FAILURE
         }
     }

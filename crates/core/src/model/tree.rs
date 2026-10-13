@@ -196,7 +196,7 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
             let is_test = failures.iter().any(|failure| failure.task == "test");
             let what = failures_text(failures);
             let what = if what.is_empty() {
-                "see pnpm wt:check".to_string()
+                crate::config::in_repo("see pnpm wt:check")
             } else {
                 what
             };
@@ -677,7 +677,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
         let develop = tree.map(|tree| tree.on_base.clone()).unwrap_or_default();
         // Named after its base: develop, or its epic (#349).
         let develop = (!develop.is_empty()).then(|| Overlap {
-            name: tree.map_or_else(|| "develop".into(), |tree| tree.base.local.clone()),
+            name: tree.map_or_else(|| crate::git::default_branch().into(), |tree| tree.base.local.clone()),
             files: develop,
         });
         let others = works
@@ -803,7 +803,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 is_shared: tree.is_some_and(|tree| tree.has_env && !tree.has_own_port),
                 app_port: tree
                     .filter(|tree| tree.has_env)
-                    .map(|tree| 3000 + if tree.has_own_port { tree.offset } else { 0 }),
+                    .map(|tree| tree.app_port + if tree.has_own_port { tree.offset } else { 0 }),
                 migrations_at: tree.map_or(0, |tree| tree.migrations_at),
                 docker_at: tree.map_or(0, |tree| tree.docker_at),
                 state,
@@ -1271,6 +1271,7 @@ mod tests {
                 files: files.iter().map(|file| file.to_string()).collect(),
                 on_base: on_develop.iter().map(|file| file.to_string()).collect(),
                 has_env: true,
+                app_port: 3000,
                 has_own_port: true,
                 offset: number,
                 stack: Some("running(5)".into()),
@@ -1317,6 +1318,7 @@ mod tests {
     fn a_stack_says_its_states_in_words_and_never_down_while_docker_has_not_answered() {
         let own = |docker: Docker, stack: Option<&str>| Tree {
             has_env: true,
+            app_port: 3000,
             has_own_port: true,
             offset: 2,
             docker,

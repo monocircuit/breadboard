@@ -51,9 +51,9 @@ pub struct Tries {
     pub clicked: HashMap<PathBuf, (i64, String)>,
 }
 
-/// Whether `page` is on the worktree's own app, the one a click starts when it is down.
-pub fn is_on_app(page: &str, offset: i64) -> bool {
-    let origin = app_origin(offset);
+/// Whether `page` is on the worktree's own app on `port`, the one a click starts when it is down.
+pub fn is_on_app(page: &str, port: i64) -> bool {
+    let origin = app_origin(port);
     page == origin || page.starts_with(&format!("{origin}/"))
 }
 
@@ -236,8 +236,8 @@ fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Result<String, &'sta
 /// one waits takes its place.
 fn open_page(app: &mut Overview, tree: &Tree, action: &Action) {
     let dir = tree.dir.clone();
-    let offset = tree.offset;
-    let page = page_of(action.url.as_deref().unwrap_or_default(), offset);
+    let port = tree.app_port + tree.offset;
+    let page = page_of(action.url.as_deref().unwrap_or_default(), port);
     let stack_error = app.actor.stacks.get(&dir).and_then(|run| run.error.clone());
     if let Some(state) = app.actor.tries.trying.get_mut(&dir)
         && state.error.is_none()
@@ -250,9 +250,9 @@ fn open_page(app: &mut Overview, tree: &Tree, action: &Action) {
         }
         return;
     }
-    let is_own = tree.has_own_port && tree.has_env && is_on_app(&page, offset);
+    let is_own = tree.has_own_port && tree.has_env && is_on_app(&page, port);
     let is_starting = app.actor.stacks.get(&dir).is_some_and(|run| run.is_running);
-    if !is_own || is_starting || is_port_taken(3000 + offset) {
+    if !is_own || is_starting || is_port_taken(port) {
         app.actor.tries.trying.remove(&dir);
         app.actor
             .tries
@@ -273,11 +273,11 @@ fn open_page(app: &mut Overview, tree: &Tree, action: &Action) {
             replaced: None,
         },
     );
-    start_stack(app, &dir, Some(offset));
+    start_stack(app, &dir, Some(port));
 }
 
 /// The stack is up for a waiting try: the page once `pnpm dev` answers.
-fn app_up(app: &mut Overview, dir: &Path, offset: i64) {
+fn app_up(app: &mut Overview, dir: &Path, port: i64) {
     let Some(state) = app.actor.tries.trying.get_mut(dir) else {
         return;
     };
@@ -287,7 +287,7 @@ fn app_up(app: &mut Overview, dir: &Path, offset: i64) {
     std::thread::spawn(move || {
         let until = Instant::now() + APP_WAIT;
         let is_up = loop {
-            if is_port_taken(3000 + offset) {
+            if is_port_taken(port) {
                 break true;
             }
             if Instant::now() >= until {
@@ -312,7 +312,7 @@ fn app_up(app: &mut Overview, dir: &Path, offset: i64) {
             } else {
                 let why = format!(
                     "the app on {} didn't answer: see the tab dev",
-                    short_page(&app_origin(offset))
+                    short_page(&app_origin(port))
                 );
                 app.actor.log(Paint::Red, format!("try #{}: {why}", state.id));
                 if let Some(trying) = app.actor.tries.trying.get_mut(&dir) {
@@ -344,7 +344,7 @@ pub fn spot(actor: &Actor, action: &Action, tree: Option<&Tree>) -> Option<Vec<S
         }
         return clicked.map(|done| vec![Span::new(done, Paint::Green), Span::dim(format!(" {run}"))]);
     }
-    let page = page_of(action.url.as_deref()?, tree.offset);
+    let page = page_of(action.url.as_deref()?, tree.app_port + tree.offset);
     let state = actor.tries.trying.get(dir).filter(|state| state.id == action.id);
     let stack = actor.stacks.get(dir);
     let error = state.and_then(|state| state.error.clone()).or_else(|| {
@@ -383,8 +383,8 @@ pub fn spot(actor: &Actor, action: &Action, tree: Option<&Tree>) -> Option<Vec<S
 }
 
 /// `stack:up` of a checkout, detached (`startStack`, `▶ start the stack`, `u`);
-/// `offset`: a try waits for its page once it is up.
-pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
+/// `port`: a try waits for its page on the app's port once it is up.
+pub fn start_stack(app: &mut Overview, dir: &Path, port: Option<i64>) {
     if app.actor.stacks.get(dir).is_some_and(|run| run.is_running) {
         return;
     }
@@ -425,8 +425,8 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
                             format!("the stack of {who} is up"),
                             None,
                         );
-                        if let Some(offset) = offset {
-                            app_up(app, &done, offset);
+                        if let Some(port) = port {
+                            app_up(app, &done, port);
                         }
                     }
                     Some(why) => {
@@ -454,7 +454,7 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
                 &format!("stack:{who}"),
                 Paint::Yellow,
                 format!("starting the stack of {who} …"),
-                Some("pnpm stack:up".into()),
+                Some(breadboard_core::config::of(dir).command("stack:up")),
             );
         }
         Err(why) => {
@@ -471,8 +471,8 @@ pub fn start_stack(app: &mut Overview, dir: &Path, offset: Option<i64>) {
     }
 }
 
-/// `pnpm pg:migrate` in a worktree's vita, detached (STACK's `▶ pnpm
-/// pg:migrate`, from WORKTREES since #332), once at a time; its log in
+/// The stack's migrations (`[stack.migrations] run`) in a worktree, detached
+/// (STACK's `▶ <run>`, from WORKTREES since #332), once at a time; its log in
 /// `$TMPDIR/overview-migrate-<basename>.log`. Its end forgets the
 /// migrations core holds of it: the next read asks the database again.
 pub fn migrate(app: &mut Overview, dir: &Path) {
@@ -483,14 +483,22 @@ pub fn migrate(app: &mut Overview, dir: &Path) {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let Some(run) = breadboard_core::stack::of(dir)
+        .and_then(|stack| stack.migrations)
+        .map(|m| m.run)
+    else {
+        return;
+    };
     let log = spawn::log_file(&format!("overview-migrate-{base}.log"));
     let poster = app.actor.poster();
     let done = dir.to_path_buf();
+    let said = format!("{run} ");
+    let shown = run.clone();
     let started = spawn::start(
         Background {
-            program: Path::new("pnpm"),
-            args: vec!["pg:migrate".into()],
-            cwd: &dir.join(breadboard_core::model::develop::VITA),
+            program: Path::new("sh"),
+            args: vec!["-c".into(), run],
+            cwd: &breadboard_core::stack::dir_of(dir),
             log: &log,
             env: Vec::new(),
             is_paneless: false,
@@ -498,7 +506,7 @@ pub fn migrate(app: &mut Overview, dir: &Path) {
         move |code, last| {
             breadboard_core::model::develop::forget_migrations(&done);
             poster.post(move |app: &mut Overview| {
-                let error = error_of(code, &last, "pnpm pg:migrate ");
+                let error = error_of(code, &last, &said);
                 let who = feature_of(&app.actor.main, &done);
                 let (paint, text) = match &error {
                     None => (Paint::Green, format!("the migrations of {who} are applied")),
@@ -525,7 +533,7 @@ pub fn migrate(app: &mut Overview, dir: &Path) {
                 &format!("migrate:{who}"),
                 Paint::Yellow,
                 format!("migrating the database of {who} …"),
-                Some("pnpm pg:migrate".into()),
+                Some(shown),
             );
         }
         Err(why) => {
@@ -548,10 +556,10 @@ mod tests {
 
     #[test]
     fn knows_the_pages_of_the_worktrees_app() {
-        assert!(is_on_app("http://localhost:3002/atlas", 2));
-        assert!(is_on_app("http://localhost:3002", 2));
-        assert!(!is_on_app("http://localhost:30021", 2));
-        assert!(!is_on_app("https://example.org/", 2));
+        assert!(is_on_app("http://localhost:3002/atlas", 3002));
+        assert!(is_on_app("http://localhost:3002", 3002));
+        assert!(!is_on_app("http://localhost:30021", 3002));
+        assert!(!is_on_app("https://example.org/", 3002));
     }
 
     #[test]
@@ -565,6 +573,7 @@ mod tests {
         let tree = Tree {
             dir: "/r-7".into(),
             offset: 2,
+            app_port: 3000,
             ..Default::default()
         };
         let run = Action {

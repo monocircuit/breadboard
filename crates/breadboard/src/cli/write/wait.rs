@@ -240,9 +240,10 @@ fn line_of(parsed: &Parsed, verdict: &Verdict, base: &str, behind: Option<u64>) 
             CONFLICT_MS / 60_000
         ),
         Verdict::Timeout(open) => format!(
-            "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again (pnpm wt:wait)",
+            "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again ({run} wt:wait)",
             hours_text(parsed),
-            list_of(open)
+            list_of(open),
+            run = breadboard_core::config::run_word()
         ),
         Verdict::Waiting => String::new(),
     }

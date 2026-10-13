@@ -249,8 +249,9 @@ pub async fn read_orchestration(
     }
 
     // develop's last finished pipeline, its jobs only when it failed.
+    let branch = gitlab.branch();
     let develop = match pipelines.iter().find(|pipeline| {
-        pipeline.reference.as_deref() == Some("develop") && FINISHED.contains(&pipeline.status.as_str())
+        pipeline.reference.as_deref() == Some(branch.as_str()) && FINISHED.contains(&pipeline.status.as_str())
     }) {
         Some(pipeline) => Some(DevelopPipeline {
             id: pipeline.id,
