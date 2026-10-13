@@ -19,7 +19,7 @@ pub fn brief_of(
     let (number, title, dir, branch) = (&issue.number, &issue.title, text(&issue.dir), &issue.branch);
     let worktree = match before {
         Some(_) => format!(
-            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim. You come from another worktree: `EnterWorktree(path: \"{dir}\")` once, if you don't stand in it yet; after that don't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
+            "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim. You come from another worktree: before any work `git rev-parse --show-toplevel` prints `{dir}`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"{dir}\")`, once. After that don't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
         ),
         None => format!(
             "Your worktree is `{dir}` on `{branch}`: it exists, its branch is pushed as the claim, you already stand in it.\nDon't run `wt:new`, `EnterWorktree` or `ExitWorktree`."
@@ -73,12 +73,12 @@ You work on issue #{number} of {repo}, started by the orchestration `{name}` (he
 4. **Whenever you stop and the next step is the user's, leave an action for it** with `{run} wt:action`. The overview of the orchestration answers "what now?" from these (its NEXT line and ACTIONS): the user must never have to ask you what is next.
    - `{run} wt:action merge "<what is in it>"` only once the work is done: the pipeline of the MR passed, every box of the issue is ticked (Work and acceptance criteria), every `try` you posted was answered `looks good`, and it is its turn in the merge order (`wt:plan`). Then mark it ready (`glab mr update --ready`) and post it yourself, the overview's automatic one is only a fallback; when your permissions block `--ready`, post it anyway with "mark ready + merge" in the text. While a try is open the overview offers no merge. Never merge yourself;
    - `{run} wt:action try "<what to check>" --run "<command>"` (a terminal, e.g. `{run} overview --orchestration <name>` of your branch) or `--url <page>` (`/atlas/…` on your worktree's app, its stack started first) for something only a person can judge: the click opens that spot. Every box you leave open for the user's live check gets one, and the box names it (`… (try #<id>)`); tick it once the answer is `looks good`. A check that needs the deployment (HTTPS, the test instance's data) is `--on test --url <path>`, posted with the merge, its box marked `(after deploy, try #<id>)`: the only check that stays open across the merge; the row shows `waits for merge`, `deploying`, then `ready` by itself. A `broken` puts the MR back to draft (the overview does it when the MR was ready, else `glab mr update --draft`) until the fix is pushed, green and tried again with a new try;
-   - `{run} wt:action decide "<what is decided, one sentence>? <why the recommendation, one line>" --option "<label>" --why "<what happens>" --option "<label>" --why "<what happens>" --recommend <label>`: the user answers from the row, so the question says precisely what is decided, each option a short label (the answer you get) with what happens as its `--why` (or `--option "<label>: <what happens>"`), not `A`/`B`, and `--recommend` marks yours `(Recommended)`. Together with the SendMessage to the orchestrator that explains them;
+   - `{run} wt:action decide "<what is decided, one sentence>? <why the recommendation, one line>" --option "<label>" --why "<what happens>" --option "<label>" --why "<what happens>" --recommend <label>`: the user answers from the row, so the question says precisely what is decided, each option a short label (the answer you get) with what happens as its `--why` (or `--option "<label>: <what happens>"`), not `A`/`B`, and `--recommend` marks yours `(Recommended)`. Together with the SendMessage to the orchestrator that explains them. `AskUserQuestion` is off in headless runs (#360): a question for the user is always a `decide`;
    - `{run} wt:action plan "<the plan in one line>"` before larger work, for an `ok` or `different`;
    - `{run} wt:action look "<what>"` for anything else the user has to do.
    The user's click arrives typed into this tab as one line, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user, maybe with images: until it arrives, wait for it instead of guessing from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `{run} wt:action --done <id>` (`--list` shows them). While you are working, leave none.
 5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as the first prompt of your conversation, resumed in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>, read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
+6. Your next issue may come as the first prompt of your conversation, resumed in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: "keep")`, then `EnterWorktree(path: "<dir>")`. Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
 {tail}"#
     )
 }
@@ -109,7 +109,11 @@ mod tests {
         assert!(brief.contains("\n1. Read the issue: `glab issue view 12 --comments`, then"));
         assert!(brief.contains("Before that, `ListAgents` finds it (it works in `/r/p`)."));
         assert!(brief.contains("\n   At every stage, `breadboard wt:action note \"<one line>\"`: what you are on"));
-        assert!(brief.ends_with("read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
+        // A headless run can't show AskUserQuestion: questions go to the overview (#360).
+        assert!(brief.contains(
+            "`AskUserQuestion` is off in headless runs (#360): a question for the user is always a `decide`;"
+        ));
+        assert!(brief.ends_with("Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
     }
 
     #[test]
@@ -123,7 +127,7 @@ mod tests {
             Some("You are a reused agent: x."),
             Path::new("/r/p"),
         );
-        assert!(brief.contains("You come from another worktree: `EnterWorktree(path: \"/r/p-12-a-title\")` once"));
+        assert!(brief.contains("You come from another worktree: before any work `git rev-parse --show-toplevel` prints `/r/p-12-a-title`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"/r/p-12-a-title\")`, once."));
         assert!(brief.contains("   The orchestrator is the session `s-1` (`ListAgents`).\n"));
         assert!(brief.ends_with(
             ".\n\n## Before this issue\n\nYou are a reused agent: x.\n\n## From the orchestrator\n\nmore\n"

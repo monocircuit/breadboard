@@ -488,7 +488,7 @@ pub fn command(args: &Args) -> ExitCode {
                     };
                     results.push(if agent.is_started {
                         format!(
-                            "✓ #{} {}: claude started in its tab, named {}{note}",
+                            "✓ #{} {}: claude queued headless (breadboard runs), named {}{note}",
                             item.number, item.feature, item.feature
                         )
                     } else {
