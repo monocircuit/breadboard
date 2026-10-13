@@ -8,14 +8,13 @@
 
 use super::args::Args;
 use super::claude::{bound_session, context_share_of, is_conversation_running};
-use super::handover::restart::{self, Machine};
-use super::handover::{agent_of, context_limit, pane_of_conversation, refusal_of};
-use super::herdr::s;
+use super::handover::{agent_of, context_limit, end_claude, refusal_of};
 use super::proc::{Done, fail, step};
 use super::repo::Repo;
+use breadboard_core::conversations::interactive_pids_of;
 use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
-use breadboard_core::runs::{self, args_of};
+use breadboard_core::runs::args_of;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::json;
 use std::fs;
@@ -36,15 +35,6 @@ pub fn is_retire(words: &[String]) -> bool {
     words
         .iter()
         .any(|word| word == "--retire" || word.starts_with("--retire="))
-}
-
-/// The line that ends an agent's claude in its pane before its last run.
-pub fn retire_line(iid: i64, share: f64, limit: f64) -> String {
-    format!(
-        "[overview] !{iid} merged, your context is at {} %, above {} %: you retire. Your claude ends now, nothing to do or answer; one last run writes your handoff, a fresh agent takes the next issue.",
-        percent(share),
-        percent(limit)
-    )
 }
 
 /// The prompt of the last run: the handoff, a page at most, facts only.
@@ -97,23 +87,23 @@ pub fn command(args: &Args) -> Done {
         percent(limit)
     ));
     // Never mid-issue: only an agent that is idle (its MR merged, nothing asked) retires.
-    let is_headless = runs::is_headless(&repo.main);
-    let found = agent_of(&repo.main, &id, is_headless)
+    let found = agent_of(&repo.main, &id)
         .map_err(|why| super::proc::Fail(format!("{why}: can't tell whether {shown} is idle; nothing changed")))?;
     if let Some(why) = refusal_of(found.as_ref(), true, None, 1.0) {
         return fail(format!(
             "{shown} not retired: {why}; only an idle agent retires, never mid-issue"
         ));
     }
-    if is_headless && is_conversation_running(&id) {
-        return fail(format!("{shown} not retired: a claude runs its conversation"));
+    // An idle claude of it still in a tab (#361) ends first, as a handover's does: the last run takes its conversation.
+    for pid in interactive_pids_of(&id) {
+        if !end_claude(pid) {
+            return fail(format!(
+                "{shown} not retired: its claude in a tab (pid {pid}) did not end"
+            ));
+        }
     }
-    // A pane runs it (not headless): its claude ends first, the last run takes its conversation.
-    if !is_headless
-        && let Ok(Some(pane)) = pane_of_conversation(&id)
-        && let Err(why) = restart::retire(&Machine, &id, s(&pane, "pane_id"), &retire_line(iid, share, limit))
-    {
-        return fail(format!("{shown} not retired: {why}"));
+    if is_conversation_running(&id) {
+        return fail(format!("{shown} not retired: a claude runs its conversation"));
     }
     let changed: Vec<String> = work_files(&dir).into_iter().collect();
     let written = dir.join(HANDOFF);
@@ -222,10 +212,6 @@ mod tests {
         let many: Vec<String> = (0..25).map(|n| format!("f{n}")).collect();
         assert!(handoff_prompt(1, 0.5, 0.4, &many).contains(", f19 and 5 more)"));
         assert!(handoff_prompt(1, 0.5, 0.4, &[]).contains("about the files you worked on:"));
-        assert_eq!(
-            retire_line(313, 0.47, 0.4),
-            "[overview] !313 merged, your context is at 47 %, above 40 %: you retire. Your claude ends now, nothing to do or answer; one last run writes your handoff, a fresh agent takes the next issue."
-        );
     }
 
     #[test]
