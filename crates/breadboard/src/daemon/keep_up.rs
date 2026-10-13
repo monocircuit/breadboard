@@ -22,8 +22,8 @@ pub async fn keep_up(main: PathBuf) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        // Its repo gone (a gauntlet world removed): nothing to keep.
-        if !main.is_dir() {
+        // Its repo gone or going (a gauntlet world removed): nothing to keep.
+        if !main.join(".git").exists() {
             return;
         }
         let (main, store) = (main.clone(), store.clone());

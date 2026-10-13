@@ -178,6 +178,9 @@ pub fn read(store: &Path) -> State {
 /// `change` on the state, under its lock (two daemons of the clone, each
 /// with a step running, never undo the other's write).
 pub fn change(store: &Path, change: impl FnOnce(&mut State)) -> std::io::Result<()> {
+    if !has_store(store) {
+        return Ok(());
+    }
     let file = state_file(store);
     crate::lock::with_dir_lock(&file, Duration::from_secs(10), || {
         let mut state = read(store);
@@ -191,10 +194,17 @@ pub fn change(store: &Path, change: impl FnOnce(&mut State)) -> std::io::Result<
 /// Something merged (the overview's own merge, the branch moved on GitLab):
 /// the next look comes now, not after its while.
 pub fn wake(main: &Path) {
-    if let Some(store) = store_of(main) {
-        let _ = std::fs::create_dir_all(&store);
+    if let Some(store) = store_of(main)
+        && has_store(&store)
+    {
         let _ = std::fs::write(wake_file(&store), crate::time::now_ms().to_string());
     }
+}
+
+/// The store there, made when its git directory is: never a git directory
+/// made again under a checkout being removed (a gauntlet world's end).
+fn has_store(store: &Path) -> bool {
+    store.is_dir() || std::fs::create_dir(store).is_ok()
 }
 
 /// Whether a look is due at `now`: `every` since the last, or woken since.
@@ -213,11 +223,15 @@ pub fn is_due(store: &Path, now: i64, every: Duration) -> bool {
 }
 
 /// One look at the main checkout `main` when one is due, under the look's
-/// lock (one daemon of the clone looks, another finds it done): the state
-/// written, what came of it. None: not due, or another looks right now.
+/// lock (one daemon of the clone looks, another finds it done; due is asked
+/// again under it): the state written, what came of it. None: not due, or
+/// another looks right now.
 pub fn look_if_due(main: &Path, store: &Path, settings: &Settings) -> Option<Look> {
+    // Asked every few seconds: nothing is written before a look is due.
+    if !is_due(store, crate::time::now_ms(), settings.every) || !has_store(store) {
+        return None;
+    }
     let lock = store.join("develop.look");
-    std::fs::create_dir_all(store).ok()?;
     if std::fs::create_dir(crate::lock::lock_of(&lock)).is_err() {
         // Another daemon looks; one whose look died long ago is taken over next time.
         if crate::lock::age_of(&crate::lock::lock_of(&lock)).is_some_and(|age| age > LOOK_STALE) {
@@ -678,6 +692,24 @@ mod tests {
         std::fs::write(&launcher, "exit 0\n").unwrap();
         run_steps(&main, &store, &["packages/breadboard/Cargo.lock".into()], &settings());
         assert_eq!(read(&store).steps[0].state, StepState::Done);
+    }
+
+    #[test]
+    fn writes_nothing_until_due_and_never_makes_a_removed_git_directory_again() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let store = store_of(&main).unwrap();
+        assert_eq!(look_if_due(&main, &store, &settings()), Some(Look::UpToDate));
+        // Not due: no lock made, nothing touched.
+        let before = std::fs::read_dir(&store).unwrap().count();
+        assert_eq!(look_if_due(&main, &store, &settings()), None);
+        assert_eq!(std::fs::read_dir(&store).unwrap().count(), before);
+        // The checkout being removed (a gauntlet world's end): its .git stays gone.
+        std::fs::remove_dir_all(main.join(".git")).unwrap();
+        assert_eq!(look_if_due(&main, &store, &settings()), None);
+        wake(&main);
+        let _ = change(&store, |state| state.looked_at = 1);
+        assert!(!main.join(".git").exists());
     }
 
     #[test]
