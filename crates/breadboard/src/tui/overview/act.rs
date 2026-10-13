@@ -64,8 +64,8 @@ pub enum Act {
         port: i64,
         is_shared: bool,
     },
-    /// Storybook in a tab of the worktree's space.
-    Storybook(PathBuf),
+    /// A tool of the stack (Storybook) in a tab of the worktree's space, by name.
+    Tool(PathBuf, String),
     /// A file in the worktree's nvim, at a line.
     OpenFile {
         dir: PathBuf,
@@ -81,14 +81,13 @@ pub enum Act {
     },
 }
 
-/// What folds: the removed worktrees, the queue, the merged MRs; in the
+/// What folds: WORK's done ones (`Removed`: merged and removed) and its queue; in the
 /// view of everything the open MRs and issues the pane cut; DONE's commands;
-/// the boxes of an MR and of a worktree (#346).
+/// the boxes of an MR (#346).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fold {
     Removed,
     Queued,
-    Merged,
     Mrs,
     Issues,
     Done,
@@ -113,7 +112,6 @@ const DISMISS_ARM: Duration = Duration::from_millis(4000);
 pub fn act(app: &mut Overview, act: Act) -> Flow {
     match act {
         Act::Fold(fold) => {
-            let is_removed_folded = app.is_removed_folded();
             // Whether the MR shows its open boxes before any click (#354).
             let has_open_boxes = |iid: i64| {
                 app.orchestration()
@@ -131,9 +129,8 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
             };
             let folds = &mut app.folds;
             match fold {
-                Fold::Removed => folds.removed = Some(!folds.removed.unwrap_or(is_removed_folded)),
+                Fold::Removed => folds.is_done_folded = !folds.is_done_folded,
                 Fold::Queued => folds.is_queued_folded = !folds.is_queued_folded,
-                Fold::Merged => folds.is_merged_folded = !folds.is_merged_folded,
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
@@ -165,7 +162,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete
         | Act::StartStack(_)
         | Act::Migrate(_)
-        | Act::Storybook(_)
+        | Act::Tool(..)
         | Act::OpenFile { .. }
         | Act::Hunks { .. } => {
             return super::worktree_view::act(app, act);
@@ -202,11 +199,16 @@ fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
         return;
     }
     // What to do first: the band shows the words before the first `: `.
+    let dev = match breadboard_core::stack::of(&main) {
+        Some(stack) if stack.dir != "." => format!("{} in {}", stack.app.dev, stack.dir),
+        Some(stack) => stack.app.dev,
+        None => "the app".into(),
+    };
     let hint = if is_shared {
-        format!("pnpm dev in products/vita/web serves the shared :{port}: nothing answers there")
+        format!("{dev} serves the shared :{port}: nothing answers there")
     } else {
         let who = breadboard_core::git::feature_of(&main, dir);
-        format!("pnpm dev in products/vita/web starts the app of {who}: nothing answers on :{port}")
+        format!("{dev} starts the app of {who}: nothing answers on :{port}")
     };
     app.actor.log(Paint::Dim, hint);
 }
@@ -243,6 +245,14 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::FocusSpace(dir) => app.actor.queue(move || {
             herdr::focus_space(&main, &dir);
             None
+        }),
+        // A headless agent has no tab: the click opens it in one (#361).
+        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
+            let opened = super::actor::open_agent::open(&main, &dir);
+            Some(Box::new(move |app: &mut Overview| match opened {
+                Ok(did) => app.actor.log(Paint::Green, did),
+                Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
+            }))
         }),
         Go::FocusAgent(dir) => {
             let tab = app.agent_tab_of(&dir);
@@ -337,7 +347,10 @@ fn end(app: &mut Overview) {
                 "end",
                 Paint::Yellow,
                 format!("ending ⇶ {name} …"),
-                Some(format!("pnpm wt:orchestrate {name} --end")),
+                Some(format!(
+                    "{run} wt:orchestrate {name} --end",
+                    run = breadboard_core::config::run_word()
+                )),
             );
         }
         Err(why) => {

@@ -34,7 +34,7 @@ fn token_of(slot: u32) -> String {
 
 /// The checkout of the orchestration `name`, made on first use: on its epic
 /// branch (#350), with its dependencies installed, else (an orchestration
-/// made before) detached on origin/develop; None when git refuses.
+/// made before) detached on the default branch's; None when git refuses.
 pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     let dir = repo.checkout_of(name);
     if orchestrator_checkouts(&repo.main).contains(&dir) {
@@ -43,7 +43,8 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     fs::create_dir_all(dir.parent()?).ok()?;
     let epic = json::read(&record::record_file(&repo.main, name)).and_then(|raw| epic_of(&raw));
     let path = text(&dir);
-    let add = checkout_args(epic.as_deref(), &path, |branch| {
+    let base = breadboard_core::git::Base::of(&breadboard_core::git::branch(&repo.main)).remote;
+    let add = checkout_args(epic.as_deref(), &path, &base, |branch| {
         git(
             &repo.main,
             &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
@@ -56,22 +57,24 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
         return None;
     }
     if epic.is_some() {
-        // The epic's own pnpm wt:check and stack (#351, #352) need it.
-        let _ = std::process::Command::new("pnpm")
-            .args(["install", "--frozen-lockfile", "--silent"])
-            .current_dir(&dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        // The epic's own wt:check and stack (#351, #352) need its setup: breadboard.toml's [[worktrees.setup]].
+        for step in &breadboard_core::config::of(&repo.main).config.worktrees.setup {
+            let _ = std::process::Command::new("sh")
+                .args(["-c", &step.run])
+                .current_dir(&dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
     }
     Some(dir)
 }
 
 /// `git worktree add` of a checkout at `path`: on the local `epic` branch
 /// when it exists (never reset: it may hold merges not pushed yet), else
-/// made from origin's, tracking it; detached on origin/develop without one.
-fn checkout_args(epic: Option<&str>, path: &str, has_local: impl Fn(&str) -> bool) -> Vec<String> {
+/// made from origin's, tracking it; detached on `base` (the default branch's) without one.
+fn checkout_args(epic: Option<&str>, path: &str, base: &str, has_local: impl Fn(&str) -> bool) -> Vec<String> {
     let mut args: Vec<String> = ["worktree", "add", "--quiet"].map(String::from).to_vec();
     match epic {
         Some(branch) if has_local(branch) => args.extend([path.to_string(), branch.to_string()]),
@@ -82,7 +85,7 @@ fn checkout_args(epic: Option<&str>, path: &str, has_local: impl Fn(&str) -> boo
             path.to_string(),
             format!("origin/{branch}"),
         ]),
-        None => args.extend(["--detach".into(), path.to_string(), "origin/develop".into()]),
+        None => args.extend(["--detach".into(), path.to_string(), base.to_string()]),
     }
     args
 }
@@ -266,12 +269,13 @@ pub fn mark_space(repo: &Repo, space: &Value, origin: Option<&Origin>) {
         return;
     }
     // herdr wants the space first: `--source` in front takes the id for an option.
+    let source = TOKEN_SOURCE.get();
     let mut all = vec![
         "workspace",
         "report-metadata",
         s(space, "workspace_id"),
         "--source",
-        TOKEN_SOURCE,
+        &source,
     ];
     all.extend(args.iter().map(String::as_str));
     call(&all);
@@ -674,15 +678,15 @@ mod tests {
         let local = |_: &str| true;
         let none = |_: &str| false;
         assert_eq!(
-            checkout_args(None, "/c", none).join(" "),
+            checkout_args(None, "/c", "origin/develop", none).join(" "),
             "worktree add --quiet --detach /c origin/develop"
         );
         assert_eq!(
-            checkout_args(Some("epic/15-b"), "/c", none).join(" "),
+            checkout_args(Some("epic/15-b"), "/c", "origin/develop", none).join(" "),
             "worktree add --quiet --track -b epic/15-b /c origin/epic/15-b"
         );
         assert_eq!(
-            checkout_args(Some("epic/15-b"), "/c", local).join(" "),
+            checkout_args(Some("epic/15-b"), "/c", "origin/develop", local).join(" "),
             "worktree add --quiet /c epic/15-b"
         );
     }
@@ -694,7 +698,7 @@ mod tests {
     #[test]
     fn orchestrations_sort_below_the_plain_worktrees() {
         let list = vec![
-            space("m", SPACE, false),
+            space("m", &SPACE.get(), false),
             space("a", "⇶ o", true),
             space("b", "2-b", true),
             space("c", "1-c", true),

@@ -1,11 +1,12 @@
 #!/bin/sh
-# monocircuit push guard (#184), installed by pnpm wt:new and wt:mr.
+# breadboard push guard (#184), installed by wt:new and wt:mr.
 # The guard of the pushing branch: a worktree's own binary where it is built
 # (as its developer built it), the Node hook of a branch from before the
 # rewrite (#314), else the main checkout's breadboard through its launcher,
 # which builds it first when it is missing or older than the main checkout's
-# HEAD (a pull). With none of them the push is refused: a guard that is off
-# says so.
+# HEAD (a pull), else the breadboard on PATH (a repo breadboard isn't
+# developed in, #342). With none of them the push is refused: a guard that
+# is off says so.
 top="$(git rev-parse --show-toplevel)"
 common="$(git rev-parse --path-format=absolute --git-common-dir)"
 own="$top/packages/breadboard/target/release/breadboard"
@@ -19,6 +20,7 @@ done
 package="$common/../packages/breadboard"
 [ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" hook pre-push "$@"
 [ -x "$package/target/release/breadboard" ] && exec "$package/target/release/breadboard" hook pre-push "$@"
-echo "✗ push refused: no push guard to run (#184, #298): breadboard isn't built here or in the main checkout.
-  Run pnpm build:rs in packages/breadboard of the main checkout, then push again." >&2
+command -v breadboard >/dev/null 2>&1 && exec breadboard hook pre-push "$@"
+echo "✗ push refused: no push guard to run (#184, #298): no breadboard here, in the main checkout or on PATH.
+  Install breadboard (or build it: pnpm build:rs in packages/breadboard of the main checkout), then push again." >&2
 exit 1

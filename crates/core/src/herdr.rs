@@ -352,7 +352,7 @@ pub fn plugin_id() -> String {
     std::env::var("HERDR_PLUGIN_ID")
         .ok()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| "monocircuit.platform".into())
+        .unwrap_or_else(|| crate::config::here().plugin())
 }
 
 /// `$HERDR_PLUGIN_STATE_DIR/last-context.json`, None outside a plugin command.

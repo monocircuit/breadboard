@@ -27,13 +27,20 @@ const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
 /// sources, never because develop was merged in or a package it depends on
 /// changed. They run through herdr/cargo.sh, in the clone's shared target/.
 const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
-/// The Rust sources of breadboard, as the launcher keys its builds on them.
-const RUST_SOURCES: [&str; 5] = [
+/// The Rust sources of breadboard, as the launcher keys its builds on them
+/// (herdr/breadboard.sh `sources`: the crates and what they embed).
+const RUST_SOURCES: [&str; 11] = [
     "packages/breadboard/crates",
     "packages/breadboard/hooks",
+    "packages/breadboard/claude",
+    "packages/breadboard/herdr/herdr-plugin.toml",
+    "packages/breadboard/herdr/keys.toml",
+    "packages/breadboard/herdr/config.toml",
+    "packages/breadboard/herdr/breadboard.sh",
+    "packages/breadboard/nvim",
+    "packages/breadboard/chromium",
     "packages/breadboard/Cargo.toml",
     "packages/breadboard/Cargo.lock",
-    "packages/breadboard/rustfmt.toml",
 ];
 
 /// What a check runs: turbo's tasks and the filters of the packages they run in.
@@ -45,7 +52,7 @@ pub struct Scope {
 
 /// The `--filter`s of the packages a change affects, from turbo's
 /// `affectedPackages` and its package paths (`query`'s answer). Not turbo's
-/// `...[<base>]`: the root depends on `@monocircuit/vita` (#299), and turbo
+/// `...[<base>]`: the root may depend on a package (#299), and turbo
 /// counts a change in a package the root depends on as a change of every
 /// package (`RootInternalDepChanged`), so any vita change ran breadboard's
 /// cargo checks (#336). Such a package counts as itself and the packages in
@@ -268,9 +275,74 @@ pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Res
     Ok(Scope { tasks, filters })
 }
 
-fn ci_only(package: &str) -> Option<&'static str> {
-    (package == "@monocircuit/vita")
-        .then_some("vita's integration tests (test:int) need the stack: they run in CI only (check:vita:int)")
+/// What breadboard.toml says of a package whose tests need the stack (`[[check.stack_tests]]`).
+fn ci_only(dir: &Path, package: &str) -> Option<String> {
+    breadboard_core::config::of(dir)
+        .config
+        .check
+        .stack_tests
+        .iter()
+        .find(|tests| tests.package == package)
+        .map(|tests| tests.says.clone())
+}
+
+/// breadboard's own package in the repo it is developed in, by the name in its package.json.
+fn breadboard_package(dir: &Path) -> Option<String> {
+    let package = breadboard_core::json::read(&dir.join("packages/breadboard/package.json"))?;
+    breadboard_core::json::str_of(&package, "name").map(String::from)
+}
+
+/// wt:check without turbo: `[check] run` once over the branch, stamped like
+/// turbo's; without it nothing to check, stamped at once.
+fn plain_check(dir: &Path, sha: &str, tree: &str) -> ExitCode {
+    let loaded = breadboard_core::config::of(dir);
+    let short: String = sha.chars().take(8).collect();
+    let Some(run) = loaded.config.check.plain().map(String::from) else {
+        write_check(
+            dir,
+            json!({
+                "passed": { "sha": sha, "tree": tree, "packages": [], "at": to_iso(now_ms()), "duration": 0 },
+                "failed": null, "running": null,
+            }),
+        );
+        outln!("\n✓ nothing to check: breadboard.toml names no [check]; {short} may be pushed\n");
+        return ExitCode::SUCCESS;
+    };
+    step(&format!("{run} (breadboard.toml's [check] run)"));
+    write_check(
+        dir,
+        json!({ "running": { "sha": sha, "tree": tree, "pid": std::process::id(), "since": to_iso(now_ms()) } }),
+    );
+    let started = now_ms();
+    let status = Command::new("sh").args(["-c", &run]).current_dir(dir).status();
+    let duration = ((now_ms() - started) as f64 / 1000.0).round() as i64;
+    let at = to_iso(now_ms());
+    if !status.is_ok_and(|status| status.success()) {
+        write_check(
+            dir,
+            json!({
+                "running": null,
+                "failed": { "sha": sha, "tree": tree, "packages": [], "failures": [], "at": at, "duration": duration },
+            }),
+        );
+        fail(&format!(
+            "wt:check failed after {duration} s: {run}\n  Fix it, commit, run {} again: the push waits for it.",
+            loaded.command("wt:check")
+        ));
+    }
+    if working_tree_of(dir).as_deref() != Some(tree) {
+        write_check(dir, json!({ "running": null }));
+        fail("the files changed while wt:check ran: what passed isn't what is there now. Run it again.");
+    }
+    write_check(
+        dir,
+        json!({
+            "running": null, "failed": null,
+            "passed": { "sha": sha, "tree": tree, "packages": [], "at": at, "duration": duration },
+        }),
+    );
+    outln!("\n✓ checked in {duration} s: {run}\n  {short} may be pushed\n");
+    ExitCode::SUCCESS
 }
 
 /// core's `write_check` (`.claude/checked.json`, one reader and writer for
@@ -493,8 +565,12 @@ fn watch_signals() {
     });
 }
 
-/// drizzle's journal of vita's migrations.
-const JOURNAL: &str = "products/vita/web/src/server/db/migrations/meta/_journal.json";
+/// drizzle's journal in the checkout, as breadboard.toml's `[stack.migrations]` places it.
+fn journal_of(dir: &Path) -> Option<String> {
+    let stack = breadboard_core::stack::of(dir)?;
+    let journal = Path::new(&stack.dir).join(&stack.migrations?.journal);
+    Some(journal.to_string_lossy().trim_start_matches("./").to_string())
+}
 
 /// A journal's migrations: `(tag, when)`.
 fn journal_entries(text: &str) -> Vec<(String, i64)> {
@@ -528,8 +604,9 @@ pub fn older_migrations(ours: &str, base: &str) -> Option<String> {
 
 /// The refusal of `older_migrations` for the working tree against `base`'s tip.
 fn stale_migrations(dir: &Path, base: &str) -> Option<String> {
-    let ours = fs::read_to_string(dir.join(JOURNAL)).ok()?;
-    let theirs = git(&["show", &format!("{base}:{JOURNAL}")], dir);
+    let journal = journal_of(dir)?;
+    let ours = fs::read_to_string(dir.join(&journal)).ok()?;
+    let theirs = git(&["show", &format!("{base}:{journal}")], dir);
     older_migrations(&ours, theirs.is_ok.then_some(theirs.out.as_str())?)
 }
 
@@ -539,7 +616,8 @@ pub fn command() -> ExitCode {
         fail("wt:check runs in a checkout of the repo");
     }
     let dir = PathBuf::from(dir);
-    let Some(turbo) = turbo_of(&dir) else {
+    let turbo = turbo_of(&dir);
+    if turbo.is_none() && breadboard_core::config::of(&dir).config.check.turbo {
         fail("turbo isn't installed here: pnpm install first")
     };
     let against = breadboard_core::git::base_of(&dir);
@@ -553,7 +631,9 @@ pub fn command() -> ExitCode {
     // develop's, and for an orchestration's task its epic's: what the checkout of the epic holds (#351).
     let epic =
         super::epic::Epic::of_task(&dir).map(|epic| git(&["rev-parse", "HEAD"], &epic.checkout).text().to_string());
-    for base in std::iter::once("origin/develop".to_string()).chain(epic.filter(|head| !head.is_empty())) {
+    for base in std::iter::once(breadboard_core::git::Base::of(&breadboard_core::git::branch(&dir)).remote)
+        .chain(epic.filter(|head| !head.is_empty()))
+    {
         if let Some(refusal) = stale_migrations(&dir, &base) {
             fail(&refusal);
         }
@@ -562,6 +642,9 @@ pub fn command() -> ExitCode {
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
     let Some(tree) = working_tree_of(&dir) else {
         fail("couldn't read the working tree (git add -A in a copy of the index failed)")
+    };
+    let Some(turbo) = turbo else {
+        return plain_check(&dir, &sha, &tree);
     };
     let scope = scope_of(&turbo, &dir, &base, None).unwrap_or_else(|error| fail(&error));
     let planned = plan_of(&turbo, &dir, &scope).unwrap_or_else(|error| fail(&error));
@@ -596,11 +679,11 @@ pub fn command() -> ExitCode {
         outln!("  {package}  {}", tasks.join(" "));
     }
     for package in &packages {
-        if let Some(why) = ci_only(package) {
+        if let Some(why) = ci_only(&dir, package) {
             outln!("  ({why})");
         }
     }
-    if packages.iter().any(|package| package == "@monocircuit/breadboard")
+    if breadboard_package(&dir).is_some_and(|own| packages.contains(&own))
         && !scope.tasks.iter().any(|task| task.ends_with(":rs"))
     {
         outln!("  (breadboard's cargo checks: only when the branch changes its Rust sources, CI runs them anyway)");
@@ -646,7 +729,8 @@ pub fn command() -> ExitCode {
             failures_line(&failures, 5)
         };
         fail(&format!(
-            "wt:check failed after {duration} s: {what}\n  Fix it, commit, run pnpm wt:check again: the push waits for it.\n  Red on develop too: it is fixed once, in its own fix MR; wait for that with pnpm wt:wait !<mr>."
+            "wt:check failed after {duration} s: {what}\n  Fix it, commit, run {run} wt:check again: the push waits for it.\n  Red on develop too: it is fixed once, in its own fix MR; wait for that with {run} wt:wait !<mr>.",
+            run = breadboard_core::config::run_word()
         ));
     }
     if working_tree_of(&dir).as_deref() != Some(tree.as_str()) {

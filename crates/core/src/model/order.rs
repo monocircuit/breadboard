@@ -21,7 +21,8 @@ pub fn place_in(order: &[i64], number: Option<i64>) -> i64 {
 pub const FOLLOW_UPS: [&str; 6] = ["clean up", "pipeline", "end", "hand over", "start", "order"];
 /// The kinds of ACTIONS by what blocks most: an agent that stands still, work
 /// only a worktree has, then the merges, then what only looks.
-const BLOCKS: [&str; 8] = [
+const BLOCKS: [&str; 9] = [
+    "permission",
     "waits",
     "decide",
     "plan",

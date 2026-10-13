@@ -56,7 +56,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete => acts::delete(state, model, &main),
         Act::StartStack(dir) => acts::start_stack(state, &dir),
         Act::Migrate(dir) => acts::migrate(state, &dir),
-        Act::Storybook(_) => acts::start_storybook(state, model, &main),
+        Act::Tool(_, name) => acts::start_tool(state, model, &main, &name),
         Act::OpenFile { file, line, .. } => acts::open_file(state, model, &main, &file, line),
         Act::Hunks { file, at, is_whole } => acts::toggle_hunks(state, file, at, is_whole),
         _ => Flow::Same,
@@ -126,7 +126,7 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     }
     if let Some(claude) = &local.claude {
         page.section("AGENT", |scene| {
-            agent(scene, claude, local.agent_status.as_deref(), ctx)
+            agent(scene, claude, &local.dir, local.agent_status.as_deref(), ctx)
         });
     }
     match &model.issue {
@@ -175,10 +175,17 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     }
     if !tree.has_env {
         page.section("STACK", |scene| {
-            scene.text(
-                "no .env.local: no stack, the app can't run here",
-                theme::tone(Tone::Yellow),
-            );
+            if breadboard_core::config::has_stack() {
+                scene.text(
+                    &format!(
+                        "{}: no stack, the app can't run here",
+                        breadboard_core::config::env_missing()
+                    ),
+                    theme::tone(Tone::Yellow),
+                );
+            } else {
+                scene.text("none: breadboard.toml has no [stack]", theme::dim());
+            }
         });
         return;
     }
@@ -189,7 +196,9 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     page.section("STACK", |scene| stack(scene, model, tree, ctx, state));
     page.section(Section::new("FOOTER").plain(), |scene| {
         scene.text(
-            "pnpm stack:up|down|reset · pnpm wt:mr --update · pnpm overview (everything)",
+            &breadboard_core::config::in_repo(
+                "pnpm stack:up|down|reset · pnpm wt:mr --update · pnpm overview (everything)",
+            ),
             theme::dim(),
         );
     });
@@ -245,13 +254,13 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
     if local.is_main {
         row(scene, "work", None, |scene| {
             if tree.ahead == 0 && tree.changed == 0 {
-                scene.text("clean, nothing ahead of develop", theme::dim());
+                scene.text(&format!("clean, nothing ahead of {}", tree.base.local), theme::dim());
                 return;
             }
             let mut parts = vec![];
             if tree.ahead > 0 {
                 parts.push(vec![look::span(
-                    format!("{} ahead of develop", tree.ahead),
+                    format!("{} ahead of {}", tree.ahead, tree.base.local),
                     Style::new(),
                 )]);
             }
@@ -304,7 +313,8 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
                     scene.atom_gap(vec![look::dim(&mr.url)], 2);
                 }),
                 None => row(scene, "mr", None, |scene| {
-                    let text = if local.is_main { "—" } else { "none yet: pnpm wt:mr" };
+                    let none = breadboard_core::config::in_repo("none yet: pnpm wt:mr");
+                    let text = if local.is_main { "—" } else { &none };
                     scene.text(text, theme::dim());
                 }),
             }
@@ -315,7 +325,12 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
             look::flow(scene, &look::spans(&[fact]));
             match &tree.checked {
                 CheckState::Failed { .. } | CheckState::Untested { .. } => {
-                    scene.atom_gap(vec![look::dim("pnpm wt:check before the push")], 2);
+                    scene.atom_gap(
+                        vec![look::dim(breadboard_core::config::in_repo(
+                            "pnpm wt:check before the push",
+                        ))],
+                        2,
+                    );
                 }
                 CheckState::Tested { packages, .. } => {
                     let packages = if packages.is_empty() {
@@ -362,7 +377,11 @@ fn delete(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx,
             }
             scene.button("✕ delete worktree", Tone::Red, Act::Delete);
             let hint = if ctx.is_once {
-                format!("pnpm wt:remove {}", tree.name)
+                format!(
+                    "{run} wt:remove {}",
+                    tree.name,
+                    run = breadboard_core::config::run_word()
+                )
             } else {
                 format!("nothing left in it: no changes, all of it in {}", tree.base.local)
             };
@@ -421,7 +440,7 @@ fn home(path: &Path) -> String {
     }
 }
 
-fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ctx) {
+fn agent(scene: &mut Scene<Act>, claude: &Claude, dir: &Path, status: Option<&str>, ctx: &Ctx) {
     if let Some(state) = agent_state(status) {
         scene.note(state);
     }
@@ -457,7 +476,9 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
         look::say(scene, &format!("{model} · {} · {id8}", ago(at, ctx.now)), theme::dim());
         look::ticks(scene);
     });
-    row_at(scene, AGENT_LABEL, "resume", None, |scene| {
+    // A click opens it in a tab (#361); the line says what that runs.
+    let open = Act::Go(breadboard_core::model::order::Go::FocusAgent(dir.to_path_buf()));
+    row_at(scene, AGENT_LABEL, "resume", Some(open), |scene| {
         let cwd = home(&claude.cwd);
         look::say(
             scene,
@@ -749,16 +770,24 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
         scene.indent(at);
     };
     for row in rows {
-        // Outside herdr there is no tab to start Storybook in: its row shows the command.
-        let start =
-            (row.name == "storybook" && !row.is_on && herdr::is_in_herdr()).then(|| Act::Storybook(dir.to_path_buf()));
+        // Outside herdr there is no tab to start a tool in: its row shows the command.
+        let start = row
+            .tool
+            .clone()
+            .filter(|_| !row.is_on && herdr::is_in_herdr())
+            .map(|name| Act::Tool(dir.to_path_buf(), name));
+        let started = state
+            .tool
+            .as_ref()
+            .filter(|(name, _)| *name == row.name)
+            .map(|(_, start)| start);
         let draw = |scene: &mut Scene<Act>| {
             if row.is_on {
                 scene.atom(vec![look::span("●", theme::tone(Tone::Green))]);
             } else {
                 scene.atom(vec![look::dim("○")]);
             }
-            scene.atom_gap(vec![look::span(row.name, Style::new())], 2);
+            scene.atom_gap(vec![look::span(&row.name, Style::new())], 2);
             scene.pad_to(url_at);
             scene.indent(url_at);
             if let Some(url) = row.url.as_ref().or(row.address.as_ref()) {
@@ -767,20 +796,20 @@ fn where_rows(scene: &mut Scene<Act>, rows: &[WhereRow], dir: &Path, state: &Sta
             if start.is_some() || row.hint.is_some() {
                 to_hint(scene);
             }
-            match (&start, &state.storybook) {
-                (Some(start), Some(acts::Storybook::Starting)) => {
-                    scene.button("◐ starting storybook …", Tone::Yellow, start.clone());
+            match (&start, started) {
+                (Some(start), Some(acts::ToolStart::Starting)) => {
+                    scene.button(&format!("◐ starting {} …", row.name), Tone::Yellow, start.clone());
                     look::say(
                         scene,
-                        "its tab storybook, the row turns ● once it answers",
+                        &format!("its tab {}, the row turns ● once it answers", row.name),
                         theme::dim(),
                     );
                 }
-                (Some(start), Some(acts::Storybook::Failed(why))) => {
-                    scene.button("▶ start storybook", Tone::Cyan, start.clone());
+                (Some(start), Some(acts::ToolStart::Failed(why))) => {
+                    scene.button(&format!("▶ start {}", row.name), Tone::Cyan, start.clone());
                     look::say(scene, why, theme::tone(Tone::Red));
                 }
-                (Some(start), None) => scene.button("▶ start storybook", Tone::Cyan, start.clone()),
+                (Some(start), None) => scene.button(&format!("▶ start {}", row.name), Tone::Cyan, start.clone()),
                 (None, _) => {
                     if let Some(hint) = &row.hint {
                         look::say(scene, hint, theme::dim());
@@ -811,7 +840,8 @@ fn start_button(scene: &mut Scene<Act>, dir: &Path, ctx: &Ctx, state: &State) {
         }
         started => {
             scene.button("▶ start the stack", Tone::Cyan, start.clone());
-            let hint = if ctx.is_once { "pnpm stack:up" } else { "click or u" };
+            let up = breadboard_core::config::in_repo("pnpm stack:up");
+            let hint = if ctx.is_once { up.as_str() } else { "click or u" };
             look::say(scene, hint, theme::dim());
             // Set apart from the hint, as Node's two spaces.
             if let Some(error) = started.and_then(|started| started.error("stack:up")) {
@@ -828,7 +858,11 @@ fn stack(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, 
         scene.note(format!("shared, the one of the main checkout ({})", tree.project));
         look::say(
             scene,
-            "its tabs are in the space Monocircuit/Platform; an own stack: pnpm wt:stack",
+            &format!(
+                "its tabs are in the space {}; an own stack: {}",
+                breadboard_core::record::SPACE,
+                breadboard_core::config::here().command("wt:stack")
+            ),
             theme::dim(),
         );
         scene.end_line();
@@ -934,8 +968,9 @@ fn migrations_of(scene: &mut Scene<Act>, migrations: &Migrations, dir: &Path, st
                 scene.redraw_in(acts::WATCH);
             }
             started => {
-                scene.button("▶ pnpm pg:migrate", Tone::Cyan, migrate.clone());
-                if let Some(error) = started.and_then(|started| started.error("pg:migrate")) {
+                let run = super::worktrees::migrate_run(dir);
+                scene.button(&format!("▶ {run}"), Tone::Cyan, migrate.clone());
+                if let Some(error) = started.and_then(|started| started.error(&run)) {
                     say_gap(scene, &error, theme::tone(Tone::Red), 2);
                 }
             }

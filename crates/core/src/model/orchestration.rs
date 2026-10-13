@@ -348,10 +348,10 @@ fn states_of(issues: &[Entry], remote: Option<&Remote>) -> HashMap<i64, IssueSta
         .collect()
 }
 
-/// The page of an action's url: a path on the app of the main checkout, anything else as it is.
-fn page_of(url: &str, offset: i64) -> String {
+/// The page of an action's url: a path on the app on `port`, anything else as it is.
+fn page_of(url: &str, port: i64) -> String {
     if url.starts_with('/') {
-        format!("http://localhost:{}{url}", 3000 + offset)
+        format!("http://localhost:{port}{url}")
     } else {
         url.to_string()
     }
@@ -369,6 +369,13 @@ fn actions_of(
     state: &ViewState,
     now: i64,
 ) -> ActionsSection {
+    // The orchestrator's pages are on the main checkout's app: its port is any worktree's (one config).
+    let main_port = local
+        .trees
+        .first()
+        .map(|tree| tree.app_port)
+        .or_else(|| crate::stack::app_port(&std::env::current_dir().unwrap_or_default()))
+        .unwrap_or(0);
     let merge = &order.numbers;
     let mut items: Vec<Item> = Vec::new();
     // The orchestrator's own (`wt:action --orchestration`); a merge it posted for an MR (`--mr !N`) is that MR's.
@@ -400,7 +407,7 @@ fn actions_of(
                     action: Some((file.clone(), action.id)),
                 },
                 (None, Some(url)) => Go::Show {
-                    url: page_of(url, 0),
+                    url: page_of(url, main_port),
                     dir: None,
                 },
                 (None, None) => Go::Nothing,
@@ -837,16 +844,18 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
                 })
                 .unwrap_or_default();
             // Without its worktree no one can check it here: its boxes say it.
-            let is_checked = issue
-                .tree
-                .as_ref()
-                .is_none_or(|tree| matches!(tree.checked, crate::check::CheckState::Tested { .. }));
+            let tested = issue.tree.as_ref().map(|tree| match &tree.checked {
+                crate::check::CheckState::Tested { sha, .. } => Some(sha.clone()),
+                _ => None,
+            });
+            let is_checked = tested.as_ref().is_none_or(Option::is_some);
             Some((
                 iid,
                 crate::ci::Bar {
                     ticked: boxes.iter().filter(|found| found.is_ticked).count(),
                     total: boxes.len(),
                     is_checked,
+                    sha: tested.flatten(),
                 },
             ))
         })
@@ -860,13 +869,9 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
 /// The mark of an MR waiting in the CI queue: its place, a click runs it
 /// now; the page of its last pipeline stays a click away on the MR's.
 fn ci_mark(place: &crate::ci::Place, last: Option<&crate::gitlab::Pipeline>) -> Span {
-    let paint = match place {
-        crate::ci::Place::Held { .. } => super::Paint::Dim,
-        _ => super::Paint::Yellow,
-    };
     Span {
         text: format!("{} ▸", place.text()),
-        paint,
+        paint: super::Paint::Yellow,
         url: last.and_then(|pipeline| pipeline.web_url.clone()),
     }
 }

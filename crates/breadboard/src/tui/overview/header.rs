@@ -32,8 +32,9 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         (_, View::Everything) => match remote {
             Some(RemoteOf::Everything(remote)) => {
                 format!(
-                    "{}\u{a0} develop {}",
+                    "{}\u{a0} {} {}",
                     ctx.main_name,
+                    breadboard_core::git::default_branch(),
                     pipeline_mark(remote.develop.as_ref()).text
                 )
             }
@@ -49,6 +50,11 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         status.push(Span::styled(format!("{load} · "), quiet));
     }
     status.push(Span::styled(ctx.gitlab.fresh(), quiet));
+    // How the main checkout followed develop (#348): in the views that look at all of it.
+    if let Some((text, is_warning)) = ctx.develop.filter(|_| !matches!(view, View::Worktree(_))) {
+        let style = if *is_warning { theme::tone(Tone::Yellow) } else { quiet };
+        status.splice(0..0, [Span::styled(text.clone(), style), Span::styled(" · ", quiet)]);
+    }
     let mut header = Header::new(title).status(status);
     if ctx.is_once {
         header.keys = String::new();
@@ -80,5 +86,50 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         page.section(Section::new("GITLAB").sticky().plain(), |scene| {
             look::say(scene, error, theme::tone(Tone::Red));
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Folds, GitlabState, actor};
+    use super::*;
+
+    fn status_of(view: &View, develop: Option<&(String, bool)>) -> String {
+        let gitlab = GitlabState {
+            progress: "GitLab …".into(),
+            ..GitlabState::default()
+        };
+        let ctx = Ctx {
+            is_once: true,
+            folds: Folds::default(),
+            gitlab: &gitlab,
+            now: 0,
+            main_name: "platform",
+            actor: actor::idle(),
+            words: actor::view::no_words(),
+            develop,
+        };
+        header(view, None, None, &ctx)
+            .status
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn says_how_develop_was_updated_beside_gitlab_in_the_views_of_all() {
+        let updated = ("develop updated 17:42 · +4 commits (!331, !332…)".to_string(), false);
+        assert_eq!(
+            status_of(&View::Everything, Some(&updated)),
+            "develop updated 17:42 · +4 commits (!331, !332…) · GitLab …"
+        );
+        let skipped = (
+            "develop: not updated (↓2), local changes in README.md".to_string(),
+            true,
+        );
+        assert!(status_of(&View::Orchestration("b".into()), Some(&skipped)).starts_with("develop: not updated"));
+        // A worktree's view is about its branch.
+        assert_eq!(status_of(&View::Worktree("/w".into()), Some(&updated)), "GitLab …");
+        assert_eq!(status_of(&View::Everything, None), "GitLab …");
     }
 }

@@ -7,9 +7,9 @@ Chromium tab group named like the space:
 | Opened by | Group |
 | --------- | ----- |
 | `pnpm wt:new` / `pnpm wt:stack` with an own stack, inside herdr: the app (`http://localhost:3000+n`); not a `wt:new` of an orchestration (`--origin`, #337: its tab came to the front and passed for another worktree's try) | the worktree's, `<feature>` |
-| a click in the overview of a worktree (app, keycloak, s3, studio, storybook, issue, MR) | that worktree's |
+| a click in the overview of a worktree (app, a service or tool of WHERE, issue, MR) | that worktree's |
 | a click in the main overview: a worktree's app, an MR or issue of a branch that has a worktree | that worktree's |
-| any other click in the main overview | `Monocircuit/Platform` |
+| any other click in the main overview | the main space's (`[herdr] space`) |
 
 A group of that name is reused, also from another window, and a tab of it
 that shows the url already comes to the front instead of a second one. A new
@@ -28,7 +28,7 @@ the group and turns into the url. The id is fixed by the `key` in
 pnpm browser
 ```
 
-copies the extension to `~/.local/share/monocircuit/chromium-extension` and
+copies the extension to `~/.local/share/<the plugin id up to its first dot>/chromium-extension` and
 says how your browser loads it. The browser loads it from there, never from a
 checkout: a worktree goes away, and the main checkout only has a change of the
 extension after its merge. A directory missing at the browser's start gives a

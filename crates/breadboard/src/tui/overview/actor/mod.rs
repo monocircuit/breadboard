@@ -24,6 +24,7 @@ pub mod glab;
 pub mod herdr;
 pub mod layout_log;
 pub mod merge;
+pub mod open_agent;
 pub mod spawn;
 pub mod sync;
 pub mod tries;
@@ -101,6 +102,8 @@ pub struct Actor {
     /// The names the orchestration shows its agents by (#292), as of its last
     /// read: what the log says an agent was told or given goes by them.
     pub names: Names,
+    /// The prompt a headless agent's `broken` / `different` opened (#359).
+    pub prompt: Option<super::actions::Prompt>,
 }
 
 impl Actor {
@@ -124,7 +127,18 @@ impl Actor {
             sync: sync::Sync::default(),
             did: VecDeque::new(),
             names: Names::default(),
+            prompt: None,
         }
+    }
+
+    /// Whether it does something on a thread of this process that an exec
+    /// would cut off: a merge, the end of the orchestration.
+    pub fn is_busy(&self) -> bool {
+        self.merges
+            .of
+            .values()
+            .any(|merge| merge.phase == merge::Phase::Running)
+            || self.end.as_ref().is_some_and(|end| end.is_running)
     }
 
     /// The view's channel: effects come back on it; the actor's thread starts.
