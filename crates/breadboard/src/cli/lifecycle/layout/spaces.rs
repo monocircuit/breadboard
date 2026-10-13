@@ -11,6 +11,7 @@ use super::tabs::{
     idle_pane_of, keep_order, keep_order_except, mark_branch, overall_changelog_command, overview_command,
 };
 use breadboard_core::record::{self, SPACE};
+use breadboard_core::runs;
 use serde_json::Value;
 use std::path::Path;
 
@@ -96,6 +97,11 @@ pub fn ensure_editor(repo: &Repo, workspace: &str, dir: &Path, tabs: &[Value]) {
 /// `should_resume`: the conversation bound to it comes back in its tab.
 pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume: bool) -> Option<String> {
     let feature = repo.feature_of(dir);
+    // A headless agent (#359) is a session, not a tab: its space keeps `nvim`
+    // but gets no conversation's tab, and nothing resumes there.
+    let is_headless = has_work_tab && record::is_orchestrated(&repo.main, dir) && runs::is_headless(&repo.main);
+    let (has_editor, has_work_tab) = (has_work_tab, has_work_tab && !is_headless);
+    let should_resume = should_resume && !is_headless;
     let main = space_of(repo, &repo.main);
     let workspace = ensure_worktree_space(
         &feature,
@@ -146,7 +152,7 @@ pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool, should_resume
         &tabs,
     );
     // Behind the conversation's tab: an agent that brings its own opens it after the move.
-    if has_work_tab {
+    if has_editor {
         ensure_editor(repo, &workspace, dir, &tabs);
     }
     drop_duplicates(&workspace, &feature);

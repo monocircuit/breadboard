@@ -51,6 +51,9 @@ pub struct Action {
     pub waits: Option<String>,
     /// A `permission` action's rule: what an `allow` lets the agent's next run do (#360).
     pub rule: Option<String>,
+    /// What the user wrote after `broken` / `different` in the overview's
+    /// prompt (#359): the draft a headless agent gets whole, no input to finish it in.
+    pub note: Option<String>,
     pub raw: Value,
 }
 
@@ -78,6 +81,7 @@ impl Action {
             delivered_at: str_of(value, "deliveredAt").map(String::from),
             waits: str_of(value, "waits").map(String::from),
             rule: str_of(value, "rule").map(String::from),
+            note: str_of(value, "note").map(String::from),
             raw: value.clone(),
         })
     }
@@ -173,7 +177,7 @@ pub fn is_draft(action: &Action) -> bool {
         "plan" => "different",
         _ => return false,
     };
-    action.answer.as_deref() == Some(draft)
+    action.answer.as_deref() == Some(draft) && action.note.is_none()
 }
 
 /// An option of a decide as shown (#273): `label` the answer, short,
@@ -254,13 +258,17 @@ pub fn decide_problem(text: &str, options: &[(String, String)], recommend: Optio
 
 /// How an answer reaches its agent: `[overview] #3 decide "A or B" → B`.
 pub fn answer_line(action: &Action) -> String {
-    format!(
+    let line = format!(
         "[overview] #{} {} \"{}\" → {}",
         action.id,
         action.kind,
         action.text,
         action.answer.as_deref().unwrap_or("")
-    )
+    );
+    match &action.note {
+        Some(note) => format!("{line}: {note}"),
+        None => line,
+    }
 }
 
 /// The draft the user completes: `… → broken: `.
@@ -425,6 +433,11 @@ pub fn done_action(file: &Path, id: i64) -> io::Result<bool> {
 
 /// The action `id` answered, until it is delivered. False when there is none.
 pub fn answer_action(file: &Path, id: i64, answer: &str) -> io::Result<bool> {
+    answer_noted(file, id, answer, None)
+}
+
+/// `answer_action` with what the user wrote after it (`broken: <note>`, #359).
+pub fn answer_noted(file: &Path, id: i64, answer: &str, note: Option<&str>) -> io::Result<bool> {
     change_actions(file, |actions| {
         if !actions.iter().any(|action| int_of(action, "id") == Some(id)) {
             return Changed {
@@ -442,6 +455,9 @@ pub fn answer_action(file: &Path, id: i64, answer: &str) -> io::Result<bool> {
                 {
                     object.insert("answer".into(), json!(answer));
                     object.insert("answeredAt".into(), json!(answered_at));
+                    if let Some(note) = note {
+                        object.insert("note".into(), json!(note));
+                    }
                 }
                 action
             })
@@ -732,6 +748,22 @@ mod tests {
         assert_eq!(answer_line(&taken[0]), "[overview] #1 decide \"A or B\" → B");
         assert!(take_answers(&file, None).unwrap().is_empty());
         assert_eq!(actions_of(&file).iter().map(|a| a.id).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn a_broken_with_its_note_is_a_whole_answer() {
+        let scratch = Scratch::new();
+        let file = file_of(&scratch);
+        add(&file, "try", "the chip");
+        answer_noted(&file, 1, "broken", Some("the chip is grey")).unwrap();
+        let all = actions_of(&file);
+        assert!(!is_draft(&all[0]));
+        assert_eq!(all[0].answer.as_deref(), Some("broken"));
+        assert_eq!(
+            answer_line(&all[0]),
+            "[overview] #1 try \"the chip\" → broken: the chip is grey"
+        );
+        assert_eq!(take_answers(&file, None).unwrap().len(), 1);
     }
 
     #[test]

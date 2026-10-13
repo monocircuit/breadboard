@@ -569,6 +569,10 @@ impl App for Overview {
     fn picked(&mut self, picked: Option<&Act>) -> Flow {
         worktree_view::picked(self, picked)
     }
+
+    fn is_typing(&self) -> bool {
+        self.actor.prompt.is_some()
+    }
 }
 
 #[cfg(test)]

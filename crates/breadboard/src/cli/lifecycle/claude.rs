@@ -57,6 +57,46 @@ pub fn transcript_of(id: &str) -> Option<PathBuf> {
         .find(|file| file.exists())
 }
 
+/// Whether the last `worktree-state` record of a transcript holds a worktree:
+/// a conversation that ran `EnterWorktree` (and never `ExitWorktree`).
+fn is_in_worktree(transcript: &str) -> bool {
+    transcript
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"type\":\"worktree-state\""))
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .is_some_and(|record| record.get("worktreeSession").is_some_and(|session| !session.is_null()))
+}
+
+/// The conversation `id` out of the worktree it entered (#363): `claude
+/// --resume` restores the last `worktree-state` of its transcript, not the
+/// directory it starts in, so a moved agent stayed in its old worktree. A
+/// record without one appended, it starts where it is resumed, as a fresh
+/// claude does. Only while no claude runs it. Whether it was in one.
+pub fn leave_worktree(id: &str) -> bool {
+    transcript_of(id).is_some_and(|file| leave_worktree_in(&file, id))
+}
+
+fn leave_worktree_in(file: &Path, id: &str) -> bool {
+    let Ok(text) = fs::read_to_string(file) else {
+        return false;
+    };
+    if !is_in_worktree(&text) {
+        return false;
+    }
+    let record = serde_json::json!({ "type": "worktree-state", "worktreeSession": null, "sessionId": id });
+    let gap = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    fs::OpenOptions::new()
+        .append(true)
+        .open(file)
+        .and_then(|mut out| std::io::Write::write_all(&mut out, format!("{gap}{record}\n").as_bytes()))
+        .is_ok()
+}
+
 /// The context window: 1M with a `[1m]` model in claude's settings, else 200k.
 fn context_window() -> u64 {
     let model = json::read(&claude_dir().join("settings.json"))
@@ -430,6 +470,26 @@ mod tests {
         fs::create_dir_all(&empty).unwrap();
         assert!(!is_tree_project(&empty, &main));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_conversation_in_a_worktree_leaves_it_once() {
+        let file = std::env::temp_dir().join(format!("lifecycle-worktree-{}.jsonl", std::process::id()));
+        let entered = r#"{"type":"worktree-state","worktreeSession":{"worktreePath":"/r/p-3"},"sessionId":"s"}"#;
+        fs::write(&file, format!("{{\"type\":\"user\"}}\n{entered}")).unwrap();
+        assert!(leave_worktree_in(&file, "s"));
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "{entered}\n{{\"type\":\"worktree-state\",\"worktreeSession\":null,\"sessionId\":\"s\"}}\n"
+            )),
+            "{text}"
+        );
+        assert!(!is_in_worktree(&text));
+        assert!(!leave_worktree_in(&file, "s"), "a second record for nothing");
+        fs::write(&file, "{\"type\":\"user\",\"cwd\":\"/r/p\"}\n").unwrap();
+        assert!(!leave_worktree_in(&file, "s"), "one that never entered one");
+        fs::remove_file(file).unwrap();
     }
 
     #[test]

@@ -23,6 +23,7 @@ use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
 use breadboard_core::reader::{Model, RemoteOf};
+use breadboard_core::runs;
 use breadboard_core::time::{ago, parse_iso};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -403,6 +404,12 @@ pub fn action_block(scene: &mut Scene<Act>, item: &Item, ctx: &Ctx, is_keyed: bo
             answers(scene, item, is_keyed, has_merge);
         }
         scene.end_line();
+        if let (Some(prompt), Some(file), Some(action)) = (&ctx.actor.prompt, &item.file, &item.action)
+            && prompt.file == *file
+            && prompt.id == action.id
+        {
+            prompt_line(scene, prompt);
+        }
     };
     match click_of(item) {
         Some(act) => scene.block(act, draw),
@@ -752,6 +759,9 @@ pub fn unpicked_hint(item: &Item) -> Vec<Vec<Span<'static>>> {
 /// pane never writes into one (rule 6). Any other key is left to the others
 /// (Enter runs the frame's pick).
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Option<Flow> {
+    if app.actor.prompt.is_some() {
+        return Some(prompt_key(app, key));
+    }
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         return None;
     }
@@ -955,6 +965,80 @@ fn line_of(action: &Action) -> String {
 /// its input, its tab in front). A try found `broken` puts its ready MR back
 /// to draft (#280). The log under the band says where it went.
 pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
+    if let Some(prompt) = prompt_for(app, file, id, answer) {
+        app.actor.prompt = Some(prompt);
+        return Flow::Redraw;
+    }
+    answer_with(app, file, id, answer, None)
+}
+
+/// The words a headless agent's `broken` / `different` waits for (#359): it
+/// has no input to finish a draft in, so the overview asks for them in a
+/// line under the action, sent whole with its answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prompt {
+    pub file: PathBuf,
+    pub id: i64,
+    pub answer: String,
+    pub text: String,
+}
+
+/// The prompt `answer` opens: a draft answer of a task agent's action while agents run headless.
+fn prompt_for(app: &Overview, file: &Path, id: i64, answer: &str) -> Option<Prompt> {
+    let item = item_of(app, file, id)?;
+    let action = item.action.as_ref()?;
+    let is_draft = stored::is_draft(&Action {
+        answer: Some(answer.to_string()),
+        ..action.clone()
+    });
+    let is_headless = matches!(item.to, Some(Target::Dir(_))) && runs::is_headless(&app.actor.main);
+    (is_draft && is_headless).then(|| Prompt {
+        file: file.to_path_buf(),
+        id,
+        answer: answer.to_string(),
+        text: String::new(),
+    })
+}
+
+/// A key while the prompt is open: text, Backspace, Enter sends it with its
+/// answer (an empty one sends nothing), Esc drops it unanswered.
+fn prompt_key(app: &mut Overview, key: KeyEvent) -> Flow {
+    let Some(prompt) = app.actor.prompt.as_mut() else {
+        return Flow::Same;
+    };
+    match key.code {
+        KeyCode::Esc => app.actor.prompt = None,
+        KeyCode::Backspace => {
+            prompt.text.pop();
+        }
+        KeyCode::Enter => {
+            let note = prompt.text.trim().to_string();
+            if note.is_empty() {
+                return Flow::Same;
+            }
+            let Prompt { file, id, answer, .. } = app.actor.prompt.take().expect("open");
+            return answer_with(app, &file, id, &answer, Some(&note));
+        }
+        KeyCode::Char(ch) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            prompt.text.push(ch);
+        }
+        _ => return Flow::Same,
+    }
+    Flow::Redraw
+}
+
+/// The prompt's line under its action: what it answers, the text so far, the keys.
+fn prompt_line(scene: &mut Scene<Act>, prompt: &Prompt) {
+    scene.atom(vec![
+        look::span(format!("{}: ", prompt.answer), theme::tone(Tone::Red)),
+        look::span(format!("{}▏", prompt.text), Style::new()),
+    ]);
+    scene.atom_gap(vec![look::dim("Enter sends · Esc drops")], 2);
+    scene.end_line();
+}
+
+/// `answer` stored, with what the prompt said after it, and delivered.
+fn answer_with(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Option<&str>) -> Flow {
     let Some(item) = item_of(app, file, id) else {
         return Flow::Same;
     };
@@ -970,24 +1054,24 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
         }
         return Flow::Redraw;
     }
-    if !stored::answer_action(file, id, answer).unwrap_or(false) {
+    if !stored::answer_noted(file, id, answer, note).unwrap_or(false) {
         return Flow::Same;
     }
     remember(file, id, answer, TYPING);
-    let is_draft = stored::is_draft(&Action {
+    let answered = Action {
         answer: Some(answer.to_string()),
+        note: note.map(String::from),
         ..action.clone()
-    });
+    };
+    let is_draft = stored::is_draft(&answered);
     let redraft = redraft_of(app, &item, &action, answer);
-    let line = line_of(&Action {
-        answer: Some(answer.to_string()),
-        ..action.clone()
-    });
+    let line = line_of(&answered);
     let main = app.actor.main.clone();
     let (file, to, answer) = (file.to_path_buf(), item.to.clone(), answer.to_string());
+    let is_queued = matches!(to, Some(Target::Dir(_))) && runs::is_headless(&main);
     app.actor.queue(move || {
         if let Some(to) = &to {
-            if is_draft {
+            if is_draft && !is_queued {
                 focus_agent(&main, to);
             }
             let _ = deliver_answers(&main, &file, to);
@@ -996,6 +1080,7 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
         let is_in = left.is_none();
         let waits = match left {
             Some(left) => waits_of(&file, left.waits),
+            None if is_queued => QUEUED.into(),
             None if is_draft => DRAFT_WRITTEN.into(),
             None => TYPED_IN.into(),
         };
@@ -1104,6 +1189,11 @@ fn draft_waits_for(pane: Option<&Pane>) -> &'static str {
 /// A draft is written, not submitted. A pane at a question gets nothing: the
 /// drafts say why they wait. The ones that got in.
 fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
+    if let Target::Dir(dir) = to
+        && runs::is_headless(main)
+    {
+        return queue_answers(main, file, dir);
+    }
     let pane = herdr::agent_pane_of(main, to);
     locked(&TRIED).insert(file.to_path_buf(), pane.as_ref().and_then(|pane| pane.status.clone()));
     let answered: Vec<Action> = stored::actions_of(file)
@@ -1145,6 +1235,33 @@ fn deliver_answers(main: &Path, file: &Path, to: &Target) -> Vec<Action> {
     delivered
 }
 
+/// The answers of `file` queued for the next run of the headless agent in
+/// `dir` (#359): no pane to wait for, so no draft and no retry; a draft
+/// answered without its words (from a file, not the prompt) goes as it is.
+fn queue_answers(main: &Path, file: &Path, dir: &Path) -> Vec<Action> {
+    let answered: Vec<i64> = stored::actions_of(file)
+        .into_iter()
+        .filter(|action| action.answer.as_deref().is_some_and(|answer| !answer.is_empty()))
+        .map(|action| action.id)
+        .collect();
+    let mut delivered = Vec::new();
+    for id in answered {
+        let Ok(Some(action)) = stored::claim_answer(file, id) else {
+            continue;
+        };
+        let is_in = herdr::enqueue(main, dir, &stored::answer_line(&action));
+        let _ = if is_in {
+            stored::done_action(file, id).map(|_| ())
+        } else {
+            stored::release_answer(file, id)
+        };
+        if is_in {
+            delivered.push(action);
+        }
+    }
+    delivered
+}
+
 /// Where a delivered answer went, for its block and the log.
 fn went_to(action: &Action) -> &'static str {
     if stored::is_draft(action) {
@@ -1156,6 +1273,8 @@ fn went_to(action: &Action) -> &'static str {
 
 /// Where an answer went, on its block and in the log.
 const TYPED_IN: &str = "typed into its agent's pane";
+/// A headless agent's (#359): it reads it in its next run.
+const QUEUED: &str = "queued for its agent's next run";
 const DRAFT_WRITTEN: &str = "written into its agent's input: say what's wrong there and send it";
 
 /// After a read: answers that didn't get in are tried again on the actor's
@@ -1246,6 +1365,10 @@ mod tests {
     }
 
     fn drawn(item: &Item, width: u16) -> (Vec<String>, Scene<Act>) {
+        drawn_by(item, width, actor::idle())
+    }
+
+    fn drawn_by(item: &Item, width: u16, actor: &Actor) -> (Vec<String>, Scene<Act>) {
         let gitlab = super::super::GitlabState::default();
         let ctx = Ctx {
             is_once: false,
@@ -1253,7 +1376,7 @@ mod tests {
             gitlab: &gitlab,
             now: 0,
             main_name: "platform",
-            actor: actor::idle(),
+            actor,
             words: actor::view::no_words(),
         };
         let mut scene = Scene::new(width);
@@ -1265,6 +1388,35 @@ mod tests {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
             .collect();
         (text, scene)
+    }
+
+    #[test]
+    fn a_headless_broken_asks_for_its_words_under_its_action() {
+        let item = item_with(Action {
+            id: 4,
+            kind: "try".into(),
+            text: "the chip".into(),
+            ..Default::default()
+        });
+        let mut actor = Actor::new(&breadboard_core::reader::View::Everything, Path::new(""), true, false);
+        let (before, _) = drawn_by(&item, 80, &actor);
+        actor.prompt = Some(Prompt {
+            file: item.file.clone().unwrap(),
+            id: 4,
+            answer: "broken".into(),
+            text: "grey on hover".into(),
+        });
+        let (lines, _) = drawn_by(&item, 80, &actor);
+        assert_eq!(lines.len(), before.len() + 1, "{lines:?}");
+        assert_eq!(lines.last().unwrap(), "broken: grey on hover▏  Enter sends · Esc drops");
+        // Another action's block shows no prompt.
+        let other = item_with(Action {
+            id: 5,
+            kind: "try".into(),
+            text: "the chip".into(),
+            ..Default::default()
+        });
+        assert_eq!(drawn_by(&other, 80, &actor).0.len(), before.len());
     }
 
     fn answered_at(scene: &Scene<Act>, x: u16, y: u16) -> Option<String> {
