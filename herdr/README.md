@@ -152,7 +152,7 @@ together. Rows of your own stay for other agents; claude gets these
 
 Under each agent in a worktree's space the sidebar says what it waits for,
 so you see it without the overview, its MR behind it (`· !n`): the same
-words as WORKTREES in the overview of an orchestration (#288), the first
+words as WORK in the overview of an orchestration (#288), the first
 that holds:
 
 | Line | When | Colour |
@@ -162,7 +162,7 @@ that holds:
 | `waits for the pipeline` | its MR's pipeline runs, or GitLab has none yet for its last push | `blue` |
 | `pipeline failed` | the pipeline of its MR failed | `red` |
 | `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed and no try is open | `red` |
-| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORKTREES an acceptance box) is open | `red` |
+| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORK an acceptance box) is open | `red` |
 | `waits for !n`, `→ next #n after !m` | `wt:wait`, a handover announced for it | `blue` |
 | `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
 | `free` | none of these: nothing to do | `teal` |
