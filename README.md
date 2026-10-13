@@ -83,9 +83,17 @@ counts as none, so every checkout takes a checked binary once.
 
 ## Headless agents
 
-A task agent can be a Claude Code session instead of a process (#358,
-rollout #359–#362): `git config breadboard.agents headless` in the main
-checkout turns it on (tabs stay the default until #361).
+A task agent is a Claude Code session, not a process (#358, rollout
+#359–#362): every agent of an orchestration runs headless, and a worktree
+of your own keeps its claude in a tab (#361).
+
+- **A click opens one in a tab** (its node, an action that opens it, the
+  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
+  the tab `<feature>` of its worktree's space, once no run of it is in
+  flight; its queue waits until that claude ends.
+- **The sidebar and the tab bar read the status table**: the space of a
+  worktree shows what its agent waits for (`$wt_state`, the space's third
+  row), and "N need you" counts its `asks`.
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
