@@ -362,7 +362,7 @@ mod tests {
 
     fn spaces() -> HashMap<String, String> {
         [
-            ("w1", SPACE),
+            ("w1", SPACE.get().as_str()),
             ("w4P", "299-import-vita"),
             ("w46", "292-every-agent"),
             ("w48", "307-rust"),

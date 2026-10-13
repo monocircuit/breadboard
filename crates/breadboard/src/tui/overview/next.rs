@@ -97,8 +97,10 @@ fn up_next_of<'a>(model: &'a OrchestrationModel, item: &'a Item) -> Option<&'a I
 pub fn empty(page: &mut Page<Act>, model: &OrchestrationModel) {
     page.section(Section::new("EMPTY").plain(), |scene: &mut Scene<Act>| {
         let text = format!(
-            "no issues recorded for {}: pnpm wt:orchestrate {} <issue>…",
-            model.label, model.name
+            "no issues recorded for {}: {run} wt:orchestrate {} <issue>…",
+            model.label,
+            model.name,
+            run = breadboard_core::config::run_word()
         );
         look::say(scene, &text, theme::dim());
     });

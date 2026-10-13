@@ -744,10 +744,11 @@ pub fn undone(is_gone: bool, issue: &Issue) -> String {
         format!("the worktree of #{} is removed again", issue.number)
     } else {
         format!(
-            "the worktree of #{} stays at {}, not removed (see above why; pnpm wt:remove {} takes it)",
+            "the worktree of #{} stays at {}, not removed (see above why; {run} wt:remove {} takes it)",
             issue.number,
             text(&issue.dir),
-            issue.feature
+            issue.feature,
+            run = breadboard_core::config::run_word()
         )
     }
 }
@@ -1076,7 +1077,11 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let mut setup_note = "";
     if !is_made {
         let _ = record::write_record(&repo.main, name, &[start_entry(&issue, known.as_ref(), None)]);
-        step(&format!("pnpm wt:new {} --origin {name}", issue.feature));
+        step(&format!(
+            "{run} wt:new {} --origin {name}",
+            issue.feature,
+            run = breadboard_core::config::run_word()
+        ));
         let made = make_worktree(repo, &issue, name, request.is_shared);
         if made.failed_after_setup() {
             setup_note = " (wt:new failed after the setup, see above)";

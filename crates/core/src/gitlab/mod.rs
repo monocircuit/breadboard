@@ -110,7 +110,7 @@ impl Mr {
     /// The branch it merges into: develop unless GitLab names another.
     pub fn target(&self) -> &str {
         if self.target.is_empty() {
-            crate::git::DEVELOP
+            crate::git::default_branch()
         } else {
             &self.target
         }

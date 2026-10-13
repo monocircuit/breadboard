@@ -11,9 +11,6 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
-/// The folder of vita's web app in a checkout.
-pub const VITA: &str = "products/vita/web";
-
 /// An MR merged on develop's first-parent line since the branch started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
@@ -127,18 +124,22 @@ fn pending_since(journal: &Path, newest: i64) -> Option<Migrations> {
     })
 }
 
-/// migrationsOf: None without .env.local, journal or psql.
+/// drizzle's journal of a checkout (breadboard.toml's `[stack.migrations]`), None without one.
+fn journal_of(dir: &Path) -> Option<PathBuf> {
+    let loaded = crate::config::of(dir);
+    let stack = loaded.config.stack.as_ref()?;
+    Some(dir.join(&stack.dir).join(&stack.migrations.as_ref()?.journal))
+}
+
+/// migrationsOf: None without a stack with migrations, its env file, journal or psql.
 pub fn migrations_of(dir: &Path) -> Option<Migrations> {
-    let vita = dir.join(VITA);
-    let journal = vita.join("src/server/db/migrations/meta/_journal.json");
-    let env = std::fs::read_to_string(vita.join(".env.local")).ok()?;
+    let journal = journal_of(dir)?;
+    let variable = crate::stack::of(dir)?.migrations?.database_env;
+    let env = crate::stack::env_of(dir)?;
     if !journal.exists() {
         return None;
     }
-    let url = env
-        .lines()
-        .find_map(|line| line.strip_prefix("MIGRATION_DATABASE_URL="))
-        .map(str::trim)?;
+    let url = env.get(&variable).map(|url| url.trim())?;
     let answer = Command::new("psql")
         .args([
             url,
@@ -177,7 +178,7 @@ type Asked = (i64, Option<SystemTime>, Option<Migrations>);
 static MIGRATIONS: LazyLock<Mutex<HashMap<PathBuf, Asked>>> = LazyLock::new(Mutex::default);
 
 fn journal_time(dir: &Path) -> Option<SystemTime> {
-    std::fs::metadata(dir.join(VITA).join("src/server/db/migrations/meta/_journal.json"))
+    std::fs::metadata(journal_of(dir)?)
         .and_then(|meta| meta.modified())
         .ok()
 }
@@ -229,7 +230,14 @@ mod tests {
     fn migrations_are_asked_again_after_a_while_when_the_journal_changes_or_once_forgotten() {
         let scratch = Scratch::new();
         let dir = scratch.path().join("held");
-        let journal = dir.join(VITA).join("src/server/db/migrations/meta/_journal.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(crate::config::FILE),
+            "[stack]\ndir = \"web\"\nproject = \"p\"\n[stack.app]\nport = 3000\nenv = \"PORT\"\n\
+             [stack.migrations]\njournal = \"meta/_journal.json\"\nrun = \"migrate\"\n",
+        )
+        .unwrap();
+        let journal = dir.join("web/meta/_journal.json");
         std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
         std::fs::write(&journal, "{}").unwrap();
         let asked = std::cell::Cell::new(0);

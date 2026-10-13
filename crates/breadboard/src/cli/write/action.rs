@@ -24,7 +24,7 @@ pub const USAGE: &str = r#"usage: pnpm wt:action <kind> <text> [--url <url>]   k
        pnpm wt:action try <what to check> --run <command> | --url <path or url>
        pnpm wt:action try <what to check> --on test --url <path>   on the test instance, ready once the MR is merged and deployed
        pnpm wt:action merge <what is in it> --orchestration <name> --mr !N   the orchestrator's merge of an MR
-       pnpm wt:action note <one line>   what you are on, in plain words, under your node in WORKTREES
+       pnpm wt:action note <one line>   what you are on, in plain words, in your block in WORK
        pnpm wt:action change <what>     a change for this MR: draft at once, merge withdrawn (--orchestration <name> --mr !N: the orchestrator's)
        pnpm wt:action --list   the open actions, then the answered ones (a decision answered is taken)
        pnpm wt:action --done <id>
@@ -188,7 +188,8 @@ fn where_of(argv: &Argv, here: &Here) -> Result<(PathBuf, Option<String>), Strin
         // A name outside NAME would reach outside the records (`../x`); said as wt:plan says it.
         if !is_name(name) {
             return Err(format!(
-                "{name} is no orchestration's name: names are kebab-case (pnpm wt:orchestrate <name> <issue>…)"
+                "{name} is no orchestration's name: names are kebab-case ({run} wt:orchestrate <name> <issue>…)",
+                run = breadboard_core::config::run_word()
             ));
         }
         let Some(main) = here.main.as_deref().filter(|main| record_of(main, name).is_some()) else {
@@ -253,7 +254,7 @@ fn change_text(argv: &Argv) -> Result<String, String> {
 }
 
 /// `wt:action note <one line>` (#341): what the agent is on, in plain words,
-/// under its node in WORKTREES; no action, nothing for the human to click.
+/// in its block in WORK; no action, nothing for the human to click.
 fn note(argv: &Argv, here: &Here) -> Outcome {
     let Some(dir) = here.worktree() else {
         return Err("a note is for a worktree's agent: run it inside its worktree".into());
@@ -265,7 +266,7 @@ fn note(argv: &Argv, here: &Here) -> Outcome {
     set_note(dir, line, now_ms())
         .map_err(|error| format!("{} could not be written: {error}", note_file(dir).display()))?;
     let shown = match origin_of(dir) {
-        Some(origin) => format!("under its node in WORKTREES of ⇶ {}", origin.name),
+        Some(origin) => format!("in its block in WORK of ⇶ {}", origin.name),
         None => "noted (no orchestration shows it)".into(),
     };
     say(&format!("\n✓ {shown}: {line}\n"));
@@ -346,7 +347,10 @@ pub fn run(argv: &Argv) -> Outcome {
         let is_done = *result.as_ref().unwrap_or(&false);
         written(result, &file)?;
         if !is_done {
-            return Err(format!("no open action {id} (pnpm wt:action --list)"));
+            return Err(format!(
+                "no open action {id} ({run} wt:action --list)",
+                run = breadboard_core::config::run_word()
+            ));
         }
         say(&format!("\n✓ action {id} done\n"));
         return Ok(ExitCode::SUCCESS);
@@ -492,8 +496,12 @@ fn posted(action: &Action, name: Option<&str>, is_orchestrator: bool) -> String 
         _ => String::new(),
     };
     format!(
-        "\n✓ action {} ({}): {}\n{spot}  {place}\n{answer}  done by hand: pnpm wt:action --done {}{by_hand}\n",
-        action.id, action.kind, action.text, action.id
+        "\n✓ action {} ({}): {}\n{spot}  {place}\n{answer}  done by hand: {run} wt:action --done {}{by_hand}\n",
+        action.id,
+        action.kind,
+        action.text,
+        action.id,
+        run = breadboard_core::config::run_word()
     )
 }
 

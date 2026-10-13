@@ -53,7 +53,8 @@ pub fn run(argv: &Argv) -> Outcome {
     let wanted = words.get(1..).unwrap_or_default();
     if let Some(box_) = wanted.iter().find(|box_| number_of(box_) != Some(**box_)) {
         return Err(format!(
-            "{box_} is no box number: pnpm wt:tick {number} lists them, numbered"
+            "{box_} is no box number: {run} wt:tick {number} lists them, numbered",
+            run = breadboard_core::config::run_word()
         ));
     }
 
@@ -74,7 +75,10 @@ pub fn run(argv: &Argv) -> Outcome {
         for line in boxes::print_boxes(&boxes, &[]) {
             say(&line);
         }
-        say(&format!("\n  pnpm wt:tick {number} <box>… ticks them\n"));
+        say(&format!(
+            "\n  {run} wt:tick {number} <box>… ticks them\n",
+            run = breadboard_core::config::run_word()
+        ));
         return Ok(ExitCode::SUCCESS);
     }
 

@@ -1,7 +1,7 @@
 //! `wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]`
 //! (plan.mjs): the order the orchestrator works and merges its issues in,
-//! printed, and set with the flags. The overview's NEXT, WORKTREES and MERGE
-//! REQUESTS and herdr's space order read it from the record.
+//! printed, and set with the flags. The overview's NEXT and WORK and herdr's
+//! space order read it from the record.
 
 use super::args::{Takes, fail, first, flag_value, main_dir};
 use breadboard_core::lock::{lock_of, with_dir_lock};
@@ -36,7 +36,8 @@ pub fn run(args: &[String]) -> ExitCode {
     // A name outside kebab-case would read a file outside the records (`../x`).
     if !is_name(name) {
         return fail(&format!(
-            "{name} is no orchestration's name: names are kebab-case (pnpm wt:orchestrate <name> <issue>…)"
+            "{name} is no orchestration's name: names are kebab-case ({run} wt:orchestrate <name> <issue>…)",
+            run = breadboard_core::config::run_word()
         ));
     }
     let Some(record) = record_of(&main, name) else {
@@ -106,7 +107,10 @@ pub fn broken_record(main: &Path, name: &str) -> Option<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(error) => return Some(format!("{file} can't be read: {error}")),
     };
-    let fix = format!("fix it, or start the orchestration again (pnpm wt:orchestrate {name} <issue>…)");
+    let fix = format!(
+        "fix it, or start the orchestration again ({run} wt:orchestrate {name} <issue>…)",
+        run = breadboard_core::config::run_word()
+    );
     match serde_json::from_str::<Value>(&text) {
         Err(error) => Some(format!("{file} is no JSON ({error}): {fix}")),
         Ok(value) if !value.get("issues").is_some_and(Value::is_array) => {

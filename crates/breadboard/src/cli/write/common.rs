@@ -16,7 +16,7 @@ pub fn finish(outcome: Outcome) -> ExitCode {
     match outcome {
         Ok(code) => code,
         Err(message) => {
-            let _ = writeln!(std::io::stderr(), "\n✗ {message}");
+            let _ = writeln!(std::io::stderr(), "\n✗ {}", breadboard_core::config::in_repo(&message));
             ExitCode::FAILURE
         }
     }
@@ -26,7 +26,7 @@ pub fn finish(outcome: Outcome) -> ExitCode {
 /// away (a closed pipe) is no reason to panic.
 pub fn say(text: &str) {
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{text}");
+    let _ = writeln!(out, "{}", breadboard_core::config::in_repo(text));
     let _ = out.flush();
 }
 

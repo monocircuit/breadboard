@@ -127,7 +127,7 @@ static TURBO_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:@[\w.-]+/)?[\w.-]+(?::[A-Za-z][\w-]*)+:(?: |$)").unwrap());
 
 /// The `<package>:<task>: ` turbo writes before each line of a task's
-/// output (`@monocircuit/breadboard:lint: `), or nothing.
+/// output (`@acme/web:lint: `), or nothing.
 pub fn turbo_prefix(text: &str) -> &str {
     TURBO_PREFIX.find(text).map_or("", |found| found.as_str())
 }

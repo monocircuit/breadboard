@@ -3,7 +3,7 @@
 //! `nvim` (`.claude/nvim.sock`, relative to the checkout: a socket's path
 //! holds at most 107 bytes), else the tab started on the file, then its space
 //! and tab in front. And the herdr tabs a click starts (tabs.mjs `ensureTab`):
-//! the editor's, Storybook's. The herdr writes are exactly Node's (rule 6).
+//! the editor's, a tool's. The herdr writes are exactly Node's (rule 6).
 
 use breadboard_core::git::git;
 use breadboard_core::herdr::{self, Tab};
@@ -33,9 +33,10 @@ pub struct Checkout<'a> {
 }
 
 impl Checkout<'_> {
-    /// Its herdr space (spaces.mjs `spaceLabel`): the main checkout's is `Monocircuit/Platform`.
+    /// Its herdr space (spaces.mjs `spaceLabel`): the main checkout's is `[herdr] space`.
     fn space(&self) -> Option<String> {
-        let label = if self.is_main { SPACE } else { self.feature };
+        let space = SPACE.get();
+        let label = if self.is_main { space.as_str() } else { self.feature };
         herdr::spaces()
             .into_iter()
             .find(|space| space.label == label)
@@ -150,10 +151,11 @@ fn quote(text: &str) -> String {
 /// checkout didn't switch it off (#258), on the file at the line.
 fn editor_command(checkout: &Checkout, file: &str, line: u64) -> String {
     let socket = quote(SOCKET);
-    let changes = checkout.main.join("packages/breadboard/nvim/changes.lua");
+    let nvim = crate::cli::files_dir(checkout.main).join("nvim");
+    let changes = nvim.join("changes.lua");
     let mut commands = vec![format!("luafile {}", changes.display())];
     if let Some(plugin) = ide_plugin(checkout) {
-        let lua = checkout.main.join("packages/breadboard/nvim/ide.lua");
+        let lua = nvim.join("ide.lua");
         let json = |path: &Path| serde_json::to_string(&path.to_string_lossy()).unwrap_or_default();
         commands.push(format!("lua dofile({})({})", json(&lua), json(&plugin)));
     }
@@ -228,18 +230,16 @@ pub fn ensure_tab(space: &str, label: &str, cwd: &Path, command: &str) -> bool {
     true
 }
 
-/// Storybook of the checkout in its tab `storybook` (layout.mjs `startStorybook`): false without a space.
-pub fn start_storybook(checkout: &Checkout, port: i64) -> bool {
+/// A tool of the stack (Storybook) in the tab of its name (layout.mjs `startStorybook`): false without a space.
+pub fn start_tool(checkout: &Checkout, tool: &breadboard_core::config::Tool, offset: u16) -> bool {
     let Some(space) = checkout.space() else {
         return false;
     };
-    let cwd = checkout.dir.join("packages/monolithium");
-    ensure_tab(
-        &space,
-        "storybook",
-        &cwd,
-        &format!("pnpm exec storybook dev -p {port} --ci"),
-    )
+    let cwd = match &tool.dir {
+        Some(dir) => checkout.dir.join(dir),
+        None => breadboard_core::stack::dir_of(checkout.dir),
+    };
+    ensure_tab(&space, &tool.name, &cwd, &tool.command(offset))
 }
 
 #[cfg(test)]
@@ -270,7 +270,7 @@ mod tests {
             editor_command(&checkout, "src/a b.ts", 7),
             "cd '/nowhere/platform-1-x'; nvim --server '.claude/nvim.sock' --remote-expr 1 >/dev/null 2>&1 \
              || rm -f '.claude/nvim.sock'; nvim --listen '.claude/nvim.sock' \
-             -c 'luafile /nowhere/platform/packages/breadboard/nvim/changes.lua' +7 'src/a b.ts'"
+             -c 'luafile /nowhere/platform/.breadboard/nvim/changes.lua' +7 'src/a b.ts'"
         );
     }
 

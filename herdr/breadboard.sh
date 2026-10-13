@@ -14,7 +14,7 @@
 #                                      binary is that of HEAD
 #
 # "Older than HEAD": target/release/breadboard.source holds what HEAD had in
-# crates/, hooks/ and the workspace's Cargo files when it was made here.
+# its sources (`sources` below) when it was made here.
 # Only sh, git and cat until a build (no dirname: herdr's PATH may be short).
 #
 # Made, not always built: the repo's store, <git common dir>/breadboard, is
@@ -43,9 +43,14 @@ case "${1-}" in
   --built) mode=built && shift ;;
 esac
 
+# The sources the binary is built from: the crates and what they embed
+# (include_str!: the hooks' shims, the skill's templates, the herdr plugin
+# init copies, this launcher, the nvim Lua, the Chromium extension, #342).
+sources="crates hooks claude herdr/herdr-plugin.toml herdr/keys.toml herdr/config.toml herdr/breadboard.sh nvim chromium Cargo.toml Cargo.lock"
+
 # What HEAD has of the sources the binary is built from (ls-tree: one line each).
 source_now() {
-  git -C "$package" ls-tree HEAD -- crates hooks Cargo.toml Cargo.lock 2>/dev/null
+  git -C "$package" ls-tree HEAD -- $sources 2>/dev/null
 }
 
 # The stamp of a binary made from the sources $1. Its first line says it
@@ -79,7 +84,7 @@ has_key() {
 
 # Whether the sources have no uncommitted changes.
 is_clean() {
-  [ -z "$(git -C "$package" status --porcelain -- crates hooks Cargo.toml Cargo.lock 2>/dev/null)" ]
+  [ -z "$(git -C "$package" status --porcelain -- $sources 2>/dev/null)" ]
 }
 
 # cargo on PATH, else rustup's: a herdr started from a desktop has no ~/.cargo/bin.
