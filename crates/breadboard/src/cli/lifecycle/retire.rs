@@ -7,9 +7,9 @@
 //! the worktree goes; a fresh agent on those files reads the handoff.
 
 use super::args::Args;
-use super::claude::{bound_session, context_share_of};
+use super::claude::{bound_session, context_share_of, is_conversation_running};
 use super::handover::restart::{self, Machine};
-use super::handover::{context_limit, pane_of_conversation};
+use super::handover::{agent_of, context_limit, pane_of_conversation, refusal_of};
 use super::herdr::s;
 use super::proc::{Done, fail, step};
 use super::repo::Repo;
@@ -96,8 +96,20 @@ pub fn command(args: &Args) -> Done {
         percent(share),
         percent(limit)
     ));
+    // Never mid-issue: only an agent that is idle (its MR merged, nothing asked) retires.
+    let is_headless = runs::is_headless(&repo.main);
+    let found = agent_of(&repo.main, &id, is_headless)
+        .map_err(|why| super::proc::Fail(format!("{why}: can't tell whether {shown} is idle; nothing changed")))?;
+    if let Some(why) = refusal_of(found.as_ref(), true, None, 1.0) {
+        return fail(format!(
+            "{shown} not retired: {why}; only an idle agent retires, never mid-issue"
+        ));
+    }
+    if is_headless && is_conversation_running(&id) {
+        return fail(format!("{shown} not retired: a claude runs its conversation"));
+    }
     // A pane runs it (not headless): its claude ends first, the last run takes its conversation.
-    if !runs::is_headless(&repo.main)
+    if !is_headless
         && let Ok(Some(pane)) = pane_of_conversation(&id)
         && let Err(why) = restart::retire(&Machine, &id, s(&pane, "pane_id"), &retire_line(iid, share, limit))
     {

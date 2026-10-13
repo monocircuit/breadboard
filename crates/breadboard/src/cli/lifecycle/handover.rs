@@ -414,7 +414,7 @@ pub fn pane_of_conversation(id: &str) -> Result<Option<Value>, String> {
 /// What the agent `id` does, as herdr's pane of it says (`agent_status`);
 /// for a headless agent (#359) the run engine's status table, where no row
 /// is an idle session that never ran.
-fn agent_of(main: &Path, id: &str, is_headless: bool) -> Result<Option<Value>, String> {
+pub(super) fn agent_of(main: &Path, id: &str, is_headless: bool) -> Result<Option<Value>, String> {
     if !is_headless {
         return pane_of_conversation(id);
     }
