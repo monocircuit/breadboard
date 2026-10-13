@@ -30,6 +30,19 @@ pub fn shared_of(paths: &[String], files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The retired agent whose handoff a fresh agent on `paths` reads (#381):
+/// the one sharing the most of them, the one retired last on a tie; None
+/// when no handoff shares a path. With the paths it shares.
+pub fn handoff_of<'a>(retired: &[&'a Worker], paths: &[String]) -> Option<(&'a Worker, Vec<String>)> {
+    let at = |worker: &Worker| worker.retired.as_ref().and_then(|retired| retired.at.clone());
+    retired
+        .iter()
+        .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+        .map(|worker| (*worker, shared_of(paths, &worker.files)))
+        .filter(|(_, shared)| !shared.is_empty())
+        .max_by(|(a, a_shared), (b, b_shared)| a_shared.len().cmp(&b_shared.len()).then(at(a).cmp(&at(b))))
+}
+
 /// An agent free for a next issue: one of a worktree whose MR is done, or a
 /// free one without a worktree (#289, `is_free`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -658,6 +671,35 @@ mod tests {
             ),
             ["overview/boxes.mjs", "tty.mjs"]
         );
+    }
+
+    #[test]
+    fn hands_a_fresh_agent_the_handoff_sharing_most_files() {
+        use crate::record::Retired;
+        let retired = |id: &str, files: &[&str], at: &str, has_handoff: bool| Worker {
+            id: id.into(),
+            files: files.iter().map(|file| file.to_string()).collect(),
+            retired: Some(Retired {
+                at: Some(at.into()),
+                handoff: has_handoff.then(|| format!("h/{id}.md")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let one = retired("one", &["src/a.rs"], "2026-10-01", true);
+        let two = retired("two", &["src/a.rs", "src/b.rs"], "2026-10-02", true);
+        let late = retired("late", &["src/a.rs"], "2026-10-03", true);
+        let none = retired("none", &["src/a.rs", "src/b.rs", "src/c.rs"], "2026-10-04", false);
+        let all = [&one, &two, &late, &none];
+        let (worker, shared) = handoff_of(&all, &paths(&["a.rs", "b.rs", "c.rs"])).unwrap();
+        // No handoff, no pick: `none` shares most but wrote nothing.
+        assert_eq!(
+            (worker.id.as_str(), shared),
+            ("two", vec!["a.rs".to_string(), "b.rs".into()])
+        );
+        // A tie: the one retired last.
+        assert_eq!(handoff_of(&all, &paths(&["a.rs"])).unwrap().0.id, "late");
+        assert!(handoff_of(&all, &paths(&["z.rs"])).is_none());
     }
 
     #[test]
