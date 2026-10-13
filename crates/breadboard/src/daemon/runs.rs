@@ -10,9 +10,10 @@
 
 use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
+use breadboard_core::permissions;
 use breadboard_core::runs::{
-    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, denials_in,
-    prompt_of, read_or_default, room_for, status_file, write_whole,
+    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, prompt_of,
+    read_or_default, room_for, status_file, write_whole,
 };
 use breadboard_core::time::now_ms;
 use std::collections::{HashMap, HashSet};
@@ -214,7 +215,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         read.runs
             .insert(session.clone(), row(State::Running, Some(pid), None, Vec::new()));
     });
-    let mut denials = Vec::new();
+    let mut lines = Vec::new();
     if let Ok(mut file) = tokio::fs::File::create(&log).await {
         let mut stdout = child.stdout.take().map(|out| BufReader::new(out).lines());
         let mut stderr = child.stderr.take().map(|err| BufReader::new(err).lines());
@@ -231,16 +232,36 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
                 else => break,
             };
             let Some(line) = line else { continue };
-            denials.extend(denials_in(&line));
             let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+            lines.push(line);
         }
     }
     let code = child.wait().await.ok().and_then(|status| status.code());
+    let denials = asked_of(&dir, &name, &lines);
     let state = if denials.is_empty() { State::Idle } else { State::Asks };
     change_table(&main, &table, |read| {
         read.runs.insert(session.clone(), row(state, None, code, denials));
     });
     locked(&in_flight).remove(&session);
+}
+
+/// What a run that ended was denied that a tab would have asked the user
+/// (#360), each posted as a `permission` action in its worktree; a block
+/// by the classifier or a deny rule stays the refusal the agent was told.
+fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let asked: Vec<_> = permissions::denials_of(lines, &permissions::deny_rules(dir, &home))
+        .into_iter()
+        .filter(|denial| denial.why == permissions::Why::Asked)
+        .collect();
+    let _ = permissions::post_denials(dir, name, &asked);
+    asked
+        .into_iter()
+        .map(|denial| runs::Denial {
+            tool: denial.tool,
+            input: denial.input,
+        })
+        .collect()
 }
 
 /// `breadboard runs [tell <dir> <line…>]`: the status table of the repo's

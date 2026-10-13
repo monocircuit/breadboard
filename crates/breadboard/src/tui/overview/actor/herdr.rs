@@ -173,7 +173,13 @@ pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
 /// `dir` (#358), the daemon woken to run it; false when no session is bound
 /// there. Queued is in: the daemon runs it, now or once memory allows.
 pub fn enqueue(main: &Path, dir: &Path, line: &str) -> bool {
-    if breadboard_core::runs::enqueue_line(main, dir, &overview_line(line)).is_err() {
+    enqueue_allowing(main, dir, line, Vec::new())
+}
+
+/// `enqueue` with rules allowed for the one run that takes the line: the
+/// user's `allow` of a `permission` action (#360).
+pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String>) -> bool {
+    if breadboard_core::runs::enqueue_allowing(main, dir, &overview_line(line), allowed).is_err() {
         return false;
     }
     crate::daemon::client::wake_runs(main);
