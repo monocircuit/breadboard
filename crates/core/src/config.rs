@@ -103,6 +103,74 @@ pub struct Stack {
     /// What a worktree may run beside its stack, on a port moved with it (Storybook).
     #[serde(default)]
     pub tools: Vec<Tool>,
+    /// An orchestration's epic stack and the task stacks on it (#351, #365);
+    /// None: an orchestration's worktrees get own stacks.
+    pub epic: Option<Epic>,
+}
+
+/// The epic stack of an orchestration (#351): its checkout runs a full
+/// stack whose database service keeps a template database, migrated and
+/// seeded; a task worktree's stack runs without that service, on the epic's
+/// network, its databases made on the epic's.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Epic {
+    /// The `[[stack.services]]` the task stacks share: its container answers psql.
+    #[serde(default = "postgres")]
+    pub service: String,
+    /// psql's user in it.
+    #[serde(default = "postgres")]
+    pub superuser: String,
+    /// The template database the cloned database of a task is made from.
+    pub template: String,
+    /// The folder in the stack's `dir` whose git tree a template is made from:
+    /// the template is made again when it changed.
+    pub stamp: String,
+    /// Run in a new template before its migrations (`[stack.migrations] run`).
+    #[serde(default)]
+    pub template_sql: Vec<String>,
+    /// What seeds the template after its migrations, in the stack's `dir`.
+    pub seed: Option<String>,
+    /// What a task stack runs once its containers are up and its migrations applied, in order.
+    #[serde(default)]
+    pub task_setup: Vec<String>,
+    /// The databases a task gets on the epic's service, `<name>_<feature>`.
+    #[serde(default)]
+    pub databases: Vec<Database>,
+    /// What a task stack's env file sets besides, `{network}` the epic's compose network.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+/// A database a task gets on the epic's service.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Database {
+    /// Its name before `_<feature>`.
+    pub name: String,
+    /// Cloned from the template (one database is); else made empty.
+    #[serde(default)]
+    pub is_clone: bool,
+    /// The role that owns it (and the template, for the cloned one).
+    pub owner: String,
+    /// The roles that may connect to it besides its owner.
+    #[serde(default)]
+    pub connect: Vec<String>,
+    /// The variables of the env file whose URL points at it.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// The variable of the env file set to its name.
+    pub name_env: Option<String>,
+}
+
+impl Epic {
+    /// The database cloned from the template.
+    pub fn clone_database(&self) -> &Database {
+        self.databases
+            .iter()
+            .find(|database| database.is_clone)
+            .expect("validated: one database is cloned")
+    }
 }
 
 /// The app a checkout serves: its port, how it starts.
@@ -366,6 +434,9 @@ fn compose_yml() -> String {
 fn pnpm_dev() -> String {
     "pnpm dev".into()
 }
+fn postgres() -> String {
+    "postgres".into()
+}
 fn database_url() -> String {
     "DATABASE_URL".into()
 }
@@ -480,6 +551,9 @@ impl Config {
                     return bad(&format!("stack.services[{at}].name"), "must not be empty");
                 }
             }
+            if let Some(epic) = &stack.epic {
+                epic.validate(stack)?;
+            }
         }
         if self.main_checkout.every_minutes == 0 {
             return bad("main_checkout.every_minutes", "must be 1 or more");
@@ -509,6 +583,42 @@ impl Config {
     /// How a command is typed: `pnpm wt:new`, `breadboard wt:new`.
     pub fn command(&self, command: &str) -> String {
         format!("{} {command}", self.repo.run.as_deref().unwrap_or("breadboard"))
+    }
+}
+
+impl Epic {
+    fn validate(&self, stack: &Stack) -> Result<(), String> {
+        let bad = |key: &str, why: &str| Err(format!("stack.epic.{key}: {why}"));
+        if stack.service(&self.service).is_none_or(|service| service.env.is_none()) {
+            return bad(
+                "service",
+                &format!(
+                    "{:?} is no [[stack.services]] with an `env`: the task stacks reach it on the epic's moved port",
+                    self.service
+                ),
+            );
+        }
+        if stack.migrations.is_none() {
+            return Err("stack.epic: needs [stack.migrations], its `run` migrates the template".into());
+        }
+        if self.template.trim().is_empty() {
+            return bad("template", "must not be empty");
+        }
+        if self.stamp.trim().is_empty() {
+            return bad("stamp", "must name a folder");
+        }
+        if self.databases.iter().filter(|database| database.is_clone).count() != 1 {
+            return bad(
+                "databases",
+                "exactly one has `is_clone = true`: the one made from the template",
+            );
+        }
+        for (at, database) in self.databases.iter().enumerate() {
+            if database.name.trim().is_empty() || database.owner.trim().is_empty() {
+                return bad(&format!("databases[{at}]"), "needs a `name` and an `owner`");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -838,6 +948,33 @@ mod tests {
         assert_eq!(
             stack.ports().iter().map(|port| port.port).collect::<Vec<_>>(),
             [3000, 4983, 5432, 6006, 8080, 8333, 64738]
+        );
+        // vita's epic and task stacks (#351, #365).
+        let epic = stack.epic.unwrap();
+        assert_eq!(
+            (epic.service.as_str(), epic.template.as_str()),
+            ("postgres", "vita_tpl")
+        );
+        assert_eq!(epic.clone_database().name, "vita");
+        assert_eq!(epic.env.get("VITA_NETWORK").map(String::as_str), Some("{network}"));
+    }
+
+    #[test]
+    fn an_epic_is_refused_without_what_it_needs() {
+        let stack = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n\
+                     [[stack.services]]\nname = \"postgres\"\nport = 5432\nenv = \"DB_PORT\"\n";
+        let migrations = "[stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n";
+        let epic = "[stack.epic]\ntemplate = \"t\"\nstamp = \"db\"\n";
+        let clone = "[[stack.epic.databases]]\nname = \"app\"\nowner = \"o\"\nis_clone = true\n";
+        assert!(Config::parse(&format!("{stack}{migrations}{epic}{clone}")).is_ok());
+        let error = Config::parse(&format!("{stack}{epic}{clone}")).unwrap_err();
+        assert!(error.starts_with("stack.epic: needs [stack.migrations]"), "{error}");
+        let error = Config::parse(&format!("{stack}{migrations}{epic}")).unwrap_err();
+        assert!(error.starts_with("stack.epic.databases: exactly one"), "{error}");
+        let error = Config::parse(&format!("{stack}{migrations}{epic}service = \"db\"\n{clone}")).unwrap_err();
+        assert!(
+            error.starts_with("stack.epic.service: \"db\" is no [[stack.services]]"),
+            "{error}"
         );
     }
 

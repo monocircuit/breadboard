@@ -56,12 +56,12 @@ repo is to it comes from its `breadboard.toml`):
 
 | Command | Does |
 | ------- | ---- |
-| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; an orchestration's task: its epic; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#epics}}. An orchestration's task gets a task stack on demand instead ([epics.md](epics.md)){{/epics}}{{/stack}} |
+| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; an orchestration's task: its epic; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#epics}}{{#epic_stack}}. An orchestration's task gets a task stack on demand instead ([epics.md](epics.md)){{/epic_stack}}{{/epics}}{{/stack}} |
 {{#stack}}
 | `{{run}} wt:new <feature> --shared` | the same but on the **shared** stack of the main checkout (copies its `{{stack.env}}`), no containers — for work that never starts the app |
 {{/stack}}
 | `{{run}} wt:new <feature> --fix` | branch `fix/<feature>` instead |
-| `{{run}} wt:orchestrate <name> <issue>…` | **several issues at once**: a space `⇶ <name>` for this session, per issue a worktree (`wt:new --origin <name>`) with a `claude` briefed on it: WORKTREES of its overview shows where each is, `SendMessage` carries only decisions. `--dry-run` first. When and how: [orchestrate.md](orchestrate.md) |
+| `{{run}} wt:orchestrate <name> <issue>…` | **several issues at once**: a space `⇶ <name>` for this session, per issue a worktree (`wt:new --origin <name>`) with a `claude` briefed on it: WORK of its overview shows where each is, `SendMessage` carries only decisions. `--dry-run` first. When and how: [orchestrate.md](orchestrate.md) |
 {{#stack}}
 | `{{run}} wt:stack` | inside a worktree: move it from the shared stack to an own one |
 {{/stack}}

@@ -12,7 +12,8 @@
 //! (core's `model_of`) and the page from the model, one file per section:
 //!
 //! - orchestration: `header` (the chat row, GitLab's error), `next`,
-//!   `actions` (ACTIONS, UP NEXT), `worktrees`, `agents`, `merge_requests`,
+//!   `actions` (ACTIONS, UP NEXT), `work` (the worktrees and their MRs in
+//!   one, from the pieces of `worktrees` and `merge_requests`), `agents`,
 //!   `footer` (end orchestration, the hints);
 //! - one worktree: `worktree_view`; everything: `everything`.
 //!
@@ -33,6 +34,7 @@ mod look;
 mod merge_requests;
 mod next;
 mod overall;
+mod work;
 mod worktree_view;
 mod worktrees;
 
@@ -316,9 +318,9 @@ impl GitlabState {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Folds {
-    pub removed: Option<bool>,
+    /// WORK's done ones (#347: the merged MRs and the removed worktrees), shown until folded.
+    pub is_done_folded: bool,
     pub is_queued_folded: bool,
-    pub is_merged_folded: bool,
     /// The view of everything: every open MR, every issue, past what fits the pane.
     pub is_every_mr_shown: bool,
     pub is_every_issue_shown: bool,
@@ -494,17 +496,6 @@ impl Overview {
         }
     }
 
-    /// Whether "done and removed" is folded by the model's default (past FOLD_OVER).
-    fn is_removed_folded(&self) -> bool {
-        match &self.model {
-            Some(Model::Orchestration(model)) => model
-                .worktrees
-                .as_ref()
-                .is_ok_and(|worktrees| worktrees.is_removed_folded),
-            _ => false,
-        }
-    }
-
     /// The model again from what was read; a panic keeps the last one and says why.
     fn rebuild(&mut self) {
         let Some(local) = &self.local else { return };
@@ -551,9 +542,8 @@ impl App for Overview {
                 next::build(page, model, &ctx);
                 epic::build(page, model);
                 actions::build(page, model, &ctx);
-                worktrees::build(page, model, &ctx);
+                work::build(page, model, &ctx);
                 agents::build(page, model, &ctx);
-                merge_requests::build(page, model, &ctx);
                 footer::build(page, model, &ctx);
                 actor::view::done(page, &ctx);
             }
@@ -691,12 +681,15 @@ mod tests {
         app.actor.merges.of.clear();
         assert!(app.is_over());
         // Its folds go along as text and come back.
-        let folds = Folds {
-            is_merged_folded: true,
-            removed: Some(false),
+        let mut folds = Folds {
+            is_done_folded: true,
+            is_every_issue_shown: true,
             ..Folds::default()
         };
+        folds.boxes.mrs.insert(311);
         let back: Folds = serde_json::from_str(&serde_json::to_string(&folds).unwrap()).unwrap();
-        assert!(back.is_merged_folded && back.removed == Some(false) && !back.is_queued_folded);
+        assert!(back.is_done_folded && back.is_every_issue_shown && !back.is_queued_folded);
+        // The boxes stay out: the new build reads them from their file.
+        assert!(back.boxes.mrs.is_empty());
     }
 }
