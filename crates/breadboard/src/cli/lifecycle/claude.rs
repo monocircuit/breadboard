@@ -84,17 +84,26 @@ fn leave_worktree_in(file: &Path, id: &str) -> bool {
     if !is_in_worktree(&text) {
         return false;
     }
+    // Back up the transcript before modifying it (#363).
+    let backup = format!("{}.before-leave-{}", file.display(), std::process::id());
+    if fs::write(&backup, &text).is_err() {
+        return false;
+    }
     let record = serde_json::json!({ "type": "worktree-state", "worktreeSession": null, "sessionId": id });
     let gap = if text.is_empty() || text.ends_with('\n') {
         ""
     } else {
         "\n"
     };
-    fs::OpenOptions::new()
+    let success = fs::OpenOptions::new()
         .append(true)
         .open(file)
         .and_then(|mut out| std::io::Write::write_all(&mut out, format!("{gap}{record}\n").as_bytes()))
-        .is_ok()
+        .is_ok();
+    if !success {
+        let _ = fs::remove_file(&backup);
+    }
+    success
 }
 
 /// The context window: 1M with a `[1m]` model in claude's settings, else 200k.
