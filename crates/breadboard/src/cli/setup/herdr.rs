@@ -19,7 +19,6 @@ use std::sync::OnceLock;
 
 pub use crate::cli::lifecycle::herdr::{all_panes, current_pane, id_at, is_idle, panes_of, spaces, tabs_of};
 pub use crate::cli::lifecycle::layout::exclusive;
-pub use crate::cli::lifecycle::layout::tabs::idle_pane_of;
 
 /// The pane running this, asked once a run. wt:new asks three times (the
 /// orchestration it runs in, the worktree an agent leaves, the tab it
@@ -40,11 +39,6 @@ pub fn herdr(args: &[&str]) -> Option<Value> {
     lifecycle_herdr::call(args)
 }
 
-/// `herdr <args>` for its effect: true when herdr did it.
-pub fn herdr_did(args: &[&str]) -> bool {
-    lifecycle_herdr::did(args)
-}
-
 /// A string field of a herdr answer, "" without it.
 pub fn field<'a>(value: &'a Value, key: &str) -> &'a str {
     lifecycle_herdr::s(value, key)
@@ -55,11 +49,6 @@ pub fn session_of(pane: &Value) -> Option<&str> {
     pane.get("agent_session").and_then(|session| str_of(session, "value"))
 }
 
-/// The space a checkout's tabs belong in.
-pub fn space_of(dir: &Path) -> Option<String> {
-    spaces::space_of(&repo::lifecycle(), dir)
-}
-
 /// The label of a checkout's space: the main space for the main checkout.
 pub fn space_label(dir: &Path) -> String {
     repo::lifecycle().space_label(dir)
@@ -68,7 +57,7 @@ pub fn space_label(dir: &Path) -> String {
 /// The space of a worktree with its tabs (`root`, `overview` unless an
 /// orchestration's, the conversation's tab, `nvim`), under the layout's lock.
 pub fn worktree_space(dir: &Path, has_work_tab: bool) -> Option<String> {
-    exclusive(|| spaces::worktree_space(&repo::lifecycle(), dir, has_work_tab, false))
+    exclusive(|| spaces::worktree_space(&repo::lifecycle(), dir, has_work_tab))
 }
 
 /// While the stack of `dir` runs its space shows it (a tab per container,
@@ -143,7 +132,7 @@ pub fn open_space(feature: &str, dir: &Path, origin: Option<&Origin>, stays: Opt
         let repo = repo::lifecycle();
         spaces::main_space(&repo)?;
         if !moves_tab(proc::is_agent(), origin, stays) {
-            let workspace = spaces::worktree_space(&repo, dir, true, false)?;
+            let workspace = spaces::worktree_space(&repo, dir, true)?;
             layout::sync_stack_tabs(&repo, dir, Some(&workspace));
             if let Some(origin) = origin {
                 if let Some(found) = spaces()
@@ -169,7 +158,7 @@ pub fn open_space(feature: &str, dir: &Path, origin: Option<&Origin>, stays: Opt
             }
             return Some(format!("opened the space {feature}"));
         }
-        let workspace = spaces::worktree_space(&repo, dir, false, false)?;
+        let workspace = spaces::worktree_space(&repo, dir, false)?;
         let pane = pane_here()?;
         let moved = herdr(&[
             "pane",

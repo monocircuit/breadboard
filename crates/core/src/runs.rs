@@ -1,9 +1,9 @@
 //! Headless task agents (#358): a task agent is a Claude Code session id, not
 //! a process. A line for it is queued (`enqueue`), and `breadboard serve`
 //! runs `claude -p --resume <id>` in its worktree only when something waits
-//! in its queue; nothing runs while it waits. Behind a switch, `git config
-//! breadboard.agents headless` (`is_headless`); interactive tabs stay the
-//! default until #361.
+//! in its queue; nothing runs while it waits. Every task agent runs so
+//! (#361); one is opened in a tab only on a click (the overview's
+//! `open_agent`), and its queue waits while that claude runs.
 //!
 //! The files of `<main>/.claude/runs/`:
 //! - `queue.json` (`Queue`): the lines waiting for a run, appended by every
@@ -21,8 +21,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// `git config breadboard.agents headless`: task agents run headless.
-pub const MODE_KEY: &str = "breadboard.agents";
 /// What a run needs, roughly (a claude is ~200 MB, its tools more): what
 /// the memory model counts for an agent, now only while it runs.
 pub const RUN: u64 = crate::model::memory::AGENT;
@@ -33,9 +31,11 @@ pub const STARTING_MS: i64 = 15_000;
 /// A lock of the queue older than this belongs to a process that died.
 const STALE: Duration = Duration::from_secs(10);
 
-/// Whether `main` runs its task agents headless.
-pub fn is_headless(main: &Path) -> bool {
-    crate::git::git(main, &["config", "--get", MODE_KEY]).out() == "headless"
+/// Whether the agent of the worktree `dir` runs headless: every task agent
+/// of an orchestration does (#361). A worktree of your own keeps its claude
+/// in a tab.
+pub fn is_headless(main: &Path, dir: &Path) -> bool {
+    crate::record::is_orchestrated(main, dir)
 }
 
 pub fn dir_of(main: &Path) -> PathBuf {

@@ -181,7 +181,7 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         });
         if let Some(tree) = tree {
             let feature = repo.feature_of(&tree.dir);
-            if let Some(workspace) = worktree_space(repo, &tree.dir, false, false) {
+            if let Some(workspace) = worktree_space(repo, &tree.dir, false) {
                 for pane in &own {
                     let moved = call(&[
                         "pane",
@@ -236,7 +236,7 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     for tree in &trees {
         let feature = repo.feature_of(&tree.dir);
         let before = known.get(&feature);
-        let workspace = worktree_space(repo, &tree.dir, true, should_resume);
+        let workspace = worktree_space(repo, &tree.dir, true);
         match (before, &workspace) {
             (None, Some(_)) => report.push(format!("space {feature} opened")),
             // Today's said nothing: a space may be there now, without its tabs.
