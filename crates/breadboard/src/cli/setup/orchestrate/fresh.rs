@@ -6,7 +6,8 @@
 //! quiet point (no question to the user open, the chat idle, no merge in
 //! flight); never two claudes on one conversation.
 
-use crate::cli::lifecycle::handover::restart::{Host, Machine};
+use crate::cli::lifecycle::claude::running_claudes;
+use crate::cli::lifecycle::handover::end_claude;
 use crate::cli::lifecycle::herdr as lifecycle_herdr;
 use crate::cli::lifecycle::layout::nvim::ide_flag;
 use crate::cli::lifecycle::layout::orchestrations;
@@ -23,6 +24,8 @@ use std::time::{Duration, Instant};
 
 /// How long the old chat gets for its journal entry.
 const JOURNAL_WAIT: Duration = Duration::from_secs(300);
+/// How long the old chat gets to start its answer to the line.
+const START_WAIT: Duration = Duration::from_secs(5);
 /// How long the tab's shell gets to come back once its claude ended.
 const SHELL_WAIT: Duration = Duration::from_secs(10);
 /// How many of the journal's lines the first prompt carries, the newest.
@@ -103,6 +106,40 @@ pub fn first_prompt(
     text
 }
 
+/// What a fresh start needs of the machine: herdr's in a run, a fake in the tests.
+pub trait Host {
+    /// `line` typed into the claude of `pane`: whether herdr took it.
+    fn tell(&self, pane: &str, line: &str) -> bool;
+    /// The pid of the claude that runs the conversation `id`, None when none does.
+    fn pid_of(&self, id: &str) -> Option<i64>;
+    /// The claude `pid` asked to end; whether it is gone within the wait.
+    fn end(&self, pid: i64) -> bool;
+    /// `command` run in the shell of `pane`, only while that shell idles.
+    fn run(&self, pane: &str, command: &str) -> bool;
+}
+
+/// The machine as it is: herdr, the claudes' session files, signals.
+struct Machine;
+
+impl Host for Machine {
+    fn tell(&self, pane: &str, line: &str) -> bool {
+        lifecycle_herdr::did(&["agent", "prompt", pane, line])
+    }
+    fn pid_of(&self, id: &str) -> Option<i64> {
+        running_claudes()
+            .into_iter()
+            .find(|claude| claude.id == id)
+            .map(|claude| claude.pid)
+    }
+    fn end(&self, pid: i64) -> bool {
+        end_claude(pid)
+    }
+    fn run(&self, pane: &str, command: &str) -> bool {
+        // A shell line goes only into a shell, never into a running claude.
+        lifecycle_herdr::is_idle(pane) && lifecycle_herdr::did(&["pane", "run", pane, command])
+    }
+}
+
 /// What the fresh start needs to know.
 pub struct Fresh<'a> {
     pub id: &'a str,
@@ -145,7 +182,8 @@ pub fn fresh_start(host: &dyn Host, is_done: &dyn Fn(&str) -> bool, fresh: &Fres
     Ok(())
 }
 
-/// Whether the agent of `pane` has finished its turn (herdr's agent status), waited for.
+/// Whether the agent of `pane` has finished its answer to the line (herdr's
+/// agent status), waited for: its start first, a while, then its end.
 fn is_done_on_herdr(pane: &str) -> bool {
     let status = || {
         lifecycle_herdr::all_panes()
@@ -153,6 +191,10 @@ fn is_done_on_herdr(pane: &str) -> bool {
             .find(|each| lifecycle_herdr::s(each, "pane_id") == pane)
             .map(|each| lifecycle_herdr::s(&each, "agent_status").to_string())
     };
+    let started = Instant::now();
+    while status().is_some_and(|now| now != "working") && started.elapsed() < START_WAIT {
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let started = Instant::now();
     loop {
         match status() {
@@ -267,9 +309,6 @@ mod tests {
     }
 
     impl Host for Fake {
-        fn shell(&self, _: &str, _: &str, _: &Path) -> Option<String> {
-            None
-        }
         fn pid_of(&self, _: &str) -> Option<i64> {
             *self.pid.borrow()
         }
@@ -278,13 +317,11 @@ mod tests {
             *self.pid.borrow_mut() = None;
             true
         }
-        fn leave_worktree(&self, _: &str) {}
         fn run(&self, pane: &str, command: &str) -> bool {
             assert!(self.pid.borrow().is_none(), "a second claude on one conversation");
             self.did.borrow_mut().push(format!("run {pane}: {command}"));
             true
         }
-        fn close(&self, _: &str) {}
         fn tell(&self, pane: &str, line: &str) -> bool {
             if self.is_deaf {
                 return false;
