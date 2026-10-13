@@ -187,6 +187,15 @@ urls = ["DATABASE_URL"]
 | --- | ------- | ------------ |
 | `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
 
+## `[orchestrator]`
+
+The orchestrator's chat (#382): its context shows in the overview's title band.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `fresh_above` | `50` | the share of its context (percent) from which the overview offers `↻ fresh start` at a quiet point: its chat idle, no `decide` or `plan` open, no merge in flight. The old chat writes its journal, a new one starts from the journal and the record (`wt:orchestrate <name> --fresh`) |
+| `auto_fresh` | `false` | the overview makes that fresh start by itself, without a click |
+
 ## `[tries]`
 
 A `try --on test` waits for the merge's deployment to the test instance, then
