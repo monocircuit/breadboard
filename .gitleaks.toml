@@ -1,0 +1,11 @@
+# The secret scan of breadboard's public history (#343): gitleaks' own rules,
+# run on every commit before the mirror pushes (scripts/breadboard-mirror.sh
+# in the monorepo).
+[extend]
+useDefault = true
+
+[[allowlists]]
+condition = "AND"
+description = "The Chromium extension's public key: it fixes the extension id (chromium/README.md)"
+paths = ['''(^|/)chromium/manifest\.json$''']
+regexes = ['''MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA[A-Za-z0-9+/=]+''']
