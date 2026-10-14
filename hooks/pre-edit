@@ -1,0 +1,20 @@
+#!/bin/sh
+# Claude Code's PreToolUse hook on edits (.claude/settings.json runs this
+# file with sh): an edit in the main checkout is blocked (#342, the port of
+# .claude/hooks/pre-edit-worktree.mjs). A worktree's own binary where it is
+# built, else the main checkout's through its launcher, which never waits
+# for a build here, else the breadboard on PATH. Without any the edit goes
+# through: a guard that can't run never blocks work.
+dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 0
+own="$dir/packages/breadboard/target/release/breadboard"
+if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != "$common" ] && [ -x "$own" ]; then
+  exec "$own" hook pre-edit
+fi
+package="$common/../packages/breadboard"
+if [ -x "$package/target/release/breadboard" ]; then
+  [ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" --no-wait hook pre-edit
+  exec "$package/target/release/breadboard" hook pre-edit
+fi
+command -v breadboard >/dev/null 2>&1 && exec breadboard hook pre-edit
+exit 0

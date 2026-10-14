@@ -92,14 +92,14 @@ pub fn pipeline_line_of(mr: &Mr, jobs: &[Job], develop: Option<&DevelopPipeline>
         .collect::<Vec<_>>()
         .join(", ");
     let verdict = if !failed.is_empty() && own.is_empty() {
-        format!(
+        crate::config::in_repo(&format!(
             "develop fails the same job{}: not yours, waits for the fix (say so in the MR)",
             if theirs.len() == 1 { "" } else { "s" }
-        )
+        ))
     } else if theirs.is_empty() {
         "look into it".into()
     } else {
-        format!("look into it (develop fails {names} too: not yours)")
+        crate::config::in_repo(&format!("look into it (develop fails {names} too: not yours)"))
     };
     let log = own
         .first()
@@ -387,16 +387,19 @@ pub fn auto_actions_of(
                         dir: tree.dir.clone(),
                         key: boxes,
                         line: format!(
-                            "MR !{} is merged: tick the boxes of #{} that are done (pnpm wt:tick), say what stays open.",
-                            mr.iid, found.iid
-                        ),
+                            "MR !{} is merged: tick the boxes of #{} that are done ({run} wt:tick), say what stays open.",
+                            mr.iid, found.iid, run = crate::config::run_word()),
                         fallback: Box::new(Go::FocusAgent(tree.dir.clone())),
                     },
                 ));
             }
         }
+        // A headless agent at a would-be question has its `permission` action
+        // (#360): that is what it waits for, no `waits` beside it.
+        let is_asking = tree.is_some_and(|tree| tree.actions.iter().any(|action| action.kind == "permission"));
         if let (Some(agent), Some(tree)) = (agent, tree)
             && let Some(claude) = &tree.claude
+            && !is_asking
         {
             let answer = claude.answer.as_deref().unwrap_or("");
             let question = match agent.status.as_deref() {
@@ -790,9 +793,17 @@ mod tests {
         );
         asking.tree.as_mut().unwrap().pending = Some("may it run Bash: git push?".into());
         assert_eq!(
-            kinds_with(&[asking], &none, &agents("blocked"), &facts),
+            kinds_with(std::slice::from_ref(&asking), &none, &agents("blocked"), &facts),
             [pair("waits", "may it run Bash: git push?")]
         );
+        // Headless (#360): its `permission` action asks, no `waits` beside it.
+        asking.tree.as_mut().unwrap().actions = vec![Action {
+            id: 1,
+            kind: "permission".into(),
+            text: "may 12-x run Bash: docker system prune?".into(),
+            ..Default::default()
+        }];
+        assert!(kinds_with(&[asking], &none, &agents("blocked"), &facts).is_empty());
     }
 
     #[test]

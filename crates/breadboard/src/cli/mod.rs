@@ -33,15 +33,22 @@ const COMMANDS: [&[&str]; 7] = [
         "changelog:notes",
         "changelog:check",
     ],
-    &["commands", "browser", "herdr", "herdr:install"],
+    &["commands", "browser", "herdr", "herdr:install", "init"],
 ];
+
+/// The folder of breadboard's files (herdr plugin, nvim Lua, Chromium
+/// extension) for the repo of the main checkout `main` (init.rs).
+pub fn files_dir(main: &std::path::Path) -> std::path::PathBuf {
+    setup::init::files_dir(main)
+}
 
 /// The usage and every command, a group per line.
 pub fn usage() -> String {
     let lines: Vec<String> = COMMANDS.iter().map(|group| format!("  {}", group.join("  "))).collect();
     format!(
-        "usage: breadboard <command> [args…]   (in the repo: pnpm <command> [args…])\n\n{}\n\n  what each does: pnpm commands",
-        lines.join("\n")
+        "usage: breadboard <command> [args…]   (in the repo: pnpm <command> [args…])\n\n{}\n\n  what each does: {run} commands",
+        lines.join("\n"),
+        run = breadboard_core::config::run_word()
     )
 }
 

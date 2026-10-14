@@ -62,6 +62,8 @@ pub struct Facts<'a> {
 /// orchestration's verdict): no merge is claimed for the user, as none may
 /// be offered (#344).
 pub const MERGE_TURN: &str = "done: waits for its merge turn";
+/// The key of a headless agent whose lines wait for a run (#358).
+pub const RUN_QUEUED: &str = "run-queued";
 /// A green MR whose turn says it lacks something no check names (work
 /// boxes, conflicts, a change): its MR row says what.
 pub const NOT_READY: &str = "not ready to merge: its MR row says why";
@@ -84,8 +86,9 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         return state("working", "at work", Tone::Work);
     }
     // A headless agent's lines wait for a run (#358): memory, the merge order, its open tab.
+    // Its key is no issue's `queued` (#361): the tree folds those into the start queue.
     if *status == Some("queued") {
-        return state("queued", "queued for a run", Tone::Work);
+        return state(RUN_QUEUED, "queued for a run", Tone::Work);
     }
     let is_asking = tree
         .claude
@@ -245,6 +248,14 @@ mod tests {
             at(&tree(), Some(&mr("success")), "working"),
             state("working", "at work", Tone::Work)
         );
+    }
+
+    #[test]
+    fn lines_waiting_for_a_run_are_no_issue_in_the_start_queue() {
+        let queued = at(&tree(), Some(&mr("success")), "queued");
+        assert_eq!(queued, state(RUN_QUEUED, "queued for a run", Tone::Work));
+        // The tree folds every node keyed `queued` into the queue of issues to start.
+        assert_ne!(queued.key, "queued");
     }
 
     #[test]

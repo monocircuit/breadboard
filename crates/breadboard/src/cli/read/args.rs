@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 /// `✗ <message>` on stderr after an empty line, exit 1 (proc.mjs `fail`).
 pub fn fail(message: &str) -> ExitCode {
-    eprintln!("\n✗ {message}");
+    eprintln!("\n✗ {}", breadboard_core::config::in_repo(message));
     ExitCode::FAILURE
 }
 
@@ -64,10 +64,15 @@ pub struct Takes {
 /// `wt:plan x --work=3` wrote nothing and said nothing.
 pub fn check(args: &[String], takes: &Takes) -> Option<ExitCode> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("{}\n\n{}", takes.about, takes.usage);
+        println!(
+            "{}\n\n{}",
+            breadboard_core::config::in_repo(takes.about),
+            breadboard_core::config::in_repo(takes.usage)
+        );
         return Some(ExitCode::SUCCESS);
     }
-    problem_of(args, takes).map(|problem| fail(&format!("{problem}\n{}", takes.usage)))
+    problem_of(args, takes)
+        .map(|problem| fail(&format!("{problem}\n{}", breadboard_core::config::in_repo(takes.usage))))
 }
 
 fn problem_of(args: &[String], takes: &Takes) -> Option<String> {

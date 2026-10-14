@@ -34,7 +34,7 @@ time it
    (`rows_by_agent`),
 3. starts the herdr **session `platform`** — its own server next to your
    default session — with the pinned herdr first on `PATH`,
-4. links this plugin, which builds the layout: the space `Monocircuit/Platform`
+4. links this plugin, which builds the layout: the main space (breadboard.toml's `[herdr] space`)
    with `root` and `overview`, a space per worktree, the tabs of every running
    stack (skill `parallel-work`, "In herdr"),
 5. opens it in a **new window of your terminal without padding** (kitty,
@@ -69,15 +69,15 @@ session and your config, instead of the session `platform`:
 pnpm herdr:install
 ```
 
-It "installs" the repo into your herdr: the space `Monocircuit/Platform`
+It "installs" the repo into your herdr: the main space (`[herdr] space`)
 with a space per worktree, and everything the session `platform` adds to
 your config. It needs a herdr and a running server ≥ 0.9
 (`min_herdr_version` in `herdr-plugin.toml`: an older herdr lists the
 plugin but doesn't load it), then
 
 1. links the plugin,
-2. writes one block between `# >>> monocircuit.platform` and
-   `# <<< monocircuit.platform` at the end of `~/.config/herdr/config.toml`:
+2. writes one block between `# >>> <plugin id>` and
+   `# <<< <plugin id>` (`[herdr] plugin`) at the end of `~/.config/herdr/config.toml`:
    the plugin's keys and the sidebar rows, as for the session `platform`.
    The first time after a question, then renewed on every run and by
    `--reload`,
@@ -134,14 +134,14 @@ to next to the agent, then what it waits for; no name twice:
 
 ```
 ● 144-branch-pill-morph
-  Monocircuit/Platform · claude
+  Acme/Shop · claude
   waits for you: merge · !172
-● Monocircuit/Platform
+● Acme/Shop
   claude
 ```
 
 The repo (`$wt_repo`, `../crates/breadboard/src/tui/overview/actor/sync.rs`) is on agents in a
-worktree's space, an orchestration's too: `Monocircuit/Platform`. The
+worktree's space, an orchestration's too: the main space's name. The
 repo's own space names it already,
 agents outside the repo get nothing. herdr can't group the agents panel
 (herdrdev/herdr#1907); `agent_panel_sort = "spaces"` keeps a repo's agents
@@ -152,7 +152,7 @@ together. Rows of your own stay for other agents; claude gets these
 
 Under each agent in a worktree's space the sidebar says what it waits for,
 so you see it without the overview, its MR behind it (`· !n`): the same
-words as WORKTREES in the overview of an orchestration (#288), the first
+words as WORK in the overview of an orchestration (#288), the first
 that holds:
 
 | Line | When | Colour |
@@ -162,7 +162,7 @@ that holds:
 | `waits for the pipeline` | its MR's pipeline runs, or GitLab has none yet for its last push | `blue` |
 | `pipeline failed` | the pipeline of its MR failed | `red` |
 | `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed and no try is open | `red` |
-| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORKTREES an acceptance box) is open | `red` |
+| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORK an acceptance box) is open | `red` |
 | `waits for !n`, `→ next #n after !m` | `wt:wait`, a handover announced for it | `blue` |
 | `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
 | `free` | none of these: nothing to do | `teal` |
@@ -185,6 +185,6 @@ space: a new worktree's app, and every link clicked in an overview.
 
 ## When something does nothing
 
-`herdr --session platform plugin log --plugin monocircuit.platform` shows the
+`herdr --session <main checkout's folder> plugin log --plugin <plugin id>` shows the
 output of every plugin command. A stack action on a tab outside the repo says
 so in its popup instead of guessing a stack.

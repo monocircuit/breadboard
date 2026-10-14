@@ -77,9 +77,8 @@ fn second_issue(body: &str, number: &str) -> Option<String> {
         .collect();
     (!others.is_empty()).then(|| {
         format!(
-            "the description closes {} besides #{number}: one merge request handles exactly one issue. Another issue gets its own branch and MR (pnpm wt:new <n>-<feature>); to mention one, write Refs #<n>",
-            others.join(", ")
-        )
+            "the description closes {} besides #{number}: one merge request handles exactly one issue. Another issue gets its own branch and MR ({run} wt:new <n>-<feature>); to mention one, write Refs #<n>",
+            others.join(", "), run = breadboard_core::config::run_word())
     })
 }
 
@@ -90,7 +89,8 @@ fn second_issue(body: &str, number: &str) -> Option<String> {
 /// refuses when there is none. Node's shim (`exec node …pre-push.mjs`,
 /// `exit 0` without one) is replaced where found: same marker (rule 8).
 pub const SHIM: &str = crate::herdr::hook::PRE_PUSH_SHIM;
-const MARKER: &str = "monocircuit push guard (#184)";
+/// What every version of the shim says of itself (before #342 it named the repo: `<repo> push guard (#184)`).
+const MARKER: &str = "push guard (#184)";
 
 /// Puts the hook into the hooks folder all worktrees share; one that isn't
 /// ours stays. The answer says what happened (push-guard.mjs `installPushGuard`).
@@ -217,7 +217,10 @@ pub fn run(argv: &Argv) -> Outcome {
         .as_ref()
         .is_some_and(|mr| matches!(glab::text_of(mr, "state"), "opened" | "merged"));
     if is_update && !has_one {
-        return Err(format!("no open MR of {branch} to update: pnpm wt:mr opens it"));
+        return Err(format!(
+            "no open MR of {branch} to update: {run} wt:mr opens it",
+            run = breadboard_core::config::run_word()
+        ));
     }
 
     // Worktrees made before the guard existed get it here (#184).
@@ -230,9 +233,10 @@ pub fn run(argv: &Argv) -> Outcome {
     let state = newest.as_ref().map(|mr| glab::text_of(mr, "state"));
     if let Some(mr) = newest.as_ref().filter(|_| state == Some("merged")) {
         return Err(format!(
-            "!{} of {branch} is merged already: new work goes on a new branch, its own issue first (glab issue create), then pnpm wt:new <n>-<feature>\n  {}",
+            "!{} of {branch} is merged already: new work goes on a new branch, its own issue first (glab issue create), then {run} wt:new <n>-<feature>\n  {}",
             glab::shown(mr.get("iid")),
-            glab::text_of(mr, "web_url")
+            glab::text_of(mr, "web_url"),
+            run = breadboard_core::config::run_word()
         ));
     }
     let closed = newest.as_ref().filter(|_| state != Some("opened"));
@@ -257,9 +261,10 @@ pub fn run(argv: &Argv) -> Outcome {
             .map(|n| box_report(top, n, None))
             .unwrap_or_default();
         say(&format!(
-            "\n✓ the merge request is open already\n  {}\n  {}\n\n  Its description grew out of date? pnpm wt:mr --update{report}\n",
+            "\n✓ the merge request is open already\n  {}\n  {}\n\n  Its description grew out of date? {run} wt:mr --update{report}\n",
             glab::text_of(mr, "title"),
-            glab::text_of(mr, "web_url")
+            glab::text_of(mr, "web_url"),
+            run = breadboard_core::config::run_word()
         ));
         return Ok(ExitCode::SUCCESS);
     }
@@ -270,7 +275,8 @@ pub fn run(argv: &Argv) -> Outcome {
     // The branch is the claim on its issue: an MR of it is of that one (#349).
     if let Some(claimed) = issue_of_branch(&branch).filter(|claimed| claimed.to_string() != number) {
         return Err(format!(
-            "{branch} claims #{claimed}, not #{number}: one merge request handles exactly one issue, the one its branch claims. #{number} gets its own branch and MR (pnpm wt:new {number}-<feature>)"
+            "{branch} claims #{claimed}, not #{number}: one merge request handles exactly one issue, the one its branch claims. #{number} gets its own branch and MR ({run} wt:new {number}-<feature>)",
+            run = breadboard_core::config::run_word()
         ));
     }
 
@@ -316,10 +322,11 @@ pub fn run(argv: &Argv) -> Outcome {
     let unwritten = template::unfilled(&written);
     if !unwritten.is_empty() {
         return Err(format!(
-            "{} is still the template, {} unwritten:\n{}\n\n  Say per section what this branch changes and why, then run pnpm wt:mr again.",
+            "{} is still the template, {} unwritten:\n{}\n\n  Say per section what this branch changes and why, then run {run} wt:mr again.",
             here.shown(&given),
             plural(unwritten.len(), "place"),
-            unwritten.join("\n")
+            unwritten.join("\n"),
+            run = breadboard_core::config::run_word()
         ));
     }
     // A box that doesn't apply is deleted, not kept empty: an unticked box reads as open work (#302).
@@ -327,7 +334,7 @@ pub fn run(argv: &Argv) -> Outcome {
     if !not_applying.is_empty() {
         let is_one = not_applying.len() == 1;
         return Err(format!(
-            "{} keeps {} that {} apply:\n{}\n\n  Delete {}: Tests lists only what applies. Something that applies but didn't run goes into a sentence under the boxes. Then run pnpm wt:mr again.",
+            "{} keeps {} that {} apply:\n{}\n\n  Delete {}: Tests lists only what applies. Something that applies but didn't run goes into a sentence under the boxes. Then run {run} wt:mr again.",
             here.shown(&given),
             if is_one {
                 "a Tests box".to_string()
@@ -336,7 +343,8 @@ pub fn run(argv: &Argv) -> Outcome {
             },
             if is_one { "says it doesn't" } else { "say they don't" },
             not_applying.join("\n"),
-            if is_one { "that line" } else { "those lines" }
+            if is_one { "that line" } else { "those lines" },
+            run = breadboard_core::config::run_word()
         ));
     }
     let body = body_of(&written, &number);
@@ -484,7 +492,8 @@ pub fn run(argv: &Argv) -> Outcome {
     // check:changelog fails the MR until it has an entry: say so now, not at the pipeline.
     if !has_fragment(top, &number) {
         say(&format!(
-            "  No changelog entry yet: pnpm changelog:add \"<what users notice>\" (or the label {NO_CHANGELOG})\n"
+            "  No changelog entry yet: {run} changelog:add \"<what users notice>\" (or the label {NO_CHANGELOG})\n",
+            run = breadboard_core::config::run_word()
         ));
     }
     Ok(ExitCode::SUCCESS)
@@ -555,6 +564,9 @@ mod tests {
         assert_eq!(fs::read_to_string(&hook).unwrap(), SHIM);
         assert_eq!(install_into(&hooks), "installed");
         fs::write(&hook, format!("{SHIM}# old\n")).unwrap();
+        assert_eq!(install_into(&hooks), "updated");
+        // The shim from before #342 named the repo: still ours, updated.
+        fs::write(&hook, "#!/bin/sh\n# platform push guard (#184)\nexit 1\n").unwrap();
         assert_eq!(install_into(&hooks), "updated");
         fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
         assert!(install_into(&hooks).ends_with("is someone else's hook, the push guard is not installed"));

@@ -1,4 +1,4 @@
-//! The vita dev stacks (stack.mjs, commands/stack.mjs, commands/control.mjs):
+//! The dev stacks of breadboard.toml's `[stack]` (stack.mjs, commands/stack.mjs, commands/control.mjs):
 //! `wt:stack` gives a worktree its own, `stack:up|down|reset|ps` act on the
 //! one of a port, a feature or the checkout you are in; the summary wt:new
 //! and wt:stack print.
@@ -6,17 +6,19 @@
 use super::epic::{self, Epic};
 use super::herdr;
 use super::proc::{self, Args, How, fail, outln, step};
-use super::repo::{self, PORTS, VITA};
+use super::repo;
+use breadboard_core::config::Stack;
 use breadboard_core::record;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-/// What a new own stack's `.env.local` says: the main checkout's with every
+/// What a new own stack's env file says: the main checkout's with every
 /// port moved by `offset` and a compose project of its own.
-pub fn stack_env(source: &str, feature: &str, offset: u16) -> String {
-    let skip: Vec<&str> = std::iter::once("COMPOSE_PROJECT_NAME")
-        .chain(PORTS.iter().filter_map(|(_, var)| *var))
+pub fn stack_env(stack: &Stack, source: &str, feature: &str, offset: u16) -> String {
+    let ports: Vec<(u16, Option<String>)> = stack.ports().into_iter().map(|port| (port.port, port.env)).collect();
+    let skip: Vec<&str> = std::iter::once(breadboard_core::stack::PROJECT)
+        .chain(ports.iter().filter_map(|(_, var)| var.as_deref()))
         .collect();
     let mut lines: Vec<String> = source
         .split('\n')
@@ -26,8 +28,8 @@ pub fn stack_env(source: &str, feature: &str, offset: u16) -> String {
                 return line.to_string();
             };
             let mut value = line[at + 1..].to_string();
-            for (port, _) in PORTS {
-                value = move_port(&value, port, port + offset);
+            for (port, _) in &ports {
+                value = move_port(&value, *port, port + offset);
             }
             format!("{}={value}", &line[..at])
         })
@@ -37,10 +39,15 @@ pub fn stack_env(source: &str, feature: &str, offset: u16) -> String {
     }
     lines.push(String::new());
     lines.push(format!(
-        "# --- own dev stack of the worktree {feature}, written by breadboard (pnpm wt:new, wt:stack) ---"
+        "# --- own dev stack of the worktree {feature}, written by breadboard ({run} wt:new, wt:stack) ---",
+        run = breadboard_core::config::run_word()
     ));
-    lines.push(format!("COMPOSE_PROJECT_NAME=vita-{feature}"));
-    for (port, var) in PORTS {
+    lines.push(format!(
+        "{}={}-{feature}",
+        breadboard_core::stack::PROJECT,
+        stack.project
+    ));
+    for (port, var) in &ports {
         if let Some(var) = var {
             lines.push(format!("{var}={}", port + offset));
         }
@@ -73,7 +80,7 @@ fn move_port(value: &str, port: u16, to: u16) -> String {
 
 /// The smallest offset whose ports are free and that no checkout's (stopped)
 /// stack claims: the worktrees' and the orchestrations' epic stacks.
-fn free_offset() -> u16 {
+fn free_offset(stack: &Stack) -> u16 {
     let claimed: Vec<u16> = breadboard_core::git::all_worktrees(&repo::main_dir())
         .iter()
         .map(|tree| repo::offset_of(&tree.dir))
@@ -81,34 +88,60 @@ fn free_offset() -> u16 {
     (1..50u16)
         .filter(|offset| !claimed.contains(offset))
         .find(|offset| {
-            PORTS
+            stack
+                .ports()
                 .iter()
-                .all(|(port, _)| repo::is_port_free(u32::from(*port) + u32::from(*offset)))
+                .all(|port| repo::is_port_free(u32::from(port.port) + u32::from(*offset)))
         })
         .unwrap_or_else(|| fail("no free ports found for a stack"))
 }
 
+/// The services a line names, by label (`Postgres 5434`): those with a `label`.
+fn named(stack: &Stack, offset: u16) -> Vec<String> {
+    stack
+        .services
+        .iter()
+        .filter_map(|service| {
+            Some(format!(
+                "{} {}",
+                service.label.as_ref()?,
+                u32::from(service.port) + u32::from(offset)
+            ))
+        })
+        .collect()
+}
+
 /// The ports of a stack on `offset`, as the lines about it name them.
-fn ports_text(offset: u16) -> String {
-    let at = |port: u32| port + u32::from(offset);
-    format!(
-        "app {}, Postgres {}, Keycloak {}, SeaweedFS {}",
-        at(3000),
-        at(5432),
-        at(8080),
-        at(8333)
-    )
+fn ports_text(stack: &Stack, offset: u16) -> String {
+    std::iter::once(format!("app {}", u32::from(stack.app.port) + u32::from(offset)))
+        .chain(named(stack, offset))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The app and the first named service: `app 3002, Postgres 5434`.
+fn short_text(stack: &Stack, offset: u16) -> String {
+    std::iter::once(format!("app {}", u32::from(stack.app.port) + u32::from(offset)))
+        .chain(named(stack, offset).into_iter().take(1))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The repo's stack, refused without one.
+fn stack_or_fail() -> Stack {
+    repo::stack().unwrap_or_else(|| fail("the repo has no stack: breadboard.toml has no [stack]"))
 }
 
 /// Moves a worktree from the shared stack to an own one and sets it up. One
-/// that has its own already is set up again on it: a `pnpm dev:setup` that
-/// failed is finished by running `pnpm wt:stack` once more.
+/// that has its own already is set up again on it: a setup that failed is
+/// finished by running `wt:stack` once more.
 pub fn create_stack(dir: &Path, feature: &str) -> u16 {
+    let stack = stack_or_fail();
     let existing = repo::offset_of(dir);
     if existing != 0 {
         step(&format!(
             "own stack on offset {existing} already: {}, set up again",
-            ports_text(existing)
+            ports_text(&stack, existing)
         ));
         dev_setup(dir);
         return existing;
@@ -118,9 +151,10 @@ pub fn create_stack(dir: &Path, feature: &str) -> u16 {
     offset
 }
 
-/// A checkout's own stack written to its `.env.local`, nothing started: the
+/// A checkout's own stack written to its env file, nothing started: the
 /// main checkout's with the ports moved and a compose project of its own.
 pub fn reserve_stack(dir: &Path, feature: &str) -> u16 {
+    let stack = stack_or_fail();
     let source = repo::env_file_of(&repo::main_dir());
     let Ok(text) = fs::read_to_string(&source) else {
         fail(&format!(
@@ -128,21 +162,22 @@ pub fn reserve_stack(dir: &Path, feature: &str) -> u16 {
             source.display()
         ))
     };
-    reserve_with(dir, &text, |offset| stack_env(&text, feature, offset))
+    reserve_with(dir, &text, |offset| stack_env(&stack, &text, feature, offset))
 }
 
-/// A free offset taken by writing `env(offset)` as the `.env.local` of `dir`,
+/// A free offset taken by writing `env(offset)` as the env file of `dir`,
 /// which has none or the main checkout's (`source`).
 pub fn reserve_with(dir: &Path, source: &str, env: impl Fn(u16) -> String) -> u16 {
-    let target = dir.join(VITA).join(".env.local");
+    let stack = stack_or_fail();
+    let target = repo::env_file_of(dir);
     if fs::read_to_string(&target).is_ok_and(|current| current != source) {
         fail(&format!(
             "{} differs from the one of the main checkout and is no stack's, move it away first",
             target.display()
         ));
     }
-    let offset = free_offset();
-    step(&format!("own stack on offset {offset}: {}", ports_text(offset)));
+    let offset = free_offset(&stack);
+    step(&format!("own stack on offset {offset}: {}", ports_text(&stack, offset)));
     if let Some(parent) = target.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -152,20 +187,34 @@ pub fn reserve_with(dir: &Path, source: &str, env: impl Fn(u16) -> String) -> u1
     offset
 }
 
-/// `pnpm dev:setup` in vita: containers, migrations, bucket, Keycloak, seed.
-/// It may fail; the hint says how to finish it.
+/// The stack's setup (`[stack.setup]`: containers, migrations, seed), else
+/// compose's `up -d`, in its folder. It may fail; the hint says how to finish it.
 pub fn dev_setup(dir: &Path) {
-    step("pnpm dev:setup (containers, migrations, bucket, Keycloak, seed)");
+    let stack = stack_or_fail();
+    let compose = || {
+        let mut args = breadboard_core::stack::compose_args(&stack, &["up", "-d"]);
+        args.insert(0, "docker".into());
+        args.join(" ")
+    };
+    let (run, says) = match &stack.setup {
+        Some(setup) => (
+            setup.run.clone(),
+            setup.says.clone().unwrap_or_else(|| setup.run.clone()),
+        ),
+        None => (compose(), compose()),
+    };
+    step(&says);
     let before = proc::hint();
     proc::set_hint(&format!(
-        "the stack is only half set up: fix the cause, then run pnpm wt:stack in {}, it sets the stack up again",
+        "the stack is only half set up: fix the cause, then run {} in {}, it sets the stack up again",
+        breadboard_core::config::of(dir).command("wt:stack"),
         dir.display()
     ));
     proc::run(
-        "pnpm",
-        &["dev:setup"],
+        "sh",
+        &["-c", &run],
         How {
-            cwd: Some(&dir.join(VITA)),
+            cwd: Some(&repo::stack_dir(dir)),
             ..How::default()
         },
     );
@@ -191,7 +240,7 @@ pub struct Summary<'a> {
     /// origin refused the claim: the line says so, never `pushed` (round 7;
     /// today's said `pushed` under its own `! origin refused the branch`).
     pub is_unpushed: bool,
-    /// A task stack (#351): the port of its epic's Postgres; it starts on `pnpm stack:up`.
+    /// A task stack (#351): the port of its epic's database; it starts on `stack:up`.
     pub epic_port: Option<u32>,
 }
 
@@ -214,7 +263,13 @@ impl Default for Summary<'_> {
     }
 }
 
-pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> String) -> String {
+pub fn summary_text(
+    repo: &breadboard_core::config::Loaded,
+    summary: &Summary,
+    is_agent: bool,
+    label: impl Fn(&str) -> String,
+) -> String {
+    let stack = repo.config.stack.as_ref();
     let Summary {
         dir,
         branch,
@@ -229,18 +284,27 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         is_unpushed,
         epic_port,
     } = summary;
-    let from = breadboard_core::git::base_of(dir).remote;
+    // The worktree's base: its epic's, else the repo's default branch (breadboard.toml).
+    let from = breadboard_core::record::base_in(dir).map_or_else(|| repo.base(), |base| format!("origin/{base}"));
     let dir = dir.display();
     let claim = if *is_unpushed {
         format!("{branch} not pushed (git push -u origin {branch})")
     } else {
         format!("{branch} pushed")
     };
-    let port = 3000 + u32::from(*offset);
+    let port = stack.map_or(0, |stack| u32::from(stack.app.port)) + u32::from(*offset);
+    let short = stack.map(|stack| short_text(stack, *offset)).unwrap_or_default();
+    // A task stack (#351): its database lies on its epic's, the first named service.
+    let database = stack
+        .and_then(|stack| stack.services.iter().find(|service| service.label.is_some()))
+        .map(|service| service.label().to_string())
+        .unwrap_or_else(|| "database".into());
+    let task = epic_port.filter(|_| *offset > 0);
+    let up = repo.command("stack:up");
     let herdr = tab.as_ref().map(|tab| format!(", herdr: {tab}")).unwrap_or_default();
     if let Some(origin) = origin {
-        let own = if let Some(epic) = epic_port.filter(|_| *offset > 0) {
-            format!(", task stack +{offset} on the epic's Postgres {epic} (pnpm stack:up starts it)")
+        let own = if let Some(epic) = task {
+            format!(", task stack +{offset} on the epic's {database} {epic} ({up} starts it)")
         } else if *offset > 0 {
             format!(", own stack +{offset}")
         } else {
@@ -256,30 +320,32 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
             ("worktrees", "branches")
         };
         sweep.push_str(&format!(
-            "\n  {stale} {trees}/{branches} of merged work left: pnpm wt:prune"
+            "\n  {stale} {trees}/{branches} of merged work left: {run} wt:prune",
+            run = breadboard_core::config::run_word()
         ));
     }
     if *silent > 0 {
         let issues = if *silent == 1 { "issue" } else { "issues" };
         sweep.push_str(&format!(
-            "\n  {silent} {issues} of merged work without a comment since the merge: pnpm wt:issues"
+            "\n  {silent} {issues} of merged work without a comment since the merge: {run} wt:issues",
+            run = breadboard_core::config::run_word()
         ));
     }
-    // A task stack's database lies on its epic's Postgres.
-    let postgres = epic_port.unwrap_or(5432 + u32::from(*offset));
-    let kind = if epic_port.is_some() { "task" } else { "own" };
     if is_agent && *is_stack_only {
-        return format!("\n✓ {kind} stack +{offset} ready: app {port}, Postgres {postgres}{herdr}\n");
+        if let Some(epic) = task {
+            return format!("\n✓ task stack +{offset} ready: app {port}, {database} {epic}{herdr}\n");
+        }
+        return format!("\n✓ own stack +{offset} ready: {short}{herdr}\n");
     }
     if is_agent {
         let enter = match left {
             Some(line) => format!("ExitWorktree(action: \"keep\"), then EnterWorktree(path: \"{dir}\")\n  {line}"),
             None => format!("EnterWorktree(path: \"{dir}\")"),
         };
-        let own = if epic_port.is_some() && *offset > 0 {
-            format!("\n  task stack +{offset}: app {port}, Postgres {postgres} (the epic's), pnpm stack:up starts it")
+        let own = if let Some(epic) = task {
+            format!("\n  task stack +{offset}: app {port}, {database} {epic} (the epic's), {up} starts it")
         } else if *offset > 0 {
-            format!("\n  own stack +{offset}: app {port}, Postgres {postgres}")
+            format!("\n  own stack +{offset}: {short}")
         } else {
             String::new()
         };
@@ -289,23 +355,25 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stack = if *is_stackless {
-        "none: the main checkout has no .env.local (pnpm wt:stack once it has)".to_string()
-    } else if epic_port.is_some() && *offset > 0 {
-        format!(
-            "task: Postgres {postgres} (the epic's), Keycloak {}, SeaweedFS {}, started by pnpm stack:up",
-            8080 + u32::from(*offset),
-            8333 + u32::from(*offset)
-        )
+    let env = stack.map_or(".env.local", |stack| stack.env_file.as_str());
+    let wt_stack = repo.command("wt:stack");
+    let stack_line = if stack.is_none() {
+        "none: breadboard.toml has no [stack]".to_string()
+    } else if *is_stackless {
+        format!("none: the main checkout has no {env} ({wt_stack} once it has)")
+    } else if let Some(epic) = task {
+        let others: Vec<String> = stack
+            .map(|stack| named(stack, *offset).into_iter().skip(1).collect())
+            .unwrap_or_default();
+        let others: String = others.iter().map(|named| format!(", {named}")).collect();
+        format!("task: {database} {epic} (the epic's){others}, started by {up}")
     } else if *offset > 0 {
         format!(
-            "own: Postgres {}, Keycloak {}, SeaweedFS {}",
-            5432 + u32::from(*offset),
-            8080 + u32::from(*offset),
-            8333 + u32::from(*offset)
+            "own: {}",
+            stack.map(|stack| named(stack, *offset).join(", ")).unwrap_or_default()
         )
     } else {
-        "shared with the main checkout (pnpm wt:stack for an own one)".to_string()
+        format!("shared with the main checkout ({wt_stack} for an own one)")
     };
     let head = tab.as_ref().map(|tab| format!("\n▸ herdr: {tab}")).unwrap_or_default();
     let unpushed = if *is_unpushed {
@@ -323,22 +391,34 @@ pub fn summary_text(summary: &Summary, is_agent: bool, label: impl Fn(&str) -> S
     } else {
         " (only one checkout at a time)"
     };
-    let vita = if *is_stackless {
-        "no stack, so no pnpm dev yet".to_string()
-    } else {
-        format!("cd {VITA} && pnpm dev{flag}   → http://localhost:{port}{only}")
+    let app = match stack {
+        None => String::new(),
+        Some(stack) if *is_stackless => format!("\n  {}:  no stack, so no {} yet", stack.project, stack.app.dev),
+        Some(stack) => {
+            let cd = if stack.dir == "." {
+                String::new()
+            } else {
+                format!("cd {} && ", stack.dir)
+            };
+            format!(
+                "\n  {}:  {cd}{}{flag}   → http://localhost:{port}{only}",
+                stack.project, stack.app.dev
+            )
+        }
     };
     format!(
-        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from {from}{unpushed})\n  stack      {stack}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd\n  vita:  {vita}{sweep}\n"
+        "{head}\n✓ {base} is ready\n\n  directory  {dir}\n  branch     {branch} (from {}{unpushed})\n  stack      {stack_line}\n\n  cd {dir} && claude\n  agent: EnterWorktree(path: \"{dir}\")   ← move the session, don't cd{app}{sweep}\n",
+        from
     )
 }
 
 /// Prints the summary.
 pub fn summary(summary: &Summary) {
     let main = repo::main_dir();
+    let loaded = breadboard_core::config::of(&main);
     outln!(
         "{}",
-        summary_text(summary, proc::is_agent(), |name| record::orchestrator_label(
+        summary_text(&loaded, summary, proc::is_agent(), |name| record::orchestrator_label(
             &main, name
         ))
     );
@@ -349,7 +429,8 @@ pub fn open_app(dir: &Path, offset: u16) {
     if offset == 0 || !herdr::is_in_herdr() || !super::browser::can_group_tabs() {
         return;
     }
-    let url = format!("http://localhost:{}", 3000 + u32::from(offset));
+    let Some(stack) = repo::stack() else { return };
+    let url = format!("http://localhost:{}", u32::from(stack.app.port) + u32::from(offset));
     let label = herdr::space_label(dir);
     if super::browser::open_in_group(&url, &label) {
         step(&format!("browser: {url} in the tab group {label}"));
@@ -369,7 +450,11 @@ pub fn wt_stack() -> ExitCode {
     if let Some(epic) = Epic::at(top) {
         epic::ensure_epic(&epic);
         let offset = repo::offset_of(top);
-        outln!("\n✓ epic stack of {} ready: {}\n", epic.name, ports_text(offset));
+        outln!(
+            "\n✓ epic stack of {} ready: {}\n",
+            epic.name,
+            ports_text(&stack_or_fail(), offset)
+        );
         return ExitCode::SUCCESS;
     }
     let feature = repo::feature_of(top);
@@ -423,7 +508,11 @@ const ACTIONS: [&str; 4] = ["up", "down", "reset", "ps"];
 
 /// `pnpm stack:up|down|reset|ps [--port <port> | <feature>]`.
 pub fn control(action: &str, args: &Args) -> ExitCode {
-    let usage = format!("usage: pnpm stack:{} [--port <port> | <feature>]", ACTIONS.join("|"));
+    let usage = format!(
+        "usage: {run} stack:{} [--port <port> | <feature>]",
+        ACTIONS.join("|"),
+        run = breadboard_core::config::run_word()
+    );
     if !ACTIONS.contains(&action) {
         fail(&usage);
     }
@@ -441,13 +530,22 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
         else {
             fail(&format!("--port {port} is not a port"))
         };
-        repo::worktree_on_port(number)
-            .unwrap_or_else(|| fail(&format!("no worktree has a stack on port {port} (pnpm wt:list)")))
+        repo::worktree_on_port(number).unwrap_or_else(|| {
+            fail(&format!(
+                "no worktree has a stack on port {port} ({run} wt:list)",
+                run = breadboard_core::config::run_word()
+            ))
+        })
     } else if let Some(name) = &name {
         breadboard_core::git::all_worktrees(&main)
             .into_iter()
             .find(|tree| tree.dir == repo::dir_of(name) || repo::base_of(&tree.dir) == *name)
-            .unwrap_or_else(|| fail(&format!("{name} is not a worktree (pnpm wt:list)")))
+            .unwrap_or_else(|| {
+                fail(&format!(
+                    "{name} is not a worktree ({run} wt:list)",
+                    run = breadboard_core::config::run_word()
+                ))
+            })
     } else {
         let here = repo::cwd();
         // The orchestrations' checkouts too: one of them lies inside the main checkout.
@@ -459,8 +557,11 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
     };
     let dir = tree.dir;
     let base = repo::base_of(&dir);
+    let Some(stack) = repo::stack() else {
+        fail("the repo has no stack: breadboard.toml has no [stack]")
+    };
     if !repo::env_file_of(&dir).exists() {
-        fail(&format!("{base} has no .env.local, so no stack"));
+        fail(&format!("{base} has no {}, so no stack", stack.env_file));
     }
     super::heal_plugin();
     let offset = if dir == main { 0 } else { repo::offset_of(&dir) };
@@ -470,41 +571,40 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
         ""
     };
     step(&format!(
-        "stack {action}: {base} (app {}, Postgres {}){whose}",
-        3000 + u32::from(offset),
-        5432 + u32::from(offset)
+        "stack {action}: {base} ({}){whose}",
+        short_text(&stack, offset)
     ));
-    let vita = dir.join(VITA);
     let how = How {
-        cwd: Some(&vita),
+        cwd: Some(&repo::stack_dir(&dir)),
         ..How::default()
     };
+    let compose = |args: &[&str]| {
+        let mut all = breadboard_core::stack::compose_args(&stack, args);
+        all.insert(0, "docker".into());
+        all.join(" ")
+    };
+    let run = |action: &str| match action {
+        "ps" => compose(&["ps"]),
+        "up" => stack.up.clone().unwrap_or_else(|| compose(&["up", "-d", "--wait"])),
+        "down" => stack.down.clone().unwrap_or_else(|| compose(&["down"])),
+        _ => stack
+            .reset
+            .clone()
+            .unwrap_or_else(|| format!("{} && {}", compose(&["down", "-v"]), compose(&["up", "-d", "--wait"]))),
+    };
+    // A task stack (#351) starts on its epic's database, an epic's checkout brings the epic's up.
     let feature = repo::feature_of(&dir);
     let task = epic::epic_of_stack(&dir).map(|_| task_epic(&dir).unwrap_or_else(|| fail("no epic")));
     match (action, &task, Epic::at(&dir)) {
         ("up", Some(epic), _) => epic::task_up(&dir, &feature, epic),
         ("reset", Some(epic), _) => {
-            proc::run("pnpm", &["stack:down", "--volumes"], how);
+            proc::run("sh", &["-c", &compose(&["down", "--volumes"])], how);
             epic::drop_task(&feature, &epic.name);
             epic::task_up(&dir, &feature, epic);
         }
         ("up", None, Some(epic)) => epic::ensure_epic(&epic),
-        ("ps", ..) => {
-            proc::run(
-                "docker",
-                &[
-                    "compose",
-                    "--env-file",
-                    ".env.local",
-                    "-f",
-                    "docker-compose.local.yml",
-                    "ps",
-                ],
-                how,
-            );
-        }
         _ => {
-            proc::run("pnpm", &[&format!("stack:{action}")], how);
+            proc::run("sh", &["-c", &run(action)], how);
         }
     }
     if herdr::is_in_herdr() && action != "ps" {
@@ -519,11 +619,33 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use breadboard_core::config::{Config, Loaded};
+
+    /// A repo configured as platform is.
+    fn repo() -> Loaded {
+        let config = Config::parse(
+            "[repo]\ndefault_branch = \"develop\"\nrun = \"pnpm\"\n\
+             [stack]\ndir = \"products/vita/web\"\nproject = \"vita\"\n[stack.app]\nport = 3000\n\
+             [[stack.services]]\nname = \"postgres\"\nlabel = \"Postgres\"\nport = 5432\nenv = \"POSTGRES_PORT\"\n\
+             [[stack.services]]\nname = \"keycloak\"\nlabel = \"Keycloak\"\nport = 8080\nenv = \"KEYCLOAK_PORT\"\n\
+             [[stack.services]]\nname = \"s3\"\nlabel = \"SeaweedFS\"\nport = 8333\nenv = \"S3_PORT\"\n\
+             [[stack.services]]\nname = \"visualizer\"\nport = 64738\nenv = \"VISUALIZER_PORT\"\n\
+             [[stack.tools]]\nname = \"studio\"\nport = 4983\nrun = \"x\"\n\
+             [[stack.tools]]\nname = \"storybook\"\nport = 6006\nrun = \"y\"\n",
+        )
+        .unwrap();
+        Loaded {
+            config,
+            main: "/r/platform".into(),
+            branch: "develop".into(),
+            error: None,
+        }
+    }
 
     #[test]
     fn moves_every_port_of_the_env() {
         let source = "APP_ORIGIN=http://localhost:3000\nDATABASE_URL=postgres://u@127.0.0.1:5432/vita\nPOSTGRES_PORT=5432\nX=localhost:30001\n# localhost:3000\n\n";
-        let env = stack_env(source, "40-x", 3);
+        let env = stack_env(repo().config.stack.as_ref().unwrap(), source, "40-x", 3);
         assert_eq!(
             env,
             "APP_ORIGIN=http://localhost:3003\nDATABASE_URL=postgres://u@127.0.0.1:5435/vita\nX=localhost:30001\n# localhost:3000\n\n# --- own dev stack of the worktree 40-x, written by breadboard (pnpm wt:new, wt:stack) ---\nCOMPOSE_PROJECT_NAME=vita-40-x\nPOSTGRES_PORT=5435\nKEYCLOAK_PORT=8083\nS3_PORT=8336\nVISUALIZER_PORT=64741\n"
@@ -550,11 +672,12 @@ mod tests {
             }
         };
         assert_eq!(
-            summary_text(&origin, false, |name| format!("⇶ {name}")),
+            summary_text(&repo(), &origin, false, |name| format!("⇶ {name}")),
             "\n✓ feature/40-x pushed, worktree ready for ⇶ b, herdr: opened, own stack +2\n"
         );
         assert_eq!(
             summary_text(
+                &repo(),
                 &Summary {
                     is_stack_only: true,
                     tab: Some("stack tabs +postgres".into()),
@@ -569,10 +692,11 @@ mod tests {
             "\n✓ own stack +2 ready: app 3002, Postgres 5434, herdr: stack tabs +postgres\n"
         );
         assert_eq!(
-            summary_text(&Summary { stale: 1, ..base }, true, |name| name.into()),
+            summary_text(&repo(), &Summary { stale: 1, ..base }, true, |name| name.into()),
             "\n✓ feature/40-x pushed, worktree ready\n  EnterWorktree(path: \"/r/platform-40-x\")\n  own stack +2: app 3002, Postgres 5434\n  1 worktree/branch of merged work left: pnpm wt:prune\n"
         );
         let human = summary_text(
+            &repo(),
             &Summary {
                 dir,
                 branch: "feature/40-x",
@@ -585,6 +709,7 @@ mod tests {
         assert!(human.ends_with("→ http://localhost:3000 (only one checkout at a time)\n"));
         // Without the main checkout's .env.local: no stack is promised.
         let stackless = summary_text(
+            &repo(),
             &Summary {
                 dir,
                 branch: "feature/40-x",
@@ -604,9 +729,9 @@ mod tests {
             is_unpushed: true,
             ..Summary::default()
         };
-        let agent = summary_text(&unpushed(), true, |name| name.into());
+        let agent = summary_text(&repo(), &unpushed(), true, |name| name.into());
         assert!(agent.starts_with("\n✓ feature/40-x not pushed (git push -u origin feature/40-x), worktree ready\n"));
-        let human = summary_text(&unpushed(), false, |name| name.into());
+        let human = summary_text(&repo(), &unpushed(), false, |name| name.into());
         assert!(human.contains(
             "  branch     feature/40-x (from origin/develop, not pushed: git push -u origin feature/40-x)\n"
         ));

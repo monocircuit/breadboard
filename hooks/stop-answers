@@ -13,6 +13,10 @@ if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != "$common" 
   exec "$own" hook stop-answers
 fi
 package="$common/../packages/breadboard"
-[ -x "$package/target/release/breadboard" ] || exit 0
-[ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" --no-wait hook stop-answers
-exec "$package/target/release/breadboard" hook stop-answers
+if [ -x "$package/target/release/breadboard" ]; then
+  [ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" --no-wait hook stop-answers
+  exec "$package/target/release/breadboard" hook stop-answers
+fi
+# A repo breadboard isn't developed in (#342): the breadboard on PATH.
+command -v breadboard >/dev/null 2>&1 && exec breadboard hook stop-answers
+exit 0

@@ -21,6 +21,10 @@ pub fn ensure_epic(name: &str, plan: &[Item], given: Option<&str>, is_dry: bool)
     if let Some(raw) = &raw {
         return Ok(epic_of(raw));
     }
+    // breadboard.toml's `[orchestration] epic_branches`: without it the default branch, unless `--epic` asks.
+    if given.is_none() && !breadboard_core::config::of(&main).config.orchestration.epic_branches {
+        return Ok(None);
+    }
     let number = match given {
         Some(given) => given
             .parse::<i64>()
@@ -32,7 +36,10 @@ pub fn ensure_epic(name: &str, plan: &[Item], given: Option<&str>, is_dry: bool)
     };
     let branch = branch_of(number, name);
     if is_dry {
-        step(&format!("the epic branch would be {branch}, from origin/develop"));
+        step(&format!(
+            "the epic branch would be {branch}, from origin/{}",
+            breadboard_core::git::branch(&main)
+        ));
         return Ok(Some(branch));
     }
     make_branch(&main, &branch)?;
@@ -51,6 +58,7 @@ fn epic_fields(branch: &str, number: i64) -> Value {
 /// at once, the claim on the epic, as a task's branch is.
 fn make_branch(main: &Path, branch: &str) -> Result<(), String> {
     let _ = git(&["fetch", "--quiet", "origin"], main);
+    let develop = breadboard_core::git::branch(main);
     let remote = format!("refs/remotes/origin/{branch}");
     if git(&["rev-parse", "--verify", "--quiet", &remote], main).is_ok {
         step(&format!(
@@ -63,7 +71,7 @@ fn make_branch(main: &Path, branch: &str) -> Result<(), String> {
             "push",
             "--quiet",
             "origin",
-            &format!("refs/remotes/origin/develop:refs/heads/{branch}"),
+            &format!("refs/remotes/origin/{develop}:refs/heads/{branch}"),
         ],
         main,
     );
@@ -72,7 +80,7 @@ fn make_branch(main: &Path, branch: &str) -> Result<(), String> {
     }
     let _ = git(&["fetch", "--quiet", "origin", branch], main);
     step(&format!(
-        "made the epic branch {branch} from origin/develop and pushed it"
+        "made the epic branch {branch} from origin/{develop} and pushed it"
     ));
     Ok(())
 }

@@ -33,7 +33,7 @@ use crate::model::everything::{EverythingLocal, EverythingModel, everything_of};
 use crate::model::memory::free_memory;
 use crate::model::orchestration::{OrchestrationLocal, OrchestrationModel, ViewState, orchestration_of};
 use crate::model::waiting::{Waiting, waiting_for};
-use crate::model::worktree::{STORYBOOK_PORT, STUDIO_PORT, WorktreeLocal, WorktreeModel, worktree_of};
+use crate::model::worktree::{WorktreeLocal, WorktreeModel, worktree_of};
 use crate::model::{Docker, Tree, develop, diff};
 use crate::record::{self, record_of};
 use crate::setups::live_setups_of;
@@ -631,6 +631,7 @@ impl LocalReader {
             chat,
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
+            ci: crate::ci::Queue::read(&self.main, now),
             epic: epic_local(&self.main, record.as_ref()),
             record,
         }
@@ -696,6 +697,7 @@ impl LocalReader {
                 .and_then(|pane| pane.status)
         });
         let offset = if tree.has_own_port { tree.offset } else { 0 };
+        let stack = crate::stack::of(dir);
         // git's facts of the view besides the tree, from the tree's memo while its key holds.
         let memo = memo_of(dir, self.known[dir].key);
         let (own_commits, own_diff, develop) = if is_main {
@@ -769,9 +771,13 @@ impl LocalReader {
             } else {
                 None
             },
-            is_app_up: is_port_taken(3000 + offset),
-            is_studio_up: is_port_taken(STUDIO_PORT + offset),
-            is_storybook_up: is_port_taken(STORYBOOK_PORT + offset),
+            is_app_up: tree.app_port > 0 && is_port_taken(tree.app_port + offset),
+            tools_up: stack
+                .iter()
+                .flat_map(|stack| &stack.tools)
+                .map(|tool| (tool.name.clone(), is_port_taken(i64::from(tool.port) + offset)))
+                .collect(),
+            stack,
             tree: Some(tree),
         }
     }
@@ -898,9 +904,10 @@ impl RemoteReader {
                 let refs = tokio::task::spawn_blocking(move || git::remote_heads(&main))
                     .await
                     .unwrap_or_default();
+                let develop = git::branch(&self.main);
                 let head = refs
                     .iter()
-                    .find(|(_, branch)| branch == "develop")
+                    .find(|(_, branch)| *branch == develop)
                     .map(|(sha, _)| sha.clone());
                 let heads: Vec<String> = refs.into_iter().map(|(_, branch)| branch).collect();
                 read::read_everything(&self.gitlab, &heads)
@@ -969,14 +976,12 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
     }
 }
 
-/// The agents by conversation: herdr's panes, and with headless agents (#358)
-/// the run engine's status table over them (an agent without a pane is a
-/// session that runs only when something is queued for it).
+/// The agents by conversation: the run engine's status table (#358, an
+/// agent is a session that runs only when something is queued for it), and
+/// over it herdr's panes, where a click opened one in a tab (#361).
 fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent> {
-    let mut agents = herdr::agents_in(panes);
-    if crate::runs::is_headless(main) {
-        agents.extend(crate::runs::agents_of(main));
-    }
+    let mut agents = crate::runs::agents_of(main);
+    agents.extend(herdr::agents_in(panes));
     agents
 }
 
@@ -986,7 +991,11 @@ fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::mod
     let branch = crate::epic::epic_of(&record?.raw)?;
     let behind = git::git(
         main,
-        &["rev-list", "--count", &format!("origin/{branch}..origin/develop")],
+        &[
+            "rev-list",
+            "--count",
+            &format!("origin/{branch}..{}", git::Base::of(&git::branch(main)).remote),
+        ],
     );
     Some(crate::model::epic_row::EpicLocal {
         behind: (behind.status == 0)
