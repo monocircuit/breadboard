@@ -2,7 +2,8 @@
 //! one herdr resumed by itself after a restart is no one's (#386). A click
 //! on ACTIONS' `held` row (and `breadboard runs release <dir>`) ends it once
 //! herdr says it is idle, so no answer is cut off; its lines then run
-//! headless again.
+//! headless again. One herdr's restore started (a bare `claude --resume`,
+//! no click's `--name`) the overview ends by itself once it idles.
 
 use breadboard_core::conversations::{bound_session, interactive_pids_of};
 use breadboard_core::git::feature_of;
@@ -48,6 +49,28 @@ pub fn end(main: &Path, dir: &Path) -> Result<String, String> {
     }
     crate::daemon::client::wake_runs(main);
     Ok(format!("{feature}'s open claude ended: its lines run headless again"))
+}
+
+/// herdr's own resume of a headless agent (#386): `claude --resume <id>`
+/// without a name in a pane its restore brought back, never a click's. Ended
+/// as soon as herdr says it is idle, else left for the next read: a turn is
+/// never cut off. What it did, None when nothing.
+pub fn end_herdr_resume(main: &Path, dir: &Path, id: &str, pid: i64) -> Option<String> {
+    let status = breadboard_core::herdr::all_panes()
+        .into_iter()
+        .find(|pane| pane.session.as_deref() == Some(id))
+        .map(|pane| pane.status.unwrap_or_else(|| "unknown".into()))?;
+    if !is_quiet(Some(&status)) {
+        return None;
+    }
+    // SAFETY: a signal to a pid read from /proc a moment ago; SIGTERM lets claude save.
+    (unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0).then(|| {
+        crate::daemon::client::wake_runs(main);
+        format!(
+            "ended the claude herdr reopened for {} after a restart: its lines run headless again",
+            feature_of(main, dir)
+        )
+    })
 }
 
 #[cfg(test)]

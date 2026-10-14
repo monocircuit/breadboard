@@ -150,9 +150,50 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             is_changed |= remove_merged(app, &name, &local, remote, &model);
         }
     }
+    if is_local && is_deliverer && is_in_herdr() {
+        end_herdr_resumes(app, &local);
+    }
     notify_new(app, &model);
     if is_changed {
         app.redraw();
+    }
+}
+
+/// A headless agent's claude herdr's restore resumed in a pane (#386, a bare
+/// `claude --resume`, no click's) holds its lines: ended once herdr says it
+/// idles, said in DONE. One at a time per claude, on the actor's thread.
+fn end_herdr_resumes(app: &mut Overview, local: &OrchestrationLocal) {
+    let main = app.actor.main.clone();
+    let headless: HashMap<String, PathBuf> = local
+        .trees
+        .iter()
+        .filter(|tree| breadboard_core::runs::is_headless(&main, &tree.dir))
+        // Its binding, not its transcript: one herdr resumed may not have written yet.
+        .filter_map(|tree| {
+            Some((
+                breadboard_core::conversations::bound_session(&tree.dir)?,
+                tree.dir.clone(),
+            ))
+        })
+        .collect();
+    for (pid, id) in breadboard_core::conversations::unnamed_resumes() {
+        let Some(dir) = headless.get(&id).cloned() else {
+            continue;
+        };
+        let key = format!("herdr-resume:{pid}");
+        if !app.actor.auto.in_flight.insert(key.clone()) {
+            continue;
+        }
+        let main = main.clone();
+        app.actor.queue(move || {
+            let ended = super::end_held::end_herdr_resume(&main, &dir, &id, pid);
+            Some(Box::new(move |app: &mut Overview| {
+                app.actor.auto.in_flight.remove(&key);
+                if let Some(ended) = ended {
+                    app.actor.log(Paint::Yellow, ended);
+                }
+            }))
+        });
     }
 }
 
