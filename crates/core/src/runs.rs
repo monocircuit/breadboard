@@ -1,9 +1,9 @@
 //! Headless task agents (#358): a task agent is a Claude Code session id, not
 //! a process. A line for it is queued (`enqueue`), and `breadboard serve`
 //! runs `claude -p --resume <id>` in its worktree only when something waits
-//! in its queue; nothing runs while it waits. Behind a switch, `git config
-//! breadboard.agents headless` (`is_headless`); interactive tabs stay the
-//! default until #361.
+//! in its queue; nothing runs while it waits. Every task agent runs so
+//! (#361); one is opened in a tab only on a click (the overview's
+//! `open_agent`), and its queue waits while that claude runs.
 //!
 //! The files of `<main>/.claude/runs/`:
 //! - `queue.json` (`Queue`): the lines waiting for a run, appended by every
@@ -19,8 +19,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// `git config breadboard.agents headless`: task agents run headless.
-pub const MODE_KEY: &str = "breadboard.agents";
 /// What a run needs, roughly (a claude is ~200 MB, its tools more): what
 /// the memory model counts for an agent, now only while it runs.
 pub const RUN: u64 = crate::model::memory::AGENT;
@@ -30,12 +28,12 @@ pub const RESERVE: u64 = 6 << 30;
 pub const STARTING_MS: i64 = 15_000;
 /// A lock of the queue older than this belongs to a process that died.
 const STALE: Duration = Duration::from_secs(10);
-/// The tools a run may never use: no one sees its questions (#360 makes them actions).
-pub const DISALLOWED: &str = "AskUserQuestion";
 
-/// Whether `main` runs its task agents headless.
-pub fn is_headless(main: &Path) -> bool {
-    crate::git::git(main, &["config", "--get", MODE_KEY]).out() == "headless"
+/// Whether the agent of the worktree `dir` runs headless: every task agent
+/// of an orchestration does (#361). A worktree of your own keeps its claude
+/// in a tab.
+pub fn is_headless(main: &Path, dir: &Path) -> bool {
+    crate::record::is_orchestrated(main, dir)
 }
 
 pub fn dir_of(main: &Path) -> PathBuf {
@@ -298,41 +296,11 @@ pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed:
         session.into(),
     ]);
     args.extend(["--name".into(), name.into()]);
-    args.extend(["--permission-mode".into(), "auto".into()]);
-    args.extend(["--permission-prompts".into(), "none".into()]);
-    args.extend(["--disallowedTools".into(), DISALLOWED.into()]);
-    if !allowed.is_empty() {
-        args.push("--allowedTools".into());
-        args.extend(allowed.iter().cloned());
-    }
+    // Auto mode as in a tab, what would ask denied, the user's allows of this run (#360).
+    args.extend(crate::permissions::run_flags(allowed));
     // `-p` with stream-json needs `--verbose`.
     args.extend(["--output-format".into(), "stream-json".into(), "--verbose".into()]);
     args
-}
-
-/// The tools a stream's line says were denied: the `permission_denials` of its `result`.
-pub fn denials_in(line: &str) -> Vec<Denial> {
-    let Ok(value) = serde_json::from_str::<Value>(line) else {
-        return Vec::new();
-    };
-    if value.get("type").and_then(Value::as_str) != Some("result") {
-        return Vec::new();
-    }
-    value
-        .get("permission_denials")
-        .and_then(Value::as_array)
-        .map(|denials| {
-            denials
-                .iter()
-                .filter_map(|denial| {
-                    Some(Denial {
-                        tool: denial.get("tool_name")?.as_str()?.to_string(),
-                        input: denial.get("tool_input").cloned().unwrap_or(Value::Null),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// What each session's run does now: the table, a run whose claude is gone
@@ -464,20 +432,6 @@ mod tests {
         let allowing = args_of("abc", "1-x", "go", true, &rules);
         let at = allowing.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(&allowing[at + 1..at + 3], rules);
-    }
-
-    #[test]
-    fn reads_the_denials_of_a_result() {
-        let line = r#"{"type":"result","subtype":"success","permission_denials":[{"tool_name":"Bash","tool_use_id":"t","tool_input":{"command":"rm -rf x"}}]}"#;
-        assert_eq!(
-            denials_in(line),
-            [Denial {
-                tool: "Bash".into(),
-                input: serde_json::json!({ "command": "rm -rf x" }),
-            }]
-        );
-        assert!(denials_in(r#"{"type":"assistant"}"#).is_empty());
-        assert!(denials_in("no json").is_empty());
     }
 
     #[test]

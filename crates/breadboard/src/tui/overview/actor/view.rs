@@ -443,6 +443,7 @@ mod tests {
                 main_name: "platform",
                 actor: &actor,
                 words: no_words(),
+                develop: None,
             };
             let mut page = Page::new(120);
             done(&mut page, &ctx);

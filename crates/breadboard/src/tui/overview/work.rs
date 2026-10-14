@@ -638,6 +638,7 @@ mod tests {
             main_name: "platform",
             actor,
             words: super::super::actor::view::no_words(),
+            develop: None,
         };
         let mut scene = Scene::new(width);
         work(&mut scene, worktrees, merge_requests, None, true, &ctx);
@@ -1598,7 +1599,7 @@ mod tests {
         let lines = text(&folded);
         let bar = lines.iter().position(|line| line.contains("#302: 9/12 boxes")).unwrap();
         assert!(lines[bar].trim_start().starts_with("▸ ━"), "{lines:#?}");
-        assert!(!lines.iter().any(|line| line.contains('☐')), "{lines:#?}");
+        assert!(!lines.iter().any(|line| line.contains("• A fold")), "{lines:#?}");
         let region = |scene: &Scene<Act>| {
             scene
                 .regions
@@ -1614,7 +1615,21 @@ mod tests {
         let lines = text(&open);
         assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
         assert_eq!(lines[bar + 1].trim(), "Scope", "{lines:#?}");
-        assert!(lines[bar + 2].contains("☑ A fold control on the MR row"), "{lines:#?}");
+        assert!(lines[bar + 2].contains("• A fold control on the MR row"), "{lines:#?}");
+        // A plain bullet, its colour the state (#370): a ticked box green, an open one yellow; no ☑/☐.
+        let bullet_of = |row: usize| {
+            open.lines[row]
+                .spans
+                .iter()
+                .find(|span| span.content.contains('•'))
+                .and_then(|span| span.style.fg)
+        };
+        assert_eq!(bullet_of(bar + 2), Some(theme::Tone::Green.fg()));
+        assert!(
+            (bar..open.lines.len()).any(|row| bullet_of(row) == Some(theme::Tone::Yellow.fg())),
+            "{lines:#?}"
+        );
+        assert!(!lines.iter().any(|line| line.contains(['☑', '☐'])), "{lines:#?}");
         assert!(
             lines.iter().any(|line| line.contains("try #12 looks good")),
             "{lines:#?}"

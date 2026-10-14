@@ -1,6 +1,8 @@
 //! The daemon's process: detached from the overview that started it, one per
 //! socket (its pid file), a connection a task, gone GRACE after the last one
-//! closed or once its socket isn't its own any more.
+//! closed or once its socket isn't its own any more. A build installed over
+//! its binary (#348) makes it go on in that one: socket and pid file given
+//! up, the new binary run in its place.
 
 use super::feed::Feed;
 use super::{ALIVE_EVERY, GRACE, HERDR_FRESH, Request, Said};
@@ -44,6 +46,19 @@ struct State {
     engines: Mutex<HashMap<std::path::PathBuf, Arc<std::sync::atomic::AtomicBool>>>,
     /// The last answer of a feed that ended, by view, for GRACE.
     kept: Mutex<HashMap<String, (Instant, Arc<str>)>>,
+    /// Whether it keeps the main checkouts on develop (`keep_up`; not a test's daemon).
+    is_keeping_up: bool,
+    /// The main checkouts kept on develop: each one an overview asked GitLab about.
+    kept_up: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+}
+
+/// How the serving ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ended {
+    /// Not wanted any more: no connection for GRACE, or its socket another's.
+    Done,
+    /// A build was installed over its binary: that one goes on.
+    Replaced,
 }
 
 /// One open connection, counted while it lives.
@@ -91,18 +106,29 @@ pub fn main(args: &[String]) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let _ = std::fs::remove_file(&socket);
+    let binary = crate::binary::Started::now();
     let served = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .and_then(|runtime| {
-            runtime.block_on(async {
+            let served = runtime.block_on(async {
                 let listener = UnixListener::bind(&socket)?;
                 say_ready(ready);
-                serve(listener, &socket).await
-            })
+                serve(listener, &socket, true, &binary).await
+            });
+            // A step after an update may still run (a build): it isn't waited for.
+            runtime.shutdown_timeout(Duration::from_millis(100));
+            served
         });
     match served {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(Ended::Done) => ExitCode::SUCCESS,
+        Ok(Ended::Replaced) => {
+            // Its socket gone already; the pid file too, so the new one can hold it under the same pid.
+            drop(_held);
+            let error = binary.exec(["serve".into(), "--foreground".into()], &[]);
+            eprintln!("serve: the new binary didn't start: {error}");
+            ExitCode::FAILURE
+        }
         Err(error) => {
             eprintln!("serve: {error}");
             ExitCode::FAILURE
@@ -159,9 +185,17 @@ fn say_ready(ready: Option<std::fs::File>) {
     }
 }
 
-async fn serve(listener: UnixListener, socket: &Path) -> std::io::Result<()> {
+async fn serve(
+    listener: UnixListener,
+    socket: &Path,
+    is_keeping_up: bool,
+    binary: &crate::binary::Started,
+) -> std::io::Result<Ended> {
     let own = std::fs::metadata(socket)?.ino();
-    let state = Arc::new(State::default());
+    let state = Arc::new(State {
+        is_keeping_up,
+        ..State::default()
+    });
     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     let mut look = tokio::time::interval(LOOK_EVERY);
     loop {
@@ -179,7 +213,7 @@ async fn serve(listener: UnixListener, socket: &Path) -> std::io::Result<()> {
             _ = look.tick() => {
                 // Its socket gone or another's (a world removed, a new daemon): it isn't asked any more.
                 if std::fs::metadata(socket).map(|meta| meta.ino()).ok() != Some(own) {
-                    return Ok(());
+                    return Ok(Ended::Done);
                 }
                 state.kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (at, _)| at.elapsed() < GRACE);
                 // A worktree no overview asked about for a while (removed, its views closed): forgotten.
@@ -200,9 +234,15 @@ async fn serve(listener: UnixListener, socket: &Path) -> std::io::Result<()> {
                 if is_running {
                     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 }
+                // A build installed over its binary: the overviews connect to the new one. Not
+                // while a run is queued or in flight: the new one wouldn't know its claude.
+                if !is_running && binary.is_replaced() {
+                    let _ = std::fs::remove_file(socket);
+                    return Ok(Ended::Replaced);
+                }
                 if !is_running && state.connections.load(Ordering::SeqCst) == 0 && idle.is_some_and(|at| at.elapsed() >= GRACE) {
                     let _ = std::fs::remove_file(socket);
-                    return Ok(());
+                    return Ok(Ended::Done);
                 }
             }
         }
@@ -244,6 +284,15 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.
             start_engine(state, &main);
+            if state.is_keeping_up
+                && state
+                    .kept_up
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(main.clone())
+            {
+                tokio::spawn(super::keep_up::keep_up(main.clone()));
+            }
             let key = serde_json::to_string(&(&main, &view)).unwrap_or_default();
             let (feed, said, last) = {
                 let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
@@ -390,5 +439,44 @@ async fn follow(
 /// A test's daemon, listening on `socket`.
 #[cfg(test)]
 pub async fn serve_at(socket: std::path::PathBuf) -> std::io::Result<()> {
-    serve(UnixListener::bind(&socket)?, &socket).await
+    let binary = crate::binary::Started::at(socket.with_extension("binary"));
+    serve(UnixListener::bind(&socket)?, &socket, false, &binary)
+        .await
+        .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn goes_on_in_a_build_installed_over_its_binary() {
+        let dir = std::path::PathBuf::from(format!("/tmp/bb-serve-replaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (socket, file) = (dir.join("serve.sock"), dir.join("breadboard"));
+        std::fs::write(&file, "old").unwrap();
+        let binary = crate::binary::Started::at(file.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let ended = runtime.block_on(async {
+            let listener = UnixListener::bind(&socket).unwrap();
+            let serving = tokio::spawn({
+                let socket = socket.clone();
+                async move { serve(listener, &socket, false, &binary).await.unwrap() }
+            });
+            // The launcher's install: copied beside it, renamed over it.
+            let new = dir.join("breadboard.new");
+            std::fs::write(&new, "new").unwrap();
+            std::fs::set_permissions(&new, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            std::fs::rename(&new, &file).unwrap();
+            tokio::time::timeout(LOOK_EVERY * 3, serving).await.unwrap().unwrap()
+        });
+        assert_eq!(ended, Ended::Replaced);
+        // Its socket given up: the overviews connect to the new one.
+        assert!(!socket.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

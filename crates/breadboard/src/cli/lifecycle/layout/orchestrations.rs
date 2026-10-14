@@ -5,10 +5,11 @@
 //! and the space that goes with the last worktree.
 
 use super::super::claude::{is_conversation_running, running_claudes};
-use super::super::herdr::{self, call, did, has_agent, s};
+use super::super::herdr::{self, call, has_agent, s};
 use super::super::proc::{exe, git, quote, text};
 use super::super::repo::Repo;
 use super::nvim::{can_edit, editor_command, ide_flag, lua};
+use super::resume::resume;
 use super::spaces::space_of;
 use super::tabs::{
     CHANGELOG, CHANGES, ORCHESTRATOR_TAB, OVERVIEW, ROOT, TOKEN_SOURCE, View, Want, drop_duplicates, ensure_space,
@@ -578,7 +579,7 @@ pub fn restore_chat(repo: &Repo, name: &str) -> Option<String> {
             }
             let ChatState::Idle { pane } = state else { return None };
             let command = format!("cd {} && claude --resume {id}{}", quote(&text(&cwd)), ide_flag(&cwd));
-            did(&["pane", "run", s(&pane, "pane_id"), &command]).then(|| format!("resumed {id} in its tab"))
+            resume(s(&pane, "pane_id"), &id, &command).then(|| format!("resumed {id} in its tab"))
         }
     }
 }

@@ -132,11 +132,18 @@ pub fn free_memory() -> f64 {
         .map(|bytes| bytes as f64)
         .unwrap_or_else(|| {
             // SAFETY: sysconf only reads.
-            let pages = unsafe { libc::sysconf(libc::_SC_AVPHYS_PAGES) } as f64;
+            let pages = unsafe { libc::sysconf(AVAILABLE_PAGES) } as f64;
             let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as f64;
             pages * size
         })
 }
+
+/// The pages sysconf counts as available: free ones on Linux; macOS knows no
+/// such count, so all of them there (the release binaries, #343).
+#[cfg(target_os = "linux")]
+const AVAILABLE_PAGES: libc::c_int = libc::_SC_AVPHYS_PAGES;
+#[cfg(not(target_os = "linux"))]
+const AVAILABLE_PAGES: libc::c_int = libc::_SC_PHYS_PAGES;
 
 fn gb(bytes: f64) -> String {
     format!("{:.1} GB", bytes / GIB)

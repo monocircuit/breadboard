@@ -1,15 +1,17 @@
 //! The boxes of an issue as a list under an MR's row or a worktree's node
 //! (#346): folded behind `▸` by default, opened by a click or Enter on the
-//! line that says how many there are. Grouped by section, each box `☑` or
-//! `☐` with its whole text wrapped under it, then how it is verified
-//! (#309's mark), a try with its answer.
+//! line that says how many there are. Grouped by section, each box a `•`,
+//! green once ticked, yellow while open (#370), its whole text wrapped under
+//! it, then how it is verified (#309's mark), a try with its answer.
 
 use super::{Act, look};
 use crate::tui::Scene;
 use crate::tui::theme::{self, Tone};
 use breadboard_core::model::boxes::{BoxSection, Check};
-use ratatui::style::Style;
 use ratatui::text::Span;
+
+/// A box's bullet, one cell wide in every font.
+pub const BULLET: &str = "•";
 
 /// The fold's mark in front of what it folds: `▸` folded, `▾` open.
 pub fn mark(is_open: bool) -> Span<'static> {
@@ -17,7 +19,7 @@ pub fn mark(is_open: bool) -> Span<'static> {
 }
 
 /// Every box of `sections` from column `at`, each section's heading over its
-/// boxes; a box's lines wrap under its text, not under its `☐`.
+/// boxes; a box's lines wrap under its text, not under its `•`.
 pub fn list(scene: &mut Scene<Act>, sections: &[BoxSection], at: u16) {
     for section in sections {
         if !section.heading.is_empty() {
@@ -31,12 +33,10 @@ pub fn list(scene: &mut Scene<Act>, sections: &[BoxSection], at: u16) {
             scene.end_line();
             scene.indent(at);
             scene.pad_to(at);
-            let (tick, text) = if line.is_ticked {
-                (look::span("☑", theme::tone(Tone::Green)), theme::dim())
-            } else {
-                (look::span("☐", theme::tone(Tone::Yellow)), Style::new())
-            };
-            scene.atom_gap(vec![tick], 0);
+            // A plain `•` (#370): no emoji-wide glyph; the colour says the
+            // state, the bullet and the text green once ticked, yellow while open.
+            let text = theme::tone(if line.is_ticked { Tone::Green } else { Tone::Yellow });
+            scene.atom_gap(vec![look::span(BULLET, text)], 0);
             scene.indent(at + 2);
             // The text as words, its check one atom after a `·` that ends the
             // line before a break, never starts one.
