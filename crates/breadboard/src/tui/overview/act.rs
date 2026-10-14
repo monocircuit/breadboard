@@ -50,6 +50,8 @@ pub enum Act {
     Resolve(i64),
     /// An MR waiting in the CI queue goes to its front (#357).
     RunNow(i64),
+    /// The daily limit lifted until midnight: the queued runs start (#372).
+    LiftLimit,
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -174,6 +176,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
         Act::RunNow(iid) => run_now(app, iid),
+        Act::LiftLimit => lift_limit(app),
     }
     app.redraw();
     Flow::Redraw
@@ -465,6 +468,23 @@ fn run_now(app: &mut Overview, iid: i64) {
             .actor
             .log(Paint::Green, format!("CI: !{iid} to the front of the queue")),
         Err(error) => app.actor.log(Paint::Red, format!("CI: !{iid} not moved up: {error}")),
+    }
+}
+
+/// `continue anyway` (#372): the daily limit lifted until midnight, the run engine woken.
+fn lift_limit(app: &mut Overview) {
+    let main = app.actor.main.clone();
+    match breadboard_core::runs::lift_limit(&main, &breadboard_core::time::day(now_ms())) {
+        Ok(()) => {
+            crate::daemon::client::wake_runs(&main);
+            // Read again now: the LIMIT row goes without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
+            app.actor
+                .log(Paint::Green, "daily limit lifted until midnight: the queued runs start");
+        }
+        Err(error) => app.actor.log(Paint::Red, format!("daily limit not lifted: {error}")),
     }
 }
 

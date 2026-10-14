@@ -92,6 +92,8 @@ pub struct OrchestrationLocal {
     pub ci: Option<crate::ci::Queue>,
     /// Its epic branch (#350), None for one that works on develop.
     pub epic: Option<super::epic_row::EpicLocal>,
+    /// What its agents and the repo's spent (#372).
+    pub spent: crate::spend::Spent,
 }
 
 /// What the writing side keeps between frames: the removals, starts and
@@ -178,6 +180,8 @@ pub struct MrFacts {
     pub open_boxes: Vec<BoxSection>,
     /// The issue its bar counts the boxes of: the bar names it (#346).
     pub issue: Option<i64>,
+    /// What its issue's agents spent on it (#372), None before they answered.
+    pub spent: Option<crate::spend::Spend>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -221,6 +225,10 @@ pub struct OrchestrationModel {
     pub plan_update: Option<Plan>,
     /// The runner's load for the band (#357): `CI 3/4 slots · 2 queued`.
     pub ci_load: Option<String>,
+    /// What the agents spent, for the band (#372): `today 4.2 M tokens · ≈ $12 · budget $80 of $200`.
+    pub spent: Option<String>,
+    /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
+    pub held: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
     pub ci_published: Option<crate::ci::Published>,
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
@@ -726,6 +734,11 @@ fn merge_requests_of(
                 _ => Vec::new(),
             },
             issue: issue.number,
+            spent: issue
+                .number
+                .and_then(|number| local.spent.by_issue.get(&number))
+                .filter(|spent| !spent.is_empty())
+                .copied(),
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)
@@ -937,6 +950,8 @@ pub fn orchestration_of(
         stale: Vec::new(),
         plan_update: None,
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
+        spent: crate::spend::band_text(&local.spent),
+        held: local.spent.held.clone(),
         ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),
@@ -1091,6 +1106,7 @@ pub fn orchestration_of(
             remote,
             &TreeFacts {
                 agents: Some(&local.agents),
+                spent: Some(&local.spent),
                 work,
                 merge: &merge_numbers,
                 announced: &announced,

@@ -1,9 +1,11 @@
 # Orchestrating several issues
 
 Part of the skill [`parallel-work`](SKILL.md): one Claude session (the
-orchestrator) gets several issues done at once, each by a real `claude` in a
-worktree of its own. The overview shows what they do; the orchestrator only
-carries decisions between them and the user.
+orchestrator) gets several issues done at once, each by an agent of its own:
+a Claude Code session that breadboard runs headless in the issue's worktree
+whenever something happens for it (see How agents run). The overview shows
+what they do; the orchestrator only carries decisions between them and the
+user.
 
 ## When
 
@@ -63,30 +65,102 @@ What it does, in this order:
    main checkout like any other, its space in the same group; `wt:list`, the
    overview, `wt:remove` and `wt:prune` know it. The origin is recorded in `.claude/origin` of the
    worktree; its space opens unfocused, with the usual tabs.
-5. In each worktree's `<feature>` tab: `claude --session-id <id> --name
-   <feature>` with `.claude/brief.md` of the worktree as the first prompt.
-   The id is bound to the space, so a herdr restart resumes it.
+5. Per worktree a new session id, bound to it (`.claude/herdr-session`), and
+   its first run queued: `.claude/brief.md` of the worktree as the prompt.
+   No tab: the worktree's space has `root`, `overview`, `nvim` and its stack
+   tabs, no claude.
 
 A worktree counts as made when it exists: `wt:new` may still fail in its
-summary (#130), and the next issue still starts. Outside herdr (`HERDR_ENV`
-unset) the origin is recorded all the same and the `claude` commands are
-printed to run by hand. A new folder asks claude's trust question first: it
-waits in the agent's tab.
+summary (#130), and the next issue still starts.
+
+## How agents run
+
+**An agent is a Claude Code session id, not a process** (#358). Nothing runs
+while it waits for a pipeline, the merge order or an answer. When something
+happens for it (its brief, an answer, a merge, a failed pipeline, the end of
+a `wt:wait`, a handover) the line goes into its queue, and breadboard's
+daemon runs it:
+
+```sh
+claude -p --resume <id> --name <feature> --permission-mode auto \
+  --permission-prompts none --disallowedTools AskUserQuestion \
+  --output-format stream-json --verbose '<the lines>'
+```
+
+in the agent's current worktree (`--session-id <id>` instead of `--resume`
+for its first run, while it has no transcript; `core/src/runs.rs`). One run
+per agent at a time: lines that arrive during a run are batched into the
+next, a line repeated in a row once. Runs start while the free memory
+(`MemAvailable`) minus a 6 GB reserve leaves room for 0.5 GB per run (one
+that started in the last 15 s counts as not yet in `MemAvailable`), in merge
+order (`wt:plan`), then by age; the rest wait `queued`. The transcript is
+the one Claude Code always writes (`~/.claude/projects/…/<id>.jsonl`), so
+the context share and the node's `now` line read it as before. The Stop
+hook (`stop-answers`, see Answers) stays the safety net for a line that came
+while a run ended.
+
+The daemon (`breadboard serve`) keeps it all in `<main checkout>/.claude/runs/`:
+`queue.json` (the lines waiting, written by every process that talks to an
+agent, under a lock), `status.json` (the status table, by session) and
+`log/<id>.jsonl` (the stream of each agent's last run). Each agent has a
+state the overview and the sidebar show (the table replaces herdr's state of
+a pane): `running` (a run in flight), `idle`, `asks` (its last run was
+denied a tool and waits for the user, see Permissions) and `queued` (lines
+wait for memory, or for its tab, below).
+
+**Open an agent in a tab** (#361): a click on an agent (its block in
+WORK, an action that opens it, the `resume` row of its worktree's view)
+runs `cd <worktree> && claude --resume <id> --name <feature>` in the
+`<feature>` tab of its space, once no run is in flight (it waits for one up
+to 15 min); a claude that already runs the conversation is put in front
+instead. While that claude runs, the agent's queue waits; when it ends, the
+queue goes on headless. Type there for anything the overview has no button
+for: your word wins over the orchestrator's.
+
+## Permissions
+
+Agents keep auto mode (#360): every run passes `--permission-mode auto`, so
+the classifier, the repo's allow and deny lists and the hooks decide tool
+calls exactly as in an interactive session. Only where a question lands
+changes. What auto mode would ask the user is denied in the run
+(`--permission-prompts none`); the daemon reads the denials from the stream
+(`permission_denials` of its result, `core/src/permissions.rs`). A denial
+that the classifier or a deny rule stands behind stays one: the agent reads
+it and works without. Only one that would have been a question becomes a
+`permission` action, `may <agent> run <Tool>: <first line of the command,
+path or url>?` (`may <agent> use <Tool>?` without one), with `allow once`,
+`allow always` and `deny`. `<rule>` is the rule that allows exactly that
+call (`Bash(docker system prune)`, `Edit(//abs/path)`,
+`WebFetch(domain:host)`). Allowed, the agent's next run gets
+`--allowedTools <rule>` and the line `[overview] the user allowed <rule>, go
+on: it is allowed in this run.`; `allow always` also writes the rule into
+the worktree's `.claude/settings.local.json`. Denied: `[overview] the user
+denied <rule>: don't run it, go on without it or leave an action for the
+user.` (`core/src/permissions.rs`, `answer_run`). `AskUserQuestion` is disallowed in runs: an
+agent asks with `{{run}} wt:action decide` (Answers).
 
 ## Talking to the agents
 
-The agents are Claude Code sessions like any other: `ListAgents` shows them
-by their name, the feature. The orchestrator says hello to each right after
-the start (`SendMessage(to: "<feature>")`, the command prints the list), so
-every agent has its address.
+The agents are Claude Code sessions named after their feature, but
+`ListAgents` shows one only during a run: between runs there is no process
+to message, and a `SendMessage` to an idle agent goes nowhere. An agent
+reaches the orchestrator with `SendMessage` (the orchestrator's chat runs
+all the time); the orchestrator reaches an agent through its queue:
+
+```sh
+sh packages/breadboard/herdr/breadboard.sh runs tell <worktree dir> "<line>"
+```
+
+The line starts the agent's next run, or goes into the next one when a run
+is in flight.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
-An agent reports nothing to the chat: its block in WORK shows herdr's
-state of it and what it waits for, with commits, MR, pipeline and boxes,
-the problem it works on and what it is on now (its `{{run}} wt:action note
-"<one line>"`, asked for at every stage, or its last answer's first line).
-The brief asks for `SendMessage`
+An agent reports nothing to the chat: its block in WORK shows its state
+(How agents run) and what it waits for, with commits, MR, pipeline and
+boxes, the problem it works on and what it is on now (its `{{run}}
+wt:action note "<one line>"`, asked for at every stage, or its last answer's
+first line). The brief asks for `SendMessage`
 only for:
 
 - its plan, when it differs from the issue;
@@ -103,16 +177,17 @@ anything an agent brought, the orchestrator checks the action:
 `answered, delivered` (then it is taken: nothing to ask). It relays only
 while the action is open, and never asks in its own chat what the overview
 has buttons for. It answers with the user's word, not its own
-guess. Never merge, approve or tag for an agent. The user can also type into
-an agent's tab directly: that wins.
+guess. Never merge, approve or tag for an agent. The user can also open an
+agent in a tab (How agents run) and type there: that wins.
 
-**Waiting for other MRs needs no orchestrator.** An agent that has to wait
-runs `{{run}} wt:wait !N … --then "<what next>"` in the background and stops:
-the command asks GitLab every minute and exits with the line to go
-on with (`!213 is merged: merge your base in (3 behind), then …`), which wakes
-the agent; early when one is closed, stays in conflict for 30 min, or after
-8 h. The wait is in `.claude/wait.json`: the MR row says `waits for !213`, and
-when the command is gone (the agent restarted) the overview types the line.
+**Waiting for other MRs needs no orchestrator, and no process** (#359). An
+agent that has to wait runs `{{run}} wt:wait !N … --then "<what next>"` and
+stops: the command records the wait in `.claude/wait.json` and returns at
+once (MRs already merged or closed: it says so then). The daemon asks
+GitLab every minute and queues the line to go on with (`!213 is merged:
+merge your base in (3 behind), then …`), which starts the agent's next run;
+early when one is closed, stays in conflict for 30 min, or after 8 h.
+Meanwhile the MR row says `waits for !213`.
 
 **The overview answers "what now?"**, so the user never has to ask. The
 orchestrator sets the order right after the start and again whenever it
@@ -143,7 +218,7 @@ the tab gets the tab's name. On top of the orchestration's overview,
 
 It never makes a second tab, and never resumes a conversation that runs
 elsewhere. After a herdr restart, the layout resumes the orchestrator in its
-idle tab, as it does for an agent. No script closes or replaces a tab
+idle tab; agents have no tab to resume (How agents run). No script closes or replaces a tab
 `orchestrator` that holds more than an idle shell.
 
 ## The overview
@@ -172,16 +247,17 @@ that isn't ready is grey, its buttons don't answer, NEXT skips it, and the
 overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
-`look` (go to the agent's space) — and the automatic `waits` (an agent at a
-question or permission), `push` (commits a worktree holds unpushed for over
-10 minutes; the click tells its agent) and `merge` (a ready, green MR without
-its agent's, none while a change is requested).
-Sorted by what blocks most: `waits`, `decide`, `plan`, `push`, `merge`,
+`look` (go to the agent's space) — and the automatic `permission` (what auto
+mode would have asked in a run, see Permissions), `push` (commits a worktree
+holds unpushed for over 10 minutes; the click queues the order for its
+agent) and `merge` (a ready, green MR without its agent's, none while a
+change is requested).
+Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
 the worktree, have its agent tick the done boxes), `pipeline` (a failed
-MR pipeline whose line the live overview couldn't send its agent yet, with
-why: no agent, blocked at a question, herdr refused; the click tries again), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
+MR pipeline whose line didn't reach its agent; queued, it arrives on the
+first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
 under the orchestration's record and how reuse went, one block per piece
 of work: the open MRs in the merge order, the MR graph's lanes in front
@@ -196,7 +272,8 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   and at the right where it stands in its life: `merged: will be removed`,
   `merged: kept` with the reason, else what its agent waits for (#288,
   never a bare `idle`; the same words in herdr's sidebar), the first that
-  holds: `at work`, `asks you` (blocked, or stopped on a question), `waits
+  holds: `at work` (a run in flight), `queued` (an event waits for memory
+  or for its open tab), `asks you` (an open `permission` action), `waits
   for the pipeline` (running, or none yet for its push), `pipeline failed`,
   `waits for you: merge, try #4, decide` (its open actions, a merge once its
   MR's pipeline passed and no try or acceptance box is open, else `checks
@@ -209,8 +286,8 @@ until folded). Its title counts the agents by whom they wait for and the MRs
 - **bar** of its issue's boxes (#294): `9/12 boxes · work 9/9 · acceptance 0/3`;
 - **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`):
   the button `resolve merge conflicts` while GitLab reports some (its click
-  types the order to merge its base in, resolve, check and push into the
-  MR's agent; grey with the reason when the click can't reach it; after a
+  queues the order to merge its base in, resolve, check and push for the
+  MR's agent; grey with the reason when it can't help; after a
   click the block says where it stands: `queued for its agent (at work)`,
   `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
   resolved`, #290), `checking for conflicts …`, the reasons; nothing when
@@ -314,38 +391,33 @@ precisely and refuses one that lacks a part:
   --option "New only" --why "the row says what the two clicks do, WORK the rest" \
   --recommend 2
 ``` The answer is stored with the action
-(`answer`, `answeredAt`), and the overview types it into the agent's pane
-as one line, `[overview] #3 decide "A or B" → B`: the `<feature>` tab of the
-worktree's space, or the `orchestrator` tab for the orchestrator's own
-(`herdr agent prompt`). An idle agent goes on; a working one queues the line.
-A delivered answer leaves ACTIONS and stays readable in the file's
-`answered` (the newest 50, with `deliveredAt`; `wt:action --list` shows
-them), so a late message about it is known as decided.
+(`answer`, `answeredAt`) and goes to the agent as one line, `[overview] #3
+decide "A or B" → B`: into its queue, so it starts the agent's next run, or
+goes into the next one when a run is in flight (#359). The orchestrator's
+own actions are typed into its tab `orchestrator` (`herdr agent prompt`),
+its chat being the one interactive claude. A delivered answer leaves ACTIONS
+and stays readable in the file's `answered` (the newest 50, with
+`deliveredAt`; `wt:action --list` shows them), so a late message about it is
+known as decided.
 
-`broken` and `different` are not sent: the click focuses the agent's tab
-(its space first) and writes the draft `[overview] #3 try "…" → broken: `
-into its input (`herdr pane send-text`, no Enter). The user adds what is
-wrong, pastes screenshots and sends it; the agent waits for that line
-instead of guessing from the bare word. The draft counts as delivered once
-written: no retry and no Stop hook sends it again. A working agent gets it
-all the same (Claude Code queues it). An agent blocked at a question gets
-nothing typed into the dialog: the row says why, and the draft is written
-once the pane changes state, unless the user typed into the input
-meanwhile. A `broken` on a try of a ready MR also puts the MR back to draft
-and withdraws its merge (see Merging).
+`broken` and `different` need the user's words: the click opens a one-line
+prompt under the action, and Enter queues the whole line `[overview] #3 try
+"…" → broken: <what is wrong>` for the agent. The agent works from that
+line, never from the bare word. A `broken` on a try of a ready MR also puts
+the MR back to draft and withdraws its merge (see Merging).
 
-herdr refuses to type into an agent blocked at a question. Any other line that
-didn't get in waits in the actions file and is tried again once the pane
-changes state. The Stop hook (`breadboard hook stop-answers`, `breadboard init` puts it into `.claude/settings.json`) is the safety
-net: it only reads the worktree's `.claude/actions.json` (in the main
-checkout, the orchestrator's actions whose `pane` is its `$HERDR_PANE_ID`),
-blocks the stop with the lines and takes them out. Without an answer it
-exits silently. `{{run}} wt:action --answers` does the same by hand. Each
-answer arrives once, and no agent turn is spent waiting for one.
+The Stop hook (`breadboard hook stop-answers`, `breadboard init` puts it
+into `.claude/settings.json`) is the safety net for a line that came while a
+run was ending: it only reads the worktree's `.claude/actions.json` (in the
+main checkout, the orchestrator's actions whose `pane` is its
+`$HERDR_PANE_ID`), blocks the stop with the lines and takes them out.
+Without an answer it exits silently. `{{run}} wt:action --answers` does the
+same by hand. Each answer arrives once, and no agent turn is spent waiting
+for one.
 
 A click on a button shows at once (#303): the buttons give way to `→
-looks good` and where it is (`typed into its agent's pane`, `at its next
-stop`, why it waits), before the reread. The button a click hits is read
+looks good` and where it is (`queued for its agent`, `in its run`), before
+the reread. The button a click hits is read
 off the line on screen, every cell of it and the column after; each line
 with buttons gets its click from the hit regions of its layout (`tui/scene.rs`), and a test
 clicks every cell of every drawn button of every rendered frame. Every
@@ -359,43 +431,36 @@ An issue keeps its worktree, branch and MR; an agent moves from one worktree
 to the next, so a follow-up doesn't pay the whole start-up again.
 `{{run}} wt:orchestrate <name> <issue> --to <agent>` (its `claude --name`, or
 the feature of the worktree it is in) makes the worktree, writes a brief
-that names what the agent had before, moves the binding
-(`.claude/herdr-session`) along and **restarts** the agent in the new
-worktree (#335): its claude ends (nothing is typed into a running one), then
-`claude --resume <id> --name <feature> '<line>'` runs in the tab `<feature>`
-of the new space, standing in the worktree, its old tab closed. So its Claude
-Code name is the feature's (`ListAgents` and `SendMessage` go by it), the
-record's too (its node shows `was <old>` for a day), and its first prompt is
+that names what the agent had before and moves the binding
+(`.claude/herdr-session`) along. The handover is the agent's next run
+(#359): it runs in the new worktree, under the new name, with the line
 `[overview] next issue #N, your name is <feature> now: your conversation runs
-again in its worktree <dir>, read .claude/brief.md`. A claude resumed in one
-directory can't `EnterWorktree` out of it, hence the restart; the resume
-starts only once the old process is gone. Without a space or an idle tab
-nothing ends and the handover fails, its worktree removed again. The old
-worktree keeps its space until its clean-up. `--to` takes the old name too.
-Refused while the agent works or waits for an answer, or above `--limit`
-(50 %) of its context.
+again in its worktree <dir>, read .claude/brief.md`. Nothing ends, no tab
+moves. So its Claude Code name is the feature's (`ListAgents` and
+`SendMessage` go by it during a run), the record's too (its node shows `was
+<old>` for a day). The old worktree keeps its space until its clean-up.
+`--to` takes the old name too. Refused while a run of the agent is in
+flight or it waits for an answer, or above `--limit` (50 %) of its context.
 
-**A merged agent stays free** (#289), without a tab (#345): before the
-clean-up of its worktree the live overview types its last line, `[overview]
-!N merged, your worktree goes: you are free. Your claude ends now, …`, waits
-for its answer, ends its claude (waited for) and closes its tab: nothing of
-it runs. The record's `workers` keeps it by its conversation's id (`free: {
-at, from, mr }`, `mrs`, the files it knows, its name and issues), its
-binding goes with the worktree's, and the worktree goes once its claude
-ended. A herdr restart changes nothing, there is no tab to restore. Its next
-issue resumes it (`claude --resume <id> --name <feature> '<line>'`) in the
-new worktree's tab, the path of every handover; never two claudes on one
-id. Above `--limit` (50 %) of its context it isn't freed and goes with the
-worktree. While the record keeps a free agent, the space `⇶ <name>` stays.
+**A merged agent stays free** (#289): it is a record entry, not a process.
+Before the clean-up of its worktree its last line `[overview] !N merged,
+your worktree goes: you are free, …` is queued; once that run ended, the
+record's `workers` keeps it by its conversation's id (`free: { at, from, mr
+}`, `mrs`, the files it knows, its name and issues), its binding goes with
+the worktree's, and the worktree goes. An agent that never ran is freed
+too. Its next issue is its next run, in the new worktree, the path of every
+handover. Above `--limit` (50 %) of its context it isn't freed and goes
+with the worktree. While the record keeps a free agent, the space `⇶
+<name>` stays.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
 records it (the record's `handovers`, the issue queued), the agent's node
 in WORK says `→ next #226 after !232` and UP NEXT lists it. The live
-overview hands the issue over by itself once the MRs are merged and the
-agent is idle, free or still in its worktree; nothing holds the clean-up
-for it but the move itself: `wt:remove` and `wt:prune` refuse a worktree a
-handed-over agent is still in.
+overview hands the issue over by itself once the MRs are merged and no run
+of the agent is in flight, free or still in its worktree; nothing holds the
+clean-up for it but the move itself: `wt:remove` and `wt:prune` refuse a
+worktree a handed-over agent is still bound to.
 A try that fails (the agent took up something while wt:new ran) is tried
 again a minute later once it is idle; its row says why it waits.
 
@@ -444,11 +509,10 @@ AGENTS, below WORK while there is one, lists the free agents (#289,
 worktree and MR they came from and how many issues they did, and their
 conversation's id, short (#345: `free  Mira Albrecht  agent-a  0f3c2a91
 ✕ dismiss`, `18 % · from 7-thing (!31) · 2 issues` under it). A click on
-the id copies `claude --resume <the whole id>` (wl-copy, xclip or xsel; the
-log shows the command either way), to resume or look into it by hand; a
-handover ends such a claude before it resumes the conversation. Two clicks
-on a row dismiss one: the record forgets it as free (a tab resumed by hand
-closes), the conversation stays in `/resume`.
+the name opens it in a tab (How agents run); a click on the id copies
+`claude --resume <the whole id>` (wl-copy, xclip or xsel; the log shows the
+command either way). Two clicks on a row dismiss one: the record forgets it
+as free, the conversation stays in `/resume`.
 
 Every agent has a person's name (#292), the one the overview shows it by
 while it moves from issue to issue: picked from its conversation id on its
@@ -473,7 +537,11 @@ the marks on a restart and the layout sets them again. The overview shows the
 origin next to the worktree and in its view. They stay together (#255): the
 worktrees of no orchestration first, then per orchestration its space with
 its worktrees right below in the work order of `wt:plan`; the overview of
-the main space sorts them on every read (`core/src/model/order.rs`).
+the main space sorts them on every read (`core/src/model/order.rs`). A
+worktree's space shows its agent's state from the status table (How agents
+run) as its third row (`$wt_state`), not from a claude pane: there is none.
+The tab bar's "N need you" counts the agents that ask (`asks`: a denied
+tool waiting for the user).
 
 ## The changelog
 
@@ -504,9 +572,9 @@ its origin with it, its agent free. Once none is left and all is merged, UP NEXT
 has the row `end`, and `✕ end orchestration` at the overview's end ends
 it with two clicks (greyed out while a worktree is left, naming it; free
 agents don't hold it):
-the space `⇶ <name>` closes, the orchestrator's claude, its free agents
-(also one moved elsewhere) and the overview with
-it, its conversation stays in `/resume` of the main checkout, and its record
+the space `⇶ <name>` closes, the orchestrator's claude and the overview with
+it (its agents' queues go, a run in flight ends first), every conversation
+stays in `/resume` of the main checkout, and its record
 and checkout go (a checkout with a change stays, the log says where). Its
 changelog stays; the log names where it is.
 `{{run}} wt:orchestrate <name> --end` does the same from the command line, with

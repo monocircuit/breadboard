@@ -9,7 +9,9 @@
 //! - `queue.json` (`Queue`): the lines waiting for a run, appended by every
 //!   process that talks to an agent, taken by the daemon, under its lock;
 //! - `status.json` (`Table`): what each session's run does, by the daemon;
-//! - `log/<session>.jsonl`: the stream of its last run.
+//! - `log/<session>.jsonl`: the stream of its last run;
+//! - `limit.json` (`Lifted`): the day a `continue anyway` lifted the daily
+//!   limit for (#372).
 
 use crate::herdr::Agent;
 use crate::lock::{is_alive, with_dir_lock};
@@ -46,6 +48,38 @@ pub fn queue_file(main: &Path) -> PathBuf {
 
 pub fn status_file(main: &Path) -> PathBuf {
     dir_of(main).join("status.json")
+}
+
+pub fn limit_file(main: &Path) -> PathBuf {
+    dir_of(main).join("limit.json")
+}
+
+/// The daily limit lifted (#372): for which day (`2026-10-13`), None: not lifted.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Lifted {
+    pub day: Option<String>,
+}
+
+/// The daily limit lifted for `day`, until midnight: `continue anyway`.
+pub fn lift_limit(main: &Path, day: &str) -> std::io::Result<()> {
+    write_whole(&limit_file(main), &Lifted { day: Some(day.into()) })
+}
+
+/// Why no run starts (#372): the daily limit `limit` (`[agents]
+/// daily_limit`) reached by `today`, not lifted for its day.
+/// `daily limit reached: $41 of $40`
+pub fn held_by(limit: Option<crate::spend::Limit>, today: &crate::spend::Today, lifted: &Lifted) -> Option<String> {
+    let limit = limit?;
+    (limit.is_reached(&today.total) && lifted.day.as_deref() != Some(today.day.as_str()))
+        .then(|| format!("daily limit reached: {}", limit.against(&today.total)))
+}
+
+/// `held_by` of the repo of `main` now: its config, its agents' spend today, its `limit.json`.
+pub fn held_now(main: &Path, now: i64) -> Option<String> {
+    let limit = crate::config::of_main(main).config.agents.daily_limit?;
+    let today = crate::spend::today_of(main, now);
+    held_by(Some(limit), &today, &read_or_default(&limit_file(main)))
 }
 
 pub fn log_file(main: &Path, session: &str) -> PathBuf {
@@ -370,6 +404,33 @@ mod tests {
             at,
             allowed: Vec::new(),
         }
+    }
+
+    #[test]
+    fn holds_the_runs_past_the_daily_limit_unless_lifted_for_the_day() {
+        use crate::spend::{Limit, Spend, Today};
+        let today = Today {
+            day: "2026-10-13".into(),
+            total: Spend {
+                tokens: 1,
+                dollars: 41.0,
+            },
+            ..Today::default()
+        };
+        let none = Lifted::default();
+        assert_eq!(held_by(None, &today, &none), None);
+        assert_eq!(held_by(Some(Limit::Dollars(50.0)), &today, &none), None);
+        assert_eq!(
+            held_by(Some(Limit::Dollars(40.0)), &today, &none).as_deref(),
+            Some("daily limit reached: $41 of $40")
+        );
+        let lifted = |day: &str| Lifted { day: Some(day.into()) };
+        assert_eq!(held_by(Some(Limit::Dollars(40.0)), &today, &lifted("2026-10-13")), None);
+        assert!(held_by(Some(Limit::Dollars(40.0)), &today, &lifted("2026-10-12")).is_some());
+        let scratch = crate::lock::scratch::Scratch::new();
+        lift_limit(scratch.path(), "2026-10-13").unwrap();
+        let read: Lifted = read_or_default(&limit_file(scratch.path()));
+        assert_eq!(read, lifted("2026-10-13"));
     }
 
     #[test]
