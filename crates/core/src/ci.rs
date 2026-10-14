@@ -165,6 +165,9 @@ pub struct Asked {
     pub rescued: BTreeMap<i64, i64>,
     /// The pipelines it created, oldest first.
     pub ours: Vec<i64>,
+    /// The pipelines it cancelled itself, oldest first (#383): a head pipeline
+    /// among them is no person's cancel.
+    pub cancelled: Vec<i64>,
 }
 
 impl Asked {
@@ -175,6 +178,15 @@ impl Asked {
         }
         let over = self.ours.len().saturating_sub(OURS_KEPT);
         self.ours.drain(..over);
+    }
+
+    /// A pipeline it cancelled, the oldest forgotten past OURS_KEPT.
+    pub fn add_cancelled(&mut self, id: i64) {
+        if !self.cancelled.contains(&id) {
+            self.cancelled.push(id);
+        }
+        let over = self.cancelled.len().saturating_sub(OURS_KEPT);
+        self.cancelled.drain(..over);
     }
 }
 
@@ -262,6 +274,9 @@ pub enum Place {
     Next { at: usize },
     /// Its bar isn't full: no pipeline before it is (a click starts one anyway).
     Boxes(Bar),
+    /// No pipeline of its newest commit runs and none starts by itself (#383):
+    /// why, in a few words (a person cancelled it, GitLab took none).
+    Stopped { why: String },
 }
 
 impl Place {
@@ -281,6 +296,7 @@ impl Place {
                 format!("CI: after the boxes ({}/{})", bar.ticked, bar.total)
             }
             Place::Boxes(_) => "CI: after wt:check".into(),
+            Place::Stopped { why } => format!("CI: {why}, a click runs it"),
         }
     }
 }
@@ -522,6 +538,8 @@ pub struct Ranks {
     pub ours: HashSet<i64>,
     /// iid → the blocking pipeline a new one was asked for over (`OpenMr::blocked_by`).
     pub rescued: HashMap<i64, i64>,
+    /// The pipelines the queue cancelled itself (#383): no person's cancel.
+    pub cancelled: HashSet<i64>,
 }
 
 impl Ranks {
@@ -533,6 +551,7 @@ impl Ranks {
             preempted: HashMap::new(),
             ours: HashSet::new(),
             rescued: HashMap::new(),
+            cancelled: HashSet::new(),
         }
     }
 
@@ -598,10 +617,25 @@ pub struct Decision {
     pub preempt: Option<(i64, i64, String)>,
 }
 
-/// Whether `mr` waits for a pipeline of its newest commit: none yet, a
-/// click asks for one again, or the queue cancelled it for an MR ahead. A
-/// pipeline of that commit that ended, or that a person cancelled or GitLab
-/// skipped, stays so without a click. Asked for once, a commit is never
+/// Whether the head pipeline of `mr` answers for its newest commit: one of
+/// that commit that runs, passed, failed or a person cancelled. A skipped
+/// one is a push's `ci.skip` (#383: every push leaves one), one the queue
+/// cancelled itself is no person's word: neither answers.
+fn has_answer(mr: &OpenMr, ranks: &Ranks) -> bool {
+    let Some(pipeline) = mr.pipeline.as_ref().filter(|_| mr.is_head_current()) else {
+        return false;
+    };
+    match pipeline.status.as_str() {
+        "skipped" => false,
+        "canceled" | "canceling" => !ranks.cancelled.contains(&pipeline.id),
+        _ => true,
+    }
+}
+
+/// Whether `mr` waits for a pipeline of its newest commit: none yet (a
+/// push's skipped one is none), a click asks for one again, or the queue
+/// cancelled it. A pipeline of that commit that ended, or that a person
+/// cancelled, stays so without a click. Asked for once, a commit is never
 /// asked for again by itself (#369): GitLab may not show it, or refuse it.
 fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i64)>) -> bool {
     let Some(sha) = &mr.sha else {
@@ -625,10 +659,25 @@ fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i6
     {
         return false;
     }
-    if mr.is_head_current() {
+    if has_answer(mr, ranks) {
         return clicked.is_some() || was_preempted;
     }
     true
+}
+
+/// Why a member MR without a live pipeline of its newest commit gets none
+/// by itself (#383: the row says it), None when it needs none: its newest
+/// commit's pipeline passed or failed, or it has no commit.
+fn stopped_why(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i64)>) -> Option<String> {
+    let sha = mr.sha.as_ref()?;
+    if has_answer(mr, ranks) {
+        let status = mr.pipeline_status()?;
+        return matches!(status, "canceled" | "canceling").then(|| "cancelled by hand".to_string());
+    }
+    started
+        .get(&mr.iid)
+        .filter(|(asked, _)| asked == sha)
+        .map(|_| "asked for, GitLab made none".to_string())
 }
 
 /// The queue now: each MR's place, and the one pipeline to start, if any.
@@ -660,7 +709,14 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
     // An MR of no orchestration is never touched: no place, no start, no cancel (#369).
     let members = mrs.iter().filter(|mr| ranks.is_member(mr.iid));
-    for mr in members.filter(|mr| wants_pipeline(mr, ranks, started)) {
+    for mr in members {
+        if !wants_pipeline(mr, ranks, started) {
+            let is_live_here = mr.is_head_current() && mr.pipeline_status().is_some_and(is_live);
+            if let Some(why) = stopped_why(mr, ranks, started).filter(|_| !is_live_here) {
+                places.insert(mr.iid, Place::Stopped { why });
+            }
+            continue;
+        }
         match class_of(mr, ranks) {
             Some(class) => waiting.push((class, key_of(class, mr, ranks), mr)),
             None => {
@@ -1041,6 +1097,55 @@ mod tests {
         // A click on one that runs changes nothing.
         let running = [mr(1, "a", pipeline(10, "running", "a", 1))];
         assert_eq!(decide_now(&running, &ranks, slots(2, 1)).start, None);
+    }
+
+    #[test]
+    fn starts_an_mr_whose_push_left_a_skipped_pipeline() {
+        // #383: every push with ci.skip leaves a skipped pipeline of its commit (!353, !354): no answer.
+        let mrs = [mr(353, "a", pipeline(10, "skipped", "a", 353))];
+        let decision = decide_now(&mrs, &order(&[353]), slots(1, 0));
+        assert_eq!(decision.start.map(|start| start.iid), Some(353));
+        assert_eq!(decision.places[&353], Place::Next { at: 1 });
+        // Its bar not full yet: the row says so, nothing starts.
+        let mut ranks = order(&[353]);
+        ranks.bars.get_mut(&353).unwrap().is_checked = false;
+        let decision = decide_now(&mrs, &ranks, slots(1, 0));
+        assert_eq!(decision.start, None);
+        assert_eq!(decision.places[&353].text(), "CI: after wt:check");
+    }
+
+    #[test]
+    fn a_pipeline_the_queue_cancelled_itself_is_no_persons_cancel() {
+        // #383, !361: its pipeline cancelled by the queue (for an MR ahead, superseded) starts again.
+        let mrs = [mr(361, "a", pipeline(24, "canceled", "a", 361))];
+        let mut ranks = order(&[361]);
+        let decision = decide_now(&mrs, &ranks, slots(1, 0));
+        assert_eq!(decision.start, None);
+        assert_eq!(decision.places[&361].text(), "CI: cancelled by hand, a click runs it");
+        ranks.cancelled.insert(24);
+        let decision = decide_now(&mrs, &ranks, slots(1, 0));
+        assert_eq!(decision.start.map(|start| start.iid), Some(361));
+        // Asked for once already at that commit: not again, and the row says why.
+        let mut started = HashMap::new();
+        started.insert(361, ("a".to_string(), NOW));
+        let decision = decide(&mrs, &ranks, slots(1, 0), &started);
+        assert_eq!(decision.start, None);
+        assert_eq!(
+            decision.places[&361].text(),
+            "CI: asked for, GitLab made none, a click runs it"
+        );
+    }
+
+    #[test]
+    fn remembers_what_it_cancelled_over_a_restart() {
+        let mut asked = Asked::default();
+        asked.add_cancelled(24);
+        asked.add_cancelled(24);
+        let read: Asked = serde_json::from_str(&serde_json::to_string(&asked).unwrap()).unwrap();
+        assert_eq!(read.cancelled, vec![24]);
+        // An asked.json from before #383 reads without it.
+        let old: Asked = serde_json::from_str(r#"{"started":{},"ours":[3]}"#).unwrap();
+        assert!(old.cancelled.is_empty());
     }
 
     #[test]

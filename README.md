@@ -1,4 +1,56 @@
-# @monocircuit/breadboard
+# breadboard
+
+A dev workflow for running several coding agents (Claude Code) in parallel
+on one repository: every task gets its own git worktree with its own dev
+stack, a live overview in the terminal shows every worktree with its agent,
+merge request and pipeline, and the decisions an agent needs come to you as
+actions you answer with one click. It plugs into [herdr](https://herdr.dev),
+a terminal workspace for agents, and comes with a herdr plugin, nvim
+integration and a Chromium extension for tab groups. One binary, written in
+Rust with [ratatui](https://ratatui.rs).
+
+**Status:** young. breadboard grew inside one monorepo, which is still its
+main user; everything it knows about a repository comes from that
+repository's `breadboard.toml` ([`docs/config.md`](docs/config.md)). It
+works with GitLab (through `glab`) and Linux is where it is used every day;
+macOS builds, but is less tried.
+
+## Install
+
+A release binary (Linux x86_64 and aarch64, macOS Intel and Apple Silicon)
+from the [releases](https://github.com/monocircuit/breadboard/releases), or
+from source with a Rust toolchain (https://rustup.rs):
+
+```sh
+cargo install --locked --git https://github.com/monocircuit/breadboard breadboard
+```
+
+Then, in your repository, `breadboard init` writes a `breadboard.toml`
+when there is none and brings in what breadboard adds for Claude Code and
+herdr: the skill `parallel-work`, the hooks, the herdr plugin, the nvim Lua
+and the Chromium extension. Run it again after an update. `breadboard herdr`
+starts herdr with the plugin and the layout of your worktrees
+([`herdr/`](herdr/README.md)).
+
+## Where it is developed
+
+This repository is a read-only mirror. breadboard is developed in a
+monorepo, in `packages/breadboard`; every change merged there shows up
+here within minutes, with the same history. Issues and pull requests are welcome here:
+how a pull request gets in is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licence
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Unless you explicitly state
+otherwise, any contribution intentionally submitted for inclusion in
+breadboard by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.
+
+## In the monorepo
+
+The rest of this README is about breadboard as a package of the monorepo
+(`@monocircuit/breadboard`), where it is the dev workflow of the repo.
 
 The dev workflow of the repo. The name says what it does: worktrees and their
 stacks side by side, plugged in, tried, rewired and pulled out again, like
@@ -6,8 +58,8 @@ circuits on a breadboard before they are soldered. It holds the worktrees with
 their own dev stacks, the live overview, the herdr plugin and the Chromium
 extension; the commands keep their names (`wt:*`, `stack:*`, `overview`). How
 to use it: skill
-[`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). Nothing here
-ships; the package is private.
+[`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). The package is
+private to npm; its public mirror is described above.
 
 One binary, `breadboard`, in Rust with ratatui (#314; why:
 [`docs/stack-evidence.md`](docs/stack-evidence.md), how it was rebuilt:
@@ -83,9 +135,17 @@ counts as none, so every checkout takes a checked binary once.
 
 ## Headless agents
 
-A task agent can be a Claude Code session instead of a process (#358,
-rollout #359–#362): `git config breadboard.agents headless` in the main
-checkout turns it on (tabs stay the default until #361).
+A task agent is a Claude Code session, not a process (#358, rollout
+#359–#362): every agent of an orchestration runs headless, and a worktree
+of your own keeps its claude in a tab (#361).
+
+- **A click opens one in a tab** (its node, an action that opens it, the
+  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
+  the tab `<feature>` of its worktree's space, once no run of it is in
+  flight; its queue waits until that claude ends.
+- **The sidebar and the tab bar read the status table**: the space of a
+  worktree shows what its agent waits for (`$wt_state`, the space's third
+  row), and "N need you" counts its `asks`.
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
