@@ -246,6 +246,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
             tries::click(app, dir.clone(), id, state);
         }
         Go::FocusSpace(dir) => app.actor.queue(move || {
+            // A headless agent's space the layout left closed opens on the click (#386).
+            if herdr::space_of(&main, &dir).is_none() {
+                let repo = crate::cli::lifecycle::repo::Repo { main: main.clone() };
+                crate::cli::lifecycle::layout::open_space(&repo, &dir);
+            }
             herdr::focus_space(&main, &dir);
             None
         }),

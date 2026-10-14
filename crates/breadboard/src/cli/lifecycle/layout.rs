@@ -24,6 +24,7 @@ use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
 use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
 use breadboard_core::record::SPACE;
+use breadboard_core::runs;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
 use serde_json::Value;
 use spaces::{busy_reason, is_busy, main_space, worktree_space};
@@ -237,6 +238,15 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     for tree in &trees {
         let feature = repo.feature_of(&tree.dir);
         let before = known.get(&feature);
+        // A headless agent's space closed by hand stays closed (#386): its
+        // agent needs no tab; only a running stack or an open try does, and
+        // the overview opens it again on a click (`open_space`).
+        let is_headless = runs::is_headless(&repo.main, &tree.dir);
+        if !is_space_wanted(before.is_some(), is_headless, || {
+            has_open_try(&tree.dir) || is_stack_up(repo, &tree.dir)
+        }) {
+            continue;
+        }
         let workspace = worktree_space(repo, &tree.dir, true);
         match (before, &workspace) {
             (None, Some(_)) => report.push(format!("space {feature} opened")),
@@ -265,6 +275,44 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     mark_origins(repo);
     report.extend(sort_spaces(repo));
     Some((main, report))
+}
+
+/// Whether the layout keeps a worktree's space: one that is there, any of a
+/// worktree whose agent has a tab, and a headless one's only while something
+/// of it needs a tab (`is_needed`: a running stack, an open try) (#386).
+pub fn is_space_wanted(has_space: bool, is_headless: bool, is_needed: impl FnOnce() -> bool) -> bool {
+    has_space || !is_headless || is_needed()
+}
+
+/// Whether a try of the worktree `dir` waits for the user's answer.
+fn has_open_try(dir: &Path) -> bool {
+    breadboard_core::actions::actions_of(&breadboard_core::actions::actions_file(dir))
+        .iter()
+        .any(|action| action.is_try() && action.answer.is_none())
+}
+
+/// Whether the own stack of `dir` has a container running.
+fn is_stack_up(repo: &Repo, dir: &Path) -> bool {
+    if dir == repo.main || !env_file_of(dir).exists() || offset_of(dir) == 0 {
+        return false;
+    }
+    let Some(all) = compose_args(dir, &["ps", "--status", "running", "-q"]) else {
+        return false;
+    };
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    !super::proc::output("docker", &all, &stack_dir(dir), None)
+        .out()
+        .is_empty()
+}
+
+/// A worktree's space for a click (the overview, #386): there already, or
+/// made now when the layout left it closed. Its id.
+pub fn open_space(repo: &Repo, dir: &Path) -> Option<String> {
+    exclusive(|| {
+        let workspace = worktree_space(repo, dir, true)?;
+        sync_stack_tabs(repo, dir, Some(&workspace));
+        Some(workspace)
+    })
 }
 
 fn is_port_free(port: i64) -> bool {
@@ -515,6 +563,17 @@ pub fn prune_spaces(repo: &Repo) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_space_of_a_headless_agent_stays_closed_until_needed() {
+        let never = || -> bool { panic!("asked what a space it keeps needs") };
+        // A space that is there is kept, and so is any of an agent with a tab.
+        assert!(is_space_wanted(true, true, never));
+        assert!(is_space_wanted(false, false, never));
+        // A headless agent's missing space comes back only for a stack or a try.
+        assert!(!is_space_wanted(false, true, || false));
+        assert!(is_space_wanted(false, true, || true));
+    }
 
     #[test]
     fn a_panic_in_a_layout_lets_the_lock_go() {
