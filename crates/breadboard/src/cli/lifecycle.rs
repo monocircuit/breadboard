@@ -21,6 +21,7 @@ pub mod proc;
 mod prune;
 pub mod remove;
 pub mod repo;
+pub mod retire;
 
 use std::process::ExitCode;
 
@@ -36,6 +37,7 @@ pub fn run(command: &str, words: &[String]) -> Option<ExitCode> {
         "wt:remove" | "remove" => remove::command,
         "wt:prune" | "prune" => prune::command,
         "wt:herdr" => layout::command,
+        "wt:orchestrate" | "orchestrate" if retire::is_retire(words) => retire::command,
         "wt:orchestrate" | "orchestrate" if handover::is_handover(words) => handover::command,
         _ => return None,
     };
