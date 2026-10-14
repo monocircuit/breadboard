@@ -85,6 +85,10 @@ fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
     if queue.events.is_empty() {
         return Vec::new();
     }
+    // Past the daily limit the lines wait (#372); the overview says why.
+    if runs::held_now(main, now_ms()).is_some() {
+        return Vec::new();
+    }
     let table: Table = read_or_default(&status_file(main));
     let flying = locked(in_flight).clone();
     let ours: HashSet<i64> = flying.values().map(|(pid, _)| *pid).collect();
@@ -264,8 +268,9 @@ fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
         .collect()
 }
 
-/// `breadboard runs [tell <dir> <line…>]`: the status table of the repo's
-/// headless agents, or a line queued for the agent of the worktree `dir`.
+/// `breadboard runs [tell <dir> <line…> | continue]`: the status table of
+/// the repo's headless agents with what they spent today, a line queued for
+/// the agent of the worktree `dir`, or the daily limit lifted until midnight.
 pub fn cli(args: &[String]) -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return ExitCode::FAILURE;
@@ -280,13 +285,21 @@ pub fn cli(args: &[String]) -> ExitCode {
             let queue: Queue = read_or_default(&runs::queue_file(&main));
             let mut states: Vec<(String, Run)> = runs::states_of(&table, &queue).into_iter().collect();
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+            let now = now_ms();
+            let today = breadboard_core::spend::today_of(&main, now);
+            println!("today {}", today.total.text());
+            if let Some(why) = runs::held_now(&main, now) {
+                println!("{why}: no run starts (breadboard runs continue lifts it until midnight)");
+            }
             for (session, run) in states {
                 let queued = queue.events.iter().filter(|event| event.session == session).count();
+                let spent = today.by_session.get(&session).copied().unwrap_or_default();
                 println!(
-                    "{:<40} {:<8} {} queued  {session}",
+                    "{:<40} {:<8} {} queued  {:<26} {session}",
                     run.name,
                     run.state.status(),
-                    queued
+                    queued,
+                    spent.text()
                 );
             }
             ExitCode::SUCCESS
@@ -302,8 +315,18 @@ pub fn cli(args: &[String]) -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        Some("continue") => {
+            let day = breadboard_core::time::day(now_ms());
+            if let Err(error) = runs::lift_limit(&main, &day) {
+                eprintln!("breadboard runs: {error}");
+                return ExitCode::FAILURE;
+            }
+            crate::daemon::client::wake_runs(&main);
+            println!("the daily limit is lifted until midnight");
+            ExitCode::SUCCESS
+        }
         _ => {
-            eprintln!("usage: breadboard runs [tell <dir> <line…>]");
+            eprintln!("usage: breadboard runs [tell <dir> <line…> | continue]");
             ExitCode::from(2)
         }
     }

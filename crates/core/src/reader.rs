@@ -642,6 +642,7 @@ impl LocalReader {
                 .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
             fresh: crate::config::of_main(&self.main).config.orchestrator.clone(),
+            spent: crate::spend::spent_of(&self.main, name, record.as_ref(), now),
             record,
         }
     }
