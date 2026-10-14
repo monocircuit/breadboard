@@ -15,7 +15,8 @@
 #
 # "Older than HEAD": target/release/breadboard.source holds what HEAD had in
 # its sources (`sources` below) when it was made here.
-# Only sh, git and cat until a build (no dirname: herdr's PATH may be short).
+# Only sh, git and cat until a build, date and find while it waits for one
+# (no dirname: herdr's PATH may be short).
 #
 # Made, not always built: the repo's store, <git common dir>/breadboard, is
 # shared by every worktree of the clone. bin/<key>/breadboard keeps each
@@ -107,26 +108,144 @@ install() {
 }
 
 # The store's build lock, waited for: one cargo build of the repo at a time,
-# so the binary a build leaves in target/ is the one it built.
+# so the binary a build leaves in target/ is the one it built. The lock says
+# who holds it (pid, checkout, since, boot, what it does: #389), so a wait
+# shows who builds and for how long, and one nobody holds is cleared: no pid
+# (a kill between mkdir and its pid), a pid that is no breadboard.sh or
+# cargo (reused after a reboot), or a lock of another boot. A build without
+# progress (nothing new in the store's target/) for BREADBOARD_LOCK_STALL
+# seconds (15 min) is offered to be cleared on a terminal, else said how.
 lock_store() {
   lock="$shared/build.lock"
+  stall=${BREADBOARD_LOCK_STALL:-900}
+  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
+  mark="$shared/build.watch.$$"
+  progressed=$(now_s)
   is_said=
+  empty=0
+  ticks=0
   while ! mkdir "$lock" 2>/dev/null; do
-    pid=$(cat "$lock/pid" 2>/dev/null)
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-      rm -rf "$lock"
+    if [ -n "$boot" ] && [ -f "$lock/boot" ] && [ "$(cat "$lock/boot" 2>/dev/null)" != "$boot" ]; then
+      clear_lock "it is of another boot"
       continue
     fi
-    [ -n "$is_said" ] || echo "▸ another checkout builds breadboard, this one waits for it" >&2
+    pid=$(cat "$lock/pid" 2>/dev/null)
+    if [ -z "$pid" ]; then
+      # mkdir and its pid are two steps: empty for 3 s, it is nobody's.
+      empty=$((empty + 1))
+      if [ "$empty" -ge 3 ]; then
+        clear_lock "it names no builder"
+        continue
+      fi
+    elif ! is_builder "$pid"; then
+      clear_lock "its builder ($pid) is gone"
+      continue
+    else
+      empty=0
+    fi
+    [ -f "$mark" ] || : >"$mark"
+    if [ -n "$(find "$shared/target" -maxdepth 3 -newer "$mark" -print 2>/dev/null | head -n 1)" ]; then
+      : >"$mark"
+      progressed=$(now_s)
+    fi
+    now=$(now_s)
+    still=
+    [ -n "$now" ] && [ -n "$progressed" ] && still=$((now - progressed))
+    if [ -t 2 ]; then
+      [ $((ticks % 2)) -eq 0 ] && printf '\r\033[K▸ another checkout builds breadboard, this one waits for it: %s' "$(holder "$still")" >&2
+    elif [ $((ticks % 60)) -eq 0 ]; then
+      echo "▸ another checkout builds breadboard, this one waits for it: $(holder "$still")" >&2
+    fi
     is_said=1
+    if [ -n "$still" ] && [ "$still" -ge "$stall" ]; then
+      if offer_clear "$(minutes "$still")"; then
+        is_said=
+        clear_lock "as asked"
+        continue
+      fi
+      progressed=$(now_s)
+    fi
+    ticks=$((ticks + 1))
     sleep 1
   done
+  rm -f "$mark"
+  [ -n "$is_said" ] && [ -t 2 ] && echo >&2
   echo "$$" >"$lock/pid"
-  trap 'rm -rf "$lock"; exit 130' INT TERM HUP
+  printf '%s\n' "$package" >"$lock/checkout"
+  now_s >"$lock/since"
+  [ -n "$boot" ] && printf '%s\n' "$boot" >"$lock/boot"
+  trap 'rm -rf "$lock" "$mark"; exit 130' INT TERM HUP
+}
+
+# Seconds since the epoch, or nothing without date (herdr's PATH may be short).
+now_s() {
+  date +%s 2>/dev/null
+}
+
+# Whether the pid $1 runs and is a build: breadboard.sh or cargo where /proc
+# tells, any process elsewhere.
+is_builder() {
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -r "/proc/$1/cmdline" ] || return 0
+  grep -aqE 'breadboard\.sh|cargo' "/proc/$1/cmdline" 2>/dev/null
+}
+
+# The lock removed, and why ($1).
+clear_lock() {
+  rm -rf "$lock"
+  [ -n "$is_said" ] && [ -t 2 ] && echo >&2
+  echo "▸ the store's build lock was cleared: $1" >&2
+  is_said=
+  empty=0
+  ticks=0
+}
+
+# Who holds the lock: `checkout <name>, 3:12 min, compiling breadboard from
+# abc1234`, and how long nothing new came to target/ ($1, seconds) past a minute.
+holder() {
+  who=$(cat "$lock/checkout" 2>/dev/null)
+  who=${who%/packages/breadboard}
+  said="checkout ${who##*/}"
+  [ -n "$who" ] || said="pid $(cat "$lock/pid" 2>/dev/null)"
+  since=$(cat "$lock/since" 2>/dev/null)
+  now=$(now_s)
+  if [ -n "$since" ] && [ -n "$now" ]; then
+    took=$((now - since))
+    said="$said, $((took / 60)):$(printf '%02d' $((took % 60))) min"
+  fi
+  what=$(cat "$lock/what" 2>/dev/null)
+  said="$said, ${what:-starting}"
+  [ -n "$1" ] && [ "$1" -ge 60 ] && said="$said, nothing compiled for $(minutes "$1")"
+  printf '%s' "$said"
+}
+
+# $1 seconds in words: `4 min`, under one `40 s`.
+minutes() {
+  if [ "$1" -ge 60 ]; then
+    printf '%s min' $(($1 / 60))
+  else
+    printf '%s s' "$1"
+  fi
+}
+
+# A build without progress for $1 (minutes()): on a terminal the question whether
+# to clear its lock (0: yes), else the line that says how; the wait goes on.
+offer_clear() {
+  [ -t 2 ] && echo >&2
+  if [ -t 2 ] && [ -r /dev/tty ]; then
+    printf '▸ its build made no progress for %s (nothing new in %s): clear its lock and build here? [y/N] ' "$1" "$shared/target" >&2
+    read -r answer </dev/tty || answer=
+    case $answer in
+      y* | Y* | j* | J*) return 0 ;;
+    esac
+    return 1
+  fi
+  echo "! its build made no progress for $1 (nothing new in $shared/target): if nothing builds, rm -rf $lock clears it" >&2
+  return 1
 }
 
 unlock_store() {
-  rm -rf "$lock"
+  rm -rf "$lock" "$mark"
   trap - INT TERM HUP
 }
 
@@ -208,7 +327,9 @@ built_in() {
   from_store "$now" && return 0
   key=
   is_clean && [ -n "$now" ] && key=$(key_of "$now")
-  echo "▸ breadboard is built from $(git -C "$package" rev-parse --short HEAD 2>/dev/null) (cargo build --release in $1)" >&2
+  short=$(git -C "$package" rev-parse --short HEAD 2>/dev/null)
+  [ -n "$shared" ] && [ -d "$lock" ] && echo "compiling breadboard from $short" >"$lock/what"
+  echo "▸ breadboard is built from $short (cargo build --release in $1)" >&2
   if ! BREADBOARD_SOURCE_KEY="$key" CARGO_TARGET_DIR="$1" sh "$package/herdr/cargo.sh" build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
     mkdir -p "${binary%/*}"
     printf '%s\n' "$now" >"$failed"
