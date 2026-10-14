@@ -21,6 +21,7 @@ pub mod record;
 pub mod runs;
 pub mod said;
 pub mod setups;
+pub mod spend;
 pub mod stack;
 pub mod time;
 pub mod wait;
