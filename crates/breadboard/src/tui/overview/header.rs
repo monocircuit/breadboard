@@ -82,6 +82,34 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             });
         });
     }
+    // Its auto mode (#384): a click switches it.
+    if !ctx.is_once || model.is_auto {
+        page.section(Section::new("AUTO").sticky().plain(), |scene| {
+            scene.block(Act::Auto, |scene| {
+                scene.pad_to(1);
+                scene.indent(2);
+                let (label, tone, says) = if model.is_auto {
+                    (
+                        "● auto mode",
+                        Tone::Green,
+                        format!(
+                            "{} checks and answers the tries · a click switches it off",
+                            model.checker
+                        ),
+                    )
+                } else {
+                    (
+                        "○ auto mode off",
+                        Tone::Gray,
+                        format!("a click switches it on: {} checks and answers the tries", model.checker),
+                    )
+                };
+                if !super::actor::view::button(scene, ctx, label, tone, Act::Auto) {
+                    look::flow(scene, &[look::dim(says)]);
+                }
+            });
+        });
+    }
     if let Some(error) = &ctx.gitlab.error {
         page.section(Section::new("GITLAB").sticky().plain(), |scene| {
             look::say(scene, error, theme::tone(Tone::Red));

@@ -104,12 +104,15 @@ pub struct Check {
     pub evidence: Option<PathBuf>,
     /// When it started, ISO.
     pub at: String,
-    /// Its tokens, input and output (#372 counts them toward the MR's cost).
+    /// Its tokens as #372 counts them: input, cache writes, output (cache reads aside).
     #[serde(default)]
     pub tokens: u64,
     /// The pid of a running checker: one whose process is gone failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Its conversation: the transcript #372 prices toward the MR's cost.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,10 +197,12 @@ pub fn prompt_of(action: &Action, evidence: &Path, app: Option<&str>) -> String 
             evidence = evidence.display()
         ),
         (None, Some(url)) => format!(
-            "The try is a page of this worktree's app: `{url}`{}. Check it with the `browser-check` subagent (Agent tool), \
-             tell it the worktree, the page and what to check, and have it save its screenshots into `{}`.",
+            "The try is a page of this worktree's app: `{url}`{}. When the app doesn't answer, start the worktree's stack first (`{run} stack:up`, then its app's dev server in the background). \
+             Check it with the `browser-check` subagent (Agent tool), tell it the worktree, the page and what to check, \
+             and have it save its screenshots into `{}`.",
             app.map(|app| format!(" at {app}")).unwrap_or_default(),
-            evidence.display()
+            evidence.display(),
+            run = crate::config::run_word()
         ),
         (None, None) => "The try names nothing to run or open.".into(),
     };
@@ -259,15 +264,10 @@ pub fn answer_of(lines: &[String]) -> (String, u64) {
                     text = result.to_string();
                 }
                 if let Some(usage) = event.get("usage").and_then(serde_json::Value::as_object) {
-                    tokens = [
-                        "input_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_read_input_tokens",
-                        "output_tokens",
-                    ]
-                    .iter()
-                    .filter_map(|key| usage.get(*key).and_then(serde_json::Value::as_u64))
-                    .sum();
+                    tokens = ["input_tokens", "cache_creation_input_tokens", "output_tokens"]
+                        .iter()
+                        .filter_map(|key| usage.get(*key).and_then(serde_json::Value::as_u64))
+                        .sum();
                 }
             }
             Some("assistant") => {
@@ -363,6 +363,7 @@ mod tests {
             at: String::new(),
             tokens: 0,
             pid: None,
+            session: None,
         };
         let ids = |due: Vec<&Action>| due.iter().map(|action| action.id).collect::<Vec<_>>();
         assert_eq!(ids(due(&actions, &[], "a")), [1, 2]);
@@ -387,6 +388,7 @@ mod tests {
             at: "2026-10-13T10:00:00.000Z".into(),
             tokens: 0,
             pid: Some(42),
+            session: None,
         };
         write_check(&dir, &check).unwrap();
         assert_eq!(row_text(&checks_of(&dir)[0]), "haiku checks it …");
@@ -411,7 +413,7 @@ mod tests {
             r#"{"type":"result","result":"Ran it.\nlooks good: the row shows","usage":{"input_tokens":100,"cache_read_input_tokens":900,"output_tokens":40}}"#.to_string(),
         ];
         let (text, tokens) = answer_of(&lines);
-        assert_eq!(tokens, 1040);
+        assert_eq!(tokens, 140, "cache reads aside, as #372 counts");
         assert_eq!(verdict_or_human(&text), Verdict::Good("the row shows".into()));
         assert_eq!(
             verdict_or_human("Hm."),

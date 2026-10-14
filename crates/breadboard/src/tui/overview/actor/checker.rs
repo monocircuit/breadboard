@@ -110,6 +110,7 @@ fn start(app: &mut Overview, due: Due) {
         at: to_iso(now_ms()),
         tokens: 0,
         pid: None,
+        session: Some(session.clone()),
     };
     let what = format!(
         "try #{} of {}",

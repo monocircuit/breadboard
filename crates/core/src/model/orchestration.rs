@@ -196,6 +196,9 @@ pub struct OrchestrationModel {
     pub name: String,
     /// `⇶ <title>`.
     pub label: String,
+    /// Its auto mode (#384): a checker answers its tries; the model that does.
+    pub is_auto: bool,
+    pub checker: String,
     pub chat: Option<Chat>,
     /// No issues recorded: the view says how to start one, nothing else.
     pub is_empty: bool,
@@ -954,6 +957,8 @@ pub fn orchestration_of(
         name: local.name.clone(),
         label,
         chat: local.chat.clone(),
+        is_auto: record.is_some_and(|record| record.is_auto),
+        checker: crate::config::here().config.tries.checker.clone(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
         next: Err(String::new()),

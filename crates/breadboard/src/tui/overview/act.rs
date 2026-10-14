@@ -43,6 +43,8 @@ pub enum Act {
     },
     /// The orchestrator's chat: focused, or opened again (#287).
     Chat,
+    /// The orchestration's auto mode switched (#384).
+    Auto,
     /// Two clicks dismiss a free agent (#289).
     Dismiss(String),
     /// A free agent's id: `claude --resume <id>` into the clipboard (#345).
@@ -171,6 +173,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Answer { file, id, answer } => return super::actions::answer(app, &file, id, &answer),
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
+        Act::Auto => toggle_auto(app),
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
@@ -472,6 +475,26 @@ fn dismiss(app: &mut Overview, id: &str) {
 /// typed into its agent's pane; nothing while the button isn't there.
 /// An MR waiting in the CI queue to its front (#357): the daemon's queue
 /// starts its pipeline as the next one, once the runner has a free slot.
+/// A click on the auto mode row (#384): its record says the other way,
+/// the next read shows it.
+fn toggle_auto(app: &mut Overview) {
+    let (Some(name), Some(model)) = (app.orchestration_name(), app.orchestration()) else {
+        return;
+    };
+    let is_on = !model.is_auto;
+    let checker = model.checker.clone();
+    let mut fields = serde_json::Map::new();
+    fields.insert("auto".into(), serde_json::json!(is_on));
+    match breadboard_core::record::update_record(&app.actor.main, &name, fields) {
+        Ok(()) if is_on => app.actor.log(
+            Paint::Green,
+            format!("auto mode on: {checker} checks and answers the tries"),
+        ),
+        Ok(()) => app.actor.log(Paint::Green, "auto mode off: the tries wait for you"),
+        Err(error) => app.actor.log(Paint::Red, format!("auto mode not switched: {error}")),
+    }
+}
+
 fn run_now(app: &mut Overview, iid: i64) {
     use breadboard_core::ci::{RunNow, read_or_default, run_now_file, write_whole};
     let file = run_now_file(&app.actor.main);
