@@ -40,7 +40,9 @@ mod tests {
     /// `BREADBOARD_SOURCE_KEY` as the real build does; each call logged with
     /// its jobs and that dir, a `clean` in `<log>.clean` only. One that fails
     /// with `CARGO_FAIL` set, edits a source while it builds with
-    /// `CARGO_EDITS` (a file), takes a second with `CARGO_SLOW`. Only the
+    /// `CARGO_EDITS` (a file), takes a second with `CARGO_SLOW`, copies what
+    /// the store's lock says of it into `<log>.lock` with `CARGO_SHOWS_LOCK`
+    /// (the lock). Only the
     /// tools the launcher has (no dirname: a short PATH).
     const CARGO: &str = r#"#!/bin/sh
 if [ "$1" = clean ]; then
@@ -51,6 +53,7 @@ echo "$* jobs=${CARGO_BUILD_JOBS:-} in ${CARGO_TARGET_DIR:-}" >>"$CARGO_LOG"
 [ -n "$CARGO_FAIL" ] && exit 101
 for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
 [ -n "$CARGO_SLOW" ] && sleep 1
+[ -n "$CARGO_SHOWS_LOCK" ] && cat "$CARGO_SHOWS_LOCK/checkout" "$CARGO_SHOWS_LOCK/what" >"$CARGO_LOG.lock" 2>/dev/null
 says=${CARGO_SAYS:-ran}
 [ -n "$CARGO_SAYS_SOURCE" ] && says=$(cat "$package/crates/core/lib.rs")
 [ -n "$CARGO_EDITS" ] && echo edited >>"$CARGO_EDITS"
@@ -91,7 +94,7 @@ chmod +x "$target/release/breadboard"
             fs::create_dir_all(&tools).unwrap();
             for tool in [
                 "sh", "git", "cat", "mkdir", "rm", "setsid", "chmod", "cp", "mv", "ls", "tail", "sleep", "nice",
-                "getconf", "flock", "grep", "sed", "find", "head",
+                "getconf", "flock", "grep", "sed", "find", "head", "date",
             ] {
                 if let Some(found) = ["/usr/bin", "/bin"]
                     .iter()
@@ -575,6 +578,144 @@ chmod +x "$target/release/breadboard"
         let back = checkout.run(&["x"], true, &[("CARGO_SAYS_SOURCE", "1")]);
         assert_eq!(out(&back), "1\n1 x");
         assert_eq!(cleans().len(), first + 4);
+    }
+
+    /// The store's build lock of `checkout`, made by hand: its files as given.
+    fn lock(checkout: &Checkout, files: &[(&str, String)]) -> PathBuf {
+        let lock = checkout.root.join("repo/.git/breadboard/build.lock");
+        fs::create_dir_all(&lock).unwrap();
+        for (file, text) in files {
+            fs::write(lock.join(file), format!("{text}\n")).unwrap();
+        }
+        lock
+    }
+
+    /// A process whose command line names breadboard.sh, as a builder's does
+    /// (not one command: sh would exec it, and the line be sleep's).
+    fn builder() -> std::process::Child {
+        Command::new("sh")
+            .args(["-c", "sleep 30; exit 0", "breadboard.sh"])
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn epoch() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    // #389: a lock without a pid (killed between its mkdir and its pid) held
+    // every later build and reload forever. Empty for 3 s, it is cleared.
+    #[test]
+    fn an_empty_lock_doesnt_block_a_build() {
+        let checkout = Checkout::new("emptylock");
+        let lock = lock(&checkout, &[]);
+        let built = checkout.run(&["--built"], true, &[("CARGO_SHOWS_LOCK", lock.to_str().unwrap())]);
+        assert!(built.status.success(), "{}", err(&built));
+        assert!(
+            err(&built).contains("▸ the store's build lock was cleared: it names no builder"),
+            "{}",
+            err(&built)
+        );
+        assert_eq!(checkout.builds(), 1);
+        assert!(!lock.exists());
+        // The build that took it said who it is while it held it.
+        let held = fs::read_to_string(checkout.root.join("cargo.log.lock")).unwrap();
+        assert!(
+            held.starts_with(&format!("{}\n", checkout.package.canonicalize().unwrap().display())),
+            "{held}"
+        );
+        assert!(held.contains("compiling breadboard from "), "{held}");
+    }
+
+    // #389: a pid that is no build (reused after a reboot) or a lock of
+    // another boot holds nothing.
+    #[test]
+    fn a_lock_of_no_builder_or_of_another_boot_is_cleared() {
+        let checkout = Checkout::new("stalelock");
+        let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+        lock(&checkout, &[("pid", other.id().to_string())]);
+        let built = checkout.run(&["--built"], true, &[]);
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(built.status.success(), "{}", err(&built));
+        assert!(err(&built).contains("cleared: its builder ("), "{}", err(&built));
+        assert_eq!(checkout.builds(), 1);
+        if !Path::new("/proc/sys/kernel/random/boot_id").is_file() {
+            return;
+        }
+        checkout.change("crates/core/lib.rs");
+        let mut alive = builder();
+        lock(
+            &checkout,
+            &[("pid", alive.id().to_string()), ("boot", "another-boot".to_string())],
+        );
+        let built = checkout.run(&["--built"], true, &[]);
+        let _ = alive.kill();
+        let _ = alive.wait();
+        assert!(built.status.success(), "{}", err(&built));
+        assert!(
+            err(&built).contains("cleared: it is of another boot"),
+            "{}",
+            err(&built)
+        );
+        assert_eq!(checkout.builds(), 2);
+    }
+
+    // #389: a wait says who builds, for how long and what; a build without
+    // progress says how its lock is cleared (on a terminal it asks).
+    #[test]
+    fn the_wait_says_who_builds_since_when_and_a_stall() {
+        let checkout = Checkout::new("waitlock");
+        let mut alive = builder();
+        let since = epoch() - 192;
+        lock(
+            &checkout,
+            &[
+                ("pid", alive.id().to_string()),
+                ("checkout", "/x/platform-9-vita/packages/breadboard".to_string()),
+                ("since", since.to_string()),
+                ("what", "compiling breadboard from abc1234".to_string()),
+            ],
+        );
+        let pid = alive.id();
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3500));
+            let _ = alive.kill();
+            let _ = alive.wait();
+        });
+        let built = checkout.run(&["--built"], true, &[("BREADBOARD_LOCK_STALL", "2")]);
+        ender.join().unwrap();
+        assert!(built.status.success(), "{}", err(&built));
+        let said = err(&built);
+        assert!(
+            said.contains("▸ another checkout builds breadboard, this one waits for it: checkout platform-9-vita, 3:1"),
+            "{said}"
+        );
+        assert!(said.contains(" min, compiling breadboard from abc1234"), "{said}");
+        assert!(
+            said.contains("! its build made no progress for 2 s (nothing new in ")
+                && said.contains("build.lock clears it"),
+            "{said}"
+        );
+        assert!(
+            said.contains(&format!("cleared: its builder ({pid}) is gone")),
+            "{said}"
+        );
+        assert_eq!(checkout.builds(), 1);
+        let store = checkout.root.join("repo/.git/breadboard");
+        assert!(!store.join("build.lock").exists());
+        assert_eq!(
+            fs::read_dir(&store)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("build.watch"))
+                .count(),
+            0
+        );
     }
 
     // #336: the target/ a worktree compiled in before is removed once; the

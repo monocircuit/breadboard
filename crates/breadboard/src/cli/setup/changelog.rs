@@ -144,6 +144,35 @@ pub struct Merged {
     pub groups: Vec<String>,
     pub changesets: Vec<Changeset>,
     pub orchestration: Option<String>,
+    /// What its issue's agents spent on it (#372); None in the repo's changelog.
+    pub spent: Option<breadboard_core::spend::Spend>,
+    /// Its agent retired at the merge (#381): `retired_note`.
+    pub retired: Option<String>,
+}
+
+/// The line under a merge whose agent retired then (#381), from the record:
+/// who, at what share of its context, and that its handoff is kept.
+pub fn retired_note(found: &record::Record, iid: i64) -> Option<String> {
+    let worker = found
+        .workers
+        .iter()
+        .find(|worker| worker.retired.as_ref().and_then(|retired| retired.mr) == Some(iid))?;
+    let retired = worker.retired.as_ref()?;
+    let name = worker
+        .display_name
+        .clone()
+        .or_else(|| worker.name.clone())
+        .unwrap_or_else(|| "its agent".into());
+    let context = retired
+        .context
+        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
+        .unwrap_or_default();
+    let handoff = if retired.handoff.is_some() {
+        "its handoff kept for a fresh agent"
+    } else {
+        "without a handoff"
+    };
+    Some(format!("↻ {name} retired{context}, {handoff}"))
 }
 
 /// An issue closed without a merge request.
@@ -195,14 +224,21 @@ pub fn changelog_text(title: &str, merged: &[Merged], closed: &[Closed]) -> Stri
             }
             lines.extend([format!("### {group}"), String::new()]);
             for entry in in_group {
+                let spent = entry
+                    .spent
+                    .map(|spent| format!(" · {}", spent.text()))
+                    .unwrap_or_default();
                 lines.push(format!(
-                    "- {} {} · {}",
+                    "- {} {} · {}{spent}",
                     refs_of(entry),
                     group_of(&entry.title).1,
                     time_of(ms_of(&entry.merged_at))
                 ));
                 if !entry.summary.is_empty() {
                     lines.push(format!("  {}", entry.summary));
+                }
+                if let Some(retired) = &entry.retired {
+                    lines.push(format!("  {retired}"));
                 }
             }
             lines.push(String::new());
@@ -312,6 +348,7 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
     };
     let mut merged = Vec::new();
     let mut closed = Vec::new();
+    let spent = breadboard_core::spend::by_issue_of(&found);
     for (number, mr, issue) in read {
         match mr {
             Some(mr) => {
@@ -328,7 +365,12 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
                     summary: summary_of(str_of(&mr, "description").unwrap_or_default(), title),
                     title: untitled(title),
                     merged_at: str_of(&mr, "merged_at").unwrap_or_default().to_string(),
+                    retired: retired_note(&found, int_of(&mr, "iid").unwrap_or_default()),
                     url,
+                    spent: number
+                        .and_then(|number| spent.get(&number))
+                        .filter(|spent| !spent.is_empty())
+                        .copied(),
                     ..Merged::default()
                 });
             }
@@ -944,7 +986,10 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
                     .iter()
                     .find(|(known, _)| known == iid)
                     .map(|(_, title)| title.clone()),
+                // The repo's changelog says no agent's retirement.
+                retired: None,
                 url,
+                spent: None,
             }
         })
         .collect();
@@ -1044,6 +1089,39 @@ pub fn overall_command(args: &Args) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_the_retirement_under_its_merge() {
+        use breadboard_core::record::{Record, Retired, Worker};
+        let found = Record {
+            workers: vec![Worker {
+                id: "c1".into(),
+                name: Some("40-x".into()),
+                display_name: Some("Mira Albrecht".into()),
+                retired: Some(Retired {
+                    mr: Some(313),
+                    context: Some(0.47),
+                    handoff: Some("h.md".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            retired_note(&found, 313).as_deref(),
+            Some("↻ Mira Albrecht retired at 47 % of its context, its handoff kept for a fresh agent")
+        );
+        assert_eq!(retired_note(&found, 314), None);
+        let merged = [Merged {
+            iid: 313,
+            title: "feat(x): y".into(),
+            merged_at: "2026-10-13T10:00:00Z".into(),
+            retired: retired_note(&found, 313),
+            ..Merged::default()
+        }];
+        assert!(changelog_text("t", &merged, &[]).contains("\n  ↻ Mira Albrecht retired at 47 %"));
+    }
 
     #[test]
     fn a_tag_names_its_release_as_breadboard_toml_says() {
@@ -1172,11 +1250,16 @@ mod tests {
             title: "fix: it".into(),
             merged_at: "2026-09-30T10:00:00.000Z".into(),
             issue: Some((7, "u/7".into())),
+            spent: Some(breadboard_core::spend::Spend {
+                tokens: 1_800_000,
+                dollars: 4.2,
+            }),
             ..Merged::default()
         }];
         let text = changelog_text("B", &merged, &[]);
         assert!(text.starts_with("# ⇶ B: changelog\n\n## "));
         assert!(text.contains("### Fixes\n\n- [!5](u/5) [#7](u/7) it · "));
+        assert!(text.contains(" · 1.8 M tokens · ≈ $4.20\n"), "{text}");
         assert_eq!(
             changelog_text("B", &[], &[]),
             "# ⇶ B: changelog\n\nNothing merged yet.\n"

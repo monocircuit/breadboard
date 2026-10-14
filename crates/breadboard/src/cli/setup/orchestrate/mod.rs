@@ -296,7 +296,8 @@ pub fn command(args: &Args) -> ExitCode {
                 name: &name,
                 peer: peer.as_deref(),
                 extra: &extra,
-                before: None
+                before: None,
+                handoff: issue::handoff_for(&name, first).map(|(_, text)| text),
             })
         );
         // Which brief each issue gets (#247): only this run's --brief.
@@ -461,12 +462,21 @@ pub fn command(args: &Args) -> ExitCode {
                         continue;
                     }
                     let extra = extra_for(&name, number, given.as_deref());
+                    // A retired agent's note on its files (#381), in its worktree before the brief names it.
+                    let handoff = issue::handoff_for(&name, item).and_then(|(kept, text)| {
+                        let is_given = issue::give_handoff(&kept, &item.dir);
+                        if is_given {
+                            step("a retired agent's handoff on its files: .claude/handoff.md");
+                        }
+                        is_given.then_some(text)
+                    });
                     let brief = brief_of(&Brief {
                         item,
                         name: &name,
                         peer: peer.as_deref(),
                         extra: &extra,
                         before: None,
+                        handoff,
                     });
                     let agent = issue::start_agent(&item.dir, &brief);
                     if !agent.is_started && is_now {

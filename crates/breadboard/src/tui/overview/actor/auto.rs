@@ -16,7 +16,7 @@ use breadboard_core::json;
 use breadboard_core::model::auto_actions::{Removal, Tell, sent_file};
 use breadboard_core::model::clean_up::{CleanUp, clean_up_of};
 use breadboard_core::model::display_names::names_of;
-use breadboard_core::model::handovers::{CONTEXT_LIMIT, agent_name_of};
+use breadboard_core::model::handovers::agent_name_of;
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
@@ -499,6 +499,7 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
+    let limit = breadboard_core::config::of_main(&app.actor.main).config.agents.limit();
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
@@ -512,10 +513,13 @@ fn remove_merged(
             continue;
         }
         // Its conversation is its agent (#361): a headless one that never ran has no row yet, and is freed too.
-        if let (Some(claude), Some(mr)) = (&tree.claude, mr)
-            && claude.share() <= CONTEXT_LIMIT
-        {
-            free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
+        if let (Some(claude), Some(mr)) = (&tree.claude, mr) {
+            if claude.share() <= limit {
+                free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
+            } else {
+                // Full (#381): it retires with a handoff, its next issue goes to a fresh agent.
+                retire_then_remove(app, name, tree, mr.iid);
+            }
             continue;
         }
         remove_worktree(app, &tree.dir);
@@ -572,6 +576,67 @@ fn free_then_remove(app: &mut Overview, name: &str, local: &OrchestrationLocal, 
             }
         }) as Effect)
     });
+}
+
+/// Its agent retired (#381): `wt:orchestrate <name> --retire` ends it, its
+/// last run writes the handoff, the record keeps it; then its worktree goes,
+/// whatever became of the handoff.
+fn retire_then_remove(app: &mut Overview, name: &str, tree: &Tree, iid: i64) {
+    let dir = tree.dir.clone();
+    let main = app.actor.main.clone();
+    let feature = feature_of(&main, &dir);
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let log = spawn::log_file(&format!("overview-retire-{base}.log"));
+    let program = spawn::breadboard();
+    let poster = app.actor.poster();
+    app.actor.auto.freeing.insert(dir.clone());
+    let done = dir.clone();
+    let started = spawn::start(
+        Background {
+            program: &program,
+            args: vec![
+                "wt:orchestrate".into(),
+                name.to_string(),
+                "--retire".into(),
+                feature.clone(),
+                "--mr".into(),
+                iid.to_string(),
+            ],
+            cwd: &main,
+            log: &log,
+            env: vec![],
+            is_paneless: false,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                app.actor.auto.freeing.remove(&done);
+                let who = feature_of(&app.actor.main, &done);
+                match error_of(code, &last, "wt:orchestrate --retire ") {
+                    None => app.actor.log(
+                        Paint::Green,
+                        format!("{who}'s agent retired: its handoff is kept, its next issue goes to a fresh agent"),
+                    ),
+                    Some(why) => app.actor.log(
+                        Paint::Dim,
+                        format!("{who}'s agent not retired ({why}), it goes with its worktree"),
+                    ),
+                }
+                remove_worktree(app, &done);
+                app.redraw();
+            });
+        },
+    );
+    if let Err(why) = started {
+        app.actor.auto.freeing.remove(&dir);
+        app.actor.log(
+            Paint::Dim,
+            format!("{feature}'s agent not retired ({why}), it goes with its worktree"),
+        );
+        remove_worktree(app, &dir);
+    }
 }
 
 fn free_label(app: &Overview) -> String {
