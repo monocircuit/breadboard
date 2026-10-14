@@ -298,19 +298,22 @@ fn add_merge(main: &Path, name: &str, branch: &str, mr: &Value) -> bool {
         return false;
     };
     // A rewrite lists the issues of the record only.
-    let Some(issue) = record::record_of(main, name).and_then(|found| {
-        found
-            .issues
-            .into_iter()
-            .find(|issue| issue.branch.as_deref() == Some(branch))
-    }) else {
+    let Some(found) = record::record_of(main, name) else {
         return true;
     };
-    let entry = changelog::entry_of(mr, issue.number, &text);
+    let Some(issue) = found
+        .issues
+        .iter()
+        .find(|issue| issue.branch.as_deref() == Some(branch))
+    else {
+        return true;
+    };
+    let iid = mr.get("iid").and_then(Value::as_i64).unwrap_or_default();
+    let retired = crate::cli::setup::changelog::retired_note(&found, iid);
+    let entry = changelog::entry_of(mr, issue.number, &text, retired);
     let Some(added) = changelog::insert(&text, &entry) else {
         return false;
     };
-    let iid = mr.get("iid").and_then(Value::as_i64).unwrap_or_default();
     step(&format!("add !{iid} to the changelog of {name}"));
     if let Err(error) = write_atomic(&file, &added) {
         step(&format!(

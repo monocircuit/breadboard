@@ -440,7 +440,10 @@ moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
 <old>` for a day). The old worktree keeps its space until its clean-up.
 `--to` takes the old name too. Refused while a run of the agent is in
-flight or it waits for an answer, or above `--limit` (50 %) of its context.
+flight or it waits for an answer, or above `--limit` (`[agents]
+fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
+agent shares a file with goes to a fresh agent: another issue's context
+buys it nothing.
 
 **A merged agent stays free** (#289): it is a record entry, not a process.
 Before the clean-up of its worktree its last line `[overview] !N merged,
@@ -449,9 +452,19 @@ record's `workers` keeps it by its conversation's id (`free: { at, from, mr
 }`, `mrs`, the files it knows, its name and issues), its binding goes with
 the worktree's, and the worktree goes. An agent that never ran is freed
 too. Its next issue is its next run, in the new worktree, the path of every
-handover. Above `--limit` (50 %) of its context it isn't freed and goes
-with the worktree. While the record keeps a free agent, the space `⇶
-<name>` stays.
+handover. While the record keeps a free agent, the space `⇶ <name>` stays.
+
+**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
+context window) it isn't freed but retires at its merge, never mid-issue:
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
+conversation one last run that writes `.claude/handoff.md` (a page at most:
+what it learned about the files it changed), keeps it next to the record
+(`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then its
+worktree goes. A fresh agent on those files gets the handoff of the retired
+agent sharing the most of them as its own `.claude/handoff.md`, its brief's
+`## Handoff` says whose it is. The overview says it in advance: the agent's
+node `fresh start at its next issue`, UP NEXT `#380 → fresh agent (Mira
+retires, 47 %)`, and the changelog notes the retirement under its merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`

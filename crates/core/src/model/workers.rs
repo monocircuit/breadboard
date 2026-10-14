@@ -1,6 +1,6 @@
 //! Agents are workers (#217, overview/workers.mjs, worktree/fit.mjs): under UP
 //! NEXT, for each queued issue the free agent that knows its code best, else
-//! the one with the most room, else a fresh one (#265). The live overview
+//! a fresh one (#265, #381). The live overview
 //! does it by itself: this says what is due (`orders`), the writing side runs
 //! it and keeps what runs (`StartRun`).
 
@@ -30,6 +30,69 @@ pub fn shared_of(paths: &[String], files: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// For each issue (`(number, paths)`) no free agent takes, the agent of a
+/// worktree above `limit` that knows its files best (#381): it retires at its
+/// merge, so the issue goes to a fresh agent with its handoff. By issue
+/// number: its name and its share of context.
+pub fn retiring_of(
+    asked: &[(i64, Vec<String>)],
+    suggested: &HashMap<i64, Suggestion>,
+    issues: &[Entry],
+    known: &Known,
+    limit: f64,
+) -> HashMap<i64, (String, f64)> {
+    let full: Vec<(String, f64, Vec<String>)> = issues
+        .iter()
+        .filter_map(|issue| {
+            let tree = issue.tree.as_ref()?;
+            let claude = tree.claude.as_ref()?;
+            let share = claude.share();
+            if share <= limit {
+                return None;
+            }
+            let record = worker_of(known, &claude.id);
+            let mut files: Vec<String> = record.map(|worker| worker.files.clone()).unwrap_or_default();
+            files.extend(
+                tree.branch_files
+                    .iter()
+                    .filter(|file| !files.contains(file))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let name = record
+                .and_then(|worker| worker.name.clone())
+                .unwrap_or_else(|| tree.name.clone());
+            Some((name, share, files))
+        })
+        .collect();
+    asked
+        .iter()
+        .filter(|(number, _)| !suggested.contains_key(number))
+        .filter_map(|(number, paths)| {
+            let (name, share, _) = full
+                .iter()
+                .map(|agent| (agent, shared_of(paths, &agent.2).len()))
+                .filter(|(_, shared)| *shared > 0)
+                .max_by_key(|(_, shared)| *shared)?
+                .0;
+            Some((*number, (name.clone(), *share)))
+        })
+        .collect()
+}
+
+/// The retired agent whose handoff a fresh agent on `paths` reads (#381):
+/// the one sharing the most of them, the one retired last on a tie; None
+/// when no handoff shares a path. With the paths it shares.
+pub fn handoff_of<'a>(retired: &[&'a Worker], paths: &[String]) -> Option<(&'a Worker, Vec<String>)> {
+    let at = |worker: &Worker| worker.retired.as_ref().and_then(|retired| retired.at.clone());
+    retired
+        .iter()
+        .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+        .map(|worker| (*worker, shared_of(paths, &worker.files)))
+        .filter(|(_, shared)| !shared.is_empty())
+        .max_by(|(a, a_shared), (b, b_shared)| a_shared.len().cmp(&b_shared.len()).then(at(a).cmp(&at(b))))
+}
+
 /// An agent free for a next issue: one of a worktree whose MR is done, or a
 /// free one without a worktree (#289, `is_free`).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -53,8 +116,8 @@ pub struct Suggestion {
 
 /// For each issue (`(number, paths)`, in the order they wait), the free worker
 /// that shares the most of its paths, the one with the most room on a tie;
-/// each worker one issue. One nothing shares goes to the merged worker with
-/// the most room left (#265); one only ready waits for an issue it knows.
+/// each worker one issue. One no worker shares a path with goes to a fresh
+/// agent (#381): a context of other files buys it nothing.
 pub fn suggestions_of(issues: &[(i64, Vec<String>)], workers: &[FreeWorker]) -> HashMap<i64, Suggestion> {
     let mut taken: HashSet<usize> = HashSet::new();
     let mut suggested: HashMap<i64, Suggestion> = HashMap::new();
@@ -88,27 +151,6 @@ pub fn suggestions_of(issues: &[(i64, Vec<String>)], workers: &[FreeWorker]) -> 
             );
         }
     }
-    for (number, _) in issues {
-        if suggested.contains_key(number) {
-            continue;
-        }
-        let candidates = workers
-            .iter()
-            .enumerate()
-            .filter(|(_, worker)| worker.is_merged)
-            .map(|(at, _)| (at, Vec::new()))
-            .collect();
-        if let Some((at, shared)) = best_of(candidates, &taken) {
-            taken.insert(at);
-            suggested.insert(
-                *number,
-                Suggestion {
-                    worker: workers[at].clone(),
-                    shared,
-                },
-            );
-        }
-    }
     suggested
 }
 
@@ -126,6 +168,7 @@ pub fn free_workers_of(
     agents: &HashMap<String, Agent>,
     known: &Known,
     free: &[(Worker, f64)],
+    limit: f64,
 ) -> Vec<FreeWorker> {
     let is_idle = |id: &str| {
         matches!(
@@ -147,7 +190,7 @@ pub fn free_workers_of(
             } else {
                 0.0
             };
-            if share > CONTEXT_LIMIT {
+            if share > limit {
                 return None;
             }
             let record = worker_of(known, &claude.id);
@@ -172,7 +215,7 @@ pub fn free_workers_of(
         .collect();
     workers.extend(
         free.iter()
-            .filter(|(worker, share)| is_idle(&worker.id) && *share <= CONTEXT_LIMIT)
+            .filter(|(worker, share)| is_idle(&worker.id) && *share <= limit)
             .map(|(worker, share)| FreeWorker {
                 name: worker.name.clone().unwrap_or_default(),
                 share: *share,
@@ -313,6 +356,8 @@ pub struct WorkerFacts<'a> {
     /// What this overview started, by issue number.
     pub runs: Option<&'a HashMap<i64, StartRun>>,
     pub now: i64,
+    /// The share of its context above which an agent retires (#381); None: `CONTEXT_LIMIT`.
+    pub limit: Option<f64>,
 }
 
 /// How the text of a start that failed ends: the queued node paints it red.
@@ -352,16 +397,23 @@ pub fn worker_actions_of(
         .chain(facts.setups.iter().filter_map(|setup| setup.to.clone()))
         .chain(running.iter().filter_map(|run| run.to.clone()))
         .collect();
-    let free: Vec<FreeWorker> = free_workers_of(issues, remote, agents, known, facts.free)
-        .into_iter()
-        .filter(|worker| {
-            if worker.is_free {
-                !promised_to.contains(&worker.name)
-            } else {
-                worker.dir.as_ref().is_none_or(|dir| !promised.contains(dir))
-            }
-        })
-        .collect();
+    let free: Vec<FreeWorker> = free_workers_of(
+        issues,
+        remote,
+        agents,
+        known,
+        facts.free,
+        facts.limit.unwrap_or(CONTEXT_LIMIT),
+    )
+    .into_iter()
+    .filter(|worker| {
+        if worker.is_free {
+            !promised_to.contains(&worker.name)
+        } else {
+            worker.dir.as_ref().is_none_or(|dir| !promised.contains(dir))
+        }
+    })
+    .collect();
     let setting_up: HashSet<i64> = facts.setups.iter().map(|setup| setup.number).collect();
     // Queued again since its start failed (by hand): the old failure is over.
     let run_of = |number: Option<i64>| -> Option<&StartRun> {
@@ -403,6 +455,7 @@ pub fn worker_actions_of(
         .filter_map(|issue| Some((issue.number?, paths_of(issue))))
         .collect();
     let suggested = suggestions_of(&asked, &free);
+    let retiring = retiring_of(&asked, &suggested, issues, known, facts.limit.unwrap_or(CONTEXT_LIMIT));
     // Not one started already, nor one that failed: a click retries it.
     let waiting: Vec<i64> = queued
         .iter()
@@ -561,14 +614,28 @@ pub fn worker_actions_of(
             continue;
         }
         let Some(found) = suggested.get(&number) else {
+            let fresh_text = fresh.get(&number).cloned().unwrap_or_default();
+            let text = match retiring.get(&number) {
+                // Visible in advance (#381): who would have taken it, and why it starts fresh.
+                Some((name, share)) => {
+                    let rest = if fresh_text.is_empty() || fresh_text == "starts a fresh agent" {
+                        String::new()
+                    } else {
+                        format!(": {fresh_text}")
+                    };
+                    format!(
+                        "#{number} → fresh agent ({} retires, {} %){rest}",
+                        names.shown(name),
+                        (share * 100.0).round() as i64
+                    )
+                }
+                None => format!("#{number} queued (--queue), no agent free: {fresh_text}"),
+            };
             actions.push(item(
                 format!("start:#{number}"),
                 &issue.feature,
                 number,
-                format!(
-                    "#{number} queued (--queue), no agent free: {}",
-                    fresh.get(&number).cloned().unwrap_or_default()
-                ),
+                text,
                 run.is_some_and(|run| run.is_running),
                 String::new(),
                 Go::StartFresh(number),
@@ -672,6 +739,74 @@ mod tests {
     }
 
     #[test]
+    fn says_in_advance_who_retires_for_a_queued_issue() {
+        // 30-done is at 60 %, above the 40 % default: its issue's follow-up goes fresh.
+        let issues = [merged_tree(30, "30-done", "c1", 120_000), queued(31, "31-new")];
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["shared.rs"])]);
+        let facts = WorkerFacts {
+            should_hand_out: true,
+            memory: 0,
+            ..Default::default()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &facts);
+        assert!(found.suggested.is_empty());
+        let shown = crate::model::display_names::display_names_of(&[], &["c1"])["c1"].clone();
+        assert!(
+            found.actions[0].text.starts_with(&format!(
+                "#31 → fresh agent ({shown} retires, 60 %): waits for an agent to get free"
+            )),
+            "{}",
+            found.actions[0].text
+        );
+        // With room for it: just who retires.
+        let roomy = WorkerFacts {
+            memory: 8 * GIB,
+            ..facts.clone()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &roomy);
+        assert_eq!(
+            found.actions[0].text,
+            format!("#31 → fresh agent ({shown} retires, 60 %)")
+        );
+        // Below the limit set in breadboard.toml: it takes the issue itself.
+        let high = WorkerFacts {
+            limit: Some(0.7),
+            ..facts
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &high);
+        assert_eq!(found.suggested[&31].worker.name, "30-done");
+    }
+
+    #[test]
+    fn hands_a_fresh_agent_the_handoff_sharing_most_files() {
+        use crate::record::Retired;
+        let retired = |id: &str, files: &[&str], at: &str, has_handoff: bool| Worker {
+            id: id.into(),
+            files: files.iter().map(|file| file.to_string()).collect(),
+            retired: Some(Retired {
+                at: Some(at.into()),
+                handoff: has_handoff.then(|| format!("h/{id}.md")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let one = retired("one", &["src/a.rs"], "2026-10-01", true);
+        let two = retired("two", &["src/a.rs", "src/b.rs"], "2026-10-02", true);
+        let late = retired("late", &["src/a.rs"], "2026-10-03", true);
+        let none = retired("none", &["src/a.rs", "src/b.rs", "src/c.rs"], "2026-10-04", false);
+        let all = [&one, &two, &late, &none];
+        let (worker, shared) = handoff_of(&all, &paths(&["a.rs", "b.rs", "c.rs"])).unwrap();
+        // No handoff, no pick: `none` shares most but wrote nothing.
+        assert_eq!(
+            (worker.id.as_str(), shared),
+            ("two", vec!["a.rs".to_string(), "b.rs".into()])
+        );
+        // A tie: the one retired last.
+        assert_eq!(handoff_of(&all, &paths(&["a.rs"])).unwrap().0.id, "late");
+        assert!(handoff_of(&all, &paths(&["z.rs"])).is_none());
+    }
+
+    #[test]
     fn picks_the_agent_sharing_most_files_the_roomier_on_a_tie() {
         let a = worker("a", 0.3, &["src/x.mjs", "src/y.mjs"], false);
         let b = worker("b", 0.1, &["src/x.mjs"], false);
@@ -710,10 +845,8 @@ mod tests {
             &[full, knows, roomy],
         );
         assert_eq!(suggested[&2].worker.name, "c");
-        assert_eq!(suggested[&1].worker.name, "roomy");
-        assert!(suggested[&1].shared.is_empty());
-        assert_eq!(suggested[&3].worker.name, "full");
-        assert!(!suggested.contains_key(&4));
+        // Sharing no file: a fresh agent, never a merged one's unrelated context (#381).
+        assert!(![1, 3, 4].iter().any(|number| suggested.contains_key(number)));
     }
 
     #[test]
@@ -789,6 +922,8 @@ mod tests {
                 dir: format!("/nonexistent/platform-{feature}").into(),
                 name: feature.into(),
                 claude: Some(with_claude(id, used)),
+                // What it worked on: a queued issue naming it shares a file with it (#381).
+                branch_files: vec!["src/shared.rs".into()],
                 ..Default::default()
             }),
             ..Default::default()
@@ -935,9 +1070,9 @@ mod tests {
     }
 
     #[test]
-    fn hands_a_queued_issue_nothing_shares_to_the_free_agent() {
+    fn hands_a_queued_issue_sharing_a_file_to_the_free_agent() {
         let issues = [merged_tree(30, "30-done", "c1", 36_000), queued(31, "31-new")];
-        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec![])]);
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["shared.rs"])]);
         let facts = WorkerFacts {
             should_hand_out: true,
             memory: 0,
@@ -953,8 +1088,15 @@ mod tests {
             }]
         );
         let shown = crate::model::display_names::display_names_of(&[], &["c1"])["c1"].clone();
-        assert_eq!(found.actions[0].text, format!("#31 → {shown} (free, 18 %)"));
+        assert_eq!(
+            found.actions[0].text,
+            format!("#31 → {shown} (free, shares shared.rs, 18 %)")
+        );
         assert!(found.holds.is_empty());
+        // Sharing no file: nothing for the free agent, a fresh one (#381).
+        let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["other.rs"])]);
+        let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &facts);
+        assert!(found.orders.is_empty() && found.suggested.is_empty());
     }
 
     #[test]
@@ -984,7 +1126,12 @@ mod tests {
             queued(267, "267-q"),
             queued(269, "269-q"),
         ];
-        let remote = remote_of(vec![("268-tokens", merged(), vec![])]);
+        let remote = remote_of(vec![
+            ("268-tokens", merged(), vec![]),
+            ("194-q", None, vec!["shared.rs"]),
+            ("267-q", None, vec!["shared.rs"]),
+            ("269-q", None, vec!["shared.rs"]),
+        ]);
         let facts = WorkerFacts {
             should_hand_out: true,
             ..Default::default()
@@ -1034,7 +1181,12 @@ mod tests {
             after(269, "269-q"),
             queued(194, "194-q"),
         ];
-        let remote = remote_of(vec![("268-tokens", merged(), vec![])]);
+        let remote = remote_of(vec![
+            ("268-tokens", merged(), vec![]),
+            ("194-q", None, vec!["shared.rs"]),
+            ("267-q", None, vec!["shared.rs"]),
+            ("269-q", None, vec!["shared.rs"]),
+        ]);
         let facts = WorkerFacts {
             should_hand_out: true,
             memory: 4 * GIB,
@@ -1083,10 +1235,14 @@ mod tests {
             ..Default::default()
         }];
         let (entry, remote) = issue(merged(), 40_000);
-        let workers = free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &known, &[]);
+        let workers = free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &known, &[], CONTEXT_LIMIT);
         assert_eq!(
             (workers[0].name.as_str(), workers[0].share, workers[0].files.clone()),
-            ("3-first", 0.2, vec!["src/a.mjs".to_string()])
+            (
+                "3-first",
+                0.2,
+                vec!["src/a.mjs".to_string(), "src/shared.rs".to_string()]
+            )
         );
         let ready = Some(Mr {
             state: "opened".into(),
@@ -1098,15 +1254,15 @@ mod tests {
         });
         let (entry, remote) = issue(ready.clone(), 40_000);
         assert_eq!(
-            free_workers_of(&[entry], Some(&remote), &idle("c1", "done"), &[], &[]).len(),
+            free_workers_of(&[entry], Some(&remote), &idle("c1", "done"), &[], &[], CONTEXT_LIMIT).len(),
             1
         );
         let (entry, remote) = issue(merged(), 40_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "working"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "working"), &[], &[], CONTEXT_LIMIT).is_empty());
         let draft = ready.map(|mr| Mr { is_draft: true, ..mr });
         let (entry, remote) = issue(draft, 40_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[], CONTEXT_LIMIT).is_empty());
         let (entry, remote) = issue(merged(), 150_000);
-        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[]).is_empty());
+        assert!(free_workers_of(&[entry], Some(&remote), &idle("c1", "idle"), &[], &[], CONTEXT_LIMIT).is_empty());
     }
 }
