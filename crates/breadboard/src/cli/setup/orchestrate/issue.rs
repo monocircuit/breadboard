@@ -39,13 +39,62 @@ pub struct Brief<'a> {
     pub peer: Option<&'a str>,
     pub extra: &'a str,
     pub before: Option<String>,
+    /// A fresh agent's `## Handoff`: the retired agent's note it reads (#381).
+    pub handoff: Option<String>,
+}
+
+/// The handoff a fresh agent on `item` reads (#381): the retired agent of
+/// `name` sharing the most files its description names, its kept note and
+/// the brief's `## Handoff` about it. None without one.
+pub fn handoff_for(name: &str, item: &handover::Issue) -> Option<(std::path::PathBuf, String)> {
+    let main = repo::main_dir();
+    let found = record::record_of(&main, name)?;
+    let paths = breadboard_core::gitlab::paths_of(&item.description);
+    let (worker, shared) = breadboard_core::model::workers::handoff_of(&found.retired(), &paths)?;
+    let retired = worker.retired.as_ref()?;
+    let kept = main.join(retired.handoff.as_ref()?);
+    if !kept.exists() {
+        return None;
+    }
+    Some((kept, handoff_text(worker, &shared)))
+}
+
+/// What the brief says about the handoff in `.claude/handoff.md`.
+pub fn handoff_text(worker: &record::Worker, shared: &[String]) -> String {
+    let name = worker
+        .display_name
+        .clone()
+        .or_else(|| worker.name.clone())
+        .unwrap_or_else(|| "an agent".into());
+    let issues = if worker.issues.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = worker.issues.iter().map(|number| format!("#{number}")).collect();
+        format!(" ({})", list.join(", "))
+    };
+    let context = worker
+        .retired
+        .as_ref()
+        .and_then(|retired| retired.context)
+        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
+        .unwrap_or_default();
+    format!(
+        "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and retired{context}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
+        shared.join(", ")
+    )
+}
+
+/// The handoff copied into the worktree `dir` as `.claude/handoff.md`; false when it couldn't be.
+pub fn give_handoff(kept: &Path, dir: &Path) -> bool {
+    let target = dir.join(crate::cli::lifecycle::retire::HANDOFF);
+    target.parent().is_some_and(|parent| fs::create_dir_all(parent).is_ok()) && fs::copy(kept, &target).is_ok()
 }
 
 /// The text is the lifecycle group's (handover.rs `brief_of`), one for both:
 /// a fresh agent's and a handed-over one's must not drift.
 pub fn brief_of(brief: &Brief) -> String {
     let main = repo::main_dir();
-    handover::brief_of(
+    let mut text = handover::brief_of(
         brief.item,
         brief.name,
         &record::orchestrator_label(&main, brief.name),
@@ -53,7 +102,11 @@ pub fn brief_of(brief: &Brief) -> String {
         brief.extra,
         brief.before.as_deref(),
         &main,
-    )
+    );
+    if let Some(handoff) = &brief.handoff {
+        text.push_str(&format!("\n## Handoff\n\n{handoff}\n"));
+    }
+    text
 }
 
 /// `wt:new <feature> --origin <name>` in a child, its output shown, its stderr read for `✗ …`.
@@ -158,6 +211,25 @@ pub fn object(fields: Value) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use breadboard_core::record::{Retired, Worker};
+
+    #[test]
+    fn names_the_handoff_in_the_brief() {
+        let worker = Worker {
+            name: Some("340-x".into()),
+            display_name: Some("Mira Albrecht".into()),
+            issues: vec![340, 352],
+            retired: Some(Retired {
+                context: Some(0.468),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            handoff_text(&worker, &["a.rs".into(), "b.rs".into()]),
+            "`.claude/handoff.md` is the handoff of Mira Albrecht, who worked on a.rs, b.rs before (#340, #352) and retired at 47 % of its context. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win."
+        );
+    }
 
     #[test]
     fn a_fresh_start_names_an_issue_as_a_handover_does() {

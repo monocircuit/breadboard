@@ -67,8 +67,13 @@ fn shape_of(command: &str) -> Option<Shape> {
                 // What the overview's own start passes; `--cap` says it is gone (#229).
                 "--now",
                 "--cap",
+                // The overview's retirement of a full agent at its merge (#381).
+                "--retire",
+                "--mr",
             ],
-            &["--title", "--epic", "--peer", "--brief", "--to", "--limit"],
+            &[
+                "--title", "--epic", "--peer", "--brief", "--to", "--limit", "--retire", "--mr",
+            ],
             None,
             orchestrate::USAGE,
         ),

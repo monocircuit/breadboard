@@ -8,8 +8,9 @@ use crate::record::{Handover, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The share of its context above which an agent gets no next issue: it would run out in the middle of it.
-pub const CONTEXT_LIMIT: f64 = 0.5;
+/// The share of its context above which an agent gets no next issue but
+/// retires (#381), when breadboard.toml's `[agents] fresh_above` says nothing.
+pub const CONTEXT_LIMIT: f64 = crate::config::FRESH_ABOVE as f64 / 100.0;
 
 /// The record's workers, in its order; by their conversation's id with `worker_of`.
 pub type Known = [Worker];
@@ -373,7 +374,7 @@ pub(crate) mod tests {
     fn refuses_a_busy_agent_or_one_out_of_context() {
         assert_eq!(
             refusal_of(Some(Some("idle")), Some(0.6), CONTEXT_LIMIT).as_deref(),
-            Some("its context is at 60 %, above the limit of 50 %")
+            Some("its context is at 60 %, above the limit of 40 %")
         );
         assert_eq!(refusal_of(Some(Some("idle")), Some(0.4), CONTEXT_LIMIT), None);
         assert_eq!(
