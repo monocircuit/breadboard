@@ -49,6 +49,18 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
     {
         status.push(Span::styled(format!("{load} · "), quiet));
     }
+    // What the agents spent (#372), red once the daily limit holds the runs.
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(spent) = &model.spent
+    {
+        let style = if model.held.is_some() {
+            theme::tone(Tone::Red)
+        } else {
+            quiet
+        };
+        status.push(Span::styled(spent.clone(), style));
+        status.push(Span::styled(" · ", quiet));
+    }
     status.push(Span::styled(ctx.gitlab.fresh(), quiet));
     // How the main checkout followed develop (#348): in the views that look at all of it.
     if let Some((text, is_warning)) = ctx.develop.filter(|_| !matches!(view, View::Worktree(_))) {
@@ -78,6 +90,24 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                 // What the last click did, for a while: the actor's.
                 if !super::actor::view::button(scene, ctx, label, tone, Act::Chat) {
                     look::flow(scene, &[look::dim(chat.text())]);
+                }
+            });
+        });
+    }
+    // The daily limit holds the headless runs (#372): why, and the click that lifts it.
+    if let Some(held) = &model.held {
+        page.section(Section::new("LIMIT").sticky().plain(), |scene| {
+            scene.block(Act::LiftLimit, |scene| {
+                scene.pad_to(1);
+                scene.indent(2);
+                look::say(
+                    scene,
+                    &format!("⏸ {held}: no new run starts, the queue waits"),
+                    theme::tone(Tone::Red),
+                );
+                if !ctx.is_once {
+                    super::actor::view::button(scene, ctx, "▶ continue anyway", Tone::Yellow, Act::LiftLimit);
+                    look::flow(scene, &[look::dim("until midnight")]);
                 }
             });
         });

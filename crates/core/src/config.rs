@@ -25,6 +25,7 @@ pub struct Config {
     pub stack: Option<Stack>,
     pub mr: Mr,
     pub orchestration: Orchestration,
+    pub agents: Agents,
     pub tries: Tries,
     pub check: Check,
     pub main_checkout: MainCheckout,
@@ -334,6 +335,18 @@ pub struct Orchestration {
     /// merge into (#350), its number from the issues' milestone
     /// (`… Epic N: …`) or `--epic`; else it works on the default branch.
     pub epic_branches: bool,
+}
+
+/// What the agents may spend (#372), in tokens (`"20 M"`) or dollars (`"$40"`).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agents {
+    /// What the repo's agents may spend a day: past it the run engine starts
+    /// no run until midnight or a `continue anyway`; None: no limit.
+    pub daily_limit: Option<crate::spend::Limit>,
+    /// What an orchestration's agents may spend in all, shown against its
+    /// spend in its band; None: none shown.
+    pub orchestration_budget: Option<crate::spend::Limit>,
 }
 
 /// A `try --on test`: the test instance a merge deploys to, and the jobs of
