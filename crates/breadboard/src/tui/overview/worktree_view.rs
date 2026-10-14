@@ -126,7 +126,7 @@ pub fn build(page: &mut Page<Act>, model: &WorktreeModel, ctx: &Ctx, state: &Sta
     }
     if let Some(claude) = &local.claude {
         page.section("AGENT", |scene| {
-            agent(scene, claude, local.agent_status.as_deref(), ctx)
+            agent(scene, claude, &local.dir, local.agent_status.as_deref(), ctx)
         });
     }
     match &model.issue {
@@ -440,7 +440,7 @@ fn home(path: &Path) -> String {
     }
 }
 
-fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ctx) {
+fn agent(scene: &mut Scene<Act>, claude: &Claude, dir: &Path, status: Option<&str>, ctx: &Ctx) {
     if let Some(state) = agent_state(status) {
         scene.note(state);
     }
@@ -476,7 +476,9 @@ fn agent(scene: &mut Scene<Act>, claude: &Claude, status: Option<&str>, ctx: &Ct
         look::say(scene, &format!("{model} · {} · {id8}", ago(at, ctx.now)), theme::dim());
         look::ticks(scene);
     });
-    row_at(scene, AGENT_LABEL, "resume", None, |scene| {
+    // A click opens it in a tab (#361); the line says what that runs.
+    let open = Act::Go(breadboard_core::model::order::Go::FocusAgent(dir.to_path_buf()));
+    row_at(scene, AGENT_LABEL, "resume", Some(open), |scene| {
         let cwd = home(&claude.cwd);
         look::say(
             scene,
@@ -514,12 +516,14 @@ fn issue(scene: &mut Scene<Act>, boxes: &IssueBoxes) {
             scene.atom_gap(vec![look::span(count, Style::new())], 2);
         }
         scene.end_line();
-        // `○ text` two columns in, the text wrapping under itself (actions.mjs `pushIssue`).
+        // `• text` two columns in, the text wrapping under itself (actions.mjs
+        // `pushIssue`), yellow as an open box of the fold (#370).
         for open in &group.open {
+            let tone = theme::tone(Tone::Yellow);
             scene.pad_to(2);
-            scene.atom_gap(vec![look::dim("○")], 0);
+            scene.atom_gap(vec![look::span(super::boxes::BULLET, tone)], 0);
             scene.indent(4);
-            look::say(scene, open, Style::new());
+            look::say(scene, open, tone);
             scene.indent(0);
             scene.end_line();
         }

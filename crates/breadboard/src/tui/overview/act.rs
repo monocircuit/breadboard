@@ -246,6 +246,14 @@ pub fn go_to(app: &mut Overview, go: Go) {
             herdr::focus_space(&main, &dir);
             None
         }),
+        // A headless agent has no tab: the click opens it in one (#361).
+        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
+            let opened = super::actor::open_agent::open(&main, &dir);
+            Some(Box::new(move |app: &mut Overview| match opened {
+                Ok(did) => app.actor.log(Paint::Green, did),
+                Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
+            }))
+        }),
         Go::FocusAgent(dir) => {
             let tab = app.agent_tab_of(&dir);
             app.actor.queue(move || {

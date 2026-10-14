@@ -976,14 +976,12 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
     }
 }
 
-/// The agents by conversation: herdr's panes, and with headless agents (#358)
-/// the run engine's status table over them (an agent without a pane is a
-/// session that runs only when something is queued for it).
+/// The agents by conversation: the run engine's status table (#358, an
+/// agent is a session that runs only when something is queued for it), and
+/// over it herdr's panes, where a click opened one in a tab (#361).
 fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent> {
-    let mut agents = herdr::agents_in(panes);
-    if crate::runs::is_headless(main) {
-        agents.extend(crate::runs::agents_of(main));
-    }
+    let mut agents = crate::runs::agents_of(main);
+    agents.extend(herdr::agents_in(panes));
     agents
 }
 
