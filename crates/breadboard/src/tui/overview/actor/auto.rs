@@ -126,6 +126,8 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     if is_deliverer && is_local {
         let dirs: Vec<PathBuf> = local.trees.iter().map(|tree| tree.dir.clone()).collect();
         super::merge::retry_lines(&app.actor, dirs);
+        // In auto mode a checker answers the open tries (#384).
+        super::checker::after_read(app, &local);
     }
     // Every live overview computes the same order: whichever reads first writes it.
     if remote.is_some() {

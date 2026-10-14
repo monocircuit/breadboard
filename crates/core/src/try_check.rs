@@ -226,6 +226,79 @@ pub fn row_text(check: &Check) -> String {
     }
 }
 
+/// How a checker run is started: `claude -p <prompt>` with the checker's
+/// model, a conversation of its own (its transcript is the evidence too),
+/// auto mode as a headless agent's (#360), its stream to read the answer and
+/// the tokens from.
+pub fn args_of(model: &str, session: &str, prompt: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        prompt.to_string(),
+        "--session-id".into(),
+        session.into(),
+        "--model".into(),
+        model.into(),
+    ];
+    args.extend(crate::permissions::run_flags(&[]));
+    args.extend(["--output-format".into(), "stream-json".into(), "--verbose".into()]);
+    args
+}
+
+/// The answer and the tokens of a checker's stream: its `result` event's
+/// text (else its last assistant text), its usage summed (input, cache, output).
+pub fn answer_of(lines: &[String]) -> (String, u64) {
+    let mut text = String::new();
+    let mut tokens = 0;
+    for line in lines {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match event.get("type").and_then(serde_json::Value::as_str) {
+            Some("result") => {
+                if let Some(result) = event.get("result").and_then(serde_json::Value::as_str) {
+                    text = result.to_string();
+                }
+                if let Some(usage) = event.get("usage").and_then(serde_json::Value::as_object) {
+                    tokens = [
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                        "output_tokens",
+                    ]
+                    .iter()
+                    .filter_map(|key| usage.get(*key).and_then(serde_json::Value::as_u64))
+                    .sum();
+                }
+            }
+            Some("assistant") => {
+                let said: Vec<&str> = event
+                    .pointer("/message/content")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                    .collect();
+                if !said.is_empty() && text.is_empty() {
+                    text = said.join("\n");
+                }
+            }
+            _ => {}
+        }
+    }
+    (text, tokens)
+}
+
+/// The verdict of a checker's answer; one with none of the three lines
+/// leaves the try to the user.
+pub fn verdict_or_human(text: &str) -> Verdict {
+    verdict_of(text).unwrap_or_else(|| Verdict::Human("its answer named no verdict".into()))
+}
+
+/// The note a checker's `broken` reaches the agent with.
+pub fn broken_note(model: &str, reason: &str) -> String {
+    format!("{reason} (checked by {model})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +401,25 @@ mod tests {
         );
         assert!(check.evidence.unwrap().ends_with(".claude/try-checks/3-abcdef12"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reads_the_answer_and_the_tokens_of_its_stream() {
+        let lines = [
+            r#"{"type":"system","subtype":"init"}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Ran it."}]}}"#.to_string(),
+            r#"{"type":"result","result":"Ran it.\nlooks good: the row shows","usage":{"input_tokens":100,"cache_read_input_tokens":900,"output_tokens":40}}"#.to_string(),
+        ];
+        let (text, tokens) = answer_of(&lines);
+        assert_eq!(tokens, 1040);
+        assert_eq!(verdict_or_human(&text), Verdict::Good("the row shows".into()));
+        assert_eq!(
+            verdict_or_human("Hm."),
+            Verdict::Human("its answer named no verdict".into())
+        );
+        let args = args_of("haiku", "s-1", "check it");
+        assert_eq!(args[..6], ["-p", "check it", "--session-id", "s-1", "--model", "haiku"]);
+        assert!(args.contains(&"stream-json".to_string()));
     }
 
     #[test]

@@ -20,6 +20,7 @@
 pub mod auto;
 pub mod browser;
 pub mod chat;
+pub mod checker;
 pub mod glab;
 pub mod herdr;
 pub mod layout_log;

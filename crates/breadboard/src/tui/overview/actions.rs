@@ -981,6 +981,13 @@ pub fn answer(app: &mut Overview, file: &Path, id: i64, answer: &str) -> Flow {
     answer_with(app, file, id, answer, None)
 }
 
+/// A try's answer by its checker (#384): stored and delivered as a click
+/// is, a `broken` with its reason (no draft to finish) and the MR back to
+/// draft. Whether the try was still there to answer.
+pub fn answer_as_checker(app: &mut Overview, file: &Path, id: i64, answer: &str, note: Option<&str>) -> bool {
+    item_of(app, file, id).is_some() && !matches!(answer_with(app, file, id, answer, note), Flow::Same)
+}
+
 /// The words a headless agent's `broken` / `different` waits for (#359): it
 /// has no input to finish a draft in, so the overview asks for them in a
 /// line under the action, sent whole with its answer.
