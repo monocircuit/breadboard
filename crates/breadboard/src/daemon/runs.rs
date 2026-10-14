@@ -155,6 +155,24 @@ fn change_table(main: &Path, table: &Mutex<()>, change: impl FnOnce(&mut Table))
     let _ = write_whole(&file, &read);
 }
 
+/// The command of a run: `claude <args>` in `dir`, no pane's (#386), so
+/// herdr never takes the headless session for a pane's agent and resumes it
+/// in a tab after a restart.
+fn run_command(dir: &Path, args: Vec<String>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(CLAUDE);
+    command
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(false);
+    for name in breadboard_core::herdr::PANE_ENV {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// One run of `start`: `claude -p` in its worktree, its stream into its
 /// log, its row of the table `running` until it ends, then `idle`, or
 /// `asks` when a tool was denied.
@@ -171,14 +189,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     if let Some(folder) = log.parent() {
         let _ = std::fs::create_dir_all(folder);
     }
-    let spawned = tokio::process::Command::new(CLAUDE)
-        .args(args_of(&session, &name, &prompt, is_known, &allowed_of(&events)))
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(false)
-        .spawn();
+    let spawned = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events))).spawn();
     let row = |state, pid, code, denials| Run {
         dir: dir.clone(),
         name: name.clone(),
@@ -312,6 +323,19 @@ pub fn cli(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_is_no_panes_agent() {
+        let command = run_command(Path::new("/w/1-x"), vec!["-p".into(), "go".into()]);
+        let removed: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, ["HERDR_PANE_ID", "HERDR_TAB_ID"]);
+        assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/w/1-x")));
+    }
 
     #[test]
     fn picks_as_many_as_there_is_room_for_in_merge_order() {
