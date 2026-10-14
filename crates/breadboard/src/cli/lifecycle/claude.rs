@@ -57,6 +57,81 @@ pub fn transcript_of(id: &str) -> Option<PathBuf> {
         .find(|file| file.exists())
 }
 
+/// Whether the last `worktree-state` record of a transcript holds a worktree:
+/// a conversation that ran `EnterWorktree` (and never `ExitWorktree`).
+fn is_in_worktree(transcript: &str) -> bool {
+    transcript
+        .lines()
+        .rev()
+        .find(|line| line.contains("\"type\":\"worktree-state\""))
+        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+        .is_some_and(|record| record.get("worktreeSession").is_some_and(|session| !session.is_null()))
+}
+
+/// The conversation `id` out of the worktree it entered (#363): `claude
+/// --resume` restores the last `worktree-state` of its transcript, not the
+/// directory it starts in, so a moved agent stayed in its old worktree. A
+/// record without one appended, it starts where it is resumed, as a fresh
+/// claude does. Only while no claude runs it. Whether it was in one.
+pub fn leave_worktree(id: &str) -> bool {
+    transcript_of(id).is_some_and(|file| leave_worktree_in(&file, id))
+}
+
+fn leave_worktree_in(file: &Path, id: &str) -> bool {
+    let Ok(text) = fs::read_to_string(file) else {
+        return false;
+    };
+    if !is_in_worktree(&text) {
+        return false;
+    }
+    // Back up the transcript before modifying it (#363).
+    let backup = format!("{}.before-leave-{}", file.display(), std::process::id());
+    if fs::write(&backup, &text).is_err() {
+        return false;
+    }
+    let record = serde_json::json!({ "type": "worktree-state", "worktreeSession": null, "sessionId": id });
+    let gap = if text.is_empty() || text.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let success = fs::OpenOptions::new()
+        .append(true)
+        .open(file)
+        .and_then(|mut out| std::io::Write::write_all(&mut out, format!("{gap}{record}\n").as_bytes()))
+        .is_ok();
+    if success {
+        remove_stale_backups(file, BACKUP_KEPT);
+    } else {
+        let _ = fs::remove_file(&backup);
+    }
+    success
+}
+
+/// How long a transcript's `.before-leave-<pid>` copy is kept: long enough
+/// to undo a leave that went wrong, short enough not to pile up.
+const BACKUP_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The `.before-leave-` copies of `transcript` older than `kept`, removed.
+fn remove_stale_backups(transcript: &Path, kept: Duration) {
+    let (Some(dir), Some(name)) = (transcript.parent(), transcript.file_name()) else {
+        return;
+    };
+    let prefix = format!("{}.before-leave-", name.to_string_lossy());
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let is_backup = entry.file_name().to_string_lossy().starts_with(&prefix);
+        let age = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok());
+        if is_backup && age.is_some_and(|age| age >= kept) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// The context window: 1M with a `[1m]` model in claude's settings, else 200k.
 fn context_window() -> u64 {
     let model = json::read(&claude_dir().join("settings.json"))
@@ -210,19 +285,6 @@ pub fn left_refusal(left: &[Running], feature: &str, is_handed_over: bool) -> St
         "{who} still stands in {feature}, handed over nowhere: end it (/exit in its tab, or kill {}) or let it leave the folder, then again",
         pids.join(" ")
     )
-}
-
-/// The directory `claude --resume` finds a conversation from: the last one
-/// it worked in, else `dir`.
-pub fn session_cwd(id: &str, dir: &Path) -> PathBuf {
-    let text = transcript_of(id)
-        .and_then(|file| fs::read_to_string(file).ok())
-        .unwrap_or_default();
-    let last = text.rmatch_indices("\"cwd\":\"").next().and_then(|(at, found)| {
-        let rest = &text[at + found.len()..];
-        rest.find('"').map(|end| PathBuf::from(&rest[..end]))
-    });
-    last.filter(|cwd| cwd.exists()).unwrap_or_else(|| dir.to_path_buf())
 }
 
 /// A transcript written to within this time may belong to a running
@@ -430,6 +492,48 @@ mod tests {
         fs::create_dir_all(&empty).unwrap();
         assert!(!is_tree_project(&empty, &main));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_conversation_in_a_worktree_leaves_it_once() {
+        let file = std::env::temp_dir().join(format!("lifecycle-worktree-{}.jsonl", std::process::id()));
+        let entered = r#"{"type":"worktree-state","worktreeSession":{"worktreePath":"/r/p-3"},"sessionId":"s"}"#;
+        fs::write(&file, format!("{{\"type\":\"user\"}}\n{entered}")).unwrap();
+        assert!(leave_worktree_in(&file, "s"));
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            text.ends_with(&format!(
+                "{entered}\n{{\"type\":\"worktree-state\",\"worktreeSession\":null,\"sessionId\":\"s\"}}\n"
+            )),
+            "{text}"
+        );
+        assert!(!is_in_worktree(&text));
+        assert!(!leave_worktree_in(&file, "s"), "a second record for nothing");
+        fs::write(&file, "{\"type\":\"user\",\"cwd\":\"/r/p\"}\n").unwrap();
+        assert!(!leave_worktree_in(&file, "s"), "one that never entered one");
+        let backup = PathBuf::from(format!("{}.before-leave-{}", file.display(), std::process::id()));
+        assert!(backup.exists(), "the transcript as it was before");
+        remove_stale_backups(&file, Duration::ZERO);
+        assert!(!backup.exists());
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_backup_stays_and_another_transcript_s_is_not_touched() {
+        let dir = std::env::temp_dir().join(format!("lifecycle-backups-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s.jsonl");
+        let mine = dir.join("s.jsonl.before-leave-1");
+        let other = dir.join("t.jsonl.before-leave-1");
+        for each in [&file, &mine, &other] {
+            fs::write(each, "").unwrap();
+        }
+        remove_stale_backups(&file, BACKUP_KEPT);
+        assert!(mine.exists(), "a fresh one is kept");
+        remove_stale_backups(&file, Duration::ZERO);
+        assert!(!mine.exists());
+        assert!(other.exists(), "another transcript's");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

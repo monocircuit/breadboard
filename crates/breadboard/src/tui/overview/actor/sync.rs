@@ -14,7 +14,6 @@ use crate::cli::lifecycle::layout;
 use crate::cli::lifecycle::layout::spaces::space_of;
 use crate::cli::lifecycle::repo::Repo;
 use crate::tui::overview::Overview;
-use breadboard_core::conversations::{bound_session, session_file};
 use breadboard_core::git::feature_of;
 use breadboard_core::gitlab::{Mr, Pipeline};
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
@@ -30,8 +29,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The source breadboard reports its tokens under, and the tokens.
-const SOURCE: &str = "monocircuit.platform";
+/// The source breadboard reports its tokens under (the plugin's id), and the tokens.
+use breadboard_core::record::PLUGIN as SOURCE;
 const STATE_TOKEN: &str = "wt_state";
 const REPO_TOKEN: &str = "wt_repo";
 /// Tokens of an older breadboard, always cleared.
@@ -285,7 +284,6 @@ fn tick(
         .map(|space| (space.id.clone(), space.label.clone()))
         .collect();
     let names = titles(main);
-    remember_sessions(main, trees, &panes, &all_spaces, &mut logged);
     remember_chats(main, &panes, &all_spaces, &names, &mut logged);
     let repo = Repo {
         main: main.to_path_buf(),
@@ -369,63 +367,6 @@ impl Leftovers {
     }
 }
 
-/// Each worktree's conversation bound to it (`rememberSessions`): the claude
-/// panes of its space; a bound id none of them runs is replaced by the first.
-fn remember_sessions(
-    main: &Path,
-    trees: &[Tree],
-    panes: &[Pane],
-    all_spaces: &[breadboard_core::herdr::Space],
-    logged: &mut Vec<Logged>,
-) {
-    let mut written: Vec<(String, String)> = Vec::new();
-    for tree in trees.iter().filter(|tree| tree.dir != main) {
-        // Never into a worktree being removed.
-        if !tree.dir.join(".git").exists() || !tree.dir.join(".claude").is_dir() {
-            continue;
-        }
-        let label = feature_of(main, &tree.dir);
-        let Some(space) = all_spaces.iter().find(|space| space.label == label) else {
-            continue;
-        };
-        let ids: Vec<&str> = panes
-            .iter()
-            .filter(|pane| pane.workspace == space.id && pane.agent.as_deref() == Some("claude"))
-            .filter_map(|pane| pane.session.as_deref())
-            .collect();
-        let Some(first) = ids.first() else { continue };
-        if bound_session(&tree.dir).is_some_and(|bound| ids.contains(&bound.as_str())) {
-            continue;
-        }
-        if std::fs::write(session_file(&tree.dir), format!("{first}\n")).is_ok() {
-            written.push((label, first.to_string()));
-        }
-    }
-    if written.is_empty() {
-        return;
-    }
-    let features: Vec<&str> = written.iter().map(|(label, _)| label.as_str()).collect();
-    let (what, them) = if written.len() == 1 {
-        ("conversation", "it")
-    } else {
-        ("conversations", "them")
-    };
-    logged.push(Logged::new(
-        Paint::Green,
-        format!(
-            "wrote down the {what} of {} · a restart of herdr resumes {them}",
-            features.join(", ")
-        ),
-        Some(
-            written
-                .iter()
-                .map(|(label, id)| format!("{id} → {label}/.claude/herdr-session"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        ),
-    ));
-}
-
 /// Every orchestration's chat written down (`rememberChats`): the claude of
 /// its tab `orchestrator`; a lone claude in a space without it gets that name.
 fn remember_chats(
@@ -503,12 +444,29 @@ fn report_states(
     // Panes whose line waits for GitLab's first answer: left as herdr holds them.
     let mut held: HashSet<String> = HashSet::new();
     let claudes = breadboard_core::local::claudes();
+    // A headless agent has no pane (#361): its line goes onto its worktree's
+    // space, its state the status table's.
+    let headless = breadboard_core::runs::agents_of(main);
+    let mut hosts: Vec<String> = Vec::new();
     for listed in trees.iter().filter(|tree| tree.dir != main) {
         let label = herdr::space_label(main, &listed.dir);
         let Some(space) = all_spaces.iter().find(|space| space.label == label) else {
             continue;
         };
-        let own: Vec<&&Pane> = agents.iter().filter(|pane| pane.workspace == space.id).collect();
+        let mut own: Vec<(String, Option<String>)> = agents
+            .iter()
+            .filter(|pane| pane.workspace == space.id)
+            .map(|pane| (pane.id.clone(), pane.status.clone()))
+            .collect();
+        if own.is_empty()
+            && let Some(agent) =
+                breadboard_core::conversations::bound_session(&listed.dir).and_then(|id| headless.get(&id))
+        {
+            // The sidebar shows agent rows for agent panes only: the space's row says it.
+            let host = format!("{SPACE_KEY}{}", space.id);
+            own.push((host.clone(), agent.status.clone()));
+            hosts.push(host);
+        }
         if own.is_empty() {
             continue;
         }
@@ -541,10 +499,10 @@ fn report_states(
                 .and_then(|pipeline| pipeline.sha.as_deref());
             record.turn_now(sha, &open)
         });
-        for pane in own {
+        for (pane, status) in own {
             let facts = Facts {
                 mr: mr.as_ref(),
-                status: pane.status.as_deref(),
+                status: status.as_deref(),
                 merged: Some(&merged),
                 handover: handover.as_ref(),
                 checks: &checks,
@@ -553,16 +511,17 @@ fn report_states(
             };
             match line_of(&tree, &facts, lab) {
                 Some(line) => {
-                    lines.insert(pane.id.clone(), line);
+                    lines.insert(pane, line);
                 }
                 None => {
-                    held.insert(pane.id.clone());
+                    held.insert(pane);
                 }
             }
         }
     }
     let repos = repos_of(all_spaces, &agents);
     let mut ids: HashSet<String> = agents.iter().map(|pane| pane.id.clone()).collect();
+    ids.extend(hosts);
     ids.extend(memory.reported.keys().cloned());
     // A held pane gets all its tokens in one write once GitLab answers, as Node's one write.
     for pane in ids.iter().filter(|pane| !held.contains(*pane)) {
@@ -647,12 +606,16 @@ fn repos_of(all_spaces: &[breadboard_core::herdr::Space], agents: &[&Pane]) -> H
                 return None;
             }
             let repo = repos.get(worktree.get("repo_root").and_then(|v| v.as_str())?)?;
-            repo.starts_with(SPACE).then(|| (agent.id.clone(), repo.clone()))
+            repo.starts_with(&SPACE.get()).then(|| (agent.id.clone(), repo.clone()))
         })
         .collect()
 }
 
 /// The tokens of one pane: set what changed, clear what went.
+/// What a reported key starts with when it is a space, not a pane: a
+/// headless agent's line goes onto its worktree's space (#361).
+const SPACE_KEY: &str = "space:";
+
 fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
     let is_new = memory.known.insert(pane.to_string());
     let before = memory.reported.get(pane).cloned().unwrap_or_default();
@@ -673,7 +636,11 @@ fn report(pane: &str, tokens: Tokens, memory: &mut Memory) {
         }
     }
     if !args.is_empty() {
-        let mut all = vec!["pane", "report-metadata", pane, "--source", SOURCE];
+        let source = SOURCE.get();
+        let mut all = match pane.strip_prefix(SPACE_KEY) {
+            Some(space) => vec!["workspace", "report-metadata", space, "--source", &source],
+            None => vec!["pane", "report-metadata", pane, "--source", &source],
+        };
         all.extend(args.iter().map(String::as_str));
         herdr::did(&all);
     }

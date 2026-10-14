@@ -23,7 +23,7 @@ pub const BAND_QUIET: Color = Color::Rgb(170, 170, 170);
 /// A chip's ground: a step above the island's, so it never reads as a button.
 const CHIP: Color = Color::Rgb(70, 70, 70);
 
-/// The Monocircuit logo in half blocks, one string per line, five columns
+/// The logo in half blocks, one string per line, five columns
 /// each (overview/logo.mjs: drawn by hand, a rasterizer drops the triangle).
 pub const LOGO: [&str; 3] = ["▀▀▀▀▀", "▀▀▀▀▀", "▀ 🭭 ▀"];
 

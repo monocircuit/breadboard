@@ -1,4 +1,56 @@
-# @monocircuit/breadboard
+# breadboard
+
+A dev workflow for running several coding agents (Claude Code) in parallel
+on one repository: every task gets its own git worktree with its own dev
+stack, a live overview in the terminal shows every worktree with its agent,
+merge request and pipeline, and the decisions an agent needs come to you as
+actions you answer with one click. It plugs into [herdr](https://herdr.dev),
+a terminal workspace for agents, and comes with a herdr plugin, nvim
+integration and a Chromium extension for tab groups. One binary, written in
+Rust with [ratatui](https://ratatui.rs).
+
+**Status:** young. breadboard grew inside one monorepo, which is still its
+main user; everything it knows about a repository comes from that
+repository's `breadboard.toml` ([`docs/config.md`](docs/config.md)). It
+works with GitLab (through `glab`) and Linux is where it is used every day;
+macOS builds, but is less tried.
+
+## Install
+
+A release binary (Linux x86_64 and aarch64, macOS Intel and Apple Silicon)
+from the [releases](https://github.com/monocircuit/breadboard/releases), or
+from source with a Rust toolchain (https://rustup.rs):
+
+```sh
+cargo install --locked --git https://github.com/monocircuit/breadboard breadboard
+```
+
+Then, in your repository, `breadboard init` writes a `breadboard.toml`
+when there is none and brings in what breadboard adds for Claude Code and
+herdr: the skill `parallel-work`, the hooks, the herdr plugin, the nvim Lua
+and the Chromium extension. Run it again after an update. `breadboard herdr`
+starts herdr with the plugin and the layout of your worktrees
+([`herdr/`](herdr/README.md)).
+
+## Where it is developed
+
+This repository is a read-only mirror. breadboard is developed in a
+monorepo, in `packages/breadboard`; every change merged there shows up
+here within minutes, with the same history. Issues and pull requests are welcome here:
+how a pull request gets in is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Licence
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. Unless you explicitly state
+otherwise, any contribution intentionally submitted for inclusion in
+breadboard by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.
+
+## In the monorepo
+
+The rest of this README is about breadboard as a package of the monorepo
+(`@monocircuit/breadboard`), where it is the dev workflow of the repo.
 
 The dev workflow of the repo. The name says what it does: worktrees and their
 stacks side by side, plugged in, tried, rewired and pulled out again, like
@@ -6,8 +58,8 @@ circuits on a breadboard before they are soldered. It holds the worktrees with
 their own dev stacks, the live overview, the herdr plugin and the Chromium
 extension; the commands keep their names (`wt:*`, `stack:*`, `overview`). How
 to use it: skill
-[`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). Nothing here
-ships; the package is private.
+[`parallel-work`](../../.claude/skills/parallel-work/SKILL.md). The package is
+private to npm; its public mirror is described above.
 
 One binary, `breadboard`, in Rust with ratatui (#314; why:
 [`docs/stack-evidence.md`](docs/stack-evidence.md), how it was rebuilt:
@@ -22,9 +74,8 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | `crates/breadboard/src/daemon/` | `breadboard serve`: one process per user reads herdr, GitLab and git's status once for every overview; started by the first, gone after the last |
 | `crates/breadboard/src/cli/` | `wt:*`, `stack:*`, `changelog*` in four groups: `read` (`wt:list`, `wt:plan`, `wt:issues`, `overview --once`), `write` (`wt:action`, `wt:tick`, `wt:note`, `wt:mr`, `wt:wait`), `lifecycle` (`wt:remove`, `wt:prune`, `wt:herdr`, the layout, handovers), `setup` (`wt:new`, `wt:stack`, `stack:*`, `wt:check`, `wt:orchestrate`, `commands`, `browser`, the changelogs, `hook pre-push`) |
 | `crates/breadboard/src/herdr/` | `pnpm herdr`, `pnpm herdr:install`, `--reload`, the plugin's actions, the Stop hook's `hook stop-answers` |
-| [`herdr/`](herdr/README.md) | the herdr plugin `monocircuit.platform` (`herdr-plugin.toml`) and `breadboard.sh`, the launcher everything starts the binary through (below) |
+| [`herdr/`](herdr/README.md) | the herdr plugin of the repo breadboard is developed in (`herdr-plugin.toml`, its id `[herdr] plugin`; `breadboard init` writes another repo's) and `breadboard.sh`, the launcher everything starts the binary through (below) |
 | `hooks/` | the shims of the git pre-push hook (`wt:new` and `wt:mr` install it) and of Claude Code's Stop hook (`.claude/settings.json`) |
-| `commands.json` | the line of every script `pnpm commands` shows: a new script gets its line here |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
 | `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
 | `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
@@ -32,6 +83,9 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 
 What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md).
+What it knows about the repo (the default branch, the stack, the MR
+template's boxes, the changelog, its name in herdr) comes from the repo's
+`breadboard.toml`: [`docs/config.md`](docs/config.md).
 The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
 
@@ -78,6 +132,70 @@ the sources were committed and unchanged across it and the file carries the
 key, and it uses a stored copy only when that copy carries its key (found with
 `grep`, never run); one that doesn't is removed. A stamp from before #339
 counts as none, so every checkout takes a checked binary once.
+
+## Headless agents
+
+A task agent is a Claude Code session, not a process (#358, rollout
+#359–#362): every agent of an orchestration runs headless, and a worktree
+of your own keeps its claude in a tab (#361).
+
+- **A click opens one in a tab** (its node, an action that opens it, the
+  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
+  the tab `<feature>` of its worktree's space, once no run of it is in
+  flight; its queue waits until that claude ends.
+- **The sidebar and the tab bar read the status table**: the space of a
+  worktree shows what its agent waits for (`$wt_state`, the space's third
+  row), and "N need you" counts its `asks`.
+
+- **A line for an agent is queued**, not typed into a pane: the overview's
+  deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
+  it to `.claude/runs/queue.json` (`breadboard_core::runs::enqueue_line`,
+  the session bound in `<dir>/.claude/herdr-session`) and wake the daemon.
+- **`breadboard serve` runs it** (`crates/breadboard/src/daemon/runs.rs`):
+  `claude -p --resume <id> --name <feature> --permission-mode auto
+  --permission-prompts none --disallowedTools AskUserQuestion
+  --output-format stream-json --verbose '<lines>'` in the worktree
+  (`--session-id` for a conversation without a transcript). One run per
+  session at a time; lines queued meanwhile go into the next run together.
+  A session open in an interactive claude (`~/.claude/sessions`) holds its
+  queue. Between runs no claude process exists. The daemon stays while a
+  line is queued or a run in flight; one engine per repo (`.claude/runs/engine.pid`).
+- **Capacity**: a run starts while `MemAvailable` less 6 GB (the reserve
+  `gitlab-runner-autoscale` keeps) and 0.5 GB for each run still starting
+  leaves 0.5 GB. Waiting sessions go in the merge order of their
+  orchestration's plan (`wt:plan`), then by age. `BREADBOARD_MEMINFO` names
+  another `/proc/meminfo` (the gauntlet's low memory).
+- **The status table**, `.claude/runs/status.json`: `running`, `idle`,
+  `asks` (the run was denied a tool, its `permission_denials`), and
+  `queued` from the queue. The overview reads it as herdr's agent states
+  (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
+  prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
+
+## The main checkout follows develop
+
+The main checkout keeps itself on `origin/develop` (#348). `breadboard
+serve`, the daemon of the overviews, fetches every 2 minutes and right after
+a merge it saw (the overview's own, or develop's head or pipeline moving on
+GitLab), and fast-forwards develop only when that is safe: on `develop`, no
+changes to tracked files, `--ff-only`. Another branch, local changes, own
+commits are skipped with the reason, never stashed, reset or forced. After an
+update `pnpm install --frozen-lockfile` runs when `pnpm-lock.yaml` changed,
+and the launcher builds the binary when breadboard's sources changed; vita's
+new migrations are only named (each stack runs `pnpm pg:migrate`). Off, the
+interval and the install: `[main_checkout]` of breadboard.toml
+([`docs/config.md`](docs/config.md)).
+
+The band of the view of everything and of every orchestration says it:
+`develop updated 17:42 · +4 commits (!331, !332…)`, or `develop: not updated
+(↓3), local changes in …` in yellow. What happened is in `<git common
+dir>/breadboard/develop.json`, the steps' output in `develop-*.log` beside it.
+
+A build installed over the binary a live overview or the daemon runs (the
+launcher renames it over the old file) makes it go on in the new one: the
+overview ends once no merge of its own runs and starts the new binary with
+the same arguments and its folds (the scroll starts at the top); the daemon,
+once no headless run is queued or in flight, gives up its socket and starts
+the new binary in its place.
 
 ## The nvim tab
 
@@ -167,18 +285,83 @@ on a heading or `z` folds it, `Z` folds all):
   `.claude/orchestrations/<name>.changelog.md`, every merged MR of it, in the
   tab of its space `⇶ <title>`. `pnpm wt:orchestrate <name> --changelog`.
 - **The repo's** (the same file): `.claude/changelog.md`,
-  what got into develop, a section per product and package (`vita`,
-  `monolithium`, `breadboard`, …, `repo` for CI, `.claude` and root config).
+  what got into the default branch, a section per product and package
+  (`[changelog] area_dirs`, `repo` for CI, `.claude` and root config).
   A merged MR goes into every section whose paths it changes, a changeset
   counts for the packages it names; per section the days newest first, then
   the type (Features, Fixes, …), with `!N`, `#issue`, the orchestration it
   came from, the time, a line of its description and its changeset. Releases
-  are markers: `vX.Y.Z` in vita, `monolithium-vX.Y.Z` in monolithium and
-  utilities, with their `CHANGELOG.md` entry. The overview of the main space
+  are markers, each tag of `[[releases]]` in its paths, with their
+  `CHANGELOG.md` entry. The overview of the main space
   rewrites it when develop's head moves; `pnpm changelog [--since 30d|2w|<date>]`
   rewrites and prints it (the window sticks, default 30 days). What a merged
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
   new ones. The tab is in the main space, `root · overview · changelog`.
+
+## The CI queue
+
+GitLab has no job priorities: its runner takes jobs first come, first served,
+so a pipeline of an MR far back could hold up the one next to merge (#357).
+breadboard decides which pipelines exist at all:
+
+- **Pushes from a worktree skip CI while a queue runs**: `wt:new` and the
+  push guard set `git config --worktree push.pushOption ci.skip` (from the
+  push after the guard first ran) while the queue's heartbeat
+  (`.claude/ci/queue.json`, written every 10 s) is younger than a minute. When it
+  is stale (no `breadboard serve` of a build with the queue runs), the guard
+  drops the option and refuses that one push: pushed again, GitLab starts
+  the pipeline itself, so nothing stalls. The main checkout and a local
+  origin are left alone.
+- **The kill switch**: `git config breadboard.ci push` (in the main
+  checkout) turns the queue off within 10 s: it starts and cancels nothing,
+  and pushes start their pipelines again. `git config --unset breadboard.ci`
+  turns it on.
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+  the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
+  repo is open, it reads the open MRs and the runner's free slots
+  (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job
+  containers, counted as `gitlab-runner-autoscale` counts them;
+  `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
+  per look, for the MR's newest commit, while a slot is free and no pipeline
+  waits for the runner. An older pipeline of that MR still running is
+  cancelled. While the runner is full and the first MR waits, the
+  lowest-ranked running MR pipeline behind it is cancelled to make room,
+  one per 30 s, and queued again. A pipeline into `main`, of develop or
+  of a tag is never cancelled, and neither is one a click started.
+- **One pipeline per commit** (#369): an MR's newest pipeline is the one
+  with the highest id (in a list of MRs gitlab.com gives their pipelines in
+  no order of time). Right before creating one the queue reads the MR and
+  its pipelines back over REST: pushed meanwhile, or a pipeline of that
+  commit there already (any status but cancelled or skipped; for a click,
+  any still to finish), it creates none. A commit asked for once is never
+  asked for again by itself, not even when GitLab refused it or it failed
+  at its creation. It cancels only pipelines it created itself.
+- **A blocked merge**: GitLab's merge waits on an MR's newest pipeline.
+  When that is a cancelled one, or one GitLab refused at its creation (a
+  `failureReason`, its job activity limit), while an older pipeline of the
+  same commit passed, the queue asks for one new pipeline, once per
+  blocking one, never over a refused one of its own. What it
+  asked for and created is kept in `.claude/ci/asked.json` over restarts,
+  and one daemon per checkout schedules (`.claude/ci/scheduler.pid`).
+- **Only the orchestrations' MRs**: those in an `order-<name>.json`. An MR
+  of no orchestration (vita's, a colleague's) is never touched: no
+  pipeline, no cancel.
+- **No pipeline before the bar is full** (the user's rule): an
+  orchestration's MR gets one only once every box of its issue is ticked
+  (after-deploy ones excepted) and `wt:check` passed at its HEAD, the
+  commit GitLab has as the MR's newest; its
+  live overviews write both, with the merge order, to
+  `.claude/ci/order-<name>.json`. Then the agent marks it ready and posts
+  the merge after the pipeline is green.
+- **The order**: a click on the row (run now, also before the bar is full),
+  a hotfix or anything into `main`, the MRs with a full bar in the merge
+  order, fixes after a red run. A pipeline that a person cancelled, or that GitLab
+  skipped, for the newest commit stays that way until a click.
+- **The overview** shows a waiting MR's place instead of its pipeline mark,
+  e.g. `CI: next (2nd) ▸`, `CI: after the boxes (3/7) ▸` or `CI: after wt:check ▸`; a click on it moves the MR to the front
+  (`.claude/ci/run-now.json`). The band shows the runner's load:
+  `CI 3/4 slots · 2 queued`. The queue's state is
+  `.claude/ci/queue.json`.
 
 ## Checks
 
@@ -192,8 +375,8 @@ pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite 
 ```
 
 `pnpm wt:check` runs `lint:rs` and `test:rs` only when the branch changes the
-Rust sources (`crates/`, `hooks/`, the Cargo files, `rustfmt.toml`), never
+Rust sources (`crates/` and what it embeds, `breadboard.sh`'s `sources`), never
 because develop was merged in; CI (`check:breadboard-rs`) runs them on every
 MR that touches the package. Which packages it checks comes from turbo's
-`affectedPackages`, not from `...[<base>]`: the root depends on
-`@monocircuit/vita`, and turbo counts a change there as one of every package.
+`affectedPackages`, not from `...[<base>]`: where the root depends on a
+package, turbo counts a change there as one of every package.

@@ -354,7 +354,7 @@ pub fn is_idle(pane: &str) -> bool {
 }
 
 /// The pids from `pid` up to init, from Linux's /proc; only `pid` without it.
-fn ancestors_of(pid: i64) -> Vec<i64> {
+pub fn ancestors_of(pid: i64) -> Vec<i64> {
     let mut chain = Vec::new();
     let mut id = pid;
     while id > 1 && chain.len() < 64 {

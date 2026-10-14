@@ -3,6 +3,8 @@
 
 pub mod actions;
 pub mod check;
+pub mod ci;
+pub mod config;
 pub mod conversations;
 pub mod epic;
 pub mod git;
@@ -11,10 +13,14 @@ pub mod herdr;
 pub mod json;
 pub mod local;
 pub mod lock;
+pub mod main_update;
 pub mod model;
+pub mod permissions;
 pub mod reader;
 pub mod record;
+pub mod runs;
 pub mod said;
 pub mod setups;
+pub mod stack;
 pub mod time;
 pub mod wait;

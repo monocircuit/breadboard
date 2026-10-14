@@ -111,6 +111,14 @@ pub fn agent_pane_of(main: &Path, to: &Target) -> Option<Pane> {
         .find(|pane| pane.tab == tab && pane.agent.is_some())
 }
 
+/// The tab of the pane that runs the conversation `id`, None when none does.
+pub fn agent_tab_of_session(id: &str) -> Option<String> {
+    herdr::all_panes()
+        .into_iter()
+        .find(|pane| pane.session.as_deref() == Some(id))
+        .map(|pane| pane.tab)
+}
+
 /// Whether a line can go into `pane`: there is one, and its agent isn't at a question.
 pub fn can_type(pane: Option<&Pane>) -> bool {
     pane.is_some_and(|pane| pane.status.as_deref() != Some("blocked"))
@@ -124,9 +132,58 @@ pub fn type_into(pane: Option<&Pane>, line: &str) -> bool {
     did(&["agent", "prompt", &pane.id, &overview_line(line)])
 }
 
-/// One line into the pane of the agent of the worktree `dir` (`deliverTo`); true when it got in.
+/// The pane of an interactive claude that runs the conversation of the
+/// worktree `dir` now (#361): one opened by a click, or a task agent still in
+/// its tab from before the switch. Its queue is held while it runs, so a line
+/// for it goes into that pane, as before the switch. None when no
+/// interactive claude runs it, or none of herdr's panes does.
+pub fn held_pane(main: &Path, dir: &Path) -> Option<Pane> {
+    let id = breadboard_core::conversations::bound_session(dir)?;
+    if breadboard_core::conversations::interactive_pids_of(&id).is_empty() {
+        return None;
+    }
+    agent_pane_of(main, &Target::Dir(dir.to_path_buf())).or_else(|| {
+        herdr::all_panes()
+            .into_iter()
+            .find(|pane| pane.session.as_deref() == Some(id.as_str()))
+    })
+}
+
+/// Whether a line for the agent of `dir` goes into its run queue: a task
+/// agent's (#361), unless an interactive claude of it runs in a pane.
+pub fn is_queued_for(main: &Path, dir: &Path) -> bool {
+    breadboard_core::runs::is_headless(main, dir) && held_pane(main, dir).is_none()
+}
+
+/// One line for the agent of the worktree `dir` (`deliverTo`); true when it
+/// got in: queued for the next run of a task agent (#358, #361), typed into
+/// the pane of a claude that runs it interactively (one opened by a click, a
+/// task agent still in its tab, the claude of a worktree of your own).
 pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
+    if breadboard_core::runs::is_headless(main, dir) {
+        if let Some(pane) = held_pane(main, dir) {
+            return type_into(Some(&pane), line);
+        }
+        return enqueue(main, dir, line);
+    }
     type_into(agent_pane_of(main, &Target::Dir(dir.to_path_buf())).as_ref(), line)
+}
+
+/// One line queued for the next run of the headless agent of the worktree
+/// `dir` (#358), the daemon woken to run it; false when no session is bound
+/// there. Queued is in: the daemon runs it, now or once memory allows.
+pub fn enqueue(main: &Path, dir: &Path, line: &str) -> bool {
+    enqueue_allowing(main, dir, line, Vec::new())
+}
+
+/// `enqueue` with rules allowed for the one run that takes the line: the
+/// user's `allow` of a `permission` action (#360).
+pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String>) -> bool {
+    if breadboard_core::runs::enqueue_allowing(main, dir, &overview_line(line), allowed).is_err() {
+        return false;
+    }
+    crate::daemon::client::wake_runs(main);
+    true
 }
 
 /// A checkout's space in front (`focusSpace`); false outside herdr or without one.

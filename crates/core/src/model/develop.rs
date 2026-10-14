@@ -11,9 +11,6 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::SystemTime;
 
-/// The folder of vita's web app in a checkout.
-pub const VITA: &str = "products/vita/web";
-
 /// An MR merged on develop's first-parent line since the branch started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merged {
@@ -39,27 +36,26 @@ static TRAILER: LazyLock<Regex> =
 
 /// What came into its base since `dir` branched off (develop.mjs `developOf`).
 pub fn develop_of(dir: &Path) -> Develop {
+    let (merges, direct) = merges_in(dir, &format!("HEAD..{}", base_of(dir).remote));
+    let is_empty = merges.is_empty() && direct == 0;
+    Develop {
+        merges,
+        direct,
+        conflicts: if is_empty { Some(Vec::new()) } else { conflicts_of(dir) },
+    }
+}
+
+/// The merges on the first-parent line of `range` in `dir`, newest first,
+/// and how many commits came in without one (the main checkout's update, #348).
+pub fn merges_in(dir: &Path, range: &str) -> (Vec<Merged>, usize) {
     // Fields split by 0x1f, entries by 0x1e: a body has newlines.
-    let log = git(
-        dir,
-        &[
-            "log",
-            "--first-parent",
-            "--format=%s%x1f%b%x1e",
-            &format!("HEAD..{}", base_of(dir).remote),
-        ],
-    )
-    .stdout;
-    let entries: Vec<&str> = log
-        .split('\u{1e}')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    let mut develop = Develop::default();
-    for entry in &entries {
+    let log = git(dir, &["log", "--first-parent", "--format=%s%x1f%b%x1e", range]).stdout;
+    let mut merges = Vec::new();
+    let mut direct = 0;
+    for entry in log.split('\u{1e}').map(str::trim).filter(|entry| !entry.is_empty()) {
         let (subject, body) = entry.split_once('\u{1f}').unwrap_or((entry, ""));
         let Some(branch) = MERGE.captures(subject).map(|found| found[1].to_string()) else {
-            develop.direct += 1;
+            direct += 1;
             continue;
         };
         let mr = MR.captures(body).and_then(|found| found[1].parse().ok());
@@ -69,14 +65,9 @@ pub fn develop_of(dir: &Path) -> Develop {
             .find(|line| !line.is_empty() && !TRAILER.is_match(line))
             .map(String::from)
             .unwrap_or_else(|| branch.clone());
-        develop.merges.push(Merged { mr, title, branch });
+        merges.push(Merged { mr, title, branch });
     }
-    develop.conflicts = if entries.is_empty() {
-        Some(Vec::new())
-    } else {
-        conflicts_of(dir)
-    };
-    develop
+    (merges, direct)
 }
 
 /// The files a `git merge` of its base in `dir` would stop at, empty when
@@ -127,18 +118,22 @@ fn pending_since(journal: &Path, newest: i64) -> Option<Migrations> {
     })
 }
 
-/// migrationsOf: None without .env.local, journal or psql.
+/// drizzle's journal of a checkout (breadboard.toml's `[stack.migrations]`), None without one.
+fn journal_of(dir: &Path) -> Option<PathBuf> {
+    let loaded = crate::config::of(dir);
+    let stack = loaded.config.stack.as_ref()?;
+    Some(dir.join(&stack.dir).join(&stack.migrations.as_ref()?.journal))
+}
+
+/// migrationsOf: None without a stack with migrations, its env file, journal or psql.
 pub fn migrations_of(dir: &Path) -> Option<Migrations> {
-    let vita = dir.join(VITA);
-    let journal = vita.join("src/server/db/migrations/meta/_journal.json");
-    let env = std::fs::read_to_string(vita.join(".env.local")).ok()?;
+    let journal = journal_of(dir)?;
+    let variable = crate::stack::of(dir)?.migrations?.database_env;
+    let env = crate::stack::env_of(dir)?;
     if !journal.exists() {
         return None;
     }
-    let url = env
-        .lines()
-        .find_map(|line| line.strip_prefix("MIGRATION_DATABASE_URL="))
-        .map(str::trim)?;
+    let url = env.get(&variable).map(|url| url.trim())?;
     let answer = Command::new("psql")
         .args([
             url,
@@ -177,7 +172,7 @@ type Asked = (i64, Option<SystemTime>, Option<Migrations>);
 static MIGRATIONS: LazyLock<Mutex<HashMap<PathBuf, Asked>>> = LazyLock::new(Mutex::default);
 
 fn journal_time(dir: &Path) -> Option<SystemTime> {
-    std::fs::metadata(dir.join(VITA).join("src/server/db/migrations/meta/_journal.json"))
+    std::fs::metadata(journal_of(dir)?)
         .and_then(|meta| meta.modified())
         .ok()
 }
@@ -229,7 +224,14 @@ mod tests {
     fn migrations_are_asked_again_after_a_while_when_the_journal_changes_or_once_forgotten() {
         let scratch = Scratch::new();
         let dir = scratch.path().join("held");
-        let journal = dir.join(VITA).join("src/server/db/migrations/meta/_journal.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(crate::config::FILE),
+            "[stack]\ndir = \"web\"\nproject = \"p\"\n[stack.app]\nport = 3000\nenv = \"PORT\"\n\
+             [stack.migrations]\njournal = \"meta/_journal.json\"\nrun = \"migrate\"\n",
+        )
+        .unwrap();
+        let journal = dir.join("web/meta/_journal.json");
         std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
         std::fs::write(&journal, "{}").unwrap();
         let asked = std::cell::Cell::new(0);

@@ -222,11 +222,26 @@ pub fn changed_count(dir: &Path) -> usize {
         .count()
 }
 
-/// The branch everything starts from without another base.
-pub const DEVELOP: &str = "develop";
+/// The default branch of the repo of `dir` (breadboard.toml, #342):
+/// `develop`, `main`. The base of every worktree without another.
+pub fn branch(dir: &Path) -> String {
+    crate::config::of(dir).branch.clone()
+}
+
+/// The default branch of the repo of the working directory, for what names
+/// it as text that lives as long as the process (an MR's target, a diff's base).
+pub fn default_branch() -> &'static str {
+    static BRANCH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BRANCH.get_or_init(|| crate::config::here().branch.clone())
+}
+
+/// `origin/<the base of the worktree dir>`: its epic's or the default branch's.
+pub fn base(dir: &Path) -> String {
+    base_of(dir).remote
+}
 
 /// The branch a worktree branches off, is compared against, merges in and
-/// opens its MR into (#349): develop, or the epic of its orchestration.
+/// opens its MR into (#349): the default branch, or the epic of its orchestration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Base {
     /// The branch: `develop`, `epic/12-name`.
@@ -243,12 +258,14 @@ impl Base {
         }
     }
 
+    /// The default branch of the repo of the working directory (breadboard.toml).
     pub fn develop() -> Base {
-        Base::of(DEVELOP)
+        Base::of(&crate::config::here().branch)
     }
 
+    /// Whether it is the default branch, no epic.
     pub fn is_develop(&self) -> bool {
-        self.local == DEVELOP
+        self.local == crate::config::here().branch
     }
 }
 
@@ -258,10 +275,10 @@ impl Default for Base {
     }
 }
 
-/// The base of the worktree `dir`: `base` of its `.claude/origin`, develop
-/// without one (every worktree from before #349).
+/// The base of the worktree `dir`: `base` of its `.claude/origin`, the
+/// repo's default branch without one (every worktree from before #349).
 pub fn base_of(dir: &Path) -> Base {
-    crate::record::base_in(dir).map_or_else(Base::develop, |base| Base::of(&base))
+    crate::record::base_in(dir).map_or_else(|| Base::of(&branch(dir)), |base| Base::of(&base))
 }
 
 /// Commits of HEAD its base doesn't have.
@@ -303,7 +320,7 @@ pub fn bases(dir: &Path) -> Vec<Base> {
             "refs/remotes/origin/epic/",
         ],
     );
-    std::iter::once(Base::develop())
+    std::iter::once(Base::of(&branch(dir)))
         .chain(epics.lines().map(Base::of))
         .collect()
 }
@@ -526,6 +543,8 @@ pub(crate) mod fixture {
         run(&main, &["commit", "--quiet", "-m", "chore: begin"]);
         run(&main, &["push", "--quiet", "origin", "develop"]);
         run(&main, &["fetch", "--quiet", "origin"]);
+        // origin's HEAD names the default branch where no breadboard.toml does.
+        run(&main, &["remote", "set-head", "origin", "develop"]);
         main
     }
 

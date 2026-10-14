@@ -123,6 +123,7 @@ pub fn prunable_count() -> usize {
             && track == "[gone]"
             && name != "develop"
             && name != "main"
+            && *name != breadboard_core::git::branch(&main)
             && !repo::has_own_commits(name, &main)
     });
     let known: Vec<PathBuf> = all.iter().map(|tree| tree.dir.clone()).collect();

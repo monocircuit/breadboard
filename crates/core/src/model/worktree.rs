@@ -12,9 +12,6 @@ use crate::gitlab::{Issue, Job};
 use crate::local::Container;
 use std::path::PathBuf;
 
-/// drizzle studio's port, and Storybook's: a worktree's move by its offset.
-pub const STUDIO_PORT: i64 = 4983;
-pub const STORYBOOK_PORT: i64 = 6006;
 /// How many open boxes ISSUE names, the rest counted.
 const MAX_OPEN: usize = 10;
 
@@ -37,8 +34,10 @@ pub struct WorktreeLocal {
     pub develop: Option<Develop>,
     pub migrations: Option<Migrations>,
     pub is_app_up: bool,
-    pub is_studio_up: bool,
-    pub is_storybook_up: bool,
+    /// The repo's stack (breadboard.toml), None without one: WHERE has no rows.
+    pub stack: Option<crate::config::Stack>,
+    /// Which of its tools answer, by name.
+    pub tools_up: std::collections::BTreeMap<String, bool>,
 }
 
 /// A heading of the issue's boxes: how many are ticked, the open ones by text.
@@ -144,81 +143,85 @@ pub fn pipeline_of(remote: &WorktreeRemote) -> Option<PipelineSection> {
 /// A row of WHERE: what runs where, a click opens it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhereRow {
-    pub name: &'static str,
+    pub name: String,
     pub is_on: bool,
     pub url: Option<String>,
     /// Not http: nothing to open.
     pub address: Option<String>,
     /// How to start it when it is down.
     pub hint: Option<String>,
+    /// A tool a click starts in a tab of its own while it is down.
+    pub tool: Option<String>,
 }
 
-/// WHERE of a worktree with an .env.local.
+/// WHERE of a worktree with an env file: the app, the services with a
+/// link or an address, the tools (breadboard.toml's `[stack]`).
 pub fn where_of(local: &WorktreeLocal, tree: &Tree) -> Vec<WhereRow> {
+    let Some(stack) = &local.stack else {
+        return Vec::new();
+    };
     let is_shared = !tree.has_own_port;
     let offset = if is_shared { 0 } else { tree.offset };
-    let port = |variable: &str, base: i64| {
-        tree.env
-            .get(variable)
-            .and_then(|port| port.trim().parse().ok())
-            .unwrap_or(base + offset)
+    let moved = u16::try_from(offset).unwrap_or(0);
+    // A service's port as its env names it, else moved by the offset.
+    let port_of = |service: &crate::config::Service| {
+        service
+            .env
+            .as_ref()
+            .and_then(|variable| tree.env.get(variable))
+            .and_then(|port| port.trim().parse::<u16>().ok())
+            .map(|port| port.saturating_sub(service.port))
+            .unwrap_or(moved)
     };
     let is_up = tree.stack.as_deref().is_some_and(|stack| stack.contains("running"));
-    let row = |name, is_on, url: Option<String>, hint: Option<String>| WhereRow {
-        name,
-        is_on,
-        url,
-        address: None,
-        hint,
+    let dev = if stack.dir == "." {
+        stack.app.dev.clone()
+    } else {
+        format!("cd {} && {}", stack.dir, stack.app.dev)
     };
-    vec![
-        row(
-            "app",
-            local.is_app_up,
-            Some(format!("http://localhost:{}", 3000 + offset)),
-            if local.is_app_up {
-                is_shared.then(|| "shared: whichever checkout runs pnpm dev".into())
-            } else {
-                Some("cd products/vita/web && pnpm dev".into())
-            },
-        ),
-        row(
-            "keycloak",
-            is_up,
-            Some(format!("http://localhost:{}/admin", port("KEYCLOAK_PORT", 8080))),
-            None,
-        ),
-        row(
-            "s3",
-            is_up,
-            Some(format!("http://localhost:{}", port("S3_PORT", 8333))),
-            None,
-        ),
-        WhereRow {
-            name: "postgres",
-            is_on: is_up,
-            url: None,
-            address: Some(format!("localhost:{}", port("POSTGRES_PORT", 5432))),
-            hint: None,
+    let mut rows = vec![WhereRow {
+        name: "app".into(),
+        is_on: local.is_app_up,
+        url: Some(format!("http://localhost:{}", i64::from(stack.app.port) + offset)),
+        address: None,
+        hint: if local.is_app_up {
+            is_shared.then(|| format!("shared: whichever checkout runs {}", stack.app.dev))
+        } else {
+            Some(dev)
         },
-        row(
-            "studio",
-            local.is_studio_up,
-            Some(format!("https://local.drizzle.studio?port={}", STUDIO_PORT + offset)),
-            (!local.is_studio_up).then(|| format!("pnpm pg:studio --port {}", STUDIO_PORT + offset)),
-        ),
-        row(
-            "storybook",
-            local.is_storybook_up,
-            Some(format!("http://localhost:{}", STORYBOOK_PORT + offset)),
-            (!local.is_storybook_up).then(|| {
-                format!(
-                    "cd packages/monolithium && pnpm exec storybook dev -p {}",
-                    STORYBOOK_PORT + offset
-                )
+        tool: None,
+    }];
+    rows.extend(
+        stack
+            .services
+            .iter()
+            .filter(|service| service.url.is_some() || service.address.is_some())
+            .map(|service| WhereRow {
+                name: service.name.clone(),
+                is_on: is_up,
+                url: service.url(port_of(service)),
+                address: service.address(port_of(service)),
+                hint: None,
+                tool: None,
             }),
-        ),
-    ]
+    );
+    rows.extend(stack.tools.iter().map(|tool| {
+        let is_on = local.tools_up.get(&tool.name).copied().unwrap_or(false);
+        let run = tool.command(moved);
+        let hint = match tool.dir.as_deref() {
+            Some(dir) => format!("cd {dir} && {run}"),
+            None => run,
+        };
+        WhereRow {
+            name: tool.name.clone(),
+            is_on,
+            url: Some(tool.url(moved)),
+            address: None,
+            hint: (!is_on).then_some(hint),
+            tool: (!tool.is_with_stack).then(|| tool.name.clone()),
+        }
+    }));
+    rows
 }
 
 /// The view of one worktree.
@@ -339,19 +342,38 @@ mod tests {
             stack: Some("running(5)".into()),
             ..Default::default()
         };
-        let rows = where_of(&WorktreeLocal::default(), &tree);
+        let stack = crate::config::Config::parse(
+            "[stack]\ndir = \"web\"\nproject = \"p\"\n[stack.app]\nport = 3000\n\
+             [[stack.services]]\nname = \"admin\"\nport = 8080\nurl = \"http://localhost:{port}/admin\"\n\
+             [[stack.services]]\nname = \"db\"\nport = 5432\nenv = \"DB_PORT\"\naddress = \"localhost:{port}\"\n\
+             [[stack.services]]\nname = \"hidden\"\nport = 9000\n\
+             [[stack.tools]]\nname = \"book\"\ndir = \"lib\"\nport = 6006\nrun = \"book -p {port}\"\n",
+        )
+        .unwrap()
+        .stack;
+        let local = WorktreeLocal {
+            stack,
+            ..Default::default()
+        };
+        assert!(where_of(&WorktreeLocal::default(), &tree).is_empty());
+        let rows = where_of(&local, &tree);
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(names, ["app", "admin", "db", "book"]);
         assert_eq!(rows[0].url.as_deref(), Some("http://localhost:3002"));
-        assert_eq!(rows[0].hint.as_deref(), Some("cd products/vita/web && pnpm dev"));
-        assert_eq!(rows[3].address.as_deref(), Some("localhost:5434"));
+        assert_eq!(rows[0].hint.as_deref(), Some("cd web && pnpm dev"));
+        assert_eq!(rows[1].url.as_deref(), Some("http://localhost:8082/admin"));
+        assert_eq!(rows[2].address.as_deref(), Some("localhost:5434"));
         assert!(rows[1].is_on);
+        assert_eq!(rows[3].hint.as_deref(), Some("cd lib && book -p 6008"));
+        assert_eq!(rows[3].tool.as_deref(), Some("book"));
         let model = worktree_of(
             WorktreeLocal {
                 tree: Some(tree),
-                ..Default::default()
+                ..local
             },
             None,
             vec![],
         );
-        assert_eq!(model.where_rows.unwrap().len(), 6);
+        assert_eq!(model.where_rows.unwrap().len(), 4);
     }
 }

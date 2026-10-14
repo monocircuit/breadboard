@@ -23,9 +23,11 @@ pub struct EpicLocal {
 pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Vec<Vec<Span>>> {
     let epic = local.epic.as_ref()?;
     let mut row = vec![vec![Span::new(epic.branch.clone(), Paint::Cyan)]];
+    // The default branch the epic merges into (breadboard.toml).
+    let develop = crate::git::default_branch();
     match epic.behind {
-        Some(0) => row.push(vec![Span::dim("has develop")]),
-        Some(behind) => row.push(vec![Span::new(format!("{behind} behind develop"), Paint::Yellow)]),
+        Some(0) => row.push(vec![Span::dim(format!("has {develop}"))]),
+        Some(behind) => row.push(vec![Span::new(format!("{behind} behind {develop}"), Paint::Yellow)]),
         None => {}
     }
     let Some(remote) = remote else {
@@ -58,13 +60,13 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
         Some(mr) => vec![
             Span::link(format!("!{}", mr.iid), Some(&mr.url)),
             Span::dim(if mr.is_draft {
-                " draft → develop "
+                format!(" draft → {develop} ")
             } else {
-                " → develop "
+                format!(" → {develop} ")
             }),
             pipeline_mark(mr.pipeline.as_ref()),
         ],
-        None => vec![Span::dim("no MR into develop yet")],
+        None => vec![Span::dim(format!("no MR into {develop} yet"))],
     });
     Some(row)
 }

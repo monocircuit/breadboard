@@ -3,11 +3,13 @@
 //! shared stack; the overview names the threshold.
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-/// What a full dev stack takes (a free worktree's, an epic's), and what a claude does.
+/// What a full dev stack takes (a free worktree's, an epic's), and what a
+/// claude does (a headless agent only while its run is in flight,
+/// `runs::RUN`: idle it is no process and costs nothing, #358).
 pub const STACK: u64 = 1 << 30;
 pub const AGENT: u64 = 1 << 29;
-/// What an orchestration's task stack takes (#351): Keycloak and SeaweedFS,
-/// its databases on the epic's Postgres, which runs once per orchestration.
+/// What an orchestration's task stack takes (#351): its services but the
+/// database, its databases on the epic's, which runs once per orchestration.
 pub const TASK_STACK: u64 = STACK / 2;
 /// Below this much free memory a fresh agent gets the shared stack.
 pub const THRESHOLD: u64 = TASK_STACK + AGENT;

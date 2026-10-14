@@ -195,8 +195,12 @@ pub fn prunable(repo: &Repo, here: &Path) -> Prunable {
         .filter_map(|line| {
             let mut parts = line.split('|');
             let (name, track, worktree) = (parts.next()?, parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            let is_gone =
-                !name.is_empty() && worktree.is_empty() && track == "[gone]" && name != "develop" && name != "main";
+            let is_gone = !name.is_empty()
+                && worktree.is_empty()
+                && track == "[gone]"
+                && name != "develop"
+                && name != "main"
+                && name != breadboard_core::git::branch(&repo.main);
             is_gone.then(|| Entry {
                 name: name.to_string(),
                 dir: repo.main.clone(),
@@ -294,7 +298,10 @@ pub fn command(args: &Args) -> Done {
             Some(why) => format!("kept, {why}"),
             None if is_dry => "would be removed".into(),
             None => {
-                step(&format!("pnpm wt:remove {name}"));
+                step(&format!(
+                    "{run} wt:remove {name}",
+                    run = breadboard_core::config::run_word()
+                ));
                 // A remove that fails is said on its line and the prune goes on: the
                 // others are independent (today's stopped the whole prune there).
                 match remove::remove(

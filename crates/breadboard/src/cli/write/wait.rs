@@ -4,12 +4,14 @@
 //! Code wakes the agent when a background command exits). It ends early when
 //! one is closed, stays in conflict, or the limit passes. The wait is
 //! recorded in `.claude/wait.json` for the overview, which delivers the line
-//! itself when this command is gone.
+//! itself when this command is gone. A headless agent's (#359) wait returns
+//! at once: the overview queues the line as its next run.
 
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::glab;
 use breadboard_core::git::{Base, base_of, git};
 use breadboard_core::json::{self, int_of, ints_of, str_of};
+use breadboard_core::runs;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::{Map, Number, Value};
 use std::collections::HashMap;
@@ -240,9 +242,10 @@ fn line_of(parsed: &Parsed, verdict: &Verdict, base: &str, behind: Option<u64>) 
             CONFLICT_MS / 60_000
         ),
         Verdict::Timeout(open) => format!(
-            "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again (pnpm wt:wait)",
+            "waited {} h for {all}, {} not merged yet: the wait ends, tell the orchestrator or wait again ({run} wt:wait)",
             hours_text(parsed),
-            list_of(open)
+            list_of(open),
+            run = breadboard_core::config::run_word()
         ),
         Verdict::Waiting => String::new(),
     }
@@ -334,6 +337,29 @@ fn pause(dir: &Path, until: i64) -> bool {
     }
 }
 
+/// Whether the agent of `dir` runs this open in a tab, not in a headless
+/// run: the nearest claude among this process's ancestors is interactive
+/// and runs the conversation bound to `dir` (its session file says which).
+/// Any other caller (a headless run, a shell, another claude) counts as headless.
+fn is_interactive_caller(dir: &Path) -> bool {
+    let Some(bound) = breadboard_core::conversations::bound_session(dir) else {
+        return false;
+    };
+    let claude = crate::cli::lifecycle::herdr::ancestors_of(i64::from(std::process::id()))
+        .into_iter()
+        .skip(1)
+        .find_map(|pid| {
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            Some((pid, breadboard_core::conversations::claude_print_in(&cmdline)?))
+        });
+    let Some((pid, false)) = claude else {
+        return false;
+    };
+    breadboard_core::conversations::running_claudes()
+        .iter()
+        .any(|claude| claude.pid == pid && claude.id == bound)
+}
+
 pub fn run(argv: &Argv) -> Outcome {
     match argv.check(&TAKES) {
         Ok(true) => return help(ABOUT, USAGE),
@@ -384,11 +410,45 @@ pub fn run(argv: &Argv) -> Outcome {
     wait.insert("hours".into(), hours_json(parsed.hours));
     wait.insert("since".into(), Value::String(to_iso(since)));
     wait.insert("until".into(), Value::String(to_iso(until)));
-    wait.insert("pid".into(), Value::from(std::process::id()));
-    let file = wait_file(dir);
+    // A headless agent (#359) is no process to wake: the wait is recorded
+    // without a command, and the overview queues its line as a run. Called
+    // from a claude open in a tab it waits as before: its queue is held
+    // while that claude runs, the line would wait for its end (#361).
+    let is_headless =
+        here.main.as_deref().is_some_and(|main| runs::is_headless(main, dir)) && !is_interactive_caller(dir);
     let base = base_of(dir);
+    if is_headless {
+        // Settled already (merged, closed): said at once, nothing waits (#361).
+        let found: Vec<Facts> = first
+            .iter()
+            .filter_map(|answer| match answer {
+                Answer::Found(facts) => Some(facts.clone()),
+                _ => None,
+            })
+            .collect();
+        let verdict = verdict_of(&parsed.mrs, until, &found, now_ms(), &mut HashMap::new());
+        if verdict != Verdict::Waiting {
+            let behind = (verdict == Verdict::Merged).then(|| behind_of(dir, &base)).flatten();
+            say(&line_of(&parsed, &verdict, &base.local, behind));
+            return Ok(if verdict == Verdict::Merged {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            });
+        }
+    } else {
+        wait.insert("pid".into(), Value::from(std::process::id()));
+    }
+    let file = wait_file(dir);
     json::write_pretty(&file, &Value::Object(wait))
         .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
+    if is_headless {
+        say(&format!(
+            "▸ {}: the overview wakes you with its line when it ends; stop now",
+            waits_text(&parsed.mrs)
+        ));
+        return Ok(ExitCode::SUCCESS);
+    }
     say(&format!("▸ {}, asking GitLab every minute", waits_text(&parsed.mrs)));
 
     let mut conflicts_since = HashMap::new();
