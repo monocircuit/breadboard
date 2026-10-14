@@ -99,6 +99,9 @@ pub enum Go {
     WritePlan(Plan),
     /// Two clicks end the orchestration.
     End,
+    /// The claude open in the tab of the worktree's agent ended once it idles:
+    /// its lines run headless again (#386).
+    EndHeld(PathBuf),
 }
 
 /// An action as a row of ACTIONS, UP NEXT or NEXT (render-orchestration.mjs

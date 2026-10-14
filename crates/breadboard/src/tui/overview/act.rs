@@ -262,6 +262,14 @@ pub fn go_to(app: &mut Overview, go: Go) {
                 Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
             }))
         }),
+        // ACTIONS' `held` row (#386): the open claude ended once it idles.
+        Go::EndHeld(dir) => app.actor.queue(move || {
+            let ended = super::actor::end_held::end(&main, &dir);
+            Some(Box::new(move |app: &mut Overview| match ended {
+                Ok(did) => app.actor.log(Paint::Green, did),
+                Err(why) => app.actor.log(Paint::Red, why),
+            }))
+        }),
         Go::FocusAgent(dir) => {
             let tab = app.agent_tab_of(&dir);
             app.actor.queue(move || {

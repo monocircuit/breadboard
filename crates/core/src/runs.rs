@@ -371,6 +371,30 @@ pub fn states_of(table: &Table, queue: &Queue) -> HashMap<String, Run> {
     states
 }
 
+/// How long an agent's lines may wait on a claude open in a tab before the
+/// overview names it (#386): such a claude holds the queue, and one herdr
+/// resumed by itself after a restart is no one's to end.
+pub const HELD_MS: i64 = 10 * 60_000;
+
+/// herdr's word for an agent whose queue an open claude holds past `HELD_MS`.
+pub const HELD: &str = "held";
+
+/// `agents` (the run engine's, then herdr's panes over them) with an agent
+/// open in a pane `held` when a line for it waits past `HELD_MS` (#386).
+pub fn mark_held(agents: &mut HashMap<String, Agent>, queue: &Queue, now: i64) {
+    for (session, agent) in agents.iter_mut() {
+        let oldest = queue
+            .events
+            .iter()
+            .filter(|event| event.session == *session)
+            .map(|event| event.at)
+            .min();
+        if !agent.pane.is_empty() && oldest.is_some_and(|at| now - at >= HELD_MS) {
+            agent.status = Some(HELD.into());
+        }
+    }
+}
+
 /// The headless agents as herdr's agents, by session (`reader`'s `agents`):
 /// every known session counts as running an agent, its status the table's word.
 pub fn agents_of(main: &Path) -> HashMap<String, Agent> {
@@ -394,6 +418,34 @@ pub fn agents_of(main: &Path) -> HashMap<String, Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_open_claude_holding_lines_past_ten_minutes_is_named() {
+        let agent = |pane: &str| Agent {
+            pane: pane.into(),
+            tab: String::new(),
+            status: Some("idle".into()),
+        };
+        let mut agents = HashMap::from([
+            ("open".to_string(), agent("w1:p2")),
+            ("headless".to_string(), agent("")),
+            ("fresh".to_string(), agent("w1:p3")),
+        ]);
+        let queue = Queue {
+            events: vec![
+                event("open", "a", 0),
+                event("headless", "b", 0),
+                event("fresh", "c", HELD_MS),
+            ],
+        };
+        mark_held(&mut agents, &queue, HELD_MS);
+        let status = |session: &str| agents[session].status.clone().unwrap();
+        assert_eq!(status("open"), HELD);
+        // No pane: no claude holds it, its run starts as usual.
+        assert_eq!(status("headless"), "idle");
+        // Its line waits less than ten minutes.
+        assert_eq!(status("fresh"), "idle");
+    }
 
     fn event(session: &str, line: &str, at: i64) -> Event {
         Event {

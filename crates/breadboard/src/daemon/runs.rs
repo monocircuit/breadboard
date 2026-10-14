@@ -8,7 +8,7 @@
 //! merge order, then by age. One engine per repo across daemons of other
 //! builds: `.claude/runs/engine.pid`.
 
-use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
+use breadboard_core::conversations::{interactive_pids_of, interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::permissions;
 use breadboard_core::runs::{
@@ -312,8 +312,25 @@ pub fn cli(args: &[String]) -> ExitCode {
                     queued,
                     spent.text()
                 );
+                if let Some(line) = held_line(&queue, &session, &run.dir, now, interactive_pids_of(&session)) {
+                    println!("  {line}");
+                }
             }
             ExitCode::SUCCESS
+        }
+        Some("release") if args.len() == 2 => {
+            let dir = PathBuf::from(&args[1]);
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            match crate::tui::overview::actor::end_held::end(&main, &dir) {
+                Ok(did) => {
+                    println!("{did}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("breadboard runs: {why}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Some("tell") if args.len() >= 3 => {
             let dir = PathBuf::from(&args[1]);
@@ -337,15 +354,63 @@ pub fn cli(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("usage: breadboard runs [tell <dir> <line…> | continue]");
+            eprintln!("usage: breadboard runs [tell <dir> <line…> | release <dir> | continue]");
             ExitCode::from(2)
         }
     }
 }
 
+/// What `breadboard runs` says under an agent whose lines an open claude
+/// (`pids`) holds past ten minutes (#386), None for any other.
+fn held_line(queue: &Queue, session: &str, dir: &Path, now: i64, pids: Vec<i64>) -> Option<String> {
+    let oldest = queue
+        .events
+        .iter()
+        .filter(|event| event.session == session)
+        .map(|event| event.at)
+        .min()?;
+    if pids.is_empty() || now - oldest < runs::HELD_MS {
+        return None;
+    }
+    let pids: Vec<String> = pids.iter().map(i64::to_string).collect();
+    Some(format!(
+        "held by an open claude (pid {}) for {} min: breadboard runs release {} ends it once it is idle",
+        pids.join(", "),
+        (now - oldest) / 60_000,
+        dir.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queue_held_by_an_open_claude_says_so_after_ten_minutes() {
+        let event = |at| Event {
+            session: "s".into(),
+            dir: PathBuf::from("/w/1-x"),
+            name: "1-x".into(),
+            line: "go".into(),
+            at,
+            allowed: Vec::new(),
+        };
+        let queue = Queue {
+            events: vec![event(0), event(5 * 60_000)],
+        };
+        let at = |now| held_line(&queue, "s", Path::new("/w/1-x"), now, vec![42]);
+        assert_eq!(at(runs::HELD_MS - 1), None);
+        assert_eq!(
+            at(23 * 60_000).as_deref(),
+            Some("held by an open claude (pid 42) for 23 min: breadboard runs release /w/1-x ends it once it is idle")
+        );
+        // No open claude: the run starts as usual.
+        assert_eq!(held_line(&queue, "s", Path::new("/w/1-x"), 23 * 60_000, vec![]), None);
+        assert_eq!(
+            held_line(&queue, "other", Path::new("/w/1-x"), 23 * 60_000, vec![42]),
+            None
+        );
+    }
 
     #[test]
     fn a_run_is_no_panes_agent() {
