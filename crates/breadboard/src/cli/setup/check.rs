@@ -533,6 +533,14 @@ fn stale_migrations(dir: &Path, base: &str) -> Option<String> {
     older_migrations(&ours, theirs.is_ok.then_some(theirs.out.as_str())?)
 }
 
+/// The refusal of `stale_migrations` against the worktree's base on origin,
+/// the ref its MR targets (#367), and `epic`, the HEAD of its epic's checkout.
+fn migrations_refusal(dir: &Path, remote: &str, epic: Option<String>) -> Option<String> {
+    std::iter::once(remote.to_string())
+        .chain(epic.filter(|head| !head.is_empty()))
+        .find_map(|base| stale_migrations(dir, &base))
+}
+
 pub fn command() -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
     if dir.is_empty() {
@@ -550,13 +558,11 @@ pub fn command() -> ExitCode {
             against.remote
         ));
     }
-    // develop's, and for an orchestration's task its epic's: what the checkout of the epic holds (#351).
+    // For an orchestration's task also what the checkout of its epic holds, it may be ahead of origin (#351).
     let epic =
         super::epic::Epic::of_task(&dir).map(|epic| git(&["rev-parse", "HEAD"], &epic.checkout).text().to_string());
-    for base in std::iter::once("origin/develop".to_string()).chain(epic.filter(|head| !head.is_empty())) {
-        if let Some(refusal) = stale_migrations(&dir, &base) {
-            fail(&refusal);
-        }
+    if let Some(refusal) = migrations_refusal(&dir, &against.remote, epic) {
+        fail(&refusal);
     }
     super::heal_plugin();
     let sha = git(&["rev-parse", "HEAD"], &dir).text().to_string();
@@ -861,6 +867,44 @@ mod tests {
             assert!(git(&full, dir).is_ok);
         }
         git(&["rev-parse", "HEAD"], dir).text().to_string()
+    }
+
+    // #367: a task off an epic branch is held to the epic's migrations, not develop's.
+    #[test]
+    fn a_task_s_migrations_are_held_to_its_base() {
+        let dir = repo("migrations");
+        let write = |entries: &[(&str, i64)]| {
+            let entries: Vec<Value> = entries
+                .iter()
+                .map(|(tag, when)| json!({ "tag": tag, "when": when }))
+                .collect();
+            fs::create_dir_all(dir.join(JOURNAL).parent().unwrap()).unwrap();
+            fs::write(dir.join(JOURNAL), json!({ "entries": entries }).to_string()).unwrap();
+        };
+        write(&[("0000_a", 1)]);
+        commit_all(&dir);
+        assert!(git(&["update-ref", "refs/remotes/origin/develop", "HEAD"], &dir).is_ok);
+        write(&[("0000_a", 1), ("0001_epic", 5)]);
+        commit_all(&dir);
+        assert!(git(&["update-ref", "refs/remotes/origin/epic/1-x", "HEAD"], &dir).is_ok);
+        // Made before the epic's newest: develop doesn't know it, the epic does.
+        write(&[("0000_a", 1), ("0001_epic", 5), ("0002_mine", 4)]);
+        assert_eq!(migrations_refusal(&dir, "origin/develop", None), None);
+        assert!(
+            migrations_refusal(&dir, "origin/epic/1-x", None)
+                .is_some_and(|refusal| refusal.contains("0002_mine is older than 0001_epic"))
+        );
+        write(&[("0000_a", 1), ("0001_epic", 5), ("0002_mine", 6)]);
+        assert_eq!(migrations_refusal(&dir, "origin/epic/1-x", None), None);
+        // The epic's checkout, ahead of origin, is a base too.
+        write(&[("0000_a", 1), ("0001_epic", 5), ("0002_later", 8)]);
+        let ahead = commit_all(&dir);
+        write(&[("0000_a", 1), ("0001_epic", 5), ("0002_mine", 6)]);
+        assert!(
+            migrations_refusal(&dir, "origin/epic/1-x", Some(ahead))
+                .is_some_and(|refusal| refusal.contains("0002_mine is older than 0002_later"))
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // #336: a vita branch runs no cargo, also after develop brought the crate.
