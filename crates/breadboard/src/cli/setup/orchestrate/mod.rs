@@ -6,6 +6,7 @@
 mod changes;
 mod end;
 mod epic;
+mod heal;
 mod issue;
 pub mod setups;
 mod space;
@@ -266,6 +267,19 @@ pub fn command(args: &Args) -> ExitCode {
         Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
         Ok(None) => {}
         Err(why) => fail(&format!("no epic branch: {why}")),
+    }
+    // Its checkout up to its base, its briefs naming the base each worktree has (#380).
+    if !is_dry {
+        if let Some(line) = heal::follow_checkout(&main, &name) {
+            outln!("{line}");
+        }
+        let healed = heal::heal_briefs(&main, &name);
+        if !healed.is_empty() {
+            outln!(
+                "  briefs naming another base than their worktree's set right: {}",
+                healed.join(", ")
+            );
+        }
     }
     if is_dry {
         let first = plan.iter().find(|item| item.why.is_none()).unwrap_or(&plan[0]);
