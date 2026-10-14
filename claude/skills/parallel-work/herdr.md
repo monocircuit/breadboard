@@ -13,7 +13,7 @@ to call `herdr` by hand. There is a space per purpose:
 | ----- | ---- |
 | `{{space}}` | `root` (a shell in the main checkout), `overview` (`{{run}} overview --herdr`, live), and while the default stack runs its stack tabs |
 | `⇶ <name>`, one per orchestration | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
-| `<feature>`, one per worktree | `root` (a shell in the worktree), `overview` (`{{run}} overview --worktree <dir>`: branch, work, issue, MR and pipeline, the URLs and ports, the containers), `<feature>` (the tab of its claude conversation), `nvim` (nvim in the worktree when it is on the PATH: neo-tree with the files changed against {{branch}} marked, the file with gitsigns' marks against {{branch}}, `:Changes` below, see "The nvim tab" in `packages/breadboard/README.md`; it listens on `.claude/nvim.sock`, so a click on a file in the overview opens it there at the change), and while its **own** stack runs its stack tabs |
+| `<feature>`, one per worktree | `root` (a shell in the worktree), `overview` (`{{run}} overview --worktree <dir>`: branch, work, issue, MR and pipeline, the URLs and ports, the containers), `<feature>` (a claude a human runs there, or an orchestration's agent opened on demand: its agents run headless without one, [orchestrate.md](orchestrate.md) "How agents run"), `nvim` (nvim in the worktree when it is on the PATH: neo-tree with the files changed against {{branch}} marked, the file with gitsigns' marks against {{branch}}, `:Changes` below, see "The nvim tab" in `packages/breadboard/README.md`; it listens on `.claude/nvim.sock`, so a click on a file in the overview opens it there at the change), and while its **own** stack runs its stack tabs |
 
 The space of a worktree hangs under `{{space}}` in the sidebar,
 a group that folds (`▾`): the scripts open it with `herdr worktree open` on
@@ -23,8 +23,8 @@ from the token `$wt_branch` the scripts report: herdr's own `branch` stays
 empty for a linked worktree (herdrdev/herdr#2952). Branches are pink. Under
 each agent of a worktree the sidebar says what it waits for (`at work`,
 `asks you`, `waits for the pipeline`, `waits for you: merge`, `free`, …),
-reported by the main space's
-overview, which also notifies when one starts asking, fails or is merged;
+reported by the main space's overview (an orchestration's agent from its
+run status, not from a pane), which also notifies when one starts asking, fails or is merged;
 the tab bar counts who needs you (herdr README, "What an agent waits for").
 An agent card names its repo instead of repeating its space ("An agent
 card").
@@ -67,7 +67,7 @@ part right away.
 | ----------------- | ------------ |
 | a human | the space `<feature>` opens with `overview` and a tab `<feature>` in the worktree, focused. Start `claude` in it. |
 | an agent (`CLAUDECODE`) | its **own tab** moves into the space `<feature>` and is named after it; it follows with `EnterWorktree`. |
-| `wt:orchestrate` (`--origin <name>`) | the space `<feature>` opens unfocused, marked `⇶ <name>`, and a `claude` briefed on the issue starts in its `<feature>` tab; the orchestrator's tab stays in `⇶ <name>`. |
+| `wt:orchestrate` (`--origin <name>`) | the space `<feature>` opens unfocused, marked `⇶ <name>`, without a `<feature>` tab: its agent's first run, briefed on the issue, is queued and runs headless; the orchestrator's tab stays in `⇶ <name>`. |
 
 An agent normally sits in `root`, because that is where the next piece of
 work is asked for. When it takes `root` along, the main space gets a new one,
@@ -91,11 +91,12 @@ still runs in stays until the agent ends.
 adds what is missing, so it is also the way back after a herdr restart or
 after tabs were closed by hand. herdr restores its tabs after a restart, but
 as bare shells: a tab of ours whose shell idles runs its command again
-(`overview`, `nvim`, the stack tabs while the stack runs), and a worktree's
-`<feature>` tab resumes **the one claude conversation bound to the space**
-(`claude --resume`). The overview of the main space writes that binding to
-`.claude/herdr-session` of the worktree while the conversation runs: the one
-already bound while it lives, else the one running in the space. It moves the layout before this one over too:
+(`overview`, `nvim`, the stack tabs while the stack runs). No claude is
+resumed in a tab, not even one you ran yourself: resume that by hand
+(`claude --resume`, the worktree's view shows the command). An
+orchestration's agent is the conversation bound to its worktree
+(`.claude/herdr-session`) and runs headless whatever herdr does
+([orchestrate.md](orchestrate.md) "How agents run"). It moves the layout before this one over too:
 `{{branch}}` becomes `root`, a worktree's tab in the main space moves (panes and
 all) into the worktree's space, and a tab whose directory is gone closes.
 
