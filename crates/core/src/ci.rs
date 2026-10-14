@@ -182,7 +182,13 @@ impl Asked {
 /// two daemons each started their own pipelines). The first one alive keeps
 /// it; a dead one's is taken over.
 pub fn holds_scheduler(main: &Path) -> bool {
-    let file = scheduler_file(main);
+    holds(main, &scheduler_file(main))
+}
+
+/// Whether this process holds the pid file `file` of `main`: the first one
+/// alive keeps it, a dead one's is taken over.
+pub fn holds(main: &Path, file: &Path) -> bool {
+    let file = file.to_path_buf();
     let own = i64::from(std::process::id());
     let held = std::fs::read_to_string(&file)
         .ok()

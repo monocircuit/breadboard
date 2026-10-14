@@ -26,6 +26,101 @@ pub fn watch_file(main: &Path) -> PathBuf {
     dir_of(main).join("watch.json")
 }
 
+/// Whose watcher reads `main`'s CI: one daemon per checkout.
+pub fn watcher_file(main: &Path) -> PathBuf {
+    dir_of(main).join("watcher.pid")
+}
+
+/// A finished job of GitLab's REST answer (`pipelines/:id/jobs`), None while it runs.
+pub fn run_of(job: &serde_json::Value) -> Option<Run> {
+    let finished = crate::time::parse_iso(job.get("finished_at")?.as_str()?)?;
+    Some(Run {
+        id: job.get("id")?.as_i64()?,
+        name: job.get("name")?.as_str()?.to_string(),
+        pipeline: job
+            .pointer("/pipeline/id")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        status: job.get("status")?.as_str()?.to_string(),
+        duration: job.get("duration").and_then(serde_json::Value::as_f64).unwrap_or(0.0),
+        queued: job
+            .get("queued_duration")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0),
+        runner: job
+            .pointer("/runner/description")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        finished,
+        cpu: None,
+        mem: None,
+    })
+}
+
+/// A job of GitLab's REST answer that runs now, its seconds counted to `now`.
+pub fn running_of(job: &serde_json::Value, now: i64) -> Option<Running> {
+    if job.get("status")?.as_str()? != "running" {
+        return None;
+    }
+    let started = crate::time::parse_iso(job.get("started_at")?.as_str()?)?;
+    Some(Running {
+        id: job.get("id")?.as_i64()?,
+        name: job.get("name")?.as_str()?.to_string(),
+        pipeline: job
+            .pointer("/pipeline/id")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        mr: job
+            .pointer("/pipeline/ref")
+            .and_then(serde_json::Value::as_str)
+            .and_then(mr_of_ref),
+        elapsed: (now - started).max(0) as f64 / 1000.0,
+        url: job.get("web_url").and_then(serde_json::Value::as_str).map(String::from),
+    })
+}
+
+/// docker's `312.5MiB / 15.5GiB` (its first half) in MB.
+fn megabytes(text: &str) -> Option<f64> {
+    let used = text.split('/').next()?.trim();
+    let split = used.find(|c: char| c.is_ascii_alphabetic())?;
+    let (number, unit) = used.split_at(split);
+    let number: f64 = number.trim().parse().ok()?;
+    let factor = match unit {
+        "B" => 1.0 / 1_048_576.0,
+        "KiB" | "kB" | "KB" => 1.0 / 1024.0,
+        "MiB" | "MB" => 1.0,
+        "GiB" | "GB" => 1024.0,
+        _ => return None,
+    };
+    Some(number * factor)
+}
+
+/// The local runner's jobs and what they use now: `ps` lines `<container>\t<job id>`,
+/// `stats` lines `<container>\t<cpu %>\t<memory>`; job id → (cores, MB),
+/// summed over its containers (its services too).
+pub fn usage_of(ps: &str, stats: &str) -> BTreeMap<i64, (f64, f64)> {
+    let jobs: BTreeMap<&str, i64> = ps
+        .lines()
+        .filter_map(|line| {
+            let (container, job) = line.trim().split_once('\t')?;
+            Some((container, job.trim().parse().ok()?))
+        })
+        .collect();
+    let mut usage: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+    for line in stats.lines() {
+        let mut parts = line.trim().split('\t');
+        let (Some(container), Some(cpu), Some(mem)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(job) = jobs.get(container) else { continue };
+        let cores = cpu.trim().trim_end_matches('%').parse::<f64>().unwrap_or(0.0) / 100.0;
+        let entry = usage.entry(*job).or_default();
+        entry.0 += cores;
+        entry.1 += megabytes(mem).unwrap_or(0.0);
+    }
+    usage
+}
+
 /// A finished job.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -72,8 +167,9 @@ pub struct History {
     pub seen: BTreeMap<i64, String>,
     /// Running jobs' CPU samples by job id.
     pub samples: BTreeMap<i64, Samples>,
-    /// The flags already posted as actions (`slow:<job>`, `hung:<id>`).
-    pub posted: BTreeSet<String>,
+    /// The flags posted as actions (`slow:<job>`, `hung:<id>`): each
+    /// orchestration's record and the action's id in it.
+    pub posted: BTreeMap<String, Vec<(String, i64)>>,
 }
 
 impl History {
@@ -552,6 +648,37 @@ mod tests {
         assert_eq!(sampled.runs[0].cpu, Some(0.4));
         assert_eq!(sampled.runs[0].mem, Some(300.0));
         assert_eq!(mr_of_ref("refs/merge-requests/353/head"), Some(353));
+    }
+
+    #[test]
+    fn reads_gitlab_s_jobs_and_docker_s_usage() {
+        let job = serde_json::json!({
+            "id": 7, "name": "check:x", "status": "success", "duration": 638.2, "queued_duration": 1.5,
+            "runner": { "description": "laptop" }, "started_at": "2026-10-13T12:00:00Z",
+            "finished_at": "2026-10-13T12:10:38Z", "pipeline": { "id": 3, "ref": "refs/merge-requests/353/head" },
+        });
+        let run = run_of(&job).unwrap();
+        assert_eq!(
+            (run.id, run.pipeline, run.duration, run.runner.as_deref()),
+            (7, 3, 638.2, Some("laptop"))
+        );
+        assert!(running_of(&job, NOW).is_none());
+        let mut live = job.clone();
+        live["status"] = "running".into();
+        live["finished_at"] = serde_json::Value::Null;
+        assert!(run_of(&live).is_none());
+        let started = crate::time::parse_iso("2026-10-13T12:00:00Z").unwrap();
+        let running = running_of(&live, started + 90_000).unwrap();
+        assert_eq!((running.elapsed, running.mr), (90.0, Some(353)));
+        let ps = "aaa\t7\nbbb\t7\nccc\t8\n";
+        let stats = "aaa\t35.00%\t300MiB / 15GiB\nbbb\t5.00%\t1GiB / 15GiB\nddd\t99%\t1GiB / 1GiB\n";
+        let usage = usage_of(ps, stats);
+        assert_eq!(usage.len(), 1);
+        let (cores, mem) = usage[&7];
+        assert!(
+            (cores - 0.4).abs() < 1e-9 && (mem - 1324.0).abs() < 1e-9,
+            "{cores} {mem}"
+        );
         assert_eq!(mr_of_ref("develop"), None);
     }
 }
