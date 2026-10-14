@@ -45,6 +45,11 @@ pub enum Act {
     Chat,
     /// The orchestration's auto mode switched (#384).
     Auto,
+    /// A try a checker answered opened again for the user (#384).
+    Overturn {
+        dir: PathBuf,
+        id: i64,
+    },
     /// Two clicks dismiss a free agent (#289).
     Dismiss(String),
     /// A free agent's id: `claude --resume <id>` into the clipboard (#345).
@@ -174,6 +179,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
         Act::Auto => toggle_auto(app),
+        Act::Overturn { dir, id } => overturn(app, &dir, id),
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
@@ -475,6 +481,33 @@ fn dismiss(app: &mut Overview, id: &str) {
 /// typed into its agent's pane; nothing while the button isn't there.
 /// An MR waiting in the CI queue to its front (#357): the daemon's queue
 /// starts its pipeline as the next one, once the runner has a free slot.
+/// `overturn` on a checked try (#384): the try open again, unanswered, its
+/// check marked overturned (no checker takes it again at this head); the
+/// user answers it in ACTIONS.
+fn overturn(app: &mut Overview, dir: &Path, id: i64) {
+    use breadboard_core::try_check::{checks_of, last_check, write_check};
+    let file = breadboard_core::actions::actions_file(dir);
+    match breadboard_core::actions::reopen(&file, id) {
+        Ok(true) => {
+            if let Some(check) = last_check(&checks_of(dir), id).cloned() {
+                let _ = write_check(
+                    dir,
+                    &breadboard_core::try_check::Check {
+                        is_overturned: true,
+                        ..check
+                    },
+                );
+            }
+            app.actor
+                .log(Paint::Green, format!("try #{id} is open again: answer it in ACTIONS"));
+        }
+        Ok(false) => app.actor.log(Paint::Dim, format!("try #{id} is open already")),
+        Err(error) => app
+            .actor
+            .log(Paint::Red, format!("try #{id} not opened again: {error}")),
+    }
+}
+
 /// A click on the auto mode row (#384): its record says the other way,
 /// the next read shows it.
 fn toggle_auto(app: &mut Overview) {

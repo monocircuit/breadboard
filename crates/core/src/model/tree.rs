@@ -300,6 +300,8 @@ pub struct Node {
     pub problem: Option<String>,
     /// What its agent is on now (#341): its note or its last answer's first line.
     pub now: Option<Now>,
+    /// Its tries a checker answered or holds (#384).
+    pub checked: Vec<crate::try_check::Checked>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -824,6 +826,17 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     _ => Vec::new(),
                 },
                 problem: tree.and(found).and_then(|found| found.problem.clone()),
+                checked: tree
+                    .map(|tree| {
+                        crate::try_check::checked_of(
+                            &tree.dir,
+                            &tree.checks,
+                            &tree.actions,
+                            &tree.answered,
+                            mr.is_some_and(|mr| mr.is_open()),
+                        )
+                    })
+                    .unwrap_or_default(),
                 now: tree.and_then(|tree| {
                     let claude = tree.claude.as_ref();
                     now_of(
@@ -1802,6 +1815,7 @@ mod tests {
             title: String::new(),
             boxes: Vec::new(),
             problem: None,
+            checked: Vec::new(),
             now: None,
             go: Go::Nothing,
         }

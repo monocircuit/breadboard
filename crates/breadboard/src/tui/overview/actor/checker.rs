@@ -111,6 +111,7 @@ fn start(app: &mut Overview, due: Due) {
         tokens: 0,
         pid: None,
         session: Some(session.clone()),
+        is_overturned: false,
     };
     let what = format!(
         "try #{} of {}",

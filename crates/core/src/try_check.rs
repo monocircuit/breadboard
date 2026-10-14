@@ -113,6 +113,9 @@ pub struct Check {
     /// Its conversation: the transcript #372 prices toward the MR's cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// The user opened the try again against its answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_overturned: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,6 +302,62 @@ pub fn broken_note(model: &str, reason: &str) -> String {
     format!("{reason} (checked by {model})")
 }
 
+/// A checked try as its worktree's block shows it: the check's line, its
+/// evidence (the answer, relative to the worktree), whether the user can
+/// still overturn its answer (the try answered by it, its MR open).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    pub id: i64,
+    pub text: String,
+    pub evidence: Option<String>,
+    pub can_overturn: bool,
+}
+
+/// The checked tries of a worktree, its latest check each, while the try is
+/// open or answered.
+pub fn checked_of(
+    dir: &Path,
+    checks: &[Check],
+    actions: &[Action],
+    answered: &[Action],
+    is_mr_open: bool,
+) -> Vec<Checked> {
+    let mut ids: Vec<i64> = checks.iter().map(|check| check.id).collect();
+    ids.dedup();
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| seen.insert(*id));
+    ids.into_iter()
+        .filter_map(|id| {
+            let check = last_check(checks, id)?;
+            let is_open = actions.iter().any(|action| action.id == id && action.is_try());
+            let given = answered.iter().rev().find(|action| action.id == id && action.is_try());
+            if !is_open && given.is_none() {
+                return None;
+            }
+            let by_it = check.verdict.as_ref().and_then(Verdict::answer);
+            let can_overturn = is_mr_open
+                && !check.is_overturned
+                && by_it.is_some()
+                && given.is_some_and(|given| given.answer.as_deref() == by_it);
+            let mut text = row_text(check);
+            if check.is_overturned {
+                text.push_str(" · overturned by you");
+            }
+            let evidence = check
+                .evidence
+                .as_ref()
+                .map(|evidence| evidence.join("answer.md"))
+                .and_then(|answer| answer.strip_prefix(dir).ok().map(|path| path.display().to_string()));
+            Some(Checked {
+                id,
+                text,
+                evidence,
+                can_overturn,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +423,7 @@ mod tests {
             tokens: 0,
             pid: None,
             session: None,
+            is_overturned: false,
         };
         let ids = |due: Vec<&Action>| due.iter().map(|action| action.id).collect::<Vec<_>>();
         assert_eq!(ids(due(&actions, &[], "a")), [1, 2]);
@@ -389,6 +449,7 @@ mod tests {
             tokens: 0,
             pid: Some(42),
             session: None,
+            is_overturned: false,
         };
         write_check(&dir, &check).unwrap();
         assert_eq!(row_text(&checks_of(&dir)[0]), "haiku checks it …");
@@ -422,6 +483,69 @@ mod tests {
         let args = args_of("haiku", "s-1", "check it");
         assert_eq!(args[..6], ["-p", "check it", "--session-id", "s-1", "--model", "haiku"]);
         assert!(args.contains(&"stream-json".to_string()));
+    }
+
+    #[test]
+    fn a_checked_try_can_be_overturned_while_its_answer_is_the_checkers() {
+        let dir = Path::new("/w");
+        let check = Check {
+            id: 1,
+            head: "a".into(),
+            model: "haiku".into(),
+            state: State::Done,
+            verdict: Some(Verdict::Good("it shows".into())),
+            evidence: Some(evidence_dir(dir, 1, "a")),
+            at: String::new(),
+            tokens: 0,
+            pid: None,
+            session: None,
+            is_overturned: false,
+        };
+        let given = Action {
+            answer: Some("looks good".into()),
+            ..tried(1, Some("x"), None)
+        };
+        let checked = checked_of(
+            dir,
+            std::slice::from_ref(&check),
+            &[],
+            std::slice::from_ref(&given),
+            true,
+        );
+        assert_eq!(
+            checked,
+            [Checked {
+                id: 1,
+                text: "checked by haiku · looks good · it shows".into(),
+                evidence: Some(".claude/try-checks/1-a/answer.md".into()),
+                can_overturn: true,
+            }]
+        );
+        assert!(
+            !checked_of(
+                dir,
+                std::slice::from_ref(&check),
+                &[],
+                std::slice::from_ref(&given),
+                false
+            )[0]
+            .can_overturn,
+            "merged"
+        );
+        assert!(
+            checked_of(dir, std::slice::from_ref(&check), &[], &[], true).is_empty(),
+            "the try is gone"
+        );
+        let overturned = Check {
+            is_overturned: true,
+            ..check
+        };
+        let open = checked_of(dir, &[overturned], &[tried(1, Some("x"), None)], &[], true);
+        assert_eq!(
+            open[0].text,
+            "checked by haiku · looks good · it shows · overturned by you"
+        );
+        assert!(!open[0].can_overturn);
     }
 
     #[test]

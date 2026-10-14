@@ -328,6 +328,50 @@ pub(super) fn said_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
     }
 }
 
+/// Its tries a checker answered or holds (#384): `try #1  checked by haiku ·
+/// looks good · <reason>`, a click on it opens what the checker said in the
+/// worktree's nvim (its evidence beside it), `overturn` opens the try again
+/// for the user while its MR is open.
+pub(super) fn checked_lines(scene: &mut Scene<Act>, node: &Node) {
+    let Some(dir) = node.dir.as_ref().filter(|_| node.has_tree) else {
+        return;
+    };
+    for checked in &node.checked {
+        let line = |scene: &mut Scene<Act>| {
+            scene.atom(vec![look::dim(format!("try #{}", checked.id))]);
+            scene.pad_to(SAID_AT);
+            scene.indent(SAID_AT);
+            look::say(scene, &checked.text, theme::dim());
+            scene.indent(0);
+            scene.end_line();
+        };
+        match &checked.evidence {
+            Some(file) => scene.block(
+                Act::OpenFile {
+                    dir: dir.clone(),
+                    file: file.clone(),
+                    line: None,
+                },
+                line,
+            ),
+            None => line(scene),
+        }
+        if checked.can_overturn {
+            scene.pad_to(SAID_AT);
+            scene.button(
+                "overturn",
+                theme::Tone::Yellow,
+                Act::Overturn {
+                    dir: dir.clone(),
+                    id: checked.id,
+                },
+            );
+            scene.atom_gap(vec![look::dim("opens the try again for you")], 2);
+            scene.end_line();
+        }
+    }
+}
+
 /// Where the text of `problem` and `now` starts, 1 after the label `problem`.
 const SAID_AT: u16 = 8;
 

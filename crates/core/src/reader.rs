@@ -335,6 +335,7 @@ impl LocalReader {
             "herdr-session",
             "overview-sent.json",
             "note.json",
+            "try-checks.json",
         ]
         .iter()
         .map(|name| claude.join(name))

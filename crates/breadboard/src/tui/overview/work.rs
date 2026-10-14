@@ -445,6 +445,7 @@ fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx
                     look::say(scene, &node.title, theme::dim());
                     scene.end_line();
                     nodes::said_lines(scene, node, ctx);
+                    nodes::checked_lines(scene, node);
                 }
                 None => {}
             }
@@ -582,6 +583,7 @@ mod tests {
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
             problem: None,
+            checked: Vec::new(),
             now: None,
             boxes: vec![],
             go: if has_tree {
