@@ -632,6 +632,7 @@ impl LocalReader {
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
             ci: crate::ci::Queue::read(&self.main, now),
+            ci_watch: crate::ci_watch::Report::read(&self.main, now),
             epic: epic_local(&self.main, record.as_ref()),
             record,
         }

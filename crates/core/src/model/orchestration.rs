@@ -90,6 +90,8 @@ pub struct OrchestrationLocal {
     pub test_origin: Option<String>,
     /// The CI queue of the repo while a daemon keeps it (#357).
     pub ci: Option<crate::ci::Queue>,
+    /// What the CI job watcher found while a daemon keeps it (#379).
+    pub ci_watch: Option<crate::ci_watch::Report>,
     /// Its epic branch (#350), None for one that works on develop.
     pub epic: Option<super::epic_row::EpicLocal>,
 }
@@ -218,6 +220,8 @@ pub struct OrchestrationModel {
     pub stale: Vec<String>,
     /// The runner's load for the band (#357): `CI 3/4 slots · 2 queued`.
     pub ci_load: Option<String>,
+    /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
+    pub ci_watch: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
     pub ci_published: Option<crate::ci::Published>,
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
@@ -711,6 +715,11 @@ fn merge_requests_of(
             .and_then(|queue| queue.places.get(&mr.iid))
             .filter(|place| place.is_waiting())
             .cloned();
+        let hung = local
+            .ci_watch
+            .as_ref()
+            .filter(|_| !is_merged)
+            .and_then(|report| report.hung_of(mr.iid));
         let mut reasons = reasons;
         if let Some(place) = &ci
             && let Some(reason) = reasons.iter_mut().find(|reason| reason.text == "no pipeline yet")
@@ -721,9 +730,18 @@ fn merge_requests_of(
         MrFacts {
             iid: mr.iid,
             url: mr.url.clone(),
-            pipeline: match &ci {
-                Some(place) => ci_mark(place, mr.pipeline.as_ref()),
-                None => pipeline_mark(mr.pipeline.as_ref()),
+            pipeline: match (&ci, hung) {
+                (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
+                // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
+                (None, Some(hung)) => Span {
+                    text: format!("⏳ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
+                    paint: super::Paint::Red,
+                    url: hung
+                        .url
+                        .clone()
+                        .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
+                },
+                (None, None) => pipeline_mark(mr.pipeline.as_ref()),
             },
             ci,
             title: mr.title.clone(),
@@ -967,6 +985,7 @@ pub fn orchestration_of(
         holds: HashMap::new(),
         stale: Vec::new(),
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
+        ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),
