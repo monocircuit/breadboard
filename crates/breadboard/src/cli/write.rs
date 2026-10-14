@@ -7,6 +7,7 @@ mod action;
 mod boxes;
 mod change;
 mod common;
+mod epic;
 mod glab;
 pub(super) mod mr;
 mod note;
@@ -24,6 +25,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:note" => note::run(&argv),
         "wt:mr" => mr::run(&argv),
         "wt:wait" => wait::run(&argv),
+        "wt:epic" => epic::run(&argv),
         _ => return None,
     };
     Some(common::finish(outcome))

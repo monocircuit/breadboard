@@ -53,7 +53,7 @@ static CLOSING: LazyLock<Regex> = LazyLock::new(|| {
 static ISSUE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#(\d+)").unwrap());
 
 /// The issues a description closes when its MR is merged, as GitLab reads it.
-fn closed_by(body: &str) -> Vec<u64> {
+pub(super) fn closed_by(body: &str) -> Vec<u64> {
     let mut numbers: Vec<u64> = CLOSING
         .captures_iter(body)
         .flat_map(|found| {
