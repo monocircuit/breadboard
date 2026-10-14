@@ -144,6 +144,8 @@ pub struct Merged {
     pub groups: Vec<String>,
     pub changesets: Vec<Changeset>,
     pub orchestration: Option<String>,
+    /// What its issue's agents spent on it (#372); None in the repo's changelog.
+    pub spent: Option<breadboard_core::spend::Spend>,
     /// Its agent retired at the merge (#381): `retired_note`.
     pub retired: Option<String>,
 }
@@ -222,8 +224,12 @@ pub fn changelog_text(title: &str, merged: &[Merged], closed: &[Closed]) -> Stri
             }
             lines.extend([format!("### {group}"), String::new()]);
             for entry in in_group {
+                let spent = entry
+                    .spent
+                    .map(|spent| format!(" · {}", spent.text()))
+                    .unwrap_or_default();
                 lines.push(format!(
-                    "- {} {} · {}",
+                    "- {} {} · {}{spent}",
                     refs_of(entry),
                     group_of(&entry.title).1,
                     time_of(ms_of(&entry.merged_at))
@@ -342,6 +348,7 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
     };
     let mut merged = Vec::new();
     let mut closed = Vec::new();
+    let spent = breadboard_core::spend::by_issue_of(&found);
     for (number, mr, issue) in read {
         match mr {
             Some(mr) => {
@@ -360,6 +367,10 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
                     merged_at: str_of(&mr, "merged_at").unwrap_or_default().to_string(),
                     retired: retired_note(&found, int_of(&mr, "iid").unwrap_or_default()),
                     url,
+                    spent: number
+                        .and_then(|number| spent.get(&number))
+                        .filter(|spent| !spent.is_empty())
+                        .copied(),
                     ..Merged::default()
                 });
             }
@@ -978,6 +989,7 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
                 // The repo's changelog says no agent's retirement.
                 retired: None,
                 url,
+                spent: None,
             }
         })
         .collect();
@@ -1238,11 +1250,16 @@ mod tests {
             title: "fix: it".into(),
             merged_at: "2026-09-30T10:00:00.000Z".into(),
             issue: Some((7, "u/7".into())),
+            spent: Some(breadboard_core::spend::Spend {
+                tokens: 1_800_000,
+                dollars: 4.2,
+            }),
             ..Merged::default()
         }];
         let text = changelog_text("B", &merged, &[]);
         assert!(text.starts_with("# ⇶ B: changelog\n\n## "));
         assert!(text.contains("### Fixes\n\n- [!5](u/5) [#7](u/7) it · "));
+        assert!(text.contains(" · 1.8 M tokens · ≈ $4.20\n"), "{text}");
         assert_eq!(
             changelog_text("B", &[], &[]),
             "# ⇶ B: changelog\n\nNothing merged yet.\n"

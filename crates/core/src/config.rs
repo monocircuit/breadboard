@@ -276,13 +276,20 @@ pub struct Orchestration {
     pub epic_branches: bool,
 }
 
-/// An orchestration's agents (#381).
+/// An orchestration's agents: what they may spend (#372), in tokens (`"20 M"`)
+/// or dollars (`"$40"`), and when one starts fresh (#381).
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Agents {
+    /// What the repo's agents may spend a day: past it the run engine starts
+    /// no run until midnight or a `continue anyway`; None: no limit.
+    pub daily_limit: Option<crate::spend::Limit>,
+    /// What an orchestration's agents may spend in all, shown against its
+    /// spend in its band; None: none shown.
+    pub orchestration_budget: Option<crate::spend::Limit>,
     /// The share of its context window, in percent, above which an agent
     /// retires at its merge instead of taking a next issue: its next one
-    /// goes to a fresh agent with its written handoff.
+    /// goes to a fresh agent with its written handoff (#381).
     pub fresh_above: u8,
 }
 
@@ -292,6 +299,8 @@ pub const FRESH_ABOVE: u8 = 40;
 impl Default for Agents {
     fn default() -> Self {
         Agents {
+            daily_limit: None,
+            orchestration_budget: None,
             fresh_above: FRESH_ABOVE,
         }
     }
