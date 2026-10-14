@@ -56,14 +56,15 @@ pub fn brief_of(
 
 You work on issue #{number} of {repo}, started by the orchestration `{name}` (herdr space `{label}`).
 {worktree}
+You run headless: breadboard resumes your conversation (`claude -p`) whenever something comes for you, and nothing runs while you wait. Every line for you (an answer, a merge, a failed pipeline, the end of a wait) starts your next run; when you stop, you are done until then.
 
 1. Read the issue: `glab issue view {number} --comments`, then the AGENTS.md files and skills it touches.
 2. Work as AGENTS.md says: commit, `{run} wt:check`, push per step (green means wt:check passed on that commit: the pre-push hook refuses any other, never `--no-verify`; a failing test is fixed; one that fails on {branch_name} too is fixed once, in its own fix MR, and the others wait for it with `{run} wt:wait`), the draft MR with the first commit (`{run} wt:mr`), boxes ticked with `{run} wt:tick`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
    A change requested for your MR (by the user or the orchestrator): `{run} wt:action change "<what>"` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
    Your pushes skip CI (#357): breadboard starts your MR's pipeline once every box of the issue is ticked (after-deploy ones excepted) and `{run} wt:check` passed at HEAD, in the runner's order; until then `wt:check` is the gate. Don't start one yourself.
-   Your MR's pipeline failed: the overview types `[overview] the pipeline of !N failed: job …, <url>: …` into this tab by itself. Read the job's log (the url, or `glab ci trace <job id>`), fix what is your MR's doing and push. When the line says {branch_name} fails the same job, it isn't yours: say so in the MR (`glab mr note`) and go on, don't chase it.
-   Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run `{run} wt:wait !N … --then "<what next>"` with `run_in_background` and stop; don't ask the orchestrator. Its line wakes you once they are merged (or why the wait ended).
-3. **The overview shows your work, you don't report it.** Your block in its WORK shows herdr's state of your agent and what you wait for, with commits, MR, pipeline and the boxes, under it the problem from your issue's Goal or Bug and what you are on now: no status message.
+   Your MR's pipeline failed: you get the line `[overview] the pipeline of !N failed: job …, <url>: …` by itself. Read the job's log (the url, or `glab ci trace <job id>`), fix what is your MR's doing and push. When the line says {branch_name} fails the same job, it isn't yours: say so in the MR (`glab mr note`) and go on, don't chase it.
+   Your issue started at once, even when it builds on an open MR or its files move in one: when you have to wait for other MRs, run `{run} wt:wait !N … --then "<what next>"` and stop: it records the wait and returns at once; don't ask the orchestrator. Its line starts your next run once they are merged (or says why the wait ended).
+3. **The overview shows your work, you don't report it.** Your block in its WORK shows your state and what you wait for, with commits, MR, pipeline and the boxes, under it the problem from your issue's Goal or Bug and what you are on now: no status message.
    At every stage, `{run} wt:action note "<one line>"`: what you are on, in plain words for the user (`cause found: …`, `fix pushed, waiting for the pipeline`, `waits for !N`). Your block shows the newer of it and the first line of your last answer.
    `SendMessage` to the orchestrator only for what needs it, one short message:
    - the plan, when it differs from the issue;
@@ -77,9 +78,10 @@ You work on issue #{number} of {repo}, started by the orchestration `{name}` (he
    - `{run} wt:action decide "<what is decided, one sentence>? <why the recommendation, one line>" --option "<label>" --why "<what happens>" --option "<label>" --why "<what happens>" --recommend <label>`: the user answers from the row, so the question says precisely what is decided, each option a short label (the answer you get) with what happens as its `--why` (or `--option "<label>: <what happens>"`), not `A`/`B`, and `--recommend` marks yours `(Recommended)`. Together with the SendMessage to the orchestrator that explains them. `AskUserQuestion` is off in headless runs (#360): a question for the user is always a `decide`;
    - `{run} wt:action plan "<the plan in one line>"` before larger work, for an `ok` or `different`;
    - `{run} wt:action look "<what>"` for anything else the user has to do.
-   The user's click arrives typed into this tab as one line, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user, maybe with images: until it arrives, wait for it instead of guessing from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `{run} wt:action --done <id>` (`--list` shows them). While you are working, leave none.
-5. The user may type into this tab directly: their word wins over the orchestrator's.
-6. Your next issue may come as the first prompt of your conversation, resumed in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: "keep")`, then `EnterWorktree(path: "<dir>")`. Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
+   The user's click arrives as one line in your next run, `[overview] #<id> <kind> "<text>" → <answer>`: go on with it, don't wait or poll for it. A `broken` or `different` comes as `… → broken: <what is wrong>`, written by the user: work from that, never from the bare word. The answered action goes by itself. Once one no longer applies (done by the user, overtaken), `{run} wt:action --done <id>` (`--list` shows them). While you are working, leave none.
+   A tool call auto mode would ask the user about is denied in your run, and the overview asks the user for you (a `permission` action): say in your note what you need it for and stop. Your next line is `[overview] the user allowed <rule>, go on: it is allowed in this run.` or `[overview] the user denied <rule>: don't run it, go on without it or leave an action for the user.` A call the classifier or a deny rule blocks never reaches the user: go on without it.
+5. The user may open your conversation in a tab and type there: their word wins over the orchestrator's.
+6. Your next issue may come as a line of your next run, which then stands in its worktree under its name: `[overview] next issue #<n>, your name is <n-feature> now: your conversation runs again in its worktree <dir>. When `git rev-parse --show-toplevel` prints another directory: `ExitWorktree(action: "keep")`, then `EnterWorktree(path: "<dir>")`. Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.
 {tail}"#
     )
 }
@@ -128,6 +130,10 @@ mod tests {
             Some("You are a reused agent: x."),
             Path::new("/r/p"),
         );
+        assert!(brief.contains("\nYou run headless: breadboard resumes your conversation (`claude -p`)"));
+        assert!(brief.contains("\n   A tool call auto mode would ask the user about is denied in your run"));
+        assert!(!brief.contains("run_in_background"));
+        assert!(!brief.contains("this tab"));
         assert!(brief.contains("You come from another worktree: before any work `git rev-parse --show-toplevel` prints `/r/p-12-a-title`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"/r/p-12-a-title\")`, once."));
         assert!(brief.contains("   The orchestrator is the session `s-1` (`ListAgents`).\n"));
         assert!(brief.ends_with(
