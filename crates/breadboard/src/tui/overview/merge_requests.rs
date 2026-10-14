@@ -178,7 +178,7 @@ pub(super) fn failed_of<'a>(ctx: &'a Ctx, mr: &MrFacts) -> Option<&'a str> {
 }
 
 /// What an MR's status says, at the right of its head: `2 h ago` under the
-/// merged fold, or `ready to merge`; while the overview merges it (two clicks
+/// merged fold (`1.8 M tokens · ≈ $4 · 2 h ago` with what it cost), or `ready to merge`; while the overview merges it (two clicks
 /// on its merge action) `merging …`, then `merged`. Never a button: the row's
 /// click opens the MR, as Node's (§11.3).
 pub(super) fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static>> {
@@ -189,7 +189,11 @@ pub(super) fn status_of(mr: &MrFacts, merge: Option<&Merge>) -> Vec<Span<'static
         // Under `▾ 42 merged` its age alone, as git log's dates: `merged`
         // on each row said the fold's word again and cost the title 7 columns.
         let text = status.text.strip_prefix("merged ").unwrap_or(&status.text);
-        return vec![look::dim(text)];
+        // What its issue cost (#372): the open ones' blocks say it among their node's facts.
+        return match &mr.spent {
+            Some(spent) => vec![look::dim(format!("{} · {text}", spent.text()))],
+            None => vec![look::dim(text)],
+        };
     }
     match merge.map(|merge| merge.phase) {
         Some(Phase::Running) if is_ready(mr) => vec![look::span("merging …", theme::tone(Tone::Yellow))],
@@ -646,6 +650,18 @@ mod tests {
         let closed = done(2, "closed");
         assert_eq!(text(&status_of(closed.mr.as_ref().unwrap(), None)), "closed");
         assert_eq!(text(&status_of(mrs.merged[0].mr.as_ref().unwrap(), None)), "3 h ago");
+        // With what its issue cost (#372).
+        let mut paid = done(1, "merged 3 h ago");
+        if let Some(mr) = paid.mr.as_mut() {
+            mr.spent = Some(breadboard_core::spend::Spend {
+                tokens: 1_800_000,
+                dollars: 4.2,
+            });
+        }
+        assert_eq!(
+            text(&status_of(paid.mr.as_ref().unwrap(), None)),
+            "1.8 M tokens · ≈ $4.20 · 3 h ago"
+        );
     }
 
     #[test]
@@ -687,6 +703,7 @@ mod tests {
             boxes: vec![],
             open_boxes: vec![],
             issue: None,
+            spent: None,
         }
     }
 }
