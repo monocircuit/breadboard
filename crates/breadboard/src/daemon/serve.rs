@@ -288,6 +288,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
                     .insert(main.clone())
             {
                 tokio::spawn(super::ci::schedule(main.clone()));
+                tokio::spawn(super::watch::watch(main.clone()));
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.
             start_engine(state, &main);

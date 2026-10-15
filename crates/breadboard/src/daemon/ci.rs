@@ -293,12 +293,12 @@ fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<Ran, String> {
 }
 
 /// `glab api <endpoint>` as the user, from the main checkout: its JSON.
-fn glab_get(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
+pub(super) fn glab_get(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
     glab_api(main, glab, &["api", endpoint])
 }
 
 /// `glab api --method POST <endpoint>` as the user, from the main checkout: its JSON.
-fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
+pub(super) fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
     glab_api(main, glab, &["api", "--method", "POST", endpoint])
 }
 

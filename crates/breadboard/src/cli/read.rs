@@ -2,6 +2,7 @@
 //! command line of `overview` (its view, live or printed, is the TUI's).
 
 mod args;
+mod ci_watch;
 mod gitlab;
 mod issues;
 mod list;
@@ -25,6 +26,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:list" => &list::TAKES,
         "wt:plan" => &plan::TAKES,
         "wt:issues" => &issues::TAKES,
+        "ci:watch" => &ci_watch::TAKES,
         _ => return None,
     };
     if let Some(code) = args::check(args, takes) {
@@ -33,6 +35,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
     Some(match command {
         "wt:list" => list::run(),
         "wt:plan" => plan::run(args),
+        "ci:watch" => ci_watch::run(),
         _ => issues::run(),
     })
 }
