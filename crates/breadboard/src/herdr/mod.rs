@@ -9,6 +9,7 @@
 //! breadboard herdr restore [--startup] the plugin's actions (herdr/herdr-plugin.toml):
 //! breadboard herdr open|pane <pane>      herdr runs them in the plugin's directory
 //! breadboard herdr status                the tab bar's line
+//! breadboard herdr heal                  the overview again in its tabs that hold a bare shell
 //! breadboard hook stop-answers         Claude Code's Stop hook: answers of the overview
 //! ```
 //!
@@ -36,7 +37,7 @@ pub use breadboard_core::record::{PLUGIN, SPACE};
 
 const USAGE: &str = "usage: breadboard herdr [--here | --no-attach | --reload | --stop]   (pnpm herdr)
        breadboard herdr:install                              (pnpm herdr:install)
-       breadboard herdr restore [--startup] | open <pane> | pane <pane> | status
+       breadboard herdr restore [--startup] | open <pane> | pane <pane> | status | heal
                                                              (the plugin's actions, run by herdr)
   panes: overview, commands, reload, stack-up, stack-down, stack-ps";
 
@@ -158,7 +159,7 @@ pub fn main(args: &[String]) -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Some("restore" | "open" | "pane" | "status") => plugin::main(args),
+        Some("restore" | "open" | "pane" | "status" | "heal") => plugin::main(args),
         Some(word) if !word.starts_with('-') => usage_error(&format!("herdr has no action {word}")),
         _ => session_flags(args),
     }

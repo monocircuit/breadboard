@@ -2,7 +2,8 @@
 //! (auto-actions.mjs, workers.mjs, free.mjs, waits.mjs): the lines core's
 //! model tells (conflicts with develop, failed pipelines), the hand-outs
 //! and fresh starts it orders, the removal of merged worktrees, the waits
-//! whose command is gone, the notifications of new actions. Each guarded
+//! whose command is gone, the notifications of new actions, the plan kept in
+//! step with the merge order (#376). Each guarded
 //! against repeats: a key in flight or sent is never sent again.
 
 use super::spawn::{self, Background, error_of};
@@ -13,15 +14,17 @@ use breadboard_core::git::{base_of, behind_base, feature_of, work_files};
 use breadboard_core::gitlab::Remote;
 use breadboard_core::herdr::{Agent, is_in_herdr};
 use breadboard_core::json;
+use breadboard_core::lock::with_dir_lock;
 use breadboard_core::model::auto_actions::{Removal, Tell, sent_file};
 use breadboard_core::model::clean_up::{CleanUp, clean_up_of};
 use breadboard_core::model::display_names::names_of;
-use breadboard_core::model::handovers::{CONTEXT_LIMIT, agent_name_of};
+use breadboard_core::model::handovers::agent_name_of;
+use breadboard_core::model::next::stamped;
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
 use breadboard_core::model::{Entry, Paint, Tree, issues_of};
-use breadboard_core::record::{Worker, write_worker};
+use breadboard_core::record::{Worker, record_file, write_plan, write_worker};
 use breadboard_core::time::{now_ms, to_iso};
 use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
 use serde_json::json;
@@ -36,6 +39,13 @@ const HALF_SET_UP: &str = "wt:new failed after the setup";
 const SENT_KEPT: usize = 50;
 /// How long a first click keeps a removal armed.
 const REMOVE_ARM: Duration = Duration::from_millis(5000);
+/// How long after writing the plan the overview writes it again at the
+/// earliest (#376): its record read back first, so one change is one write.
+const PLAN_EVERY: i64 = 5_000;
+/// After a write that failed: the record's lock held, the file unwritable.
+const PLAN_RETRY: i64 = 60_000;
+/// How long the record's lock holds before it is taken over (as wt:plan's).
+const PLAN_LOCK_STALE: Duration = Duration::from_millis(5000);
 
 /// What the automatic side remembers between reads.
 #[derive(Debug, Default)]
@@ -62,6 +72,8 @@ pub struct Auto {
     /// MRs into an epic merged by themselves, by iid: the head each was
     /// tried at. One that failed waits for a new push (#350).
     epic_tried: HashMap<i64, String>,
+    /// When the plan may be written again at the earliest (#376).
+    plan_next: i64,
 }
 
 /// `key` remembered as sent in the worktree's `.claude/overview-sent.json`, newest 50.
@@ -146,6 +158,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         for order in &model.orders {
             is_changed |= run_order(app, &name, order);
         }
+        is_changed |= follow_merge_order(app, &name, &model);
         if is_in_herdr() {
             is_changed |= remove_merged(app, &name, &local, remote, &model);
         }
@@ -167,6 +180,48 @@ fn publish_ci(app: &mut Overview, name: &str, model: &OrchestrationModel) {
     let file = breadboard_core::ci::order_file(&app.actor.main, name);
     if breadboard_core::ci::write_whole(&file, published).is_ok() {
         app.actor.auto.published = Some(published.clone());
+    }
+}
+
+/// The computed merge order written into the stale plan (#376), by the
+/// overview that delivers alone: no click, no orchestrator. The plan's why
+/// kept, its line `updated from the merge order <time>` new.
+fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel) -> bool {
+    let Some(plan) = model.plan_update.as_ref() else {
+        return false;
+    };
+    let now = now_ms();
+    if now < app.actor.auto.plan_next {
+        return false;
+    }
+    let iso = to_iso(now);
+    let why = stamped(plan.why.as_deref(), &format!("{} {} UTC", &iso[..10], &iso[11..16]));
+    let main = app.actor.main.clone();
+    let written = with_dir_lock(&record_file(&main, name), PLAN_LOCK_STALE, || {
+        write_plan(
+            &main,
+            name,
+            Some(plan.work.clone()),
+            Some(plan.merge.clone()),
+            Some(why),
+        )
+    });
+    match written {
+        Ok(Ok(_)) => {
+            app.actor.auto.plan_next = now + PLAN_EVERY;
+            let order: Vec<String> = plan.merge.iter().map(|number| format!("#{number}")).collect();
+            app.actor.log(
+                Paint::Green,
+                format!("the plan follows the merge order: {}", order.join(" → ")),
+            );
+            true
+        }
+        Ok(Err(error)) | Err(error) => {
+            app.actor.auto.plan_next = now + PLAN_RETRY;
+            app.actor
+                .log(Paint::Red, format!("the plan stays behind the merge order: {error}"));
+            true
+        }
     }
 }
 
@@ -499,6 +554,7 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
+    let limit = breadboard_core::config::of_main(&app.actor.main).config.agents.limit();
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
@@ -512,10 +568,13 @@ fn remove_merged(
             continue;
         }
         // Its conversation is its agent (#361): a headless one that never ran has no row yet, and is freed too.
-        if let (Some(claude), Some(mr)) = (&tree.claude, mr)
-            && claude.share() <= CONTEXT_LIMIT
-        {
-            free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
+        if let (Some(claude), Some(mr)) = (&tree.claude, mr) {
+            if claude.share() <= limit {
+                free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
+            } else {
+                // Full (#381): it retires with a handoff, its next issue goes to a fresh agent.
+                retire_then_remove(app, name, tree, mr.iid);
+            }
             continue;
         }
         remove_worktree(app, &tree.dir);
@@ -572,6 +631,67 @@ fn free_then_remove(app: &mut Overview, name: &str, local: &OrchestrationLocal, 
             }
         }) as Effect)
     });
+}
+
+/// Its agent retired (#381): `wt:orchestrate <name> --retire` ends it, its
+/// last run writes the handoff, the record keeps it; then its worktree goes,
+/// whatever became of the handoff.
+fn retire_then_remove(app: &mut Overview, name: &str, tree: &Tree, iid: i64) {
+    let dir = tree.dir.clone();
+    let main = app.actor.main.clone();
+    let feature = feature_of(&main, &dir);
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let log = spawn::log_file(&format!("overview-retire-{base}.log"));
+    let program = spawn::breadboard();
+    let poster = app.actor.poster();
+    app.actor.auto.freeing.insert(dir.clone());
+    let done = dir.clone();
+    let started = spawn::start(
+        Background {
+            program: &program,
+            args: vec![
+                "wt:orchestrate".into(),
+                name.to_string(),
+                "--retire".into(),
+                feature.clone(),
+                "--mr".into(),
+                iid.to_string(),
+            ],
+            cwd: &main,
+            log: &log,
+            env: vec![],
+            is_paneless: false,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                app.actor.auto.freeing.remove(&done);
+                let who = feature_of(&app.actor.main, &done);
+                match error_of(code, &last, "wt:orchestrate --retire ") {
+                    None => app.actor.log(
+                        Paint::Green,
+                        format!("{who}'s agent retired: its handoff is kept, its next issue goes to a fresh agent"),
+                    ),
+                    Some(why) => app.actor.log(
+                        Paint::Dim,
+                        format!("{who}'s agent not retired ({why}), it goes with its worktree"),
+                    ),
+                }
+                remove_worktree(app, &done);
+                app.redraw();
+            });
+        },
+    );
+    if let Err(why) = started {
+        app.actor.auto.freeing.remove(&dir);
+        app.actor.log(
+            Paint::Dim,
+            format!("{feature}'s agent not retired ({why}), it goes with its worktree"),
+        );
+        remove_worktree(app, &dir);
+    }
 }
 
 fn free_label(app: &Overview) -> String {

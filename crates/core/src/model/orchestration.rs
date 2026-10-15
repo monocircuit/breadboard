@@ -82,6 +82,8 @@ pub struct OrchestrationLocal {
     /// Its free agents (#289) with the share of their context used.
     pub free: Vec<(Worker, f64)>,
     pub free_memory: Option<u64>,
+    /// breadboard.toml's `[agents] fresh_above` as a share (#381); None: the default.
+    pub context_limit: Option<f64>,
     /// What herdr says each agent does, by conversation; empty outside herdr.
     pub agents: HashMap<String, Agent>,
     pub chat: Option<Chat>,
@@ -222,6 +224,9 @@ pub struct OrchestrationModel {
     pub holds: HashMap<PathBuf, String>,
     /// Why the plan is stale.
     pub stale: Vec<String>,
+    /// The plan the live overview writes by itself while it is stale (#376):
+    /// the computed merge order; None while the plan holds or GitLab hasn't answered.
+    pub plan_update: Option<Plan>,
     /// The runner's load for the band (#357): `CI 3/4 slots · 2 queued`.
     pub ci_load: Option<String>,
     /// What the agents spent, for the band (#372): `today 4.2 M tokens · ≈ $12 · budget $80 of $200`.
@@ -563,40 +568,6 @@ fn actions_of(
             is_auto: true,
             rank: i64::MAX,
             go: Go::End,
-            ..Default::default()
-        });
-    }
-    // A stale plan: a click writes the computed merge order into it.
-    let plan = local.record.as_ref().and_then(|record| record.plan.as_ref());
-    let states = states_of(issues, remote);
-    let stale = if remote.is_some() {
-        stale_of(plan, &states, order.is_off_plan)
-    } else {
-        Vec::new()
-    };
-    if !stale.is_empty() {
-        let numbers: Vec<String> = order.open.iter().map(|item| format!("#{}", item.number)).collect();
-        let why = if plan.is_some_and(|plan| !plan.merge.is_empty()) {
-            format!("the plan is stale: {}", stale.join("; "))
-        } else {
-            "no merge order in the plan yet".into()
-        };
-        items.push(Item {
-            key: format!(
-                "order:{}:{}:{}",
-                local.name,
-                order.planned.iter().map(i64::to_string).collect::<Vec<_>>().join(","),
-                stale.join(";")
-            ),
-            kind: "order".into(),
-            text: format!(
-                "{why}: {} · click to write it into the plan (wt:plan)",
-                numbers.join(" → ")
-            ),
-            who: format!("{ORCHESTRATOR} orchestrator"),
-            is_auto: true,
-            rank: -1,
-            go: Go::WritePlan(updated_plan(plan, &states, &order.planned)),
             ..Default::default()
         });
     }
@@ -997,6 +968,7 @@ pub fn orchestration_of(
         tells: Vec::new(),
         holds: HashMap::new(),
         stale: Vec::new(),
+        plan_update: None,
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
@@ -1081,6 +1053,7 @@ pub fn orchestration_of(
                 free: &local.free,
                 runs: Some(&state.runs),
                 now,
+                limit: local.context_limit,
             },
         )
     })
@@ -1111,11 +1084,11 @@ pub fn orchestration_of(
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &turns, &workers, state, now)
     });
-    model.stale = if remote.is_some() {
-        stale_of(plan, &states_of(&issues, remote), order.is_off_plan)
-    } else {
-        Vec::new()
-    };
+    if remote.is_some() {
+        let states = states_of(&issues, remote);
+        model.stale = stale_of(plan, &states, order.is_off_plan);
+        model.plan_update = (!model.stale.is_empty()).then(|| updated_plan(plan, &states, &order.planned));
+    }
     let merge = remote.and_then(|_| next_merge(&issues, remote, &order, &turns));
     model.next = section("NEXT", || {
         let (actions, up_next) = match &model.actions {
@@ -1169,6 +1142,7 @@ pub fn orchestration_of(
                 turns: Some(&turns),
                 setups: &local.setups,
                 now,
+                limit: local.context_limit,
             },
             local.free_memory,
         )
@@ -1241,7 +1215,7 @@ mod tests {
                 ],
                 plan: Some(Plan {
                     work: vec![2, 1],
-                    merge: vec![1, 2, 3],
+                    merge: vec![1, 2],
                     why: Some("#1 first".into()),
                 }),
                 ..Default::default()
@@ -1458,6 +1432,66 @@ mod tests {
         let closed = mrs.merged[0].mr.as_ref().unwrap();
         assert_eq!(closed.status.as_ref().unwrap().text, "closed");
         assert!(!mrs.counts.contains("merged"), "{}", mrs.counts);
+    }
+
+    /// The plan of the fixture's record, replaced.
+    fn with_plan(merge: Vec<i64>) -> OrchestrationLocal {
+        let mut local = local();
+        if let Some(plan) = local.record.as_mut().and_then(|record| record.plan.as_mut()) {
+            plan.merge = merge;
+        }
+        local
+    }
+
+    #[test]
+    fn a_stale_plan_is_written_by_itself_never_offered_as_a_row() {
+        // #3 merged, still in the plan: the merge order to write without it, the why kept.
+        let model = orchestration_of(
+            &with_plan(vec![1, 2, 3]),
+            Some(&remote()),
+            &mut ViewState::default(),
+            NOW,
+        );
+        assert_eq!(model.stale, ["#3 merged"]);
+        assert_eq!(
+            model.plan_update,
+            Some(Plan {
+                work: vec![2, 1],
+                merge: vec![1, 2],
+                why: Some("#1 first".into()),
+            })
+        );
+        let actions = model.actions.unwrap();
+        assert!(
+            !actions
+                .actions
+                .iter()
+                .chain(&actions.up_next)
+                .any(|item| item.text.contains("plan")),
+            "{actions:?}"
+        );
+        // No merge order in the plan yet: the computed one goes in.
+        let model = orchestration_of(&with_plan(vec![]), Some(&remote()), &mut ViewState::default(), NOW);
+        assert_eq!(model.plan_update.map(|plan| plan.merge), Some(vec![1, 2]));
+        // Before GitLab answers nothing is known to write.
+        let model = orchestration_of(&with_plan(vec![1, 2, 3]), None, &mut ViewState::default(), NOW);
+        assert_eq!(model.plan_update, None);
+    }
+
+    #[test]
+    fn a_hand_set_order_of_independent_mrs_survives() {
+        // !12 shares no file with !11: the plan's order holds, nothing to write.
+        let model = orchestration_of(&with_plan(vec![2, 1]), Some(&remote()), &mut ViewState::default(), NOW);
+        assert!(model.stale.is_empty(), "{:?}", model.stale);
+        assert_eq!(model.plan_update, None);
+        let open: Vec<i64> = model
+            .merge_requests
+            .unwrap()
+            .open
+            .iter()
+            .filter_map(|row| row.number)
+            .collect();
+        assert_eq!(open, [2, 1]);
     }
 
     #[test]
