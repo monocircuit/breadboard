@@ -12,6 +12,7 @@ use crate::tui::Scene;
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme::{self, Tone};
 use breadboard_core::model::Paint;
+use breadboard_core::model::merge::GITLAB_RECHECKS;
 use breadboard_core::model::mr_blockers::{Progress, Reason};
 use breadboard_core::model::orchestration::{MergeRequests, MrFacts};
 use breadboard_core::model::order::Go;
@@ -341,7 +342,8 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     let button = "resolve\u{a0}merge\u{a0}conflicts";
     match &mr.conflict {
         None => {}
-        Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts …")]),
+        // GitLab hasn't settled it; the read asks it to recheck (#391).
+        Some(Conflict::Checking) => parts.push(vec![look::dim(format!("{GITLAB_RECHECKS} …"))]),
         // No conflicts goes unsaid, as lazygit leaves a clean file unmarked:
         // an open MR always has a conflict state, so the row without one is clean.
         Some(Conflict::None) => {}
@@ -374,7 +376,15 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
             look::ticks(scene);
         }
     }
-    parts.extend(reasons_of(&mr.reasons, room));
+    // The row says GitLab rechecks once: the blocker names it again.
+    let is_said = matches!(mr.conflict, Some(Conflict::Checking));
+    let reasons: Vec<Reason> = mr
+        .reasons
+        .iter()
+        .filter(|reason| !(is_said && reason.text == GITLAB_RECHECKS))
+        .cloned()
+        .collect();
+    parts.extend(reasons_of(&reasons, room));
     look::parted(scene, &parts);
 }
 

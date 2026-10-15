@@ -33,7 +33,7 @@ fn pipeline_of(value: &Value) -> Option<Pipeline> {
 }
 
 /// An MR of REST as the views use it, with the commit a merged one put on develop.
-fn mr_of(value: &Value) -> (Mr, Option<String>) {
+pub(super) fn mr_of(value: &Value) -> (Mr, Option<String>) {
     let title = str_at(value, "title").unwrap_or_default();
     let mr = Mr {
         iid: id_of(value.get("iid")),
@@ -285,6 +285,8 @@ pub async fn read_orchestration(
             awaited.insert(*iid, state);
         }
     }
+    gitlab.phase(Some("mergeability"));
+    super::recheck::recheck(gitlab, &mut memory.rechecks, &mut of, now_ms()).await;
     gitlab.phase(None);
     cache.save();
     Ok(Remote {

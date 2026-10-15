@@ -19,6 +19,7 @@ use crate::tui::{Flow, KeyEvent, Page, Scene};
 use breadboard_core::actions::{self as stored, Action};
 use breadboard_core::herdr::Pane;
 use breadboard_core::model::Paint;
+use breadboard_core::model::merge::GITLAB_RECHECKS;
 use breadboard_core::model::next::once_text;
 use breadboard_core::model::orchestration::{ActionsSection, NextBand, OrchestrationModel};
 use breadboard_core::model::order::{Go, Item, MergeOffer, Target};
@@ -309,7 +310,7 @@ fn cleared(blockers: &[String]) -> String {
     let mut is_unnamed = false;
     for blocker in blockers {
         let text = match blocker.as_str() {
-            "GitLab is checking" => "GitLab has checked it".to_string(),
+            GITLAB_RECHECKS => "GitLab has checked it".to_string(),
             // GitLab's own `draft_status` on an MR no longer marked draft (after
             // its agent posted the merge and it was marked ready): not the agent's to do.
             "draft" => "GitLab no longer calls it a draft".to_string(),
@@ -1955,7 +1956,7 @@ mod tests {
 
     #[test]
     fn a_blocked_merge_says_its_click_opens_the_mr_not_that_it_merges() {
-        let blocked = merge_item(&["pipeline pending", "GitLab is checking"]);
+        let blocked = merge_item(&["pipeline pending", GITLAB_RECHECKS]);
         let mut waiting = item_with(Action {
             id: 6,
             kind: "try".into(),
