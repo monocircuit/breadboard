@@ -90,6 +90,13 @@ pub fn usage_file(main: &Path) -> PathBuf {
 
 /// How long after the reset the stopped runs start: not a minute too early.
 pub const AFTER_RESET_MS: i64 = 60_000;
+/// AFTER_RESET_MS, or what `BREADBOARD_AFTER_RESET_MS` says (a test's reset that doesn't wait a minute).
+fn after_reset_ms() -> i64 {
+    std::env::var("BREADBOARD_AFTER_RESET_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(AFTER_RESET_MS)
+}
 /// Without a reset time in the result: the waits of the tries in a row, the last one repeated.
 pub const BACKOFF_MS: [i64; 3] = [15 * 60_000, 30 * 60_000, 60 * 60_000];
 /// The line a session stopped by the usage limit gets once it reset.
@@ -108,6 +115,8 @@ pub struct Usage {
     pub tries: usize,
     /// The sessions it stopped, in the order they stopped.
     pub sessions: Vec<String>,
+    /// The orchestrations whose chat was told it holds: told again once it reset.
+    pub told: Vec<String>,
 }
 
 impl Usage {
@@ -171,7 +180,12 @@ pub fn hit_of(lines: &[String], now: i64) -> Option<Hit> {
             if !(1..=12).contains(&hour) {
                 return None;
             }
-            hour = hour % 12 + if half.as_str().eq_ignore_ascii_case("pm") { 12 } else { 0 };
+            hour = hour % 12
+                + if half.as_str().eq_ignore_ascii_case("pm") {
+                    12
+                } else {
+                    0
+                };
         }
         const MONTHS: [&str; 12] = [
             "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
@@ -201,7 +215,7 @@ pub fn on_hit(usage: &mut Usage, session: &str, hit: Hit, now: i64) {
     match hit.reset {
         Some(reset) => {
             usage.reset = reset;
-            usage.until = reset + AFTER_RESET_MS;
+            usage.until = reset + after_reset_ms();
             usage.tries = 0;
         }
         None if usage.holds(now) => {}
@@ -640,8 +654,14 @@ mod tests {
                 .map(|hit| hit.reset.map(crate::time::hm))
         };
         assert_eq!(at("5-hour limit reached ∙ resets 3am"), Some(Some("03:00".into())));
-        assert_eq!(at("You've hit your weekly limit · resets Oct 16, 11am"), Some(Some("11:00".into())));
-        assert_eq!(at("You've hit your session limit · resets 13:05"), Some(Some("13:05".into())));
+        assert_eq!(
+            at("You've hit your weekly limit · resets Oct 16, 11am"),
+            Some(Some("11:00".into()))
+        );
+        assert_eq!(
+            at("You've hit your session limit · resets 13:05"),
+            Some(Some("13:05".into()))
+        );
         assert_eq!(
             hit_of(
                 &result(serde_json::json!({ "is_error": true, "result": "Claude AI usage limit reached|1760572800" })),
@@ -654,7 +674,10 @@ mod tests {
         // No time in it: the backoff decides.
         assert_eq!(at("You've hit your session limit"), Some(None));
         assert_eq!(
-            hit_of(&result(serde_json::json!({ "is_error": true, "api_error_status": 429, "result": "API Error" })), now),
+            hit_of(
+                &result(serde_json::json!({ "is_error": true, "api_error_status": 429, "result": "API Error" })),
+                now
+            ),
             Some(Hit { reset: None })
         );
         // An answer that talks about the limit, another error: no limit.
@@ -719,14 +742,25 @@ mod tests {
         assert_eq!(states["a"].state, State::Limit, "a line meanwhile ran it");
         assert_eq!(release(&mut usage, &mut table, &mut queue, 1_000), Vec::<String>::new());
         let at = 1_000 + AFTER_RESET_MS;
-        assert_eq!(usage.text(at - 1).as_deref(), Some(&*format!("usage limit until {}", crate::time::clock(1_000, at))));
+        assert_eq!(
+            usage.text(at - 1).as_deref(),
+            Some(&*format!("usage limit until {}", crate::time::clock(1_000, at)))
+        );
         assert_eq!(release(&mut usage, &mut table, &mut queue, at), ["a"]);
         assert_eq!(usage.text(at), None);
         assert_eq!(table.runs["a"].state, State::Queued);
-        let mine: Vec<Event> = queue.events.iter().filter(|event| event.session == "a").cloned().collect();
+        let mine: Vec<Event> = queue
+            .events
+            .iter()
+            .filter(|event| event.session == "a")
+            .cloned()
+            .collect();
         assert_eq!(prompt_of(&mine), format!("{RESET_LINE}\n\na merge"));
         // Once only.
-        assert_eq!(release(&mut usage, &mut table, &mut queue, at + 1), Vec::<String>::new());
+        assert_eq!(
+            release(&mut usage, &mut table, &mut queue, at + 1),
+            Vec::<String>::new()
+        );
         assert_eq!(State::Limit.status(), "limit");
     }
 

@@ -228,6 +228,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The Claude usage limit holding the headless runs (#393): `usage limit until 23:30`.
+    pub usage: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
     pub ci_published: Option<crate::ci::Published>,
     /// Each worktree's merge turn for herdr's sidebar, which can't find it
@@ -984,6 +986,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        usage: local.spent.usage.clone(),
         ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),

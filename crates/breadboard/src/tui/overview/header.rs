@@ -61,6 +61,13 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         status.push(Span::styled(spent.clone(), style));
         status.push(Span::styled(" · ", quiet));
     }
+    // The Claude usage limit holds the runs (#393): until when.
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(usage) = &model.usage
+    {
+        status.push(Span::styled(usage.clone(), theme::tone(Tone::Red)));
+        status.push(Span::styled(" · ", quiet));
+    }
     status.push(Span::styled(ctx.gitlab.fresh(), quiet));
     // How the main checkout followed develop (#348): in the views that look at all of it.
     if let Some((text, is_warning)) = ctx.develop.filter(|_| !matches!(view, View::Worktree(_))) {
@@ -110,6 +117,18 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     look::flow(scene, &[look::dim("until midnight")]);
                 }
             });
+        });
+    }
+    // The Claude usage limit holds them (#393): nothing to click, they go on after the reset.
+    if let Some(usage) = &model.usage {
+        page.section(Section::new("USAGE").sticky().plain(), |scene| {
+            scene.pad_to(1);
+            scene.indent(2);
+            look::say(
+                scene,
+                &format!("⏸ {usage}: no new run starts, the queue waits; the stopped runs go on after it"),
+                theme::tone(Tone::Red),
+            );
         });
     }
     if let Some(error) = &ctx.gitlab.error {
