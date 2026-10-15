@@ -40,6 +40,7 @@ pub mod gitlab;
 mod keep_up;
 pub mod runs;
 mod serve;
+pub mod watch;
 
 pub use gitlab::{Feed, read_gitlab};
 pub use serve::main;

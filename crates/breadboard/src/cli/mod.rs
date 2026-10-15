@@ -21,6 +21,7 @@ const COMMANDS: [&[&str]; 7] = [
         "wt:issues",
         "wt:stack",
         "wt:check",
+        "ci:watch",
     ],
     &["wt:mr", "wt:note", "wt:tick", "wt:action", "wt:wait", "wt:journal", "wt:epic"],
     &["wt:prune", "wt:remove", "wt:herdr"],
