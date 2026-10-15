@@ -166,6 +166,9 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     if is_local && is_deliverer && is_in_herdr() {
         end_herdr_resumes(app, &local);
     }
+    if is_deliverer {
+        super::fresh::after_read(app, &name, &model);
+    }
     notify_new(app, &model);
     if is_changed {
         app.redraw();
