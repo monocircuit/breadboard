@@ -549,7 +549,8 @@ fn gitlab_line(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
         })
         .unwrap_or_default();
     let mut shown = None;
-    let mut is_tree_boxes = false;
+    // The line its bar (or its boxes' fold) is on, and that fold's act.
+    let mut fold: Option<(u16, Act)> = None;
     let has_more = |at: usize, of: usize| at + 1 < of;
     // The parts before the pipeline, each whole with its ` ·`.
     let put = |scene: &mut Scene<Act>, part: Vec<Span<'static>>, is_last: bool| {
@@ -602,7 +603,9 @@ fn gitlab_line(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
                     room
                 };
                 let after = has_lacks.then(|| look::dim(" ·"));
-                shown = mrs::bar_atom(scene, mr, progress, room.min(MAX_BAR), after, ctx);
+                let (boxes, y) = mrs::bar_atom(scene, mr, progress, room.min(MAX_BAR), after, ctx);
+                shown = boxes;
+                fold = y.map(|y| (y, Act::Fold(Fold::MrBoxes(mr.iid))));
             }
             if has_lacks {
                 mrs::lacks(scene, mr, &reasons, ctx);
@@ -620,28 +623,28 @@ fn gitlab_line(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
             for (at, part) in parts.into_iter().enumerate() {
                 put(scene, part, !has_more(at, of) && !has_boxes);
             }
-            if let Some(node) = node {
-                is_tree_boxes = nodes::boxes_atom(scene, node, ctx);
+            if let Some((node, number)) = node.zip(node.and_then(|node| node.number)) {
+                fold = nodes::boxes_atom(scene, node, ctx).map(|y| (y, Act::Fold(Fold::TreeBoxes(number))));
             }
         }
     }
     scene.end_line();
-    // The list is its fold's block inside the block's: a click on it folds it again.
-    if let Some((sections, mr)) = shown.zip(block.mr) {
-        if ctx.is_once {
-            boxes::list(scene, sections, 2);
-        } else {
-            scene.block(Act::Fold(Fold::MrBoxes(mr.iid)), |scene| {
-                boxes::list(scene, sections, 2)
-            });
-        }
+    if let Some(sections) = shown {
+        boxes::list(scene, sections, 2);
+    }
+    if let Some(node) = node.filter(|_| block.mr.is_none()) {
+        nodes::boxes_list(scene, node, ctx);
+    }
+    // The fold's block, inside the block's (#346, as before #390): from the
+    // bar's line down its list, a click or Tab and Enter folds it.
+    if let Some((y, act)) = fold {
+        let area = Rect::new(0, y, scene.width(), scene.y() - y);
+        scene.regions.push(Region {
+            area,
+            target: Target::Block(act),
+        });
     }
     if let Some(node) = node {
-        if is_tree_boxes && let Some(number) = node.number {
-            scene.block(Act::Fold(Fold::TreeBoxes(number)), |scene| {
-                nodes::boxes_list(scene, node, ctx)
-            });
-        }
         nodes::conflict_line(scene, node);
     }
 }
@@ -1908,7 +1911,8 @@ mod tests {
                 .map(|region| (region.area.y, region.area.height, region.is_button()))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(regions(&folded), [(bar as u16, 1, true)]);
+        // The bar a button, the fold's block from its line down (Tab and Enter, #346): here its lacks too.
+        assert_eq!(regions(&folded), [(bar as u16, 1, true), (bar as u16, 2, false)]);
 
         let mut folds = Folds::default();
         folds.boxes.mrs.insert(320);
@@ -1939,10 +1943,11 @@ mod tests {
             lines.iter().any(|line| line.contains("try #12 looks good")),
             "{lines:#?}"
         );
-        // The list is the fold's block inside the block's: a click on it folds it again.
+        // The list is in the fold's block inside the block's: a click on it folds it again.
         let list = regions(&open);
         assert_eq!(list[0], (bar as u16, 1, true));
-        assert!(list[1].0 as usize <= scope && !list[1].2, "{list:?}");
+        let (y, height, is_button) = list[1];
+        assert!(y as usize == bar && (y + height) as usize > scope + 2 && !is_button, "{list:?}");
 
         // Open boxes that hold the merge show whole before any click (#354), in the block.
         if let Some(facts) = merge_requests.open[0].mr.as_mut() {

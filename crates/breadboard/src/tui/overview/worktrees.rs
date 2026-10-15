@@ -255,11 +255,9 @@ pub(super) fn commit_parts(node: &Node) -> Vec<Vec<Span<'static>>> {
 /// `▸ 2/6 boxes · 2 open`, the fold of its issue's boxes (#346) in a block
 /// without an MR, whose bar would hold it (#347), on its GitLab line: a
 /// click or Enter lists them under it (`boxes_list`), another folds them.
-/// False without boxes, and for `--once`.
-pub(super) fn boxes_atom(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) -> bool {
-    let Some(number) = node.number.filter(|_| !node.boxes.is_empty() && !ctx.is_once) else {
-        return false;
-    };
+/// The line it is on, None without boxes and for `--once`.
+pub(super) fn boxes_atom(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) -> Option<u16> {
+    let number = node.number.filter(|_| !node.boxes.is_empty() && !ctx.is_once)?;
     let all = node.boxes.iter().flat_map(|section| &section.boxes);
     let (ticked, total) = all.fold((0, 0), |(ticked, total), line| {
         (ticked + usize::from(line.is_ticked), total + 1)
@@ -281,7 +279,7 @@ pub(super) fn boxes_atom(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) -> bool
         theme::Tone::Gray,
         Act::Fold(Fold::TreeBoxes(number)),
     );
-    true
+    rects.first().map(|rect| rect.y)
 }
 
 /// The boxes `boxes_atom`'s fold lists, while it is open.

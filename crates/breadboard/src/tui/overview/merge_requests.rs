@@ -78,8 +78,9 @@ pub(super) fn show(mr: &MrFacts) -> Go {
 /// click on it folds or opens. Before any click its open boxes show whole
 /// (#354); a click folds them, the next opens every box, one more folds it
 /// again. `after` follows it in its atom (the ` ·` before what comes next).
-/// Returns the boxes it shows, listed under the line. `--once` has no
-/// fold: its open boxes are listed.
+/// Returns the boxes it shows, listed under the line, and the line it is on
+/// where it folds (the fold's block starts there). `--once` has no fold:
+/// its open boxes are listed.
 pub(super) fn bar_atom<'a>(
     scene: &mut Scene<Act>,
     mr: &'a MrFacts,
@@ -87,13 +88,14 @@ pub(super) fn bar_atom<'a>(
     width: u16,
     after: Option<Span<'static>>,
     ctx: &Ctx,
-) -> Option<&'a [BoxSection]> {
+) -> (Option<&'a [BoxSection]>, Option<u16>) {
     if ctx.is_once || mr.boxes.is_empty() {
         if width >= MIN_BAR {
             scene.atom(bar(progress, mr.issue, width).into_iter().chain(after).collect());
         }
         // A print has nothing to click: its open boxes under the bar (#354).
-        return Some(&mr.open_boxes[..]).filter(|open| ctx.is_once && !open.is_empty());
+        let open = Some(&mr.open_boxes[..]).filter(|open| ctx.is_once && !open.is_empty());
+        return (open, None);
     }
     // Every box once opened; before any click the open ones, until a click folds them (#354).
     let shown = match ctx.folds.boxes.mr_list(mr.iid, !mr.open_boxes.is_empty()) {
@@ -109,7 +111,9 @@ pub(super) fn bar_atom<'a>(
     }
     let label: String = spans.iter().map(|span| span.content.as_ref()).collect();
     spans.extend(after);
-    for area in scene.atom(spans) {
+    let rects = scene.atom(spans);
+    let y = rects.first().map(|rect| rect.y);
+    for area in rects {
         scene.regions.push(Region {
             area,
             target: Target::Button {
@@ -119,7 +123,7 @@ pub(super) fn bar_atom<'a>(
             },
         });
     }
-    shown
+    (shown, y)
 }
 
 /// The lanes of an MR's first line, its `●` green when it is ready, red
