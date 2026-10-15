@@ -56,7 +56,8 @@ fn issue_url(text: &str, mr_url: &str, number: i64) -> String {
 
 /// The entry of the merged `mr` of issue `number` (None: its record has no
 /// number), rendered by `changelog_text` itself; `text`: the changelog it goes into.
-pub fn entry_of(mr: &Value, number: Option<i64>, text: &str) -> Entry {
+/// `retired`: the line its agent's retirement adds (#381).
+pub fn entry_of(mr: &Value, number: Option<i64>, text: &str, retired: Option<String>) -> Entry {
     let url = str_of(mr, "web_url").unwrap_or_default().to_string();
     let title = str_of(mr, "title").unwrap_or_default();
     let merged = Merged {
@@ -66,6 +67,7 @@ pub fn entry_of(mr: &Value, number: Option<i64>, text: &str) -> Entry {
         title: title.strip_prefix("Draft:").map_or(title, str::trim_start).to_string(),
         merged_at: str_of(mr, "merged_at").unwrap_or_default().to_string(),
         url,
+        retired,
         ..Merged::default()
     };
     let rendered = changelog_text("", &[merged], &[]);
@@ -253,12 +255,12 @@ mod tests {
             let mut without = entries.clone();
             without.remove(at);
             let text = changelog_text("t", &without, &closed);
-            let entry = entry_of(mr, Some(100 + at as i64), &text);
+            let entry = entry_of(mr, Some(100 + at as i64), &text, None);
             assert_eq!(insert(&text, &entry).as_deref(), Some(full.as_str()), "!{}", 10 + at);
         }
         // The first merge of an orchestration, and its issue closed without an MR before.
         let nothing = changelog_text("t", &[], &[]);
-        let entry = entry_of(&all[0], Some(100), &nothing);
+        let entry = entry_of(&all[0], Some(100), &nothing, None);
         let one = changelog_text("t", &[merged(&all[0], 100)], &[]);
         assert_eq!(
             insert(&nothing, &entry).map(|text| text.replace("issues/", "work_items/")),
@@ -273,7 +275,7 @@ mod tests {
                 ..Closed::default()
             }],
         );
-        let entry = entry_of(&all[0], Some(100), &only_closed);
+        let entry = entry_of(&all[0], Some(100), &only_closed, None);
         assert_eq!(insert(&only_closed, &entry), Some(one));
         assert_eq!(insert("no changelog", &entry), None);
     }

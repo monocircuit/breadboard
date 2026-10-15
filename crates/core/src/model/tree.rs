@@ -14,7 +14,7 @@ use super::develop::Migrations;
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
-use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
+use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
@@ -218,7 +218,9 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
 }
 
 /// How full an agent's context is and when it last answered.
-pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
+/// `limit`: the share of its context above which it retires at its merge
+/// (#381): said in advance, `fresh start at its next issue`.
+pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
     let Some(at) = claude.at else {
         return vec![Span::dim("no answer yet")];
     };
@@ -230,10 +232,14 @@ pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
     } else {
         Paint::Green
     };
-    vec![
+    let mut fact = vec![
         Span::new(format!("{}%", (share * 100.0).round() as i64), paint),
         Span::dim(format!(" of {} · {}", tokens(claude.window), ago(at, now))),
-    ]
+    ];
+    if share > limit {
+        fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
+    }
+    fact
 }
 
 /// The name an agent had before its last handover, for a day.
@@ -360,13 +366,20 @@ pub struct AgentLine {
     pub issues: usize,
     /// How many of their MRs are merged.
     pub merged: usize,
+    /// What it spent today (#372), None before it answered today.
+    pub today: Option<crate::spend::Spend>,
 }
 
 impl AgentLine {
-    /// `· 3 issues · 2 merged`: of its issues, how many MRs are merged.
+    /// `· 3 issues · 2 merged · today 1.2 M tokens · ≈ $3`: of its issues,
+    /// how many MRs are merged; what it spent today.
     pub fn counts(&self) -> String {
+        let today = self
+            .today
+            .map(|today| format!(" · today {}", today.text()))
+            .unwrap_or_default();
         format!(
-            "· {} · {} merged",
+            "· {} · {} merged{today}",
             super::counted(self.issues as u64, "issue"),
             self.merged
         )
@@ -393,7 +406,11 @@ pub struct TreeFacts<'a> {
     /// The open MRs' turns by issue, None before GitLab answered.
     pub turns: Option<&'a super::orchestration::Turns>,
     pub setups: &'a [Setup],
+    /// What the agents spent (#372): today per session, per issue.
+    pub spent: Option<&'a crate::spend::Spent>,
     pub now: i64,
+    /// `[agents] fresh_above` as a share (#381); None: `CONTEXT_LIMIT`.
+    pub limit: Option<f64>,
 }
 
 /// The tree of the issues: `live`, the worktrees there and the issues that
@@ -568,7 +585,7 @@ fn facts_of(
     }
     if let Some(tree) = tree {
         if let Some(claude) = &tree.claude {
-            all.push(agent_fact(claude, now));
+            all.push(agent_fact(claude, now, facts.limit.unwrap_or(CONTEXT_LIMIT)));
         }
         if let Some(wait) = tree.wait.as_ref().filter(|_| state.key != "waitsForMr") {
             let none = HashSet::new();
@@ -610,6 +627,7 @@ fn agent_line(
     names: &Names,
     known: &Known,
     is_merged: &dyn Fn(i64) -> bool,
+    spent: Option<&crate::spend::Spent>,
 ) -> Option<AgentLine> {
     let tree = issue.tree.as_ref()?;
     // Without its conversation (not read yet, or gone), the record's worker
@@ -632,11 +650,16 @@ fn agent_line(
         Some(tone) => Paint::Wait(tone),
         None => status.map_or(Paint::Dim, |status| Paint::State(status.into())),
     };
+    let today = spent
+        .and_then(|spent| spent.today.by_session.get(id))
+        .filter(|today| !today.is_empty())
+        .copied();
     Some(AgentLine {
         name,
         dot,
         issues,
         merged,
+        today,
     })
 }
 
@@ -780,13 +803,22 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 },
                 (None, None) => Go::Nothing,
             };
-            let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged);
+            let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged, facts.spent);
             let collides = collides_of(index);
+            let mut node_facts = facts_of(issue, found, mr, &state, handover.as_ref(), facts);
+            // What its agents spent on the issue (#372).
+            if let Some(spent) = issue
+                .number
+                .and_then(|number| facts.spent?.by_issue.get(&number))
+                .filter(|spent| !spent.is_empty())
+            {
+                node_facts.push(vec![Span::dim(spent.text())]);
+            }
             Node {
                 index,
                 number: issue.number,
                 agent,
-                facts: facts_of(issue, found, mr, &state, handover.as_ref(), facts),
+                facts: node_facts,
                 app: tree.filter(|tree| tree.has_env).map(app_cell),
                 stack: tree.filter(|tree| tree.has_env).map(stack_of),
                 docker: tree.map(|tree| tree.docker).unwrap_or_default(),
@@ -954,6 +986,19 @@ pub fn facts_text(facts: &[Fact]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_a_full_agent_starts_fresh_at_its_next_issue() {
+        let claude = Claude {
+            at: Some(0),
+            used: 94_000,
+            window: 200_000,
+            ..crate::model::handovers::tests::claude_of("c1")
+        };
+        let text = |fact: Fact| fact.iter().map(|span| span.text.clone()).collect::<String>();
+        assert!(text(agent_fact(&claude, 0, 0.4)).ends_with(" · fresh start at its next issue"));
+        assert!(!text(agent_fact(&claude, 0, 0.5)).contains("fresh start"));
+    }
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
     use crate::model::display_names::{display_names_of, pick_name};

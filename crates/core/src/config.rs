@@ -25,6 +25,8 @@ pub struct Config {
     pub stack: Option<Stack>,
     pub mr: Mr,
     pub orchestration: Orchestration,
+    pub orchestrator: Orchestrator,
+    pub agents: Agents,
     pub tries: Tries,
     pub check: Check,
     pub main_checkout: MainCheckout,
@@ -275,6 +277,62 @@ pub struct Orchestration {
     pub epic_branches: bool,
 }
 
+/// The orchestrator's chat (#382): when it gets a fresh start.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orchestrator {
+    /// From which share of its context (percent) the overview offers a fresh start at a quiet point.
+    pub fresh_above: u32,
+    /// Whether the overview makes the fresh start by itself, without a click.
+    pub auto_fresh: bool,
+}
+
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Orchestrator {
+            fresh_above: 50,
+            auto_fresh: false,
+        }
+    }
+}
+
+/// An orchestration's agents: what they may spend (#372), in tokens (`"20 M"`)
+/// or dollars (`"$40"`), and when one starts fresh (#381).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Agents {
+    /// What the repo's agents may spend a day: past it the run engine starts
+    /// no run until midnight or a `continue anyway`; None: no limit.
+    pub daily_limit: Option<crate::spend::Limit>,
+    /// What an orchestration's agents may spend in all, shown against its
+    /// spend in its band; None: none shown.
+    pub orchestration_budget: Option<crate::spend::Limit>,
+    /// The share of its context window, in percent, above which an agent
+    /// retires at its merge instead of taking a next issue: its next one
+    /// goes to a fresh agent with its written handoff (#381).
+    pub fresh_above: u8,
+}
+
+/// `[agents] fresh_above` when the file says nothing.
+pub const FRESH_ABOVE: u8 = 40;
+
+impl Default for Agents {
+    fn default() -> Self {
+        Agents {
+            daily_limit: None,
+            orchestration_budget: None,
+            fresh_above: FRESH_ABOVE,
+        }
+    }
+}
+
+impl Agents {
+    /// `fresh_above` as a share of the window, 0.4.
+    pub fn limit(&self) -> f64 {
+        f64::from(self.fresh_above) / 100.0
+    }
+}
+
 /// A `try --on test`: the test instance a merge deploys to, and the jobs of
 /// the default branch's pipeline that deploy it.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -513,6 +571,12 @@ impl Config {
     /// What serde can't say: names and ports that must be there and apart.
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
+        if !(1..=100).contains(&self.agents.fresh_above) {
+            return bad(
+                "agents.fresh_above",
+                "must be a percent of the context window, 1 to 100",
+            );
+        }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))
         {

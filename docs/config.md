@@ -187,6 +187,36 @@ urls = ["DATABASE_URL"]
 | --- | ------- | ------------ |
 | `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
 
+## `[orchestrator]`
+
+The orchestrator's chat (#382): its context shows in the overview's title band.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `fresh_above` | `50` | the share of its context (percent) from which the overview offers `↻ fresh start` at a quiet point: its chat idle, no `decide` or `plan` open, no merge in flight. The old chat writes its journal, a new one starts from the journal and the record (`wt:orchestrate <name> --fresh`). The task agents' own is `[agents] fresh_above` |
+| `auto_fresh` | `false` | the overview makes that fresh start by itself, without a click |
+
+## `[agents]`
+
+What the agents may spend (#372). The overview reads it from claude's
+transcripts: every answer's tokens, priced per model. Tokens are what an
+answer read and wrote anew (input, cache writes, output); cache reads are in
+the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
+`20000000`) or dollars (`"$40"`).
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `daily_limit` | none | what the repo's claudes may spend from local midnight: once it is reached the run engine of headless agents starts no new run, their lines wait in the queue and the overview says why; its `continue anyway` lifts it until midnight (`breadboard runs continue`) |
+| `orchestration_budget` | none | what an orchestration's agents may spend in all: shown against what they spent in its band |
+| `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+
+```toml
+[agents]
+daily_limit = "$40"
+orchestration_budget = "200 M"
+fresh_above = 40
+```
+
 ## `[tries]`
 
 A `try --on test` waits for the merge's deployment to the test instance, then

@@ -199,6 +199,16 @@ pub fn button(scene: &mut Scene<Act>, ctx: &Ctx, label: &str, tone: Tone, act: A
                 return true;
             }
         }
+        Act::Fresh => {
+            if let Some(fresh) = &actor.fresh {
+                if run(scene, fresh, "◐ fresh start …", label, "") {
+                    return true;
+                }
+                if let Some(why) = &fresh.error {
+                    return error(scene, why);
+                }
+            }
+        }
         Act::StartStack(dir) => {
             if let Some(stack) = actor.stacks.get(dir) {
                 if run(scene, stack, "◐ starting the stack …", label, "") {

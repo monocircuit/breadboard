@@ -1,5 +1,5 @@
 //! The commands that write: `wt:action`, `wt:tick`, `wt:note`, `wt:mr`,
-//! `wt:wait` (worktree/commands/*.mjs). They write the files other sessions
+//! `wt:wait`, `wt:journal` (worktree/commands/*.mjs). They write the files other sessions
 //! read (`.claude/actions.json`, the records, `.claude/wait.json`) exactly as
 //! today, and GitLab exactly where today's breadboard does (rewrite rules 5, 6).
 
@@ -9,6 +9,7 @@ mod change;
 mod common;
 mod epic;
 mod glab;
+mod journal;
 pub(super) mod mr;
 mod note;
 mod tick;
@@ -26,6 +27,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:mr" => mr::run(&argv),
         "wt:wait" => wait::run(&argv),
         "wt:epic" => epic::run(&argv),
+        "wt:journal" => journal::run(&argv),
         _ => return None,
     };
     Some(common::finish(outcome))
