@@ -1947,7 +1947,10 @@ mod tests {
         let list = regions(&open);
         assert_eq!(list[0], (bar as u16, 1, true));
         let (y, height, is_button) = list[1];
-        assert!(y as usize == bar && (y + height) as usize > scope + 2 && !is_button, "{list:?}");
+        assert!(
+            y as usize == bar && (y + height) as usize > scope + 2 && !is_button,
+            "{list:?}"
+        );
 
         // Open boxes that hold the merge show whole before any click (#354), in the block.
         if let Some(facts) = merge_requests.open[0].mr.as_mut() {
