@@ -22,7 +22,7 @@ const COMMANDS: [&[&str]; 7] = [
         "wt:stack",
         "wt:check",
     ],
-    &["wt:mr", "wt:note", "wt:tick", "wt:action", "wt:wait"],
+    &["wt:mr", "wt:note", "wt:tick", "wt:action", "wt:wait", "wt:journal"],
     &["wt:prune", "wt:remove", "wt:herdr"],
     &["stack:up", "stack:down", "stack:reset", "stack:ps"],
     &[
@@ -113,6 +113,6 @@ mod tests {
         assert_eq!(meant("action"), Some("wt:action"));
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
-        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait\n"));
+        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal\n"));
     }
 }

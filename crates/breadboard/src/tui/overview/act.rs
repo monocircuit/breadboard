@@ -6,7 +6,7 @@
 //! resolving conflicts — through the actor (`actor/`), which also does what
 //! the overview does by itself after each read (`after_read`).
 
-use super::actor::{self, auto, browser, chat, herdr, merge, spawn::Run, tries};
+use super::actor::{self, auto, browser, chat, fresh, herdr, merge, spawn::Run, tries};
 use super::{Msg, Overview};
 use crate::tui::{Flow, KeyEvent};
 use breadboard_core::gitlab::Mr;
@@ -42,6 +42,8 @@ pub enum Act {
     },
     /// The orchestrator's chat: focused, or opened again (#287).
     Chat,
+    /// The orchestrator's fresh start at a quiet point (#382).
+    Fresh,
     /// Two clicks dismiss a free agent (#289).
     Dismiss(String),
     /// A free agent's id: `claude --resume <id>` into the clipboard (#345).
@@ -172,6 +174,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Answer { file, id, answer } => return super::actions::answer(app, &file, id, &answer),
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
+        Act::Fresh => fresh::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
         Act::Resolve(iid) => resolve(app, iid),
