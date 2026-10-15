@@ -114,10 +114,8 @@ pub fn merge_develop(dir: &Path, epic: &str) -> Synced {
         };
     }
     // Behind its own origin (a task merged into the epic meanwhile): catch up first, never diverge.
-    if !is_ancestor(dir, &remote, "HEAD") {
-        if !git(dir, &["merge", "--quiet", "--ff-only", &remote]).is_ok {
-            return skipped(format!("the epic checkout and {remote} went apart"));
-        }
+    if !is_ancestor(dir, &remote, "HEAD") && !git(dir, &["merge", "--quiet", "--ff-only", &remote]).is_ok {
+        return skipped(format!("the epic checkout and {remote} went apart"));
     }
     let commits = git(dir, &["rev-list", "--count", "HEAD..origin/develop"])
         .out()
