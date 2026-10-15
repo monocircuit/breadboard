@@ -221,6 +221,38 @@ elsewhere. After a herdr restart, the layout resumes the orchestrator in its
 idle tab; agents have no tab to resume (How agents run). No script closes or replaces a tab
 `orchestrator` that holds more than an idle shell.
 
+## Staying lean
+
+The orchestrator needs to know little: the state lives in GitLab (issues,
+MRs, pipelines), the record (`plan`, `workers`), the agents' worktrees and
+the overview. What its chat holds it pays for in every turn after (#382):
+
+- **Investigate through a subagent**, not in its own chat: logs, transcripts,
+  pipeline traces, code searches go to an `Agent`, only the conclusion comes
+  back.
+- **Never paste large command output**: `head`, `grep`, counts. No
+  `overview --once` printed into the chat: the overview is on screen.
+- **Agents' routine reports go to the overview**, not the chat (status as
+  well as decisions, above). A screenshot only when nothing else shows it.
+- **The journal is its memory**: `{{run}} wt:journal "<line>" --orchestration
+  <name>` for every decision it took for the user, every open thread and
+  who waits for what, one line each, when it happens
+  (`.claude/orchestrations/<name>.journal.md`, `wt:journal` alone prints it).
+  The overview shows its last lines under JOURNAL.
+
+**The fresh start.** The title band shows the orchestrator's context
+(`orchestrator 62 % · restart at a quiet point`). Above `[orchestrator]
+fresh_above` of `breadboard.toml` (50 %) and at a quiet point (its chat idle,
+no `decide` or `plan` open, no merge in flight) the chat row offers
+**`↻ fresh start`** (with `auto_fresh = true` the overview makes it by
+itself): `{{run}} wt:orchestrate <name> --fresh` tells the old chat to write
+its journal entries, waits for its answer, ends its claude and starts a new
+one in the tab `orchestrator`, its first prompt the journal and the record.
+The old conversation stays in `/resume`, the journal says its id. A fresh
+orchestrator starts from that prompt: every open thread in the journal is
+its own, and it asks GitLab, the overview and the agents rather than the
+user.
+
 ## The overview
 
 The tab `overview` of `⇶ <name>` runs `{{run}} overview --orchestration <name>`
