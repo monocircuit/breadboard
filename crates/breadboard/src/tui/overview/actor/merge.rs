@@ -30,6 +30,8 @@ const SETTLE_TRIES: usize = 10;
 const SETTLE: Duration = Duration::from_millis(1000);
 /// How long a merge GitLab refused for now waits before its one retry.
 const RETRY: Duration = Duration::from_millis(5000);
+/// The project's open MRs, asking GitLab to recompute their mergeability.
+const RECHECK_OPEN: &str = "projects/:fullpath/merge_requests?state=opened&per_page=100&with_merge_status_recheck=true";
 /// GitLab still working out whether an MR can be merged.
 const CHECKING: [&str; 4] = ["checking", "unchecked", "preparing", "approvals_syncing"];
 
@@ -473,6 +475,9 @@ impl Running {
                 format!("[overview] !{} merged", self.iid),
             );
         }
+        // The merge moved the target: GitLab resets every open MR's mergeability and
+        // recomputes it only when asked, so a real conflict shows within a tick (#391, #392).
+        let _ = glab::get(&self.main, RECHECK_OPEN);
         told
     }
 }
