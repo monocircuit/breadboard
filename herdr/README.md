@@ -116,11 +116,16 @@ block included: run `pnpm herdr:install` again after it.
 | — | `restore` | — | `pnpm wt:herdr`: the main space, a space per worktree, the stack tabs |
 `restore` also runs at every start of a session that is `platform` or already
 has the space; plugins are linked for all sessions of a user, and a personal
-session doesn't get a space it never had. The keys are in `keys.toml`.
+session doesn't get a space it never had. At a start it never waits for a
+build: the binary from before lays out, the new one builds behind it. The
+keys are in `keys.toml`.
 
 The **tab bar** shows `⬢ 3 stacks · 1 needs you` (`breadboard herdr status`,
 every 10 s): the running vita stacks, and the agents in the repo's spaces
-that ask something. The session `platform` puts it in front of your own
+that ask something. It is also the tick that brings the overviews back
+(#388): an `overview` tab of the repo that holds only a shell (after a herdr
+or machine restart) gets its overview again, `breadboard herdr heal` under
+the layout's lock, never typed into a pane that runs something. The session `platform` puts it in front of your own
 `tab_bar_right` (`config.toml` here has it for a session without a config of
 yours). Your own herdr: a block can't add to your `[ui]`, so add it to your
 `tab_bar_right` yourself:

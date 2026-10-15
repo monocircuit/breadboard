@@ -15,7 +15,6 @@ use breadboard_core::model::order::Go;
 use breadboard_core::model::resolve::resolve_line;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, Model, RemoteOf, View};
-use breadboard_core::record::write_plan;
 use breadboard_core::time::now_ms;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -275,22 +274,6 @@ pub fn go_to(app: &mut Overview, go: Go) {
         } => auto::send_once(app, &dir, &key, &line, *fallback),
         Go::Remove(dir) => auto::click_remove(app, &dir),
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
-        Go::WritePlan(plan) => {
-            let Some(name) = app.orchestration_name() else { return };
-            let done = Go::WritePlan(plan.clone());
-            match write_plan(&main, &name, Some(plan.work), Some(plan.merge.clone()), plan.why) {
-                Ok(_) => {
-                    // Its row goes at once, not with the next read (Node drops it on the click).
-                    super::actions::did(&done);
-                    let order: Vec<String> = plan.merge.iter().map(|number| format!("#{number}")).collect();
-                    app.actor.log(
-                        Paint::Green,
-                        format!("wrote the merge order into the plan: {}", order.join(" → ")),
-                    );
-                }
-                Err(error) => app.actor.log(Paint::Red, format!("the plan stays: {error}")),
-            }
-        }
         Go::End => end(app),
     }
 }
