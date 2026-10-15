@@ -832,7 +832,7 @@ fn merge_requests_of(
 /// out) and whether `wt:check` passed at its HEAD.
 fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> crate::ci::Published {
     let open_iid = |issue: &Entry| of(remote, issue).mr.as_ref().filter(|mr| mr.is_open()).map(|mr| mr.iid);
-    let order_iids = order
+    let order_iids: Vec<i64> = order
         .open
         .iter()
         .filter_map(|item| {
@@ -875,9 +875,46 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
             ))
         })
         .collect();
+    // A hard wait holds the pipeline of an MR (#392): the prerequisite it
+    // needs, or an MR it `wt:wait`s for, while that one is open here. Shared
+    // files only rank: they are no entry.
+    let mut held: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+    for item in &order.open {
+        let Some(iid) = issues
+            .iter()
+            .rev()
+            .filter(|issue| issue.number == Some(item.number))
+            .find_map(open_iid)
+        else {
+            continue;
+        };
+        let mut awaited: Vec<i64> = item
+            .after
+            .iter()
+            .filter(|pred| pred.is_hard)
+            .map(|pred| pred.iid)
+            .collect();
+        if let Some(wait) = issues
+            .iter()
+            .rev()
+            .filter(|issue| issue.number == Some(item.number))
+            .find_map(|issue| issue.tree.as_ref().and_then(|tree| tree.wait.as_ref()))
+        {
+            for waited in &wait.mrs {
+                if order_iids.contains(waited) && !awaited.contains(waited) {
+                    awaited.push(*waited);
+                }
+            }
+        }
+        if !awaited.is_empty() {
+            let list: Vec<String> = awaited.iter().map(|iid| format!("!{iid}")).collect();
+            held.insert(iid, format!("after {}", list.join(", ")));
+        }
+    }
     crate::ci::Published {
         order: order_iids,
         bars,
+        held,
     }
 }
 
@@ -1434,6 +1471,21 @@ mod tests {
             .find(|mr| mr.iid == 12)
             .unwrap();
         assert_eq!(row.reasons[0].who, "you");
+    }
+
+    #[test]
+    fn publishes_a_hard_wait_as_a_held_pipeline_and_shared_files_not() {
+        // #392: sharing package.json only ranks #2 behind #1: no hold.
+        let (local, remote) = behind_another_sharing_files();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert!(model.ci_published.as_ref().unwrap().held.is_empty());
+        // #2 needs #1: its pipeline waits for !11 to be merged.
+        let (local, remote) = behind_another();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert_eq!(
+            model.ci_published.as_ref().unwrap().held,
+            [(12, "after !11".to_string())].into()
+        );
     }
 
     #[test]
