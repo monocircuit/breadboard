@@ -12,7 +12,6 @@ use super::glab::{self, mr_endpoint, ready_title};
 use super::{Actor, Poster, browser, herdr};
 use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of, answered_of, done_action};
-use breadboard_core::git::{git, work_files};
 use breadboard_core::gitlab::{IssueBox, Mr, Pipeline, boxes_of};
 use breadboard_core::model::merge::blockers_of;
 use breadboard_core::model::order::{Go, MergeOffer};
@@ -30,8 +29,6 @@ const SETTLE_TRIES: usize = 10;
 const SETTLE: Duration = Duration::from_millis(1000);
 /// How long a merge GitLab refused for now waits before its one retry.
 const RETRY: Duration = Duration::from_millis(5000);
-/// How many shared files a carry-on line names.
-const NAMED_FILES: usize = 3;
 /// GitLab still working out whether an MR can be merged.
 const CHECKING: [&str; 4] = ["checking", "unchecked", "preparing", "approvals_syncing"];
 
@@ -267,11 +264,6 @@ pub fn start(app: &mut Overview, branch: &str, action: &Option<(PathBuf, i64)>, 
     };
     app.actor
         .log_as(&format!("merge:{iid}"), Paint::Yellow, format!("{verb} !{iid} …"), None);
-    let others: Vec<PathBuf> = offer
-        .others
-        .iter()
-        .filter_map(|number| app.tree_dir_of_number(*number))
-        .collect();
     let run = Running {
         main: app.actor.main.clone(),
         iid,
@@ -279,7 +271,6 @@ pub fn start(app: &mut Overview, branch: &str, action: &Option<(PathBuf, i64)>, 
         dir,
         can_mark_ready: offer.can_mark_ready || action.is_some(),
         action: action.clone(),
-        others,
         pending: app.actor.merges.pending.clone(),
         poster: app.actor.poster(),
     };
@@ -294,7 +285,6 @@ struct Running {
     dir: Option<PathBuf>,
     can_mark_ready: bool,
     action: Option<(PathBuf, i64)>,
-    others: Vec<PathBuf>,
     pending: Arc<Mutex<Vec<Pending>>>,
     poster: Poster,
 }
@@ -454,10 +444,12 @@ impl Running {
         .map(|_| ())
     }
 
-    /// After the merge (`carryOn`): its posted merge done, its agent told, every
-    /// other open MR whose branch lacks the merge and shares files with it too.
+    /// After the merge (`carryOn`): its posted merge done, its agent told. The
+    /// other open MRs are not told to merge the target in (#392): a branch
+    /// that conflicts gets that line from its own conflict (`conflicts_of`),
+    /// the others keep their green pipeline.
     /// What was typed: (feature, in words, line, got in).
-    fn carry_on(&self, fresh: &Mr) -> Vec<(String, String, String, bool)> {
+    fn carry_on(&self, _fresh: &Mr) -> Vec<(String, String, String, bool)> {
         let mut told = Vec::new();
         if let Some((file, id)) = &self.action {
             let _ = done_action(file, *id);
@@ -479,44 +471,6 @@ impl Running {
                 format!("that !{} is merged", self.iid),
                 format!("[overview] !{} merged", self.iid),
             );
-        }
-        let sha = fresh.sha.clone().unwrap_or_default();
-        let target = fresh.target();
-        // A branch built on the merged one has its commits already; one on another base doesn't take it in (#349).
-        let dirs: Vec<&PathBuf> = self
-            .others
-            .iter()
-            .filter(|dir| breadboard_core::git::base_of(dir).local == target)
-            .filter(|dir| git(dir, &["merge-base", "--is-ancestor", &sha, "HEAD"]).status != 0)
-            .collect();
-        if dirs.is_empty() {
-            return told;
-        }
-        let changes = glab::get(&self.main, &format!("{}/diffs?per_page=100", mr_endpoint(self.iid)))
-            .ok()
-            .and_then(|value| value.as_array().cloned())
-            .unwrap_or_default();
-        let merged: Vec<String> = changes
-            .iter()
-            .flat_map(|change| {
-                ["old_path", "new_path"]
-                    .into_iter()
-                    .filter_map(|key| change.get(key).and_then(Value::as_str).map(String::from))
-            })
-            .collect();
-        for dir in dirs {
-            let shared = shared_files(&merged, &work_files(dir));
-            if !shared.is_empty() {
-                tell(
-                    dir,
-                    format!("to merge {target} in (!{} touched its files)", self.iid),
-                    format!(
-                        "[overview] !{} is merged and touched your files too ({}): merge {target} in (git fetch origin, git merge origin/{target})",
-                        self.iid,
-                        names_of(&shared)
-                    ),
-                );
-            }
         }
         told
     }
@@ -570,24 +524,6 @@ fn merge_call(iid: i64, squash: bool, fresh: &Mr) -> String {
         .map(|(key, value)| format!(" --field {key}={value}"))
         .collect();
     format!("glab api --method PUT {}{}", merge_endpoint(iid), fields.concat())
-}
-
-/// The files of `mine` the merged MR touched too, sorted.
-pub fn shared_files(merged: &[String], mine: &std::collections::BTreeSet<String>) -> Vec<String> {
-    let mut shared: Vec<String> = merged.iter().filter(|file| mine.contains(*file)).cloned().collect();
-    shared.sort();
-    shared.dedup();
-    shared
-}
-
-/// `a, b, c +2`: the first few files, how many more.
-pub fn names_of(files: &[String]) -> String {
-    let named = files.iter().take(NAMED_FILES).cloned().collect::<Vec<_>>().join(", ");
-    if files.len() > NAMED_FILES {
-        format!("{named} +{}", files.len() - NAMED_FILES)
-    } else {
-        named
-    }
 }
 
 /// On a local read (`retryMergeLines`): the lines after a merge that didn't
@@ -730,17 +666,6 @@ mod tests {
             "can't merge: !316 not read: GitLab did not answer"
         );
         assert!(fresh_of(Ok(Vec::new()), mr()).is_ok());
-    }
-
-    #[test]
-    fn names_the_files_two_merges_share() {
-        let mine = ["b.rs", "a.rs", "c.rs", "d.rs"].map(String::from).into_iter().collect();
-        let merged: Vec<String> = ["d.rs", "a.rs", "x.rs", "b.rs", "c.rs", "a.rs"]
-            .map(String::from)
-            .into();
-        let shared = shared_files(&merged, &mine);
-        assert_eq!(shared, ["a.rs", "b.rs", "c.rs", "d.rs"]);
-        assert_eq!(names_of(&shared), "a.rs, b.rs, c.rs +1");
     }
 
     #[test]

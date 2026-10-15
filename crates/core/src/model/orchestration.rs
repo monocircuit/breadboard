@@ -304,25 +304,8 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
     turns
 }
 
-/// The open MRs after `number` in the merge order, the issue next first (merge.mjs `openAfter`).
-fn open_after(issues: &[Entry], remote: Option<&Remote>, number: Option<i64>, order: &[i64]) -> Vec<i64> {
-    let mut after: Vec<&Entry> = issues
-        .iter()
-        .filter(|issue| {
-            issue.number != number
-                && issue.tree.is_some()
-                && of(remote, issue)
-                    .mr
-                    .as_ref()
-                    .is_some_and(|mr| mr.state != "merged" && mr.state != "closed")
-        })
-        .collect();
-    after.sort_by_key(|issue| (place_in(order, issue.number), issue.number.unwrap_or(i64::MAX)));
-    after.iter().filter_map(|issue| issue.number).collect()
-}
-
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, others: Vec<i64>) -> MergeOffer {
+fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
@@ -336,7 +319,6 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         can_mark_ready,
         blockers: blockers_of(Some(mr), boxes, can_mark_ready, actions, answered),
         to_check: to_check_of(boxes, actions),
-        others,
     }
 }
 
@@ -427,13 +409,7 @@ fn actions_of(
         if let Some(issue) = issue
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(
-                mr,
-                of(remote, issue),
-                issue,
-                true,
-                open_after(issues, remote, issue.number, merge),
-            ));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true));
         }
         if is_try(action) {
             item.text = format!("{}  {}", action.text, try_spot(action, None));
@@ -493,13 +469,7 @@ fn actions_of(
             if action.kind == "merge"
                 && let Some(mr) = mr
             {
-                item.merge = Some(merge_offer(
-                    mr,
-                    part,
-                    issue,
-                    true,
-                    open_after(issues, remote, issue.number, merge),
-                ));
+                item.merge = Some(merge_offer(mr, part, issue, true));
             }
             items.push(item);
         }
@@ -539,13 +509,7 @@ fn actions_of(
         if let (Some(issue), Some(offer)) = (issue, item.merge.take())
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(
-                mr,
-                of(remote, issue),
-                issue,
-                offer.can_mark_ready,
-                open_after(issues, remote, issue.number, merge),
-            ));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, offer.can_mark_ready));
         }
         items.push(item);
     }

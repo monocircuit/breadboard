@@ -56,8 +56,6 @@ pub struct MergeOffer {
     pub blockers: Vec<String>,
     /// How many checks wait for the deployment.
     pub to_check: usize,
-    /// The open MRs after it in the merge order, by issue number: told after the merge.
-    pub others: Vec<i64>,
 }
 
 /// What a click on an item does; the writing side carries it out.
