@@ -34,6 +34,67 @@ pub struct Config {
     pub changelog: Option<Changelog>,
     /// Release tags and the paths each one releases.
     pub releases: Vec<Release>,
+    /// What breadboard watches of the project's CI (#379).
+    pub ci: Ci,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ci {
+    /// The CI job watcher's thresholds (#379, `[ci.watch]`).
+    pub watch: CiWatch,
+}
+
+/// When the CI job watcher (#379) flags a job: the critical path of most
+/// pipelines, a median that grows, a run far past its median (hung), a run
+/// that mostly waits (idle).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CiWatch {
+    /// Off: nothing read, nothing flagged.
+    pub is_on: bool,
+    /// How many of a job's newest pipelines the critical path and idle count over.
+    pub window: usize,
+    /// Runs a job needs before any flag of it.
+    pub min_runs: usize,
+    /// A job whose median is shorter holds nothing up: no critical path, no slowdown.
+    pub min_seconds: f64,
+    /// The last job of a pipeline is its critical path when the one before ended this much earlier.
+    pub critical_margin_seconds: f64,
+    /// The share of its pipelines a job must be the critical path of.
+    pub critical_share: f64,
+    /// How much its median of the last `slowdown_days` grows over the days before (0.3: +30 %).
+    pub slowdown: f64,
+    pub slowdown_days: i64,
+    /// A running job past this many times its median is hung.
+    pub hang_factor: f64,
+    /// … and past this many seconds.
+    pub hang_seconds: f64,
+    /// A job that runs this long on fewer cores than `idle_cores` mostly waits.
+    pub idle_seconds: f64,
+    pub idle_cores: f64,
+    /// How long the history keeps a run.
+    pub history_days: i64,
+}
+
+impl Default for CiWatch {
+    fn default() -> Self {
+        CiWatch {
+            is_on: true,
+            window: 10,
+            min_runs: 5,
+            min_seconds: 120.0,
+            critical_margin_seconds: 60.0,
+            critical_share: 0.5,
+            slowdown: 0.3,
+            slowdown_days: 7,
+            hang_factor: 2.0,
+            hang_seconds: 120.0,
+            idle_seconds: 300.0,
+            idle_cores: 0.5,
+            history_days: 14,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
