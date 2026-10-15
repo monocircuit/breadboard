@@ -4,10 +4,20 @@
 //! (`[main_checkout] every_minutes` since the last, or a merge woke it), the
 //! steps after an update right after it; nothing with `follow = false`.
 //! The one thing the daemon writes besides its socket: a fast-forward of a
-//! clean default branch, which no overview's read could undo.
+//! clean default branch, which no overview's read could undo. And (#352)
+//! each orchestration's epic checkout takes develop in once develop moved
+//! (core's `epic_sync`): merged, pushed when the epic's `wt:check` passes;
+//! a conflict, a failed check or a checkout it can't touch is a `look`
+//! action of the orchestration, never a force.
 
+use breadboard_core::actions::{NewAction, add_action};
+use breadboard_core::epic::epic_of;
+use breadboard_core::epic_sync::{self, Synced, Tried};
+use breadboard_core::git::{orchestrations_dir, orchestrator_checkouts};
 use breadboard_core::main_update::{self, Look};
-use std::path::PathBuf;
+use breadboard_core::record::{record_file, record_of, recorded};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 /// How often it asks whether a look is due: a merge's wake shows within this.
@@ -37,9 +47,103 @@ pub async fn keep_up(main: PathBuf) {
             if let Some(Look::Moved(_, files)) = main_update::look_if_due(&main, &store, &settings) {
                 main_update::run_steps(&main, &store, &files, &settings);
             }
+            keep_epics_up(&main, &store);
         })
         .await;
     }
+}
+
+/// Every epic of `main`'s orchestrations whose checkout lacks the develop
+/// commit the clone knows (the main checkout's look fetched it): one try per
+/// develop commit, kept in the store.
+fn keep_epics_up(main: &Path, store: &Path) {
+    let checkouts = orchestrator_checkouts(main);
+    for name in recorded(main) {
+        let Some(epic) = record_of(main, &name).and_then(|record| epic_of(&record.raw)) else {
+            continue;
+        };
+        let checkout = orchestrations_dir(main).join(&name);
+        let tried = epic_sync::read_tried(store, &name);
+        if !checkouts.contains(&checkout) || !epic_sync::is_due(main, &tried) {
+            continue;
+        }
+        // Another daemon of the clone at it: its try counts.
+        let lock = breadboard_core::lock::lock_of(&epic_sync::tried_file(store, &name));
+        if std::fs::create_dir(&lock).is_err() {
+            continue;
+        }
+        let develop = epic_sync::develop_head(main).unwrap_or_default();
+        let outcome = sync_epic(main, &name, &epic, &checkout);
+        epic_sync::write_tried(
+            store,
+            &name,
+            &Tried {
+                develop,
+                at: breadboard_core::time::now_ms(),
+                outcome,
+            },
+        );
+        let _ = std::fs::remove_dir(&lock);
+    }
+}
+
+/// develop into the epic `epic` of `name` in `checkout`: what came of it,
+/// and for anything but `pushed` or `up to date` a look action saying why.
+fn sync_epic(main: &Path, name: &str, epic: &str, checkout: &Path) -> String {
+    let shown = format!(".claude/orchestrations/{name}");
+    let (outcome, why) = match epic_sync::merge_develop(checkout, epic) {
+        Synced::UpToDate => ("up to date".to_string(), None),
+        Synced::Merged { .. } if !is_checked(checkout) => (
+            "check failed".into(),
+            Some(format!(
+                "{epic} took develop in, but its wt:check failed: not pushed. Look in {shown} (pnpm wt:check), fix it there, push"
+            )),
+        ),
+        Synced::Merged { .. } => match epic_sync::push(checkout, epic) {
+            Ok(()) => ("pushed".into(), None),
+            Err(error) => (
+                "push failed".into(),
+                Some(format!(
+                    "{epic} took develop in, but its push failed ({error}): git push in {shown}"
+                )),
+            ),
+        },
+        Synced::Conflict { files } => (
+            "conflict".into(),
+            Some(format!(
+                "{epic} conflicts with develop in {}: merge develop into it by hand in {shown} (git merge origin/develop), resolve, pnpm wt:check, git push",
+                files.join(", ")
+            )),
+        ),
+        Synced::Skipped { reason } => (
+            format!("skipped: {reason}"),
+            Some(format!("{epic} did not take develop in: {reason}")),
+        ),
+    };
+    if let Some(text) = why {
+        let _ = add_action(
+            &record_file(main, name),
+            NewAction {
+                kind: "look".into(),
+                text,
+                ..Default::default()
+            },
+        );
+    }
+    outcome
+}
+
+/// Whether the epic checkout's `pnpm wt:check` passes: lint, typecheck and
+/// test of what the epic changes against develop, as for any push.
+fn is_checked(checkout: &Path) -> bool {
+    Command::new(crate::cli::lifecycle::proc::exe())
+        .arg("wt:check")
+        .current_dir(checkout)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(test)]
@@ -164,6 +268,84 @@ mod tests {
         assert_eq!(git(&main, &["rev-parse", "HEAD"]), before);
         assert_eq!(std::fs::read_to_string(main.join("README.md")).unwrap(), "mine\n");
         drop(runtime);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_epic_that_conflicts_with_develop_is_left_as_it_was_and_said_once() {
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-epic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let (main, other) = world(&root, "[repo]\ndefault_branch = \"develop\"\n");
+        git(&main, &["config", "user.name", "Test"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        let epic = "epic/15-breadboard";
+        git(
+            &main,
+            &["push", "--quiet", "origin", &format!("develop:refs/heads/{epic}")],
+        );
+        git(&main, &["fetch", "--quiet", "origin"]);
+        let record = record_file(&main, "breadboard");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        let fields = serde_json::json!({ "issues": [], "epic": { "branch": epic, "number": 15 }, "base": epic });
+        std::fs::write(&record, fields.to_string()).unwrap();
+        let checkout = orchestrations_dir(&main).join("breadboard");
+        let start = format!("origin/{epic}");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--track",
+                "-b",
+                epic,
+                checkout.to_str().unwrap(),
+                &start,
+            ],
+        );
+        // develop and the epic change one line each.
+        let change = |branch: &str, text: &str| {
+            git(&other, &["fetch", "--quiet", "origin"]);
+            git(
+                &other,
+                &["checkout", "--quiet", "-B", branch, &format!("origin/{branch}")],
+            );
+            std::fs::write(other.join("README.md"), text).unwrap();
+            git(&other, &["commit", "--quiet", "-am", "feat: readme"]);
+            git(&other, &["push", "--quiet", "origin", branch]);
+        };
+        change("develop", "develop's\n");
+        change(epic, "the epic's\n");
+        git(&main, &["fetch", "--quiet", "origin"]);
+        // Caught up with the task merged into the epic, then left there: develop aborted.
+        let head = git(&main, &["rev-parse", &start]);
+        let store = main_update::store_of(&main).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        keep_epics_up(&main, &store);
+        assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
+        let looks = || -> Vec<String> {
+            let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+            raw["actions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter(|action| action["kind"] == "look")
+                .map(|action| action["text"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        assert_eq!(looks().len(), 1, "{:?}", looks());
+        assert!(
+            looks()[0].contains("conflicts with develop in README.md"),
+            "{:?}",
+            looks()
+        );
+        assert_eq!(epic_sync::read_tried(&store, "breadboard").outcome, "conflict");
+        // The same develop commit is not tried again.
+        keep_epics_up(&main, &store);
+        assert_eq!(looks().len(), 1);
         let _ = std::fs::remove_dir_all(&root);
     }
 
