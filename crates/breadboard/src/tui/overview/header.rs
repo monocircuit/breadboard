@@ -1,7 +1,7 @@
 //! The top of a view (boxes.mjs, chat.mjs, gitlab-status.mjs): the title band
 //! with the view's name and the age of GitLab's data; in an orchestration the
-//! orchestrator's chat row (#287) and the line of a GitLab read that failed,
-//! both on top with NEXT while the rest scrolls.
+//! orchestrator's chat row (#287), the CI job watcher's line (#379) and the
+//! line of a GitLab read that failed, all on top with NEXT while the rest scrolls.
 
 use super::{Act, Ctx, look};
 use crate::tui::theme::{self, Tone};
@@ -165,6 +165,12 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                 &format!("⏸ {usage}: no new run starts, the queue waits; the stopped runs go on after it"),
                 theme::tone(Tone::Red),
             );
+        });
+    }
+    // A CI job that holds pipelines up (#379): under the band, with NEXT on top.
+    if let Some(line) = &model.ci_watch {
+        page.section(Section::new("CI").sticky().plain(), |scene| {
+            look::say(scene, line, theme::tone(Tone::Yellow));
         });
     }
     if let Some(error) = &ctx.gitlab.error {
