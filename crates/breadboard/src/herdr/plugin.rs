@@ -6,6 +6,7 @@
 //! breadboard herdr open <pane>          an action: where it was triggered written down, the pane opened
 //! breadboard herdr pane <pane>          inside the pane: run it in the worktree of that place
 //! breadboard herdr status               one line for tab_bar_right: stacks, agents that ask
+//! breadboard herdr heal                 the overview again in `overview` tabs that hold a bare shell
 //! ```
 //!
 //! herdr runs plugin commands in the plugin's directory: the repo is the
@@ -14,6 +15,7 @@
 //! it, a pane it opens may not, so the action writes it down for the pane.
 
 use super::{SPACE, USAGE};
+use crate::cli::lifecycle::layout::tabs::OVERVIEW;
 use breadboard_core::git::{self, git};
 use breadboard_core::herdr::{plugin_context, plugin_id, save_context, where_from};
 use breadboard_core::local::{self, StackContainer};
@@ -34,6 +36,7 @@ pub fn main(args: &[String]) -> ExitCode {
         ["restore"] => restore(false),
         ["restore", "--startup"] => restore(true),
         ["status"] => status(),
+        ["heal"] => heal(),
         ["open", pane] if PANES.contains(pane) => open(pane),
         ["pane", pane] if PANES.contains(pane) => pane_of(pane),
         ["open" | "pane", pane] => refused(&format!("unknown pane {pane}")),
@@ -128,6 +131,19 @@ fn restore(is_startup: bool) -> ExitCode {
     }
     let Some(repo) = repo() else { return no_repo() };
     code_of(this(&["wt:herdr", "--no-focus"], &repo).status())
+}
+
+/// `heal`: the overview again in every `overview` tab of the repo that
+/// holds only a shell (#388), in the checkout of the cwd. Started by the
+/// status when it saw one; says in which spaces.
+fn heal() -> ExitCode {
+    let Ok(repo) = crate::cli::lifecycle::repo::Repo::here() else {
+        return no_repo();
+    };
+    for label in crate::cli::lifecycle::layout::heal_overviews(&repo) {
+        println!("the overview runs again in {label}");
+    }
+    ExitCode::SUCCESS
 }
 
 /// `open <pane>`: where the key was pressed written down, the pane opened.
@@ -228,12 +244,27 @@ fn wait_for_key() {
 /// through core's shared file (#331): no call while another process's read
 /// is fresh, one `docker ps` by the lock holder otherwise. Hostile answers
 /// count as nothing; it always exits 0.
+///
+/// It is also the tick that brings the overviews back (#388): nothing else
+/// runs after a herdr restart until the user looks. One more read, the tabs,
+/// and a process read per `overview` tab of the repo; one that holds only a
+/// shell starts `heal` on its own, the line doesn't wait for it.
 fn status() -> ExitCode {
     let containers = local::containers();
     let main = status_main();
-    let waiting = needs_you(main.as_deref(), ask(&["workspace", "list"]).as_ref(), || {
-        ask(&["pane", "list"])
+    let spaces = ask(&["workspace", "list"]);
+    let mut panes = None;
+    let waiting = needs_you(main.as_deref(), spaces.as_ref(), || {
+        panes = ask(&["pane", "list"]);
+        panes.clone()
     }) + main.as_deref().map_or(0, headless_asks);
+    if let Some(main) = main.as_deref() {
+        let ours = ours(Some(main), spaces.as_ref());
+        let tabs = (!ours.is_empty()).then(|| ask(&["tab", "list"])).flatten();
+        if !bare_overviews(&ours, tabs.as_ref(), panes.as_ref(), is_bare).is_empty() {
+            start_heal(main);
+        }
+    }
     let project = main
         .as_deref()
         .and_then(breadboard_core::stack::of)
@@ -285,25 +316,7 @@ fn stacks_in(containers: Option<&[StackContainer]>, project: &str) -> usize {
 /// worktrees' and the orchestrations' (`repo_root` is the main checkout, or
 /// the label starts with the main space's). No pane list without one.
 fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -> Option<Value>) -> usize {
-    let main = main.map(|main| main.display().to_string());
-    let ours: Vec<&str> = spaces
-        .and_then(|result| result.get("workspaces"))
-        .and_then(Value::as_array)
-        .map(|spaces| {
-            spaces
-                .iter()
-                .filter(|space| {
-                    let root = space
-                        .get("worktree")
-                        .and_then(|tree| tree.get("repo_root"))
-                        .and_then(Value::as_str);
-                    let label = space.get("label").and_then(Value::as_str).unwrap_or_default();
-                    (root.is_some() && root == main.as_deref()) || label.starts_with(&SPACE.get())
-                })
-                .filter_map(|space| space.get("workspace_id").and_then(Value::as_str))
-                .collect()
-        })
-        .unwrap_or_default();
+    let ours = ours(main, spaces);
     if ours.is_empty() {
         return 0;
     }
@@ -320,6 +333,83 @@ fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -
                 })
                 .count()
         })
+}
+
+/// The ids of the repo's spaces: the main space, its worktrees' and the
+/// orchestrations' (`repo_root` is the main checkout, or the label starts
+/// with the main space's).
+fn ours<'a>(main: Option<&Path>, spaces: Option<&'a Value>) -> Vec<&'a str> {
+    let main = main.map(|main| main.display().to_string());
+    spaces
+        .and_then(|result| result.get("workspaces"))
+        .and_then(Value::as_array)
+        .map(|spaces| {
+            spaces
+                .iter()
+                .filter(|space| {
+                    let root = space
+                        .get("worktree")
+                        .and_then(|tree| tree.get("repo_root"))
+                        .and_then(Value::as_str);
+                    let label = space.get("label").and_then(Value::as_str).unwrap_or_default();
+                    (root.is_some() && root == main.as_deref()) || label.starts_with(&SPACE.get())
+                })
+                .filter_map(|space| space.get("workspace_id").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The panes of the `overview` tabs in the spaces `ours` that hold only a
+/// shell (`is_bare`): a tab of one pane, its overview not running. A tab
+/// split by hand is the user's.
+fn bare_overviews(
+    ours: &[&str],
+    tabs: Option<&Value>,
+    panes: Option<&Value>,
+    is_bare: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let listed = |result: Option<&Value>, key: &str| -> Vec<Value> {
+        result
+            .and_then(|result| result.get(key)?.as_array().cloned())
+            .unwrap_or_default()
+    };
+    let field = |value: &Value, key: &str| value.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
+    let panes = listed(panes, "panes");
+    listed(tabs, "tabs")
+        .iter()
+        .filter(|tab| {
+            field(tab, "label") == OVERVIEW
+                && tab.get("pane_count").and_then(Value::as_i64) == Some(1)
+                && ours.contains(&field(tab, "workspace_id").as_str())
+        })
+        .filter_map(|tab| panes.iter().find(|pane| field(pane, "tab_id") == field(tab, "tab_id")))
+        .map(|pane| field(pane, "pane_id"))
+        .filter(|pane| !pane.is_empty() && is_bare(pane))
+        .collect()
+}
+
+/// Whether the pane's shell is in front: nothing runs in it.
+fn is_bare(pane: &str) -> bool {
+    ask(&["pane", "process-info", "--pane", pane])
+        .and_then(|result| result.get("process_info").cloned())
+        .is_some_and(|info| {
+            let shell = info.get("shell_pid").and_then(Value::as_i64).unwrap_or(0);
+            shell != 0 && info.get("foreground_process_group_id").and_then(Value::as_i64) == Some(shell)
+        })
+}
+
+/// `heal` in the main checkout `main`, on its own: in a process group of
+/// its own (herdr's timeout of the status doesn't end it), not waited for.
+/// It runs inside herdr, so the layout's lock holds for it too.
+fn start_heal(main: &Path) {
+    let _ = this(&["herdr", "heal"], main)
+        .env("HERDR_ENV", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn();
 }
 
 /// The headless agents of `main` that ask (#361): no pane of theirs is
@@ -424,6 +514,32 @@ mod tests {
         assert_eq!(needs_you(None, Some(&spaces), || Some(panes.clone())), 2);
         assert_eq!(needs_you(Some(main), None, panes::unexpected), 0);
         assert_eq!(needs_you(Some(main), Some(&json!({ "workspaces": "x" })), || None), 0);
+    }
+
+    #[test]
+    fn finds_the_overview_tabs_of_the_repo_that_hold_a_bare_shell() {
+        let tabs = json!({ "tabs": [
+            { "workspace_id": "wD", "tab_id": "wD:t1", "label": "overview", "pane_count": 1 },
+            { "workspace_id": "w2", "tab_id": "w2:t2", "label": "overview", "pane_count": 1 },
+            // Split by hand, another repo's, not an overview tab.
+            { "workspace_id": "w3", "tab_id": "w3:t2", "label": "overview", "pane_count": 2 },
+            { "workspace_id": "wM", "tab_id": "wM:t1", "label": "overview", "pane_count": 1 },
+            { "workspace_id": "wD", "tab_id": "wD:t2", "label": "root", "pane_count": 1 },
+        ] });
+        let panes = json!({ "panes": [
+            { "pane_id": "wD:p1", "tab_id": "wD:t1" },
+            { "pane_id": "w2:p2", "tab_id": "w2:t2" },
+            { "pane_id": "w3:p2", "tab_id": "w3:t2" },
+            { "pane_id": "wM:p1", "tab_id": "wM:t1" },
+            { "pane_id": "wD:p2", "tab_id": "wD:t2" },
+        ] });
+        let ours = ["wD", "w2", "w3"];
+        // The main space's overview runs, the orchestration's is a bare shell.
+        let bare = bare_overviews(&ours, Some(&tabs), Some(&panes), |pane| pane != "wD:p1");
+        assert_eq!(bare, ["w2:p2"]);
+        assert!(bare_overviews(&ours, Some(&tabs), Some(&panes), |_| false).is_empty());
+        assert!(bare_overviews(&ours, None, Some(&panes), |_| true).is_empty());
+        assert!(bare_overviews(&[], Some(&tabs), Some(&panes), |_| true).is_empty());
     }
 
     mod panes {

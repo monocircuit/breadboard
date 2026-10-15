@@ -192,7 +192,13 @@ Meanwhile the MR row says `waits for !213`.
 **The overview answers "what now?"**, so the user never has to ask. The
 orchestrator sets the order right after the start and again whenever it
 changes: `{{run}} wt:plan <name> --work <issue>… --merge <issue>… --why "…"`
-(`wt:plan <name>` alone prints it). A step that is the user's and no agent's
+(`wt:plan <name>` alone prints it). The live overview keeps the plan in step
+with the merge order it computes, by itself (#376): when an issue in it is
+merged, closed or gone, its why names one done, or the merge order left it,
+it writes the computed order (done and gone issues out, new ones at their
+place, the why kept unless it names a done issue, a line `updated from the
+merge order <time>` under it). A hand-set order of independent MRs holds:
+the computed order follows the plan where nothing decides otherwise. A step that is the user's and no agent's
 it leaves as `{{run}} wt:action <kind> "<text>" --orchestration <name>`; a
 merge names its MR (`--mr !N`), so its click merges that one. Each
 agent leaves an action whenever it waits for the user (its brief says so).
@@ -214,6 +220,38 @@ It never makes a second tab, and never resumes a conversation that runs
 elsewhere. After a herdr restart, the layout resumes the orchestrator in its
 idle tab; agents have no tab to resume (How agents run). No script closes or replaces a tab
 `orchestrator` that holds more than an idle shell.
+
+## Staying lean
+
+The orchestrator needs to know little: the state lives in GitLab (issues,
+MRs, pipelines), the record (`plan`, `workers`), the agents' worktrees and
+the overview. What its chat holds it pays for in every turn after (#382):
+
+- **Investigate through a subagent**, not in its own chat: logs, transcripts,
+  pipeline traces, code searches go to an `Agent`, only the conclusion comes
+  back.
+- **Never paste large command output**: `head`, `grep`, counts. No
+  `overview --once` printed into the chat: the overview is on screen.
+- **Agents' routine reports go to the overview**, not the chat (status as
+  well as decisions, above). A screenshot only when nothing else shows it.
+- **The journal is its memory**: `{{run}} wt:journal "<line>" --orchestration
+  <name>` for every decision it took for the user, every open thread and
+  who waits for what, one line each, when it happens
+  (`.claude/orchestrations/<name>.journal.md`, `wt:journal` alone prints it).
+  The overview shows its last lines under JOURNAL.
+
+**The fresh start.** The title band shows the orchestrator's context
+(`orchestrator 62 % · restart at a quiet point`). Above `[orchestrator]
+fresh_above` of `breadboard.toml` (50 %) and at a quiet point (its chat idle,
+no `decide` or `plan` open, no merge in flight) the chat row offers
+**`↻ fresh start`** (with `auto_fresh = true` the overview makes it by
+itself): `{{run}} wt:orchestrate <name> --fresh` tells the old chat to write
+its journal entries, waits for its answer, ends its claude and starts a new
+one in the tab `orchestrator`, its first prompt the journal and the record.
+The old conversation stays in `/resume`, the journal says its id. A fresh
+orchestrator starts from that prompt: every open thread in the journal is
+its own, and it asks GitLab, the overview and the agents rather than the
+user.
 
 ## The overview
 
@@ -251,10 +289,7 @@ Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
 the worktree, have its agent tick the done boxes), `pipeline` (a failed
 MR pipeline whose line didn't reach its agent; queued, it arrives on the
-first try, so the row is rare: a worktree without an agent), `order` (the plan
-is stale: an issue in it closed or gone, its why names one done, or the
-merge order left it; the click writes the computed order, the why dropped
-when it names a done issue), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
+first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
 under the orchestration's record and how reuse went, one block per piece
 of work: the open MRs in the merge order, the MR graph's lanes in front

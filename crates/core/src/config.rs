@@ -25,6 +25,7 @@ pub struct Config {
     pub stack: Option<Stack>,
     pub mr: Mr,
     pub orchestration: Orchestration,
+    pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
     pub check: Check,
@@ -274,6 +275,25 @@ pub struct Orchestration {
     /// merge into (#350), its number from the issues' milestone
     /// (`… Epic N: …`) or `--epic`; else it works on the default branch.
     pub epic_branches: bool,
+}
+
+/// The orchestrator's chat (#382): when it gets a fresh start.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orchestrator {
+    /// From which share of its context (percent) the overview offers a fresh start at a quiet point.
+    pub fresh_above: u32,
+    /// Whether the overview makes the fresh start by itself, without a click.
+    pub auto_fresh: bool,
+}
+
+impl Default for Orchestrator {
+    fn default() -> Self {
+        Orchestrator {
+            fresh_above: 50,
+            auto_fresh: false,
+        }
+    }
 }
 
 /// An orchestration's agents: what they may spend (#372), in tokens (`"20 M"`)

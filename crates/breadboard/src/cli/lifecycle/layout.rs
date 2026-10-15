@@ -267,6 +267,41 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     Some((main, report))
 }
 
+/// The `overview` tabs that hold only a shell run their overview again
+/// (#388): after a herdr server or machine restart herdr brings the tabs
+/// back as bare shells, and the startup's layout may come late or not at
+/// all. Under the layout's lock, so a pane is judged and typed into by one
+/// process; only a shell that idles in its one pane gets the command, never
+/// a pane that runs something. The labels of the spaces it started one in.
+pub fn heal_overviews(repo: &Repo) -> Vec<String> {
+    exclusive(|| {
+        let trees = repo.trees();
+        let mut started = Vec::new();
+        for space in herdr::spaces() {
+            let label = s(&space, "label");
+            let command = if label == SPACE.get() {
+                tabs::overview_command(tabs::View::Herdr)
+            } else if let Some(name) = repo.orchestration_of(label) {
+                tabs::overview_command(tabs::View::Orchestration(&name))
+            } else if let Some(tree) = trees.iter().find(|tree| {
+                repo.feature_of(&tree.dir) == label && !breadboard_core::record::is_orchestrated(&repo.main, &tree.dir)
+            }) {
+                tabs::overview_command(tabs::View::Worktree(&tree.dir))
+            } else {
+                continue;
+            };
+            let workspace = s(&space, "workspace_id");
+            let tabs = herdr::tabs_of(workspace);
+            if let Some(idle) = tabs::idle_pane_of(workspace, OVERVIEW, &tabs)
+                && herdr::did(&["pane", "run", &idle, &command])
+            {
+                started.push(label.to_string());
+            }
+        }
+        started
+    })
+}
+
 fn is_port_free(port: i64) -> bool {
     u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_ok())
 }
