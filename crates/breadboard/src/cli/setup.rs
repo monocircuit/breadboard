@@ -64,6 +64,7 @@ fn shape_of(command: &str) -> Option<Shape> {
                 "--changelog",
                 "--watch",
                 "--changes",
+                "--fresh",
                 // What the overview's own start passes; `--cap` says it is gone (#229).
                 "--now",
                 "--cap",

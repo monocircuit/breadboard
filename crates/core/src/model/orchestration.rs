@@ -14,6 +14,7 @@ use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, progress_of, row_blockers_of};
 use super::next::{IssueState, Next, NextMerge, next_of, nothing_text, stale_of, updated_plan, why_of};
+use super::orchestrator::{Orchestrator, hold_of};
 use super::order::{Go, Item, MergeOffer, Target, order_actions, place_in};
 use super::resolve::{Conflict, Resolves};
 use super::tree::{TreeFacts, Worktrees, pipeline_mark, worktrees_of};
@@ -94,6 +95,12 @@ pub struct OrchestrationLocal {
     pub ci: Option<crate::ci::Queue>,
     /// Its epic branch (#350), None for one that works on develop.
     pub epic: Option<super::epic_row::EpicLocal>,
+    /// The share of its context the orchestrator's chat used (#382), None without one recorded.
+    pub orchestrator_share: Option<f64>,
+    /// The last lines of its journal (#382), oldest first.
+    pub journal: Vec<String>,
+    /// When the orchestrator gets a fresh start (`[orchestrator]`).
+    pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
     pub spent: crate::spend::Spent,
 }
@@ -241,6 +248,8 @@ pub struct OrchestrationModel {
     pub turn_records: Vec<(PathBuf, TurnRecord)>,
     /// The epic's head row (#350), None for one that works on develop.
     pub epic: Option<Vec<Vec<Span>>>,
+    /// The orchestrator's context, quiet point and journal (#382).
+    pub orchestrator: Orchestrator,
 }
 
 /// An action of ACTIONS: a try opens its spot, a merge merges on two clicks.
@@ -909,6 +918,19 @@ fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64, und
     }
 }
 
+/// The orchestrator's context and whether now is a quiet point for its fresh start (#382).
+fn orchestrator_of(local: &OrchestrationLocal, actions: &[Item]) -> Orchestrator {
+    let session = local.chat.as_ref().and_then(|chat| chat.session_id.as_deref());
+    let has_chat = local.chat.as_ref().is_some_and(|chat| chat.state == ChatState::Alive);
+    Orchestrator {
+        share: local.orchestrator_share,
+        fresh_above: f64::from(local.fresh.fresh_above) / 100.0,
+        is_auto: local.fresh.auto_fresh,
+        hold: hold_of(has_chat, session.and_then(|id| local.agents.get(id)), actions),
+        journal: local.journal.clone(),
+    }
+}
+
 /// The view of one orchestration from what was read: `remote` None until
 /// GitLab answers; `state` what the writing side keeps.
 pub fn orchestration_of(
@@ -962,6 +984,7 @@ pub fn orchestration_of(
         ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),
+        orchestrator: orchestrator_of(local, &[]),
     };
     if issues.is_empty() {
         model.next = Ok(NextSection {
@@ -1070,6 +1093,9 @@ pub fn orchestration_of(
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &turns, &workers, state, now)
     });
+    if let Ok(actions) = &model.actions {
+        model.orchestrator = orchestrator_of(local, &actions.actions);
+    }
     if remote.is_some() {
         let states = states_of(&issues, remote);
         model.stale = stale_of(plan, &states, order.is_off_plan);

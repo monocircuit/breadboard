@@ -21,6 +21,7 @@ pub mod auto;
 pub mod browser;
 pub mod chat;
 pub mod checker;
+pub mod fresh;
 pub mod glab;
 pub mod herdr;
 pub mod layout_log;
@@ -89,6 +90,10 @@ pub struct Actor {
     pub end: Option<Run>,
     /// What the last click on the orchestrator's chat did, shown for a while.
     pub chat: Option<String>,
+    /// The orchestrator's fresh start (#382): running, or how it ended.
+    pub fresh: Option<Run>,
+    /// The conversation a fresh start ran for: never twice by itself.
+    pub fresh_for: Option<String>,
     /// Free agents whose dismiss is armed: conversation → name.
     pub dismissing: HashMap<String, String>,
     /// `stack:up` started for a try or the view of everything, by checkout
@@ -121,6 +126,8 @@ impl Actor {
             auto: auto::Auto::default(),
             end: None,
             chat: None,
+            fresh: None,
+            fresh_for: None,
             dismissing: HashMap::new(),
             stacks: HashMap::new(),
             migrations: HashMap::new(),

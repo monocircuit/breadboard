@@ -165,6 +165,9 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             is_changed |= remove_merged(app, &name, &local, remote, &model);
         }
     }
+    if is_deliverer {
+        super::fresh::after_read(app, &name, &model);
+    }
     notify_new(app, &model);
     if is_changed {
         app.redraw();
