@@ -81,8 +81,12 @@ pub fn once_text(hold_up: &[String]) -> String {
 
 /// The one line NEXT shows when nothing is for the user: `nothing for you · 2
 /// agents at work · next merge: !286 once its pipeline passes`.
-pub fn nothing_text(at_work: usize, merge: Option<&NextMerge>) -> String {
+pub fn nothing_text(at_work: usize, merge: Option<&NextMerge>, develop_red: Option<&str>) -> String {
     let mut parts = vec!["nothing for you".to_string()];
+    // New merges are held while develop is red (#392).
+    if let Some(red) = develop_red {
+        parts.push(format!("{red}: merges held"));
+    }
     if at_work > 0 {
         parts.push(format!(
             "{at_work} agent{} at work",
@@ -297,11 +301,15 @@ mod tests {
         assert_eq!(once(&["draft"]), "its agent posts the merge");
         assert_eq!(once(&["something new"]), "something new");
         assert_eq!(
-            nothing_text(2, Some(&held())),
+            nothing_text(2, Some(&held()), None),
             "nothing for you · 2 agents at work · next merge: !286 once its pipeline passes"
         );
-        assert_eq!(nothing_text(1, None), "nothing for you · 1 agent at work");
-        assert_eq!(nothing_text(0, None), "nothing for you");
+        assert_eq!(nothing_text(1, None, None), "nothing for you · 1 agent at work");
+        assert_eq!(nothing_text(0, None, None), "nothing for you");
+        assert_eq!(
+            nothing_text(1, None, Some("develop red (check:vita)")),
+            "nothing for you · develop red (check:vita): merges held · 1 agent at work"
+        );
     }
 
     fn states() -> HashMap<i64, IssueState> {

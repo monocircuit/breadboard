@@ -277,6 +277,48 @@ fn turn_records_of(issues: &[Entry], remote: Option<&Remote>, turns: &Turns) -> 
         .collect()
 }
 
+/// `develop red (check:vita)` while develop's last finished pipeline failed:
+/// a merge now would land on a base that is already broken (#392).
+fn develop_red_text(develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
+    let develop = develop.filter(|pipeline| pipeline.status == "failed")?;
+    let jobs: Vec<&str> = develop
+        .jobs
+        .iter()
+        .filter(|job| job.status == "failed")
+        .map(|job| job.name.as_str())
+        .take(2)
+        .collect();
+    Some(if jobs.is_empty() {
+        "develop red".to_string()
+    } else {
+        format!("develop red ({})", jobs.join(", "))
+    })
+}
+
+/// While develop is red no merge is offered: the turn that would be `Offered`
+/// lacks it, and the row says why. The safety net of merging without a new
+/// pipeline (#392); the overview's offer is held, not a merge by itself.
+fn hold_while_develop_is_red(
+    (mut reasons, turn): (Vec<Reason>, MergeTurn),
+    develop: Option<&crate::gitlab::DevelopPipeline>,
+) -> (Vec<Reason>, MergeTurn) {
+    let Some(text) = develop_red_text(develop).filter(|_| turn == MergeTurn::Offered) else {
+        return (reasons, turn);
+    };
+    for reason in reasons
+        .iter_mut()
+        .filter(|reason| reason.text == super::merge_turn::MARK_READY)
+    {
+        reason.who = "agent".into();
+    }
+    reasons.push(Reason {
+        text,
+        who: "develop".into(),
+        is_conflict: false,
+    });
+    (reasons, MergeTurn::Lacks)
+}
+
 /// The turns of the open MRs, from their row's reasons.
 fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
@@ -299,7 +341,12 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
             tree,
             done,
         );
-        turns.insert(number, verdict);
+        // Only a merge onto develop waits for it: a task into its epic does not.
+        let develop = remote
+            .develop
+            .as_ref()
+            .filter(|_| mr.target() == crate::git::default_branch());
+        turns.insert(number, hold_while_develop_is_red(verdict, develop));
     }
     turns
 }
@@ -1127,7 +1174,18 @@ pub fn orchestration_of(
                             == Some("working")
                     })
                     .count();
-                NextBand::Nothing(nothing_text(at_work, merge.as_ref()))
+                NextBand::Nothing(nothing_text(
+                    at_work,
+                    merge.as_ref(),
+                    remote
+                        .and_then(|remote| develop_red_text(remote.develop.as_ref()))
+                        .filter(|_| {
+                            turns
+                                .values()
+                                .any(|(reasons, _)| reasons.iter().any(|reason| reason.who == "develop"))
+                        })
+                        .as_deref(),
+                ))
             }
         };
         NextSection { band, why }
@@ -1407,6 +1465,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["draft: mark ready → agent", "after !11 (needs #1) → !11"]
         );
+    }
+
+    #[test]
+    fn a_red_develop_holds_the_merge_offers_and_the_band_says_why() {
+        let (local, mut remote) = behind_another_sharing_files();
+        let offered = |remote: &Remote| {
+            let model = orchestration_of(&local, Some(remote), &mut ViewState::default(), NOW);
+            let merges = model
+                .actions
+                .as_ref()
+                .unwrap()
+                .actions
+                .iter()
+                .filter(|item| item.kind == "merge")
+                .count();
+            (merges, model)
+        };
+        assert_eq!(offered(&remote).0, 1);
+        remote.develop = Some(crate::gitlab::DevelopPipeline {
+            id: 9,
+            status: "failed".into(),
+            jobs: vec![crate::gitlab::Job {
+                name: "check:vita".into(),
+                status: "failed".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let (merges, model) = offered(&remote);
+        assert_eq!(merges, 0);
+        let next = model.next.unwrap();
+        assert!(
+            matches!(&next.band, NextBand::Nothing(text) if text.contains("develop red (check:vita): merges held")),
+            "{:?}",
+            next.band
+        );
+        let row = model
+            .merge_requests
+            .unwrap()
+            .open
+            .iter()
+            .filter_map(|row| row.mr.clone())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert!(
+            row.reasons
+                .iter()
+                .any(|reason| reason.text == "develop red (check:vita)"),
+            "{:?}",
+            row.reasons
+        );
+        // Green again: offered as before.
+        remote.develop.as_mut().unwrap().status = "success".into();
+        assert_eq!(offered(&remote).0, 1);
     }
 
     #[test]
