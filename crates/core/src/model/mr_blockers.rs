@@ -131,14 +131,15 @@ pub fn row_blockers_of(
         add(text, who, false);
     }
 
-    for pred in after {
+    // Only a prerequisite holds the merge: shared files just rank (#392).
+    for pred in after.iter().filter(|pred| pred.is_hard) {
         add(
             format!("after !{} ({})", pred.iid, pred.why),
             &format!("!{}", pred.iid),
             false,
         );
     }
-    let named: HashSet<i64> = after.iter().map(|pred| pred.iid).collect();
+    let named: HashSet<i64> = after.iter().filter(|pred| pred.is_hard).map(|pred| pred.iid).collect();
     for iid in tree
         .and_then(|tree| tree.wait.as_ref())
         .map(|wait| wait.mrs.clone())
@@ -416,7 +417,8 @@ mod tests {
         let after = [After {
             number: 1,
             iid: 253,
-            why: "shares tty.mjs".into(),
+            why: "needs #1".into(),
+            is_hard: true,
         }];
         let done: HashSet<i64> = [248].into();
         let all: Vec<String> = row_blockers_of(&found, &[], 4, &after, &[], Some(&tree), &done)
@@ -427,7 +429,7 @@ mod tests {
             all,
             [
                 "conflicts with develop (4 behind): merge develop in → agent",
-                "after !253 (shares tty.mjs) → !253",
+                "after !253 (needs #1) → !253",
                 "waits for !249 → !249",
                 "change requested: shorter title → agent",
                 "2 commits not pushed → agent",

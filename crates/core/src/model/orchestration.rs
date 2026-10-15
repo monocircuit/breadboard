@@ -1282,8 +1282,10 @@ mod tests {
         }
     }
 
-    /// #344, !324 of one-codebase: done itself, behind another MR in the merge order.
-    fn behind_another() -> (OrchestrationLocal, Remote) {
+    /// #344, !324 of one-codebase: done itself, behind another MR in the merge
+    /// order. Sharing `package.json` alone only ranks them (#392): `needs` is
+    /// what makes #2 wait for #1.
+    fn behind_another_sharing_files() -> (OrchestrationLocal, Remote) {
         let mut local = local();
         let files: std::collections::BTreeSet<String> = ["package.json".to_string()].into();
         for tree in &mut local.trees {
@@ -1311,6 +1313,56 @@ mod tests {
         remote.of.get_mut("feature/1-one").unwrap().mr = Some(draft(11, "feature/1-one", "running"));
         remote.of.get_mut("feature/2-two").unwrap().mr = Some(draft(12, "feature/2-two", "success"));
         (local, remote)
+    }
+
+    fn behind_another() -> (OrchestrationLocal, Remote) {
+        let (local, mut remote) = behind_another_sharing_files();
+        remote
+            .of
+            .get_mut("feature/2-two")
+            .unwrap()
+            .issue
+            .as_mut()
+            .unwrap()
+            .needs = vec![1];
+        (local, remote)
+    }
+
+    #[test]
+    fn sharing_a_code_file_only_ranks_it_the_merge_is_offered_in_parallel() {
+        let (local, remote) = behind_another_sharing_files();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert!(model.turn_records.contains(&(
+            PathBuf::from("/w/2-two"),
+            TurnRecord {
+                sha: "a".into(),
+                turn: MergeTurn::Offered,
+            }
+        )));
+        let actions = model.actions.unwrap();
+        assert_eq!(
+            actions
+                .actions
+                .iter()
+                .filter(|item| item.kind == "merge")
+                .map(|item| item.who.as_str())
+                .collect::<Vec<_>>(),
+            ["2-two"]
+        );
+        let mrs = model.merge_requests.unwrap();
+        let row = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert_eq!(
+            row.reasons
+                .iter()
+                .map(|reason| format!("{} → {}", reason.text, reason.who))
+                .collect::<Vec<_>>(),
+            ["draft: mark ready → you"]
+        );
     }
 
     #[test]
@@ -1352,7 +1404,7 @@ mod tests {
                 .iter()
                 .map(|reason| format!("{} → {}", reason.text, reason.who))
                 .collect::<Vec<_>>(),
-            ["draft: mark ready → agent", "after !11 (shares package.json) → !11"]
+            ["draft: mark ready → agent", "after !11 (needs #1) → !11"]
         );
     }
 
