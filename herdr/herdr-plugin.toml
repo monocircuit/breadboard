@@ -20,9 +20,11 @@ min_herdr_version = "0.9.0"
 # After a herdr restart the layout comes back: the main space with `root` and
 # `overview`, a space per worktree, the way pnpm wt:herdr builds it. The tabs
 # herdr restores as bare shells run their command again, and a worktree's tab
-# resumes its claude conversation.
+# resumes its claude conversation. It never waits for a build (#388: one after
+# a pull held it 6 minutes): the binary from before lays out, a build starts
+# behind it. What it misses, the tab bar's status heals within 10 s.
 [[startup]]
-command = ["sh", "breadboard.sh", "herdr", "restore", "--startup"]
+command = ["sh", "breadboard.sh", "--no-wait", "herdr", "restore", "--startup"]
 
 # Actions are what a key triggers (type = "plugin_action"). The ones that
 # show something open a pane of this plugin; the focused tab decides which
