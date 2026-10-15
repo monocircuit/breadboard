@@ -14,7 +14,7 @@ use super::develop::Migrations;
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
-use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
+use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
@@ -218,7 +218,9 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
 }
 
 /// How full an agent's context is and when it last answered.
-pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
+/// `limit`: the share of its context above which it retires at its merge
+/// (#381): said in advance, `fresh start at its next issue`.
+pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
     let Some(at) = claude.at else {
         return vec![Span::dim("no answer yet")];
     };
@@ -230,10 +232,14 @@ pub fn agent_fact(claude: &Claude, now: i64) -> Fact {
     } else {
         Paint::Green
     };
-    vec![
+    let mut fact = vec![
         Span::new(format!("{}%", (share * 100.0).round() as i64), paint),
         Span::dim(format!(" of {} · {}", tokens(claude.window), ago(at, now))),
-    ]
+    ];
+    if share > limit {
+        fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
+    }
+    fact
 }
 
 /// The name an agent had before its last handover, for a day.
@@ -313,7 +319,7 @@ impl Node {
         let mut all: Vec<Fact> = vec![lines.issue.clone(), lines.mr.clone(), lines.commits.clone()];
         all.extend(lines.tested.clone().map(|tested| vec![tested]));
         all.push(lines.renamed.clone());
-        all.extend(lines.context.clone().map(|context| vec![context]));
+        all.push(lines.context.clone());
         if let Some(doing) = &self.doing {
             all.extend(doing.parts.iter().map(|part| vec![part.clone()]));
         }
@@ -429,6 +435,8 @@ pub struct TreeFacts<'a> {
     /// What the agents spent (#372): today per session, per issue.
     pub spent: Option<&'a crate::spend::Spent>,
     pub now: i64,
+    /// `[agents] fresh_above` as a share (#381); None: `CONTEXT_LIMIT`.
+    pub limit: Option<f64>,
 }
 
 /// The tree of the issues: `live`, the worktrees there and the issues that
@@ -519,8 +527,8 @@ pub struct Lines {
     pub tested: Option<Span>,
     /// `agent Mira Albrecht was Kai`: its name when it isn't the worktree's (a handover, #251).
     pub renamed: Fact,
-    /// How full its agent's context is: `48%`.
-    pub context: Option<Span>,
+    /// How full its agent's context is: `48%`, past its limit `· fresh start at its next issue` (#381).
+    pub context: Fact,
 }
 
 /// What a node's agent does or waits for, in words (#390): its question,
@@ -614,16 +622,17 @@ fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeF
             }
             agent.push(Span::dim(format!("was {was}")));
         }
-        lines.context = Some(context_of(claude));
+        lines.context = context_of(claude, facts.limit.unwrap_or(CONTEXT_LIMIT));
     }
     lines
 }
 
 /// `48%` of its agent's context, green, yellow from half, red from 80 %;
-/// `no answer yet` before its first.
-fn context_of(claude: &Claude) -> Span {
+/// past `limit` (#381) `· fresh start at its next issue`; `no answer yet`
+/// before its first.
+fn context_of(claude: &Claude, limit: f64) -> Fact {
     if claude.at.is_none() {
-        return Span::dim("no answer yet");
+        return vec![Span::dim("no answer yet")];
     }
     let share = claude.share();
     let paint = if share >= 0.8 {
@@ -633,7 +642,11 @@ fn context_of(claude: &Claude) -> Span {
     } else {
         Paint::Green
     };
-    Span::new(format!("{}%", (share * 100.0).round() as i64), paint)
+    let mut fact = vec![Span::new(format!("{}%", (share * 100.0).round() as i64), paint)];
+    if share > limit {
+        fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
+    }
+    fact
 }
 
 /// What a node's agent does or waits for (`Doing`), None where nothing says it.
@@ -1058,6 +1071,19 @@ pub fn facts_text(facts: &[Fact]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_a_full_agent_starts_fresh_at_its_next_issue() {
+        let claude = Claude {
+            at: Some(0),
+            used: 94_000,
+            window: 200_000,
+            ..crate::model::handovers::tests::claude_of("c1")
+        };
+        let text = |fact: Fact| fact.iter().map(|span| span.text.clone()).collect::<String>();
+        assert!(text(agent_fact(&claude, 0, 0.4)).ends_with(" · fresh start at its next issue"));
+        assert!(!text(agent_fact(&claude, 0, 0.5)).contains("fresh start"));
+    }
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
     use crate::model::display_names::{display_names_of, pick_name};

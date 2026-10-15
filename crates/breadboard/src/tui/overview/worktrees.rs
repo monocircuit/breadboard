@@ -190,8 +190,8 @@ pub(super) fn agent_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
         if let Some(spend) = agent.spend() {
             scene.atom_gap(vec![look::dim(spend)], 2);
         }
-        if let Some(context) = &node.lines.context {
-            scene.atom_gap(look::spans(std::slice::from_ref(context)), 2);
+        if !node.lines.context.is_empty() {
+            scene.atom_gap(look::spans(&node.lines.context), 2);
         }
         scene.end_line();
     }
