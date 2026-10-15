@@ -185,7 +185,8 @@ agent that has to wait runs `{{run}} wt:wait !N … --then "<what next>"` and
 stops: the command records the wait in `.claude/wait.json` and returns at
 once (MRs already merged or closed: it says so then). The daemon asks
 GitLab every minute and queues the line to go on with (`!213 is merged:
-merge your base in (3 behind), then …`), which starts the agent's next run;
+develop is 3 behind: merge it in only if your work needs it or it
+conflicts, then …`), which starts the agent's next run;
 early when one is closed, stays in conflict for 30 min, or after 8 h.
 Meanwhile the MR row says `waits for !213`.
 
@@ -334,7 +335,8 @@ first. While anything blocks (open boxes or tries, a pipeline that didn't
 pass, conflicts, a draft nobody posted the merge for), the row is grey and
 names it in one line, and a click opens the MR instead. After the merge the
 agent gets `[overview] !N merged`, NEXT moves on to the next ready MR, and that
-MR's agent gets `merge your base in` when the merged MR touched its files;
+MR's agent gets `merge <base> in` only when GitLab says the merge conflicts with it (#392);
+an MR that merges cleanly keeps its green pipeline and stays offered;
 `clean up` offers the worktree. Agents still never run `glab mr merge`: the
 click is the user's (`core/src/model/merge.rs`).
 

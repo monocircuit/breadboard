@@ -3,8 +3,9 @@
 //! reads the MR, its issue's boxes and its worktree's tries again, marks a
 //! draft ready when it may, and merges as the user with the MR's squash
 //! setting, the source branch deleted, at the commit whose pipeline passed.
-//! Then the order carries on: its agent hears it, every open MR touching
-//! the same files is told to merge develop in. With the redraft of a try
+//! Then the order carries on: its agent hears it. The other open MRs are
+//! not told to merge develop in; one that conflicts gets that from its own
+//! conflict (#392). With the redraft of a try
 //! answered `broken` (actions.rs) these three PUTs are the overview's only
 //! GitLab writes (rule 6).
 
