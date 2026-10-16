@@ -1,7 +1,8 @@
 //! NEXT, the band at the top of an orchestration's overview (#278, next.mjs):
 //! only what the user can do now, with one click there; else one line that
-//! nothing is for them. And when the plan of `wt:plan` went stale, so that its
-//! `why` never stands under NEXT naming issues long done.
+//! nothing is for them. And when the plan of `wt:plan` went stale, and the
+//! plan the live overview writes then by itself (#376), so that its `why`
+//! never stands under NEXT naming issues long done.
 
 use super::order::Item;
 use crate::record::Plan;
@@ -144,7 +145,12 @@ pub fn stale_of(plan: Option<&Plan>, states: &HashMap<i64, IssueState>, is_off_p
         .copied()
         .filter(|number| states.get(number) == Some(&IssueState::Closed))
         .collect();
-    let done: Vec<i64> = named_in(why.unwrap_or(""))
+    let merged: Vec<i64> = listed
+        .iter()
+        .copied()
+        .filter(|number| states.get(number) == Some(&IssueState::Merged))
+        .collect();
+    let done: Vec<i64> = named_in(&own_why(why.unwrap_or("")))
         .into_iter()
         .filter(|number| !listed.contains(number) || states.get(number) != Some(&IssueState::Open))
         .collect();
@@ -156,6 +162,9 @@ pub fn stale_of(plan: Option<&Plan>, states: &HashMap<i64, IssueState>, is_off_p
             .join(", ")
     };
     let mut stale = Vec::new();
+    if !merged.is_empty() {
+        stale.push(format!("{} merged", issues(&merged)));
+    }
     if !closed.is_empty() {
         stale.push(format!("{} closed", issues(&closed)));
     }
@@ -183,19 +192,39 @@ fn is_merge(next: Option<&Next>, actions: &[Item]) -> bool {
 /// The plan's `why` when it belongs to what NEXT shows: a merge, and only while the plan isn't stale.
 pub fn why_of(plan: Option<&Plan>, stale: &[String], next: Option<&Next>, actions: &[Item]) -> Option<String> {
     let plan = plan?;
-    let why = plan.why.as_deref().filter(|why| !why.is_empty())?;
-    if plan.merge.is_empty() || !stale.is_empty() || !is_merge(next, actions) {
+    let why = own_why(plan.why.as_deref().unwrap_or(""));
+    if why.is_empty() || plan.merge.is_empty() || !stale.is_empty() || !is_merge(next, actions) {
         return None;
     }
-    Some(why.to_string())
+    Some(why)
 }
 
-/// The plan a click on a stale one writes: the computed merge order and the
-/// work order without the issues closed or gone; its why only while every
-/// issue it names is open.
+/// The line the live overview adds to the plan's why when it writes the merge order (#376).
+pub const UPDATED: &str = "updated from the merge order";
+
+/// A why without the overview's `updated from the merge order …` line: what a person wrote.
+fn own_why(why: &str) -> String {
+    why.lines()
+        .filter(|line| !line.starts_with(UPDATED))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The why of a plan the overview wrote at `at` (`2026-10-13 14:01 UTC`): the
+/// one there, its old `updated …` line replaced by the new.
+pub fn stamped(why: Option<&str>, at: &str) -> String {
+    let own = own_why(why.unwrap_or(""));
+    let line = format!("{UPDATED} {at}");
+    if own.is_empty() { line } else { format!("{own}\n{line}") }
+}
+
+/// The plan the live overview writes over a stale one (#376): the computed
+/// merge order and the work order, each without the issues done or gone; its
+/// why (without the time it was last updated) only while every issue it names
+/// is open, else it went stale with them.
 pub fn updated_plan(plan: Option<&Plan>, states: &HashMap<i64, IssueState>, planned: &[i64]) -> Plan {
-    let keeps = |number: &i64| matches!(states.get(number), Some(IssueState::Open | IssueState::Merged));
-    let why = plan.and_then(|plan| plan.why.clone()).unwrap_or_default();
+    let keeps = |number: &i64| states.get(number) == Some(&IssueState::Open);
+    let why = own_why(plan.and_then(|plan| plan.why.as_deref()).unwrap_or(""));
     Plan {
         work: plan
             .map(|plan| plan.work.iter().copied().filter(keeps).collect())
@@ -263,7 +292,7 @@ mod tests {
             ..row("try")
         };
         assert_eq!(
-            next_of(&[answered, waiting, row("look")], &[row("order")], Some(&ready())),
+            next_of(&[answered, waiting, row("look")], &[row("clean up")], Some(&ready())),
             Some(Next::Action(2))
         );
     }
@@ -275,7 +304,7 @@ mod tests {
             ..row("hand over")
         };
         assert_eq!(
-            next_of(&[], &[busy.clone(), row("order")], Some(&ready())),
+            next_of(&[], &[busy.clone(), row("clean up")], Some(&ready())),
             Some(Next::UpNext(1))
         );
         assert_eq!(next_of(&[], &[busy], Some(&ready())), Some(Next::Merge(ready())));
@@ -316,7 +345,7 @@ mod tests {
     fn plan() -> Plan {
         Plan {
             work: vec![273, 278],
-            merge: vec![256, 273, 278],
+            merge: vec![273, 278],
             why: Some("#273 first: #278 builds on its NEXT".into()),
         }
     }
@@ -334,6 +363,7 @@ mod tests {
         assert_eq!(
             stale_of(Some(&stale), &states(), true),
             [
+                "#256 merged",
                 "#262 closed",
                 "#299 no longer in the orchestration",
                 "its why names #256, #262, done or gone",
@@ -368,10 +398,37 @@ mod tests {
             updated_plan(Some(&old), &states(), &[256, 278, 273, 262]),
             Plan {
                 work: vec![273],
-                merge: vec![256, 278, 273],
+                merge: vec![278, 273],
                 why: Some(String::new())
             }
         );
         assert_eq!(updated_plan(Some(&plan()), &states(), &[]).why, plan().why);
+    }
+
+    #[test]
+    fn stamps_the_why_with_the_time_it_followed_the_merge_order() {
+        let at = "2026-10-13 14:01 UTC";
+        assert_eq!(stamped(None, at), "updated from the merge order 2026-10-13 14:01 UTC");
+        let once = stamped(Some("#273 first"), "2026-10-13 13:00 UTC");
+        assert_eq!(once, "#273 first\nupdated from the merge order 2026-10-13 13:00 UTC");
+        // Its old line replaced, never piled up; NEXT and the staleness read the person's lines only.
+        assert_eq!(
+            stamped(Some(&once), at),
+            "#273 first\nupdated from the merge order 2026-10-13 14:01 UTC"
+        );
+        let plan = Plan {
+            why: Some(once.clone()),
+            ..plan()
+        };
+        let actions = [row("merge")];
+        assert_eq!(
+            why_of(Some(&plan), &[], Some(&Next::Merge(ready())), &actions).as_deref(),
+            Some("#273 first")
+        );
+        assert!(stale_of(Some(&plan), &states(), false).is_empty());
+        assert_eq!(
+            updated_plan(Some(&plan), &states(), &[273]).why.as_deref(),
+            Some("#273 first")
+        );
     }
 }

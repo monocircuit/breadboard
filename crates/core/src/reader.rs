@@ -48,6 +48,8 @@ use std::sync::{Arc, Mutex};
 pub const STALE_MS: i64 = 15_000;
 /// How long docker's stacks hold for WORKTREES (#331: one docker read every 10–15 s, never a poll per read).
 pub const DOCKER_EVERY_MS: i64 = 12_000;
+/// How many of the journal's last lines the orchestration's view shows (#382).
+const JOURNAL_LINES: usize = 3;
 
 /// Which view is read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -542,6 +544,7 @@ impl LocalReader {
         }
         if let View::Orchestration(name) = &self.view {
             files.push(record::record_file(&self.main, name));
+            files.push(crate::journal::journal_file(&self.main, name));
         }
         let known: Vec<(PathBuf, String)> = self
             .known
@@ -633,7 +636,14 @@ impl LocalReader {
             setups: live_setups_of(&self.main, name),
             test_origin: test_origin(&self.main),
             ci: crate::ci::Queue::read(&self.main, now),
+            ci_watch: crate::ci_watch::Report::read(&self.main, now),
             epic: epic_local(&self.main, record.as_ref()),
+            orchestrator_share: record
+                .as_ref()
+                .and_then(|record| record.chat.as_ref())
+                .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
+            journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
+            fresh: crate::config::of_main(&self.main).config.orchestrator.clone(),
             spent: crate::spend::spent_of(&self.main, name, record.as_ref(), now),
             record,
         }

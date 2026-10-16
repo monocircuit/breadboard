@@ -6,6 +6,7 @@
 mod changes;
 mod end;
 mod epic;
+mod fresh;
 mod issue;
 pub mod setups;
 mod space;
@@ -28,6 +29,7 @@ pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… 
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
+       pnpm wt:orchestrate <name> --fresh
        pnpm wt:orchestrate <name> --changelog [--watch]
        pnpm wt:orchestrate <name> --changes";
 
@@ -74,7 +76,12 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
 
 /// The flags a form that only ends, reads or watches takes besides its own:
 /// `--end --dry-run` would end it for real, so any other is refused.
-const FORMS: [(&str, &[&str]); 3] = [("--end", &[]), ("--changelog", &["--watch"]), ("--changes", &[])];
+const FORMS: [(&str, &[&str]); 4] = [
+    ("--end", &[]),
+    ("--changelog", &["--watch"]),
+    ("--changes", &[]),
+    ("--fresh", &[]),
+];
 
 /// The first flag `args` gives a form of [`FORMS`] that the form doesn't take.
 fn stray_flag(args: &Args) -> Option<String> {
@@ -129,6 +136,12 @@ pub fn command(args: &Args) -> ExitCode {
         }
         crate::cli::setup::heal_plugin();
         return end::command(name.as_deref().unwrap_or_default());
+    }
+    if args.has("--fresh") {
+        if !is_valid {
+            refuse_name();
+        }
+        return fresh::command(name.as_deref().unwrap_or_default());
     }
     if args.has("--changelog") {
         if !is_valid {
@@ -536,6 +549,10 @@ pub fn command(args: &Args) -> ExitCode {
     {run} wt:action decide \"<what is decided>? <why the recommendation>\" --option \"<label>\" --why \"<what happens>\"… --recommend <label> --orchestration {name}
                                   a step that is the user's and no agent's (--done <id> --orchestration {name} after)
   The agents leave their own actions (merge, try, decide, look, plan) whenever they wait for the user.
+
+  Keep this chat lean, its state in the journal (the skill's \"Staying lean\"):
+    {run} wt:journal \"<line>\" --orchestration {name}
+                                  a decision taken for the user, an open thread, who waits for what
 ",
             hello.join("\n"), run = breadboard_core::config::run_word());
     }

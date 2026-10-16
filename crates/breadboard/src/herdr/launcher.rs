@@ -682,7 +682,21 @@ chmod +x "$target/release/breadboard"
             ],
         );
         let pid = alive.id();
+        // The builder ends 3.5 s after the wait began (its first round marks
+        // the store), not after the launcher started: under load (#394) that
+        // start alone can take seconds.
+        let store = checkout.root.join("repo/.git/breadboard");
+        let watched = store.clone();
         let ender = std::thread::spawn(move || {
+            let until = Instant::now() + Duration::from_secs(60);
+            while Instant::now() < until
+                && !fs::read_dir(&watched)
+                    .unwrap()
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with("build.watch"))
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             std::thread::sleep(Duration::from_millis(3500));
             let _ = alive.kill();
             let _ = alive.wait();
@@ -691,22 +705,30 @@ chmod +x "$target/release/breadboard"
         ender.join().unwrap();
         assert!(built.status.success(), "{}", err(&built));
         let said = err(&built);
-        assert!(
-            said.contains("▸ another checkout builds breadboard, this one waits for it: checkout platform-9-vita, 3:1"),
-            "{said}"
-        );
-        assert!(said.contains(" min, compiling breadboard from abc1234"), "{said}");
-        assert!(
-            said.contains("! its build made no progress for 2 s (nothing new in ")
-                && said.contains("build.lock clears it"),
-            "{said}"
-        );
+        // Seconds as the launcher counted them: a round takes about a second,
+        // more under load (#394), so they are bounds, not exact counts.
+        let after = |prefix: &str, end: &str| -> Option<String> {
+            let rest = &said[said.find(prefix)? + prefix.len()..];
+            Some(rest[..rest.find(end)?].to_string())
+        };
+        let held = after(
+            "▸ another checkout builds breadboard, this one waits for it: checkout platform-9-vita, ",
+            " min, compiling breadboard from abc1234",
+        )
+        .and_then(|held| {
+            let (minutes, seconds) = held.split_once(':')?;
+            Some(minutes.parse::<u64>().ok()? * 60 + seconds.parse::<u64>().ok()?)
+        });
+        assert!(held.is_some_and(|held| (192..252).contains(&held)), "{said}");
+        let stalled = after("! its build made no progress for ", " s (nothing new in ")
+            .and_then(|stalled| stalled.parse::<u64>().ok());
+        assert!(stalled.is_some_and(|stalled| stalled >= 2), "{said}");
+        assert!(said.contains("build.lock clears it"), "{said}");
         assert!(
             said.contains(&format!("cleared: its builder ({pid}) is gone")),
             "{said}"
         );
         assert_eq!(checkout.builds(), 1);
-        let store = checkout.root.join("repo/.git/breadboard");
         assert!(!store.join("build.lock").exists());
         assert_eq!(
             fs::read_dir(&store)

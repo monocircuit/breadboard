@@ -283,7 +283,7 @@ pub fn ticks<A: Clone>(scene: &mut Scene<A>) {
 pub fn kind_tone(kind: &str) -> Tone {
     match kind {
         "merge" => Tone::Green,
-        "try" | "browser-check" | "plan" | "order" | "hand over" | "start" | "clean up" => Tone::Cyan,
+        "try" | "browser-check" | "plan" | "hand over" | "start" | "clean up" => Tone::Cyan,
         "decide" | "waits" | "permission" => Tone::Yellow,
         "end" | "pipeline" | "push" => Tone::Red,
         _ => Tone::Gray,

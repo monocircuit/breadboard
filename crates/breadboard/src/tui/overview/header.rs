@@ -1,7 +1,7 @@
 //! The top of a view (boxes.mjs, chat.mjs, gitlab-status.mjs): the title band
 //! with the view's name and the age of GitLab's data; in an orchestration the
-//! orchestrator's chat row (#287) and the line of a GitLab read that failed,
-//! both on top with NEXT while the rest scrolls.
+//! orchestrator's chat row (#287), the CI job watcher's line (#379) and the
+//! line of a GitLab read that failed, all on top with NEXT while the rest scrolls.
 
 use super::{Act, Ctx, look};
 use crate::tui::theme::{self, Tone};
@@ -49,6 +49,17 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
     {
         status.push(Span::styled(format!("{load} · "), quiet));
     }
+    // The orchestrator's context (#382): `orchestrator 62 % · restart at a quiet point`.
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(band) = model.orchestrator.band()
+    {
+        let style = if model.orchestrator.is_due() {
+            theme::tone(Tone::Yellow)
+        } else {
+            quiet
+        };
+        status.push(Span::styled(format!("{band} · "), style));
+    }
     // What the agents spent (#372), red once the daily limit holds the runs.
     if let Some(Model::Orchestration(model)) = model
         && let Some(spent) = &model.spent
@@ -92,6 +103,31 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     look::flow(scene, &[look::dim(chat.text())]);
                 }
             });
+            // Its fresh start at a quiet point (#382), by a click unless the overview makes it itself.
+            let fresh = &model.orchestrator;
+            let is_running = ctx.actor.fresh.as_ref().is_some_and(|run| run.is_running);
+            if fresh.is_ready() && (!fresh.is_auto || is_running) {
+                scene.block(Act::Fresh, |scene| {
+                    scene.pad_to(1);
+                    scene.indent(2);
+                    if !super::actor::view::button(scene, ctx, "↻ fresh start", Tone::Yellow, Act::Fresh) {
+                        look::flow(
+                            scene,
+                            &[look::dim(
+                                "a quiet point: the chat writes its journal entry, then a fresh one starts from the journal; the old stays in /resume",
+                            )],
+                        );
+                    }
+                });
+            }
+        });
+    }
+    let journal = &model.orchestrator.journal;
+    if !journal.is_empty() {
+        page.section(Section::new("JOURNAL"), |scene| {
+            for entry in journal {
+                look::say(scene, entry, theme::dim());
+            }
         });
     }
     // The daily limit holds the headless runs (#372): why, and the click that lifts it.
@@ -110,6 +146,12 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     look::flow(scene, &[look::dim("until midnight")]);
                 }
             });
+        });
+    }
+    // A CI job that holds pipelines up (#379): under the band, with NEXT on top.
+    if let Some(line) = &model.ci_watch {
+        page.section(Section::new("CI").sticky().plain(), |scene| {
+            look::say(scene, line, theme::tone(Tone::Yellow));
         });
     }
     if let Some(error) = &ctx.gitlab.error {

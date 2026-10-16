@@ -25,6 +25,7 @@ pub mod mr_blockers;
 pub mod next;
 pub mod numbering;
 pub mod orchestration;
+pub mod orchestrator;
 pub mod order;
 pub mod resolve;
 pub mod tree;

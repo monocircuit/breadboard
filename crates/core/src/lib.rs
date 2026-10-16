@@ -4,12 +4,14 @@
 pub mod actions;
 pub mod check;
 pub mod ci;
+pub mod ci_watch;
 pub mod config;
 pub mod conversations;
 pub mod epic;
 pub mod git;
 pub mod gitlab;
 pub mod herdr;
+pub mod journal;
 pub mod json;
 pub mod local;
 pub mod lock;
