@@ -295,7 +295,7 @@ pub fn kind_tone(kind: &str) -> Tone {
         "merge" => Tone::Green,
         "try" | "browser-check" | "plan" | "hand over" | "start" | "clean up" => Tone::Cyan,
         "decide" | "waits" | "permission" => Tone::Yellow,
-        "end" | "pipeline" | "push" => Tone::Red,
+        "end" | "pipeline" | "push" | "half-merged" => Tone::Red,
         _ => Tone::Gray,
     }
 }

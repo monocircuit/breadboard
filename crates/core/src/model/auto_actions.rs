@@ -5,6 +5,7 @@
 //! conflicts and failed pipelines, as data: the writing side sends them.
 
 use super::change::{is_change_open, unpushed_action_of};
+use super::half_merged::half_merged_action_of;
 use super::merge::checks_of;
 use super::order::{Go, Item, Target};
 use super::resolve::is_conflict_settled;
@@ -209,6 +210,7 @@ pub struct AutoFacts<'a> {
 /// - `merge`: ready and green, every check done, GitLab says mergeable; a ready draft too;
 /// - `pipeline`: the pipeline of the open MR failed and its line didn't get in yet;
 /// - `push`: commits sit unpushed for long;
+/// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
 /// - `waits`: the agent asks something or stopped on a question.
 pub fn auto_actions_of(
@@ -347,6 +349,29 @@ pub fn auto_actions_of(
                 format!("push:{}", issue.branch),
                 unpushed.text,
                 Some(&unpushed.at),
+                go,
+            ));
+        }
+        let is_running = agent.is_some_and(|agent| agent.status.as_deref() == Some("working"));
+        if let Some(tree) = tree
+            && let Some(half) = half_merged_action_of(&issue.branch, tree, is_running, facts.now)
+        {
+            let focus = Go::FocusAgent(tree.dir.clone());
+            let go = if half.is_sent {
+                focus
+            } else {
+                Go::Send {
+                    dir: tree.dir.clone(),
+                    key: half.key.clone(),
+                    line: half.line.clone(),
+                    fallback: Box::new(focus),
+                }
+            };
+            actions.push(base(
+                "half-merged",
+                format!("half-merged:{}", issue.branch),
+                half.text,
+                Some(&half.at),
                 go,
             ));
         }
@@ -645,6 +670,23 @@ mod tests {
         );
         late.tree.as_mut().unwrap().unpushed_at = Some(NOW);
         assert!(kinds(&[late], &Remote::default()).is_empty());
+    }
+
+    #[test]
+    fn flags_a_worktree_half_merged_for_long_unless_its_agent_runs() {
+        let mut half = issue();
+        half.tree.as_mut().unwrap().merge_head_at = Some(NOW - 11 * 60_000);
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let found = kinds_with(&[half.clone()], &Remote::default(), &agents("idle"), &facts);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "half-merged");
+        assert!(found[0].1.starts_with("half-merged since "));
+        assert!(kinds_with(&[half.clone()], &Remote::default(), &agents("working"), &facts).is_empty());
+        half.tree.as_mut().unwrap().merge_head_at = Some(NOW - 60_000);
+        assert!(kinds_with(&[half], &Remote::default(), &agents("idle"), &facts).is_empty());
     }
 
     #[test]
