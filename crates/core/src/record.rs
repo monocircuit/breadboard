@@ -491,9 +491,7 @@ impl Record {
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
             is_auto: raw.get("auto").and_then(Value::as_bool).unwrap_or(false),
-            base: str_of(&raw, "base")
-                .filter(|base| is_branch(base) && *base != crate::git::default_branch())
-                .map(String::from),
+            base: str_of(&raw, "base").filter(|base| is_branch(base)).map(String::from),
             raw,
         })
     }
@@ -522,7 +520,34 @@ impl Record {
 
 /// The record of `name`, None without one (or one without `issues`).
 pub fn record_of(main: &Path, name: &str) -> Option<Record> {
-    Record::from_value(json::read(&record_file(main, name))?)
+    let mut record = Record::from_value(json::read(&record_file(main, name))?)?;
+    // The repo's default branch is no epic: read from `main`, never the process's cwd (#380).
+    let develop = crate::config::of(main).branch.clone();
+    record.base = record.base.filter(|base| *base != develop);
+    Some(record)
+}
+
+/// The base a new worktree of the orchestration `name` gets (`wt:new
+/// --origin`, #349): its record's epic, else the repo's default branch;
+/// both read from the main checkout `main`, never the process's cwd (#380).
+pub fn planned_base(main: &Path, name: Option<&str>) -> crate::git::Base {
+    name.and_then(|name| record_of(main, name))
+        .and_then(|record| record.base)
+        .map_or_else(
+            || crate::git::Base::of(&crate::config::of(main).branch),
+            |base| crate::git::Base::of(&base),
+        )
+}
+
+/// The base of the worktree `dir` of the orchestration `name`: what it has
+/// once it exists (`git::base_of`), what `wt:new` will give it before
+/// (`planned_base`): a brief is written before its worktree is made (#380).
+pub fn base_for(main: &Path, name: &str, dir: &Path) -> crate::git::Base {
+    if dir.join(".git").exists() {
+        crate::git::base_of(dir)
+    } else {
+        planned_base(main, Some(name))
+    }
 }
 
 /// What an orchestration shows (#234): its record's title, else its name.

@@ -725,23 +725,6 @@ impl Overview {
         self.tree_of_branch(branch).map(|tree| tree.dir)
     }
 
-    /// The worktree of an issue of the orchestration.
-    pub fn tree_dir_of_number(&self, number: i64) -> Option<PathBuf> {
-        let local = self.orchestration_local()?;
-        let record = local.record.as_ref();
-        let branch = record
-            .and_then(|record| record.issues.iter().find(|issue| issue.number == Some(number)))
-            .and_then(|issue| issue.branch.clone());
-        local
-            .trees
-            .iter()
-            .find(|tree| {
-                Some(&tree.branch) == branch.as_ref()
-                    || breadboard_core::gitlab::number_of(&tree.branch) == Some(number)
-            })
-            .map(|tree| tree.dir.clone())
-    }
-
     /// The MR of a worktree's branch, as GitLab last said.
     pub fn mr_of_dir(&self, dir: &Path) -> Option<Mr> {
         let tree = self.tree_of(dir)?;

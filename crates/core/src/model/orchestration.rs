@@ -296,6 +296,48 @@ fn turn_records_of(issues: &[Entry], remote: Option<&Remote>, turns: &Turns) -> 
         .collect()
 }
 
+/// `develop red (check:vita)` while develop's last finished pipeline failed:
+/// a merge now would land on a base that is already broken (#392).
+fn develop_red_text(develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
+    let develop = develop.filter(|pipeline| pipeline.status == "failed")?;
+    let jobs: Vec<&str> = develop
+        .jobs
+        .iter()
+        .filter(|job| job.status == "failed")
+        .map(|job| job.name.as_str())
+        .take(2)
+        .collect();
+    Some(if jobs.is_empty() {
+        "develop red".to_string()
+    } else {
+        format!("develop red ({})", jobs.join(", "))
+    })
+}
+
+/// While develop is red no merge is offered: the turn that would be `Offered`
+/// lacks it, and the row says why. The safety net of merging without a new
+/// pipeline (#392); the overview's offer is held, not a merge by itself.
+fn hold_while_develop_is_red(
+    (mut reasons, turn): (Vec<Reason>, MergeTurn),
+    develop: Option<&crate::gitlab::DevelopPipeline>,
+) -> (Vec<Reason>, MergeTurn) {
+    let Some(text) = develop_red_text(develop).filter(|_| turn == MergeTurn::Offered) else {
+        return (reasons, turn);
+    };
+    for reason in reasons
+        .iter_mut()
+        .filter(|reason| reason.text == super::merge_turn::MARK_READY)
+    {
+        reason.who = "agent".into();
+    }
+    reasons.push(Reason {
+        text,
+        who: "develop".into(),
+        is_conflict: false,
+    });
+    (reasons, MergeTurn::Lacks)
+}
+
 /// The turns of the open MRs, from their row's reasons.
 fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
@@ -318,30 +360,18 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
             tree,
             done,
         );
-        turns.insert(number, verdict);
+        // Only a merge onto develop waits for it: a task into its epic does not.
+        let develop = remote
+            .develop
+            .as_ref()
+            .filter(|_| mr.target() == crate::git::default_branch());
+        turns.insert(number, hold_while_develop_is_red(verdict, develop));
     }
     turns
 }
 
-/// The open MRs after `number` in the merge order, the issue next first (merge.mjs `openAfter`).
-fn open_after(issues: &[Entry], remote: Option<&Remote>, number: Option<i64>, order: &[i64]) -> Vec<i64> {
-    let mut after: Vec<&Entry> = issues
-        .iter()
-        .filter(|issue| {
-            issue.number != number
-                && issue.tree.is_some()
-                && of(remote, issue)
-                    .mr
-                    .as_ref()
-                    .is_some_and(|mr| mr.state != "merged" && mr.state != "closed")
-        })
-        .collect();
-    after.sort_by_key(|issue| (place_in(order, issue.number), issue.number.unwrap_or(i64::MAX)));
-    after.iter().filter_map(|issue| issue.number).collect()
-}
-
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, others: Vec<i64>) -> MergeOffer {
+fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
@@ -355,7 +385,6 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         can_mark_ready,
         blockers: blockers_of(Some(mr), boxes, can_mark_ready, actions, answered),
         to_check: to_check_of(boxes, actions),
-        others,
     }
 }
 
@@ -446,13 +475,7 @@ fn actions_of(
         if let Some(issue) = issue
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(
-                mr,
-                of(remote, issue),
-                issue,
-                true,
-                open_after(issues, remote, issue.number, merge),
-            ));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true));
         }
         if is_try(action) {
             item.text = format!("{}  {}", action.text, try_spot(action, None));
@@ -512,13 +535,7 @@ fn actions_of(
             if action.kind == "merge"
                 && let Some(mr) = mr
             {
-                item.merge = Some(merge_offer(
-                    mr,
-                    part,
-                    issue,
-                    true,
-                    open_after(issues, remote, issue.number, merge),
-                ));
+                item.merge = Some(merge_offer(mr, part, issue, true));
             }
             items.push(item);
         }
@@ -558,13 +575,7 @@ fn actions_of(
         if let (Some(issue), Some(offer)) = (issue, item.merge.take())
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(
-                mr,
-                of(remote, issue),
-                issue,
-                offer.can_mark_ready,
-                open_after(issues, remote, issue.number, merge),
-            ));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, offer.can_mark_ready));
         }
         items.push(item);
     }
@@ -831,7 +842,7 @@ fn merge_requests_of(
 /// out) and whether `wt:check` passed at its HEAD.
 fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder) -> crate::ci::Published {
     let open_iid = |issue: &Entry| of(remote, issue).mr.as_ref().filter(|mr| mr.is_open()).map(|mr| mr.iid);
-    let order_iids = order
+    let order_iids: Vec<i64> = order
         .open
         .iter()
         .filter_map(|item| {
@@ -874,9 +885,46 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
             ))
         })
         .collect();
+    // A hard wait holds the pipeline of an MR (#392): the prerequisite it
+    // needs, or an MR it `wt:wait`s for, while that one is open here. Shared
+    // files only rank: they are no entry.
+    let mut held: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+    for item in &order.open {
+        let Some(iid) = issues
+            .iter()
+            .rev()
+            .filter(|issue| issue.number == Some(item.number))
+            .find_map(open_iid)
+        else {
+            continue;
+        };
+        let mut awaited: Vec<i64> = item
+            .after
+            .iter()
+            .filter(|pred| pred.is_hard)
+            .map(|pred| pred.iid)
+            .collect();
+        if let Some(wait) = issues
+            .iter()
+            .rev()
+            .filter(|issue| issue.number == Some(item.number))
+            .find_map(|issue| issue.tree.as_ref().and_then(|tree| tree.wait.as_ref()))
+        {
+            for waited in &wait.mrs {
+                if order_iids.contains(waited) && !awaited.contains(waited) {
+                    awaited.push(*waited);
+                }
+            }
+        }
+        if !awaited.is_empty() {
+            let list: Vec<String> = awaited.iter().map(|iid| format!("!{iid}")).collect();
+            held.insert(iid, format!("after {}", list.join(", ")));
+        }
+    }
     crate::ci::Published {
         order: order_iids,
         bars,
+        held,
     }
 }
 
@@ -1146,7 +1194,18 @@ pub fn orchestration_of(
                             == Some("working")
                     })
                     .count();
-                NextBand::Nothing(nothing_text(at_work, merge.as_ref()))
+                NextBand::Nothing(nothing_text(
+                    at_work,
+                    merge.as_ref(),
+                    remote
+                        .and_then(|remote| develop_red_text(remote.develop.as_ref()))
+                        .filter(|_| {
+                            turns
+                                .values()
+                                .any(|(reasons, _)| reasons.iter().any(|reason| reason.who == "develop"))
+                        })
+                        .as_deref(),
+                ))
             }
         };
         NextSection { band, why }
@@ -1302,8 +1361,10 @@ mod tests {
         }
     }
 
-    /// #344, !324 of one-codebase: done itself, behind another MR in the merge order.
-    fn behind_another() -> (OrchestrationLocal, Remote) {
+    /// #344, !324 of one-codebase: done itself, behind another MR in the merge
+    /// order. Sharing `package.json` alone only ranks them (#392): `needs` is
+    /// what makes #2 wait for #1.
+    fn behind_another_sharing_files() -> (OrchestrationLocal, Remote) {
         let mut local = local();
         let files: std::collections::BTreeSet<String> = ["package.json".to_string()].into();
         for tree in &mut local.trees {
@@ -1331,6 +1392,56 @@ mod tests {
         remote.of.get_mut("feature/1-one").unwrap().mr = Some(draft(11, "feature/1-one", "running"));
         remote.of.get_mut("feature/2-two").unwrap().mr = Some(draft(12, "feature/2-two", "success"));
         (local, remote)
+    }
+
+    fn behind_another() -> (OrchestrationLocal, Remote) {
+        let (local, mut remote) = behind_another_sharing_files();
+        remote
+            .of
+            .get_mut("feature/2-two")
+            .unwrap()
+            .issue
+            .as_mut()
+            .unwrap()
+            .needs = vec![1];
+        (local, remote)
+    }
+
+    #[test]
+    fn sharing_a_code_file_only_ranks_it_the_merge_is_offered_in_parallel() {
+        let (local, remote) = behind_another_sharing_files();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert!(model.turn_records.contains(&(
+            PathBuf::from("/w/2-two"),
+            TurnRecord {
+                sha: "a".into(),
+                turn: MergeTurn::Offered,
+            }
+        )));
+        let actions = model.actions.unwrap();
+        assert_eq!(
+            actions
+                .actions
+                .iter()
+                .filter(|item| item.kind == "merge")
+                .map(|item| item.who.as_str())
+                .collect::<Vec<_>>(),
+            ["2-two"]
+        );
+        let mrs = model.merge_requests.unwrap();
+        let row = mrs
+            .open
+            .iter()
+            .filter_map(|row| row.mr.as_ref())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert_eq!(
+            row.reasons
+                .iter()
+                .map(|reason| format!("{} → {}", reason.text, reason.who))
+                .collect::<Vec<_>>(),
+            ["draft: mark ready → you"]
+        );
     }
 
     #[test]
@@ -1372,8 +1483,62 @@ mod tests {
                 .iter()
                 .map(|reason| format!("{} → {}", reason.text, reason.who))
                 .collect::<Vec<_>>(),
-            ["draft: mark ready → agent", "after !11 (shares package.json) → !11"]
+            ["draft: mark ready → agent", "after !11 (needs #1) → !11"]
         );
+    }
+
+    #[test]
+    fn a_red_develop_holds_the_merge_offers_and_the_band_says_why() {
+        let (local, mut remote) = behind_another_sharing_files();
+        let offered = |remote: &Remote| {
+            let model = orchestration_of(&local, Some(remote), &mut ViewState::default(), NOW);
+            let merges = model
+                .actions
+                .as_ref()
+                .unwrap()
+                .actions
+                .iter()
+                .filter(|item| item.kind == "merge")
+                .count();
+            (merges, model)
+        };
+        assert_eq!(offered(&remote).0, 1);
+        remote.develop = Some(crate::gitlab::DevelopPipeline {
+            id: 9,
+            status: "failed".into(),
+            jobs: vec![crate::gitlab::Job {
+                name: "check:vita".into(),
+                status: "failed".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let (merges, model) = offered(&remote);
+        assert_eq!(merges, 0);
+        let next = model.next.unwrap();
+        assert!(
+            matches!(&next.band, NextBand::Nothing(text) if text.contains("develop red (check:vita): merges held")),
+            "{:?}",
+            next.band
+        );
+        let row = model
+            .merge_requests
+            .unwrap()
+            .open
+            .iter()
+            .filter_map(|row| row.mr.clone())
+            .find(|mr| mr.iid == 12)
+            .unwrap();
+        assert!(
+            row.reasons
+                .iter()
+                .any(|reason| reason.text == "develop red (check:vita)"),
+            "{:?}",
+            row.reasons
+        );
+        // Green again: offered as before.
+        remote.develop.as_mut().unwrap().status = "success".into();
+        assert_eq!(offered(&remote).0, 1);
     }
 
     #[test]
@@ -1402,6 +1567,21 @@ mod tests {
             .find(|mr| mr.iid == 12)
             .unwrap();
         assert_eq!(row.reasons[0].who, "you");
+    }
+
+    #[test]
+    fn publishes_a_hard_wait_as_a_held_pipeline_and_shared_files_not() {
+        // #392: sharing package.json only ranks #2 behind #1: no hold.
+        let (local, remote) = behind_another_sharing_files();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert!(model.ci_published.as_ref().unwrap().held.is_empty());
+        // #2 needs #1: its pipeline waits for !11 to be merged.
+        let (local, remote) = behind_another();
+        let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+        assert_eq!(
+            model.ci_published.as_ref().unwrap().held,
+            [(12, "after !11".to_string())].into()
+        );
     }
 
     #[test]

@@ -1010,9 +1010,24 @@ pub fn of(dir: &Path) -> Arc<Loaded> {
     of_main(&main)
 }
 
-/// The config of the repo of the working directory.
+/// The repo a process acts on from outside any checkout (`act_on`).
+static ACTED_ON: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Says which repo this process acts on when its working directory is in
+/// none: `breadboard serve` stands in `/` (#380: `here` read the defaults
+/// there, `main` for the default branch). The first one holds.
+pub fn act_on(main: &Path) {
+    let _ = ACTED_ON.set(main.to_path_buf());
+}
+
+/// The config of the repo of the working directory; outside any repo, of
+/// the one `act_on` named. What acts on a repo it knows reads `of(main)`.
 pub fn here() -> Arc<Loaded> {
-    of(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match ACTED_ON.get() {
+        Some(main) if !cwd.ancestors().any(|at| at.join(".git").exists()) => of_main(main),
+        _ => of(&cwd),
+    }
 }
 
 /// The main checkout of `dir` from its `.git` alone, no git process: a
