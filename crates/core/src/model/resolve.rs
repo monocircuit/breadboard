@@ -78,8 +78,11 @@ pub struct ResolveClick {
 /// Where an open MR's conflicts stand, the start of its second line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conflict {
-    /// GitLab checks again (after a push): no button.
+    /// GitLab checks again (after a push, or it hasn't the pushed head yet): no button.
     Checking,
+    /// GitLab hasn't settled its mergeability (`unchecked`, `checking`):
+    /// the read asks it to recheck (#391); no button.
+    Rechecking,
     /// No conflicts.
     None,
     /// The order went through, GitLab no longer reports them.
@@ -135,7 +138,11 @@ impl Resolves {
             }
         }
         if !is_settled {
-            return Conflict::Checking;
+            return if crate::gitlab::recheck::is_unsettled(mr) {
+                Conflict::Rechecking
+            } else {
+                Conflict::Checking
+            };
         }
         if !mr.has_conflicts {
             return Conflict::None;
@@ -288,10 +295,6 @@ mod tests {
                 ..mr(true)
             },
             Mr {
-                merge_status: Some("unchecked".into()),
-                ..mr(true)
-            },
-            Mr {
                 sha: Some("old".into()),
                 ..mr(true)
             },
@@ -299,6 +302,16 @@ mod tests {
             assert_eq!(
                 resolves.state_of(&found, Some(&tree()), &working, 0, NOW),
                 Conflict::Checking
+            );
+        }
+        for status in ["unchecked", "checking"] {
+            let found = Mr {
+                merge_status: Some(status.into()),
+                ..mr(true)
+            };
+            assert_eq!(
+                resolves.state_of(&found, Some(&tree()), &working, 0, NOW),
+                Conflict::Rechecking
             );
         }
         assert!(is_conflict_settled(

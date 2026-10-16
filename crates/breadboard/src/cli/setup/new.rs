@@ -106,11 +106,7 @@ pub fn command(args: &Args) -> ExitCode {
     let base = match args.value("--base") {
         Some(base) if record::is_branch(&base) => Base::of(&base),
         Some(base) => fail(&format!("{base} is no branch name\n{USAGE}")),
-        None => origin_name
-            .as_deref()
-            .and_then(|name| record::record_of(&repo::main_dir(), name))
-            .and_then(|found| found.base)
-            .map_or_else(Base::develop, |base| Base::of(&base)),
+        None => record::planned_base(&repo::main_dir(), origin_name.as_deref()),
     };
     super::heal_plugin();
     let origin = origin_name.map(|name| Origin {
