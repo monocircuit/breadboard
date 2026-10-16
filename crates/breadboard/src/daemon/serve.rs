@@ -331,6 +331,8 @@ fn start_engine(state: &State, main: &Path) {
     if !main.is_absolute() {
         return;
     }
+    // It stands in `/`: what reads the repo's config without a path reads this one's (#380).
+    breadboard_core::config::act_on(main);
     let mut engines = state.engines.lock().unwrap_or_else(|e| e.into_inner());
     if engines.contains_key(main) {
         return;
