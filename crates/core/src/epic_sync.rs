@@ -36,6 +36,8 @@ pub struct Tried {
     pub at: i64,
     /// `pushed`, `up to date`, `conflict`, `check failed`, `skipped: …`.
     pub outcome: String,
+    /// The last milestone MR (epic → develop) whose issues were seen closed.
+    pub milestone: i64,
 }
 
 pub fn tried_file(store: &Path, name: &str) -> PathBuf {
@@ -272,6 +274,7 @@ mod tests {
                 develop: head,
                 at: 1,
                 outcome: "check failed".into(),
+                milestone: 0,
             },
         );
         assert!(!is_due(&main, &read_tried(&store, "breadboard")));

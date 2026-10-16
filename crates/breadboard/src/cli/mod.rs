@@ -5,7 +5,7 @@ pub mod lifecycle;
 mod read;
 mod setup;
 mod typo;
-mod write;
+pub(crate) mod write;
 
 use std::io::Write;
 use std::process::ExitCode;

@@ -47,7 +47,7 @@ pub async fn keep_up(main: PathBuf) {
             if let Some(Look::Moved(_, files)) = main_update::look_if_due(&main, &store, &settings) {
                 main_update::run_steps(&main, &store, &files, &settings);
             }
-            keep_epics_up(&main, &store);
+            keep_epics_up(&main, &store, "glab");
         })
         .await;
     }
@@ -56,7 +56,7 @@ pub async fn keep_up(main: PathBuf) {
 /// Every epic of `main`'s orchestrations whose checkout lacks the develop
 /// commit the clone knows (the main checkout's look fetched it): one try per
 /// develop commit, kept in the store.
-fn keep_epics_up(main: &Path, store: &Path) {
+fn keep_epics_up(main: &Path, store: &Path, glab: &str) {
     let checkouts = orchestrator_checkouts(main);
     for name in recorded(main) {
         let Some(epic) = record_of(main, &name).and_then(|record| epic_of(&record.raw)) else {
@@ -73,6 +73,8 @@ fn keep_epics_up(main: &Path, store: &Path) {
             continue;
         }
         let develop = epic_sync::develop_head(main).unwrap_or_default();
+        // develop moved: maybe by the epic's milestone MR, whose issues are closed now.
+        let milestone = close_milestone(main, &epic, glab, tried.milestone);
         let outcome = sync_epic(main, &name, &epic, &checkout);
         epic_sync::write_tried(
             store,
@@ -81,10 +83,45 @@ fn keep_epics_up(main: &Path, store: &Path) {
                 develop,
                 at: breadboard_core::time::now_ms(),
                 outcome,
+                milestone,
             },
         );
         let _ = std::fs::remove_dir(&lock);
     }
+}
+
+/// The issues of the epic's newest milestone MR (merged epic → develop)
+/// closed where GitLab didn't close them by its `Closes #n` (#352); each
+/// milestone once, `seen` the last one done. The newest milestone's iid,
+/// `seen` when there is none or GitLab doesn't answer.
+fn close_milestone(main: &Path, epic: &str, glab: &str, seen: i64) -> i64 {
+    use super::ci::{glab_get, glab_put};
+    let endpoint = format!(
+        "projects/:fullpath/merge_requests?state=merged&source_branch={}&target_branch=develop&order_by=merged_at&sort=desc&per_page=1",
+        epic.replace('/', "%2F")
+    );
+    let Ok(listed) = glab_get(main, glab, &endpoint) else {
+        return seen;
+    };
+    let Some(mr) = listed.as_array().and_then(|mrs| mrs.first()) else {
+        return seen;
+    };
+    let iid = mr.get("iid").and_then(serde_json::Value::as_i64).unwrap_or(0);
+    if iid == 0 || iid == seen {
+        return seen;
+    }
+    let description = mr.get("description").and_then(serde_json::Value::as_str).unwrap_or("");
+    for number in crate::cli::write::mr::closed_by(description) {
+        let issue = format!("projects/:fullpath/issues/{number}");
+        let is_open = glab_get(main, glab, &issue)
+            .ok()
+            .is_some_and(|found| found.get("state").and_then(serde_json::Value::as_str) == Some("opened"));
+        if is_open && glab_put(main, glab, &format!("{issue}?state_event=close")).is_err() {
+            // Tried again on the next look.
+            return seen;
+        }
+    }
+    iid
 }
 
 /// develop into the epic `epic` of `name` in `checkout`: what came of it,
@@ -322,7 +359,7 @@ mod tests {
         let head = git(&main, &["rev-parse", &start]);
         let store = main_update::store_of(&main).unwrap();
         std::fs::create_dir_all(&store).unwrap();
-        keep_epics_up(&main, &store);
+        keep_epics_up(&main, &store, "/nonexistent/glab");
         assert_eq!(git(&checkout, &["rev-parse", "HEAD"]), head);
         assert_eq!(git(&checkout, &["status", "--porcelain"]), "");
         let looks = || -> Vec<String> {
@@ -344,8 +381,42 @@ mod tests {
         );
         assert_eq!(epic_sync::read_tried(&store, "breadboard").outcome, "conflict");
         // The same develop commit is not tried again.
-        keep_epics_up(&main, &store);
+        keep_epics_up(&main, &store, "/nonexistent/glab");
         assert_eq!(looks().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_milestones_issues_gitlab_left_open_are_closed_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-milestone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("glab.log");
+        let glab = root.join("glab");
+        let list = "api projects/:fullpath/merge_requests?state=merged&source_branch=epic%2F15-breadboard&target_branch=develop&order_by=merged_at&sort=desc&per_page=1";
+        std::fs::write(
+            &glab,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  '{list}') echo '[{{\"iid\":400,\"description\":\"Closes #349, #352\"}}]' ;;\n  'api projects/:fullpath/issues/349') echo '{{\"state\":\"closed\"}}' ;;\n  'api projects/:fullpath/issues/352') echo '{{\"state\":\"opened\"}}' ;;\n  *) echo '{{}}' ;;\nesac\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let glab = glab.to_string_lossy().into_owned();
+        assert_eq!(close_milestone(&root, "epic/15-breadboard", &glab, 0), 400);
+        let calls = std::fs::read_to_string(&log).unwrap();
+        // The one GitLab left open closed, the closed one left alone.
+        assert!(
+            calls.contains("api --method PUT projects/:fullpath/issues/352?state_event=close"),
+            "{calls}"
+        );
+        assert!(!calls.contains("issues/349?state_event"), "{calls}");
+        // The same milestone again: nothing more.
+        std::fs::remove_file(&log).unwrap();
+        assert_eq!(close_milestone(&root, "epic/15-breadboard", &glab, 400), 400);
+        assert!(!std::fs::read_to_string(&log).unwrap().contains("PUT"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
