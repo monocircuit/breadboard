@@ -94,7 +94,7 @@ async fn main() {
                     let tree = &worktrees.tree;
                     for node in tree.live.iter().chain(&tree.queued).chain(&tree.removed) {
                         println!("  {}. {}  {}", node.place, node.name, node.state.text);
-                        println!("     {}", facts_text(&node.facts));
+                        println!("     {}", facts_text(&node.facts()));
                         println!("     {}", node.title);
                     }
                 }
