@@ -2,8 +2,11 @@
 //! overview knows anyway (#213, merge-order.mjs). `wt:plan` is the record and
 //! the tie-breaker; the facts go before it:
 //! - dependencies: an issue that names another as a prerequisite comes after it;
-//! - file overlap: of two MRs touching the same files, the one further along
-//!   goes first, so the other merges develop in once;
+//! - file overlap: of two MRs touching the same code files, the one further
+//!   along goes first. It only ranks them (a soft reason, #392): the other
+//!   keeps its green pipeline and merges right after while GitLab says it
+//!   merges cleanly; a real conflict is what has it merge develop in.
+//!   Overlaps in `.md` files are left out altogether;
 //! - readiness: a ready, green MR moves up past the ones ahead that are all
 //!   blocked (draft, failed pipeline, conflicts) and share no files with it.
 
@@ -49,6 +52,9 @@ pub struct After {
     pub number: i64,
     pub iid: i64,
     pub why: String,
+    /// Whether the MR must merge first (a prerequisite it needs); else the
+    /// edge only ranks them (shared files) and the MR is offered in parallel.
+    pub is_hard: bool,
 }
 
 /// What holds an open MR up, each in a few words; none when it is ready to
@@ -77,8 +83,9 @@ pub fn hold_up_of(entry: &MergeEntry, after: &[After]) -> Vec<String> {
         hold_up.push("draft".into());
     }
     hold_up.extend(blockers);
-    if !after.is_empty() {
-        let list: Vec<String> = after
+    let hard: Vec<&After> = after.iter().filter(|pred| pred.is_hard).collect();
+    if !hard.is_empty() {
+        let list: Vec<String> = hard
             .iter()
             .map(|pred| format!("!{} ({})", pred.iid, pred.why))
             .collect();
@@ -137,6 +144,12 @@ struct Pred {
     number: i64,
     reason: String,
     why: String,
+    is_hard: bool,
+}
+
+/// Whether a path is documentation: files of it never create an order (#392).
+fn is_doc(file: &str) -> bool {
+    file.ends_with(".md")
 }
 
 pub fn merge_order_of(entries: &[MergeEntry], plan: &[i64]) -> MergeOrder {
@@ -189,13 +202,18 @@ pub fn merge_order_of(entries: &[MergeEntry], plan: &[i64]) -> MergeOrder {
                     number: *need,
                     reason: format!("after #{need} (needs it)"),
                     why: format!("needs #{need}"),
+                    is_hard: true,
                 });
             }
         }
     }
     for (i, a) in base.iter().enumerate() {
         for b in &base[i + 1..] {
-            let mut shared: Vec<&String> = a.files.iter().filter(|file| b.files.contains(*file)).collect();
+            let mut shared: Vec<&String> = a
+                .files
+                .iter()
+                .filter(|file| !is_doc(file) && b.files.contains(*file))
+                .collect();
             if shared.is_empty() {
                 continue;
             }
@@ -212,8 +230,9 @@ pub fn merge_order_of(entries: &[MergeEntry], plan: &[i64]) -> MergeOrder {
                 let text = files_text(&shared);
                 before[own].1.push(Pred {
                     number: first.number,
-                    reason: format!("after !{}: shares {text}", first.mr.iid),
+                    reason: format!("goes after !{}: shares {text}", first.mr.iid),
                     why: format!("shares {text}"),
+                    is_hard: false,
                 });
             }
         }
@@ -288,6 +307,7 @@ pub fn merge_order_of(entries: &[MergeEntry], plan: &[i64]) -> MergeOrder {
                     .map(|entry| entry.mr.iid)
                     .unwrap_or(0),
                 why: pred.why.clone(),
+                is_hard: pred.is_hard,
             })
             .collect();
         open.push(OpenItem {
@@ -592,7 +612,46 @@ mod tests {
         let shared = ["packages/breadboard/src/overview/render-orchestration.mjs"];
         let found = order(&[files(draft(1), &shared), files(green(2), &shared)], &[1, 2]);
         assert_eq!(numbers(&found), [2, 1]);
-        assert_eq!(found.open[1].reason, "after !102: shares render-orchestration.mjs");
+        assert_eq!(found.open[1].reason, "goes after !102: shares render-orchestration.mjs");
+    }
+
+    #[test]
+    fn a_shared_code_file_ranks_but_holds_nothing_up() {
+        let found = order(&[files(draft(1), &["a.mjs"]), files(green(2), &["a.mjs"])], &[1, 2]);
+        assert_eq!(numbers(&found), [2, 1]);
+        let second = &found.open[1];
+        assert!(second.after.iter().all(|pred| !pred.is_hard), "{:?}", second.after);
+        assert!(
+            second.hold_up.iter().all(|reason| !reason.starts_with("after")),
+            "{:?}",
+            second.hold_up
+        );
+        let found = order(&[files(green(1), &["a.mjs"]), files(green(2), &["a.mjs"])], &[1, 2]);
+        assert!(
+            found.open.iter().all(|item| item.hold_up.is_empty()),
+            "{:?}",
+            found.open
+        );
+    }
+
+    #[test]
+    fn files_that_are_docs_create_no_order_at_all() {
+        let docs = [
+            "packages/breadboard/README.md",
+            ".claude/skills/parallel-work/orchestrate.md",
+        ];
+        let found = order(&[files(running(1), &docs), files(running(2), &docs)], &[1, 2]);
+        // No reason: the plan stands, nobody comes after anybody.
+        assert_eq!(numbers(&found), [1, 2]);
+        assert!(found.open.iter().all(|item| item.after.is_empty()), "{:?}", found.open);
+        assert_eq!(found.open[1].reason, "as planned");
+    }
+
+    #[test]
+    fn a_need_is_a_hard_wait() {
+        let found = order(&[needs(green(1), &[2]), green(2)], &[2, 1]);
+        assert!(found.open[1].after.iter().all(|pred| pred.is_hard));
+        assert_eq!(found.open[1].hold_up, ["after !102 (needs #2)"]);
     }
 
     #[test]
@@ -605,7 +664,7 @@ mod tests {
             &[2, 1],
         );
         assert_eq!(numbers(&found), [2, 1]);
-        assert_eq!(found.open[1].reason, "after !102: shares a.mjs");
+        assert_eq!(found.open[1].reason, "goes after !102: shares a.mjs");
     }
 
     #[test]
@@ -683,7 +742,8 @@ mod tests {
         let after = [After {
             number: 2,
             iid: 215,
-            why: "shares view.mjs".into(),
+            why: "needs #2".into(),
+            is_hard: true,
         }];
         assert_eq!(
             hold_up_of(&entries(std::slice::from_ref(&blocked))[0], &after),
@@ -693,7 +753,7 @@ mod tests {
                 "1 acceptance box open: c",
                 "pipeline failed",
                 "conflicts with develop (13 behind)",
-                "after !215 (shares view.mjs)",
+                "after !215 (needs #2)",
             ]
         );
         let mut trying = green(1);
@@ -724,6 +784,7 @@ mod tests {
                     number: *pred,
                     iid: 0,
                     why: String::new(),
+                    is_hard: true,
                 })
                 .collect(),
             hold_up: vec![],
