@@ -336,6 +336,13 @@ pub fn command(args: &Args) -> Done {
         };
         report.push((name.clone(), what));
     }
+    // Snapshots of uncommitted work older than 14 days or of removed branches (#395).
+    if !is_dry {
+        let pruned = breadboard_core::snapshot::prune(&repo.main, breadboard_core::time::now_ms());
+        if !pruned.is_empty() {
+            report.push(("snapshots".into(), format!("{} pruned", pruned.len())));
+        }
+    }
     for Entry { name, dir, why } in &folders {
         let what = match why {
             Some(why) => format!("kept, {why}"),

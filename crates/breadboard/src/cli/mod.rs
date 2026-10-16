@@ -24,7 +24,7 @@ const COMMANDS: [&[&str]; 7] = [
         "ci:watch",
     ],
     &["wt:mr", "wt:note", "wt:tick", "wt:action", "wt:wait", "wt:journal"],
-    &["wt:prune", "wt:remove", "wt:herdr"],
+    &["wt:prune", "wt:remove", "wt:herdr", "wt:snapshot"],
     &["stack:up", "stack:down", "stack:reset", "stack:ps"],
     &[
         "changelog",

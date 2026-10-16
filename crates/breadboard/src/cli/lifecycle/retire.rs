@@ -15,6 +15,7 @@ use breadboard_core::conversations::interactive_pids_of;
 use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
 use breadboard_core::runs::args_of;
+use breadboard_core::snapshot;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::json;
 use std::fs;
@@ -105,13 +106,23 @@ pub fn command(args: &Args) -> Done {
     if is_conversation_running(&id) {
         return fail(format!("{shown} not retired: a claude runs its conversation"));
     }
+    // Its uncommitted work is kept before the last run touches the worktree (#395).
+    let now = now_ms();
+    snapshot::prune(&repo.main, now);
+    match snapshot::take(&dir, feature, now) {
+        Ok(Some(taken)) => step(&format!("its uncommitted work is kept as {}", taken.reference())),
+        Ok(None) => {}
+        Err(why) => step(&format!("its uncommitted work could not be kept: {why}")),
+    }
     let changed: Vec<String> = work_files(&dir).into_iter().collect();
     let written = dir.join(HANDOFF);
     let _ = fs::remove_file(&written);
     step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
     let ran = last_run(&dir, &id, feature, &handoff_prompt(iid, share, limit, &changed));
     let kept = handoff_file(&repo.main, name, &id);
-    let handoff = match fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty()) {
+    let written = fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty());
+    let kept_work = snapshot::newest(&repo.main, feature).map(|newest| snapshot_line(feature, &newest.time));
+    let handoff = match with_snapshot(written, kept_work.as_deref()) {
         Some(text) => {
             if let Some(folder) = kept.parent() {
                 let _ = fs::create_dir_all(folder);
@@ -194,6 +205,24 @@ fn last_run(dir: &Path, id: &str, name: &str, prompt: &str) -> String {
     }
 }
 
+/// What the handoff says of the newest snapshot of `feature`'s work.
+pub fn snapshot_line(feature: &str, time: &str) -> String {
+    format!(
+        "Its uncommitted work in {feature} is kept as the snapshot {time}: `{} wt:snapshot restore {feature} {time}` applies it.",
+        breadboard_core::config::run_word()
+    )
+}
+
+/// The handoff the agent wrote with the line of its snapshot below it; the
+/// line alone when it wrote none, None when there is neither.
+fn with_snapshot(written: Option<String>, line: Option<&str>) -> Option<String> {
+    match (written, line) {
+        (Some(text), Some(line)) => Some(format!("{}\n\n{line}\n", text.trim_end())),
+        (Some(text), None) => Some(text),
+        (None, line) => line.map(|line| format!("{line}\n")),
+    }
+}
+
 /// `path` as the main checkout names it.
 fn relative(main: &Path, path: &Path) -> String {
     path.strip_prefix(main).unwrap_or(path).display().to_string()
@@ -212,6 +241,20 @@ mod tests {
         let many: Vec<String> = (0..25).map(|n| format!("f{n}")).collect();
         assert!(handoff_prompt(1, 0.5, 0.4, &many).contains(", f19 and 5 more)"));
         assert!(handoff_prompt(1, 0.5, 0.4, &[]).contains("about the files you worked on:"));
+    }
+
+    #[test]
+    fn names_its_snapshot_below_the_handoff() {
+        let line = snapshot_line("40-x", "20261016T142233Z");
+        assert!(line.starts_with("Its uncommitted work in 40-x is kept as the snapshot 20261016T142233Z: `"));
+        assert!(line.ends_with(" wt:snapshot restore 40-x 20261016T142233Z` applies it."));
+        assert_eq!(
+            with_snapshot(Some("# notes\n\n".into()), Some("kept")),
+            Some("# notes\n\nkept\n".into())
+        );
+        assert_eq!(with_snapshot(Some("# notes\n".into()), None), Some("# notes\n".into()));
+        assert_eq!(with_snapshot(None, Some("kept")), Some("kept\n".into()));
+        assert_eq!(with_snapshot(None, None), None);
     }
 
     #[test]

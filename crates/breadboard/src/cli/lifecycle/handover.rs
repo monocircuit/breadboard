@@ -448,10 +448,20 @@ fn queue_next_run(main: &Path, worker: &Worker, issue: &Issue, line: &str) -> Re
 }
 
 /// The claude `pid` asked to end (SIGTERM); whether it is gone within 15 s.
+/// The uncommitted work of the worktree it stands in is kept as a snapshot
+/// first (#395).
 pub fn end_claude(pid: i64) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
+    let cwd = breadboard_core::conversations::running_claudes()
+        .into_iter()
+        .find(|claude| claude.pid == i64::from(pid))
+        .map(|claude| claude.cwd)
+        .or_else(|| std::fs::read_link(format!("/proc/{pid}/cwd")).ok());
+    if let Some(cwd) = cwd.filter(|cwd| cwd.is_dir()) {
+        let _ = breadboard_core::snapshot::before_ending(&cwd, breadboard_core::time::now_ms());
+    }
     // SAFETY: a signal to one process this user runs.
     unsafe { libc::kill(pid, libc::SIGTERM) };
     let started = std::time::Instant::now();

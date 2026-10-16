@@ -301,6 +301,9 @@ pub fn cli(args: &[String]) -> ExitCode {
                     queued,
                     spent.text()
                 );
+                if let Some(line) = snapshot_of(&main, &run.dir, now) {
+                    println!("{:<40} {line}", "");
+                }
             }
             ExitCode::SUCCESS
         }
@@ -332,9 +335,39 @@ pub fn cli(args: &[String]) -> ExitCode {
     }
 }
 
+/// The line under a run's row naming the newest snapshot of its worktree's
+/// uncommitted work (#395), None when it has none.
+fn snapshot_of(main: &Path, dir: &Path, now: i64) -> Option<String> {
+    if dir == main {
+        return None;
+    }
+    let feature = breadboard_core::git::feature_of(main, dir);
+    let newest = breadboard_core::snapshot::newest(main, &feature)?;
+    Some(snapshot_line(
+        &feature,
+        &newest.time,
+        &breadboard_core::time::ago(newest.at, now),
+    ))
+}
+
+/// `snapshot 20261016T142233Z (3 h ago): pnpm wt:snapshot restore 7-x`.
+pub fn snapshot_line(feature: &str, time: &str, ago: &str) -> String {
+    format!(
+        "snapshot {time} ({ago}): {} wt:snapshot restore {feature}",
+        breadboard_core::config::run_word()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_newest_snapshot_and_how_to_restore_it() {
+        let line = snapshot_line("7-x", "20261016T142233Z", "3 h ago");
+        assert!(line.starts_with("snapshot 20261016T142233Z (3 h ago): "));
+        assert!(line.ends_with(" wt:snapshot restore 7-x"));
+    }
 
     #[test]
     fn picks_as_many_as_there_is_room_for_in_merge_order() {
