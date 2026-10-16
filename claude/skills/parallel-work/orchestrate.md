@@ -322,8 +322,9 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   MR's agent; grey with the reason when it can't help; after a
   click the block says where it stands: `queued for its agent (at work)`,
   `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
-  resolved`, #290), `checking for conflicts …`, the reasons; nothing when
-  nothing lacks;
+  resolved`, #290), `checking for conflicts …` (GitLab lacks the pushed
+  head), `GitLab rechecks mergeability …` (GitLab hasn't computed it: the
+  overview asks it to, #391), the reasons; nothing when nothing lacks;
 - **facts**: its issue, work, whether its HEAD passed `{{run}} wt:check`
   (`✓ tested <sha>`, `untested: N commits`, `checking…`, `✗ tests failed:
   <package> (<tests>)`, #298), its agent (`agent <name>` when it isn't the

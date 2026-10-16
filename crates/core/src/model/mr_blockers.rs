@@ -6,7 +6,7 @@
 use super::Tree;
 use super::agent_state::RUNNING;
 use super::change::is_change_open;
-use super::merge::{counted_checks_of, is_acceptance, is_work, merge_status_text};
+use super::merge::{GITLAB_RECHECKS, counted_checks_of, is_acceptance, is_work, merge_status_text};
 use super::merge_order::After;
 use super::resolve::is_conflict_settled;
 use crate::gitlab::{IssueBox, Job, Mr};
@@ -127,7 +127,7 @@ pub fn row_blockers_of(
         status != Some("success"),
         mr.target(),
     ) {
-        let who = if text == "GitLab is checking" { "GitLab" } else { "you" };
+        let who = if text == GITLAB_RECHECKS { "GitLab" } else { "you" };
         add(text, who, false);
     }
 

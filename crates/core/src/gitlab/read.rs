@@ -34,6 +34,8 @@ pub struct Memory {
     pub has_no_links: bool,
     /// GitLab answered REST but not GraphQL: read through REST, GraphQL tried again on a full read.
     pub is_rest_only: bool,
+    /// The open MRs whose mergeability GitLab was asked to recheck (#391).
+    pub rechecks: HashMap<i64, super::recheck::Recheck>,
 }
 
 // ---------------------------------------------------------------------------
@@ -849,6 +851,8 @@ pub async fn read_orchestration(
             awaited.insert(*iid, state);
         }
     }
+    gitlab.phase(Some("mergeability"));
+    super::recheck::recheck(gitlab, &mut memory.rechecks, &mut of, now_ms()).await;
     gitlab.phase(None);
     cache.save();
     Ok(Remote {
