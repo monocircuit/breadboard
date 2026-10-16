@@ -73,6 +73,27 @@ pub fn end_herdr_resume(main: &Path, dir: &Path, id: &str, pid: i64) -> Option<S
     })
 }
 
+/// herdr's record of the headless agent of `dir` on `pane` released (#386,
+/// `pane release-agent`): a pane that doesn't run that claude; herdr would
+/// resume it there after a restart. What it did, None when herdr refused.
+pub fn release_record(main: &Path, dir: &Path, pane: &str) -> Option<String> {
+    super::herdr::did(&[
+        "pane",
+        "release-agent",
+        "--source",
+        "herdr:claude",
+        "--agent",
+        "claude",
+        pane,
+    ])
+    .then(|| {
+        format!(
+            "released herdr's record of {}'s session on pane {pane}: no restart resumes it there",
+            feature_of(main, dir)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

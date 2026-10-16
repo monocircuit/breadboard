@@ -64,6 +64,8 @@ pub struct Auto {
     waits_in_flight: HashSet<PathBuf>,
     /// Per worktree, since when each awaited MR has had conflicts.
     wait_conflicts: Arc<Mutex<HashMap<PathBuf, HashMap<i64, i64>>>>,
+    /// The panes whose herdr record of a headless session was released, with it (#386).
+    released: HashSet<(String, String)>,
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
@@ -192,6 +194,27 @@ fn end_herdr_resumes(app: &mut Overview, local: &OrchestrationLocal) {
             ))
         })
         .collect();
+    // herdr's record of a headless session on a pane that doesn't run it (one
+    // the daemon's pane id put there before #386, the overview's tab too): a
+    // restart would resume it there. Released once per pane and session.
+    for pane in breadboard_core::herdr::all_panes() {
+        let Some(session) = pane.session.clone().filter(|session| headless.contains_key(session)) else {
+            continue;
+        };
+        if pane.agent.is_some() || !app.actor.auto.released.insert((pane.id.clone(), session.clone())) {
+            continue;
+        }
+        let dir = headless[&session].clone();
+        let main = main.clone();
+        app.actor.queue(move || {
+            let did = super::end_held::release_record(&main, &dir, &pane.id);
+            Some(Box::new(move |app: &mut Overview| {
+                if let Some(did) = did {
+                    app.actor.log(Paint::Dim, did);
+                }
+            }))
+        });
+    }
     for (pid, id) in breadboard_core::conversations::unnamed_resumes() {
         let Some(dir) = headless.get(&id).cloned() else {
             continue;
