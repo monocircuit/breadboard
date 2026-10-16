@@ -6,26 +6,31 @@
 //! the queue and the done ones (merged, closed, removed) fold, shown until
 //! folded, as the merged MRs were.
 //!
-//! A block: its head line (number, feature, `!M`, pipeline, app and stack,
-//! where it stands at the right), the MR's title with its status at the
-//! right, the bar of its boxes (#294), what it lacks with who acts on it,
-//! the worktree's facts with who works in it (#292), where it collides
-//! (#332), its issue's title, the problem it works on and what its agent
-//! is on now (#341). A click anywhere goes to the worktree's space
-//! (its MR, else its issue, where it has none), `!M` opens the MR, its mark
-//! the pipeline; hover lights the whole block (#296).
+//! A block (#390), a line per kind, each piece said once: its head (`!M`,
+//! its name, where it stands at the right); who works in it, its dot
+//! pulsing while its run is in flight, and under it what it does in words;
+//! its app and stack; its GitLab line (commits, pipeline, the bar of its
+//! boxes with their fold, where its conflicts stand with the button that
+//! resolves them, what its MR still lacks); where it collides, a fold of
+//! its own; then the problem it works on (#341), two lines until a click,
+//! after its title where that says more. A click anywhere goes to the
+//! worktree's space (its MR, else its issue, where it has none), `!M` opens
+//! the MR, the pipeline its page; hover lights the whole block (#296).
 
+use super::actor::merge::Phase;
 use super::merge_requests::{self as mrs};
-use super::worktrees::{self as nodes, Cells, Piece};
-use super::{Act, Ctx, Fold, look};
+use super::worktrees::{self as nodes, Cells};
+use super::{Act, Ctx, Fold, boxes, look};
 use crate::tui::links;
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme;
 use crate::tui::{Page, Scene};
+use breadboard_core::model::mr_blockers::Reason;
 use breadboard_core::model::orchestration::{MergeRequests, MrFacts, OrchestrationModel};
 use breadboard_core::model::order::Go;
 use breadboard_core::model::tree::{Node, Worktrees};
 use breadboard_core::model::{self, Docker, Paint};
+use ratatui::layout::Rect;
 use ratatui::text::Span;
 
 /// The section's name.
@@ -191,19 +196,18 @@ fn parts_of<'a>(worktrees: &'a Worktrees, merge_requests: &'a MergeRequests) -> 
 }
 
 /// The columns every block shares, so they line up across the folds: the
-/// graph's, the number's, the name's, `!M`'s; the app's and stack's after
-/// the pipeline marks.
+/// graph's, the number's, `!M`'s, the name's (the pipeline mark of a block
+/// without a worktree after it).
 struct Layout {
     graph: u16,
     digits: usize,
-    name: u16,
     iid: u16,
-    bar: u16,
+    name: u16,
     cells: Cells,
 }
 
 impl Layout {
-    fn of(parts: &Parts, width: u16, ctx: &Ctx) -> Layout {
+    fn of(parts: &Parts) -> Layout {
         let blocks: Vec<&Block> = parts.blocks().collect();
         let lanes = blocks
             .iter()
@@ -217,18 +221,18 @@ impl Layout {
             .map(|node| node.place.to_string().len())
             .max()
             .unwrap_or(1);
-        let room = width.saturating_sub(graph + digits as u16 + 2);
+        let iid = blocks
+            .iter()
+            .filter_map(|block| block.mr)
+            .map(|mr| Span::raw(format!("!{}", mr.iid)).width() as u16 + 2)
+            .max()
+            .unwrap_or(0);
         let name = blocks
             .iter()
             .map(|block| Span::raw(name_of(block)).width() as u16)
             .max()
             .unwrap_or(0)
             + 2;
-        let facts = || blocks.iter().filter_map(|block| block.mr);
-        let iid = facts().map(|mr| Span::raw(format!("!{}", mr.iid)).width() as u16).max();
-        let mark = facts().map(|mr| width_of(&mrs::mark_of(mr))).max().unwrap_or(0);
-        let iid = iid.unwrap_or(0);
-        let lead = name + if iid > 0 { iid + 2 + mark + 2 } else { 0 };
         // The cells of the worktrees at work: the queue's and the done ones' have none.
         let live: Vec<&Node> = parts
             .open
@@ -241,10 +245,9 @@ impl Layout {
         Layout {
             graph,
             digits,
-            name,
             iid,
-            bar: room.min(MAX_BAR),
-            cells: Cells::of(&live, lead, room, ctx),
+            name,
+            cells: Cells::of(&live),
         }
     }
 }
@@ -291,7 +294,7 @@ fn work(
     scene.atom_gap(vec![look::dim(&worktrees.record)], 2);
     scene.end_line();
     let parts = parts_of(worktrees, merge_requests);
-    let layout = Layout::of(&parts, scene.width(), ctx);
+    let layout = Layout::of(&parts);
     let tree = &worktrees.tree;
     // Why there is no app and no stack, or why a stack says `?`: said once, not on every block.
     let no_env = if breadboard_core::config::has_stack() {
@@ -417,38 +420,7 @@ fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx
     let mut rest = mrs::lanes(block.below, width);
     rest.push(Span::raw(" ".repeat(place.chars().count())));
     let draw = |scene: &mut Scene<Act>| {
-        look::gutter(scene, first, rest, |scene| {
-            let mine = head(scene, block, layout, ctx);
-            title(scene, block, ctx);
-            if let Some(mr) = block.mr {
-                if let Some(progress) = &mr.progress {
-                    mrs::bar_line(scene, mr, progress, layout.bar.min(scene.width()), ctx);
-                }
-                if mrs::has_lacks(mr, ctx) {
-                    mrs::lacks(scene, mr, ctx);
-                    scene.end_line();
-                }
-            } else if let Some(node) = block.node.filter(|_| !block.is_done) {
-                // No MR, no bar: the fold of its issue's boxes on a line of its own.
-                nodes::boxes_line(scene, node, ctx);
-            }
-            match block.node {
-                // A done one: its MR's title said what it was, else its issue's.
-                Some(node) if block.is_done => {
-                    if block.mr.is_none() {
-                        look::say(scene, &node.title, theme::dim());
-                        scene.end_line();
-                    }
-                }
-                Some(node) => {
-                    nodes::body(scene, node, &layout.cells, mine, ctx);
-                    look::say(scene, &node.title, theme::dim());
-                    scene.end_line();
-                    nodes::said_lines(scene, node, ctx);
-                }
-                None => {}
-            }
-        });
+        look::gutter(scene, first, rest, |scene| lines(scene, block, layout, ctx));
     };
     match go_of(block) {
         Go::Nothing => draw(scene),
@@ -456,52 +428,330 @@ fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx
     }
 }
 
-/// The head line: the name, `!M` and its pipeline mark, the app and stack
-/// in their column, where it stands at the right. Returns the cells that
-/// stand in no column: they go beside the facts.
-fn head(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) -> Option<Piece> {
+/// A block's lines, in their order (#390).
+fn lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
+    let live = block.node.filter(|node| node.has_tree && !block.is_done);
+    head(scene, block, layout, ctx);
+    if let Some(node) = live {
+        nodes::agent_lines(scene, node, ctx);
+        nodes::stack_lines(scene, node, &layout.cells, ctx);
+        gitlab_line(scene, block, ctx);
+        nodes::collides(scene, node, ctx);
+        description(scene, block, node, ctx);
+        return;
+    }
+    if block.is_done {
+        // A done one: its MR's title said what it was, else its issue's.
+        match (block.mr, block.node) {
+            (Some(_), _) => title(scene, block, ctx),
+            (None, Some(node)) => {
+                look::say(scene, &node.title, theme::dim());
+                scene.end_line();
+            }
+            (None, None) => {}
+        }
+        return;
+    }
+    // An open MR whose worktree is gone, an issue without a worktree, the queue.
+    if block.mr.is_some() {
+        gitlab_line(scene, block, ctx);
+        title(scene, block, ctx);
+    } else if let Some(node) = block.node {
+        look::say(scene, &node.title, theme::dim());
+        scene.end_line();
+    }
+}
+
+/// The head line (#390): `!M` (a click opens the MR), the name, where it
+/// stands at the right; a done one has its pipeline mark after the name
+/// (GitLab merges on a red pipeline too), the others their GitLab line.
+fn head(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
+    if let Some(mr) = block.mr {
+        iid_atom(scene, mr);
+    }
+    scene.pad_to(layout.iid);
     let style = match block.node {
         Some(node) if node.has_tree => look::pink().add_modifier(ratatui::style::Modifier::BOLD),
         _ => look::pink(),
     };
     scene.atom_gap(vec![look::span(name_of(block), style)], 0);
-    if let Some(mr) = block.mr {
-        scene.pad_to(layout.name);
-        // `!M` is the MR's link, a click of its own (§11.3): a Ctrl-click in herdr opens its page too.
-        let iid = format!("!{}", mr.iid);
-        let style = if mr.is_merged { theme::dim() } else { theme::bold() };
-        let rects = scene.atom_gap(vec![Span::styled(iid.clone(), links::style(style, Some(&mr.url)))], 0);
-        if let [rect] = rects.as_slice() {
-            scene.regions.push(Region {
-                area: *rect,
-                target: Target::Button {
-                    label: iid,
-                    tone: theme::Tone::Gray,
-                    action: Act::Go(mrs::show(mr)),
-                },
-            });
-        }
-        scene.pad_to(layout.name + layout.iid + 2);
+    if let Some(mr) = block.mr.filter(|_| block.is_done) {
+        scene.pad_to(layout.iid + layout.name);
         for rect in scene.atom_gap(mrs::mark_of(mr), 0) {
             mrs::pipeline_region(scene, mr, rect);
         }
     }
-    let mut mine = block.node.and_then(|node| layout.cells.of_node(node, ctx));
-    if let Some(column) = layout.cells.column
-        && let Some(piece) = mine.take()
-    {
-        scene.pad_to(column);
-        let rects = scene.atom_gap(piece.spans.clone(), 0);
-        piece.place(scene, &rects);
-    }
-    if let Some(node) = block.node {
-        nodes::right(
-            scene,
-            vec![look::span(&node.state.text, look::style_of(&node.state.paint))],
-        );
+    let state = match (block.node, block.mr) {
+        (Some(node), _) => vec![look::span(&node.state.text, look::style_of(&node.state.paint))],
+        // An open MR without its worktree: where it stands is its status.
+        (None, Some(mr)) if !block.is_done => mrs::status_of(mr, mrs::merge_of(ctx, mr)),
+        (None, _) => vec![],
+    };
+    if !state.is_empty() {
+        nodes::right(scene, state);
     }
     scene.end_line();
-    mine
+}
+
+/// `!M`, the MR's link, a click of its own (§11.3): a Ctrl-click in herdr opens its page too.
+fn iid_atom(scene: &mut Scene<Act>, mr: &MrFacts) {
+    let iid = format!("!{}", mr.iid);
+    let style = if mr.is_merged { theme::dim() } else { theme::bold() };
+    let rects = scene.atom_gap(vec![Span::styled(iid.clone(), links::style(style, Some(&mr.url)))], 0);
+    if let [rect] = rects.as_slice() {
+        scene.regions.push(Region {
+            area: *rect,
+            target: Target::Button {
+                label: iid,
+                tone: theme::Tone::Gray,
+                action: Act::Go(mrs::show(mr)),
+            },
+        });
+    }
+}
+
+/// The fewest columns the bar gets beside the line's other parts; with
+/// less it goes on a line of its own.
+const BAR_BESIDE: u16 = 32;
+
+/// The GitLab line (#390): its commits (`↑15 ↓6 · 14 commits not pushed ·
+/// ✓ tested 1a2b3c4d`), the MR's pipeline (a click opens it), the bar of
+/// its issue's boxes with their fold, then where its conflicts stand (the
+/// button that resolves them) and what its MR still lacks, without what
+/// another line says (the pipeline, unpushed commits, the MRs it waits
+/// for). Without an MR: its issue, `no MR yet`, the fold of its boxes.
+/// The boxes a fold shows follow the line; a merge of develop that would
+/// conflict, under them.
+fn gitlab_line(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
+    let node = block.node.filter(|node| node.has_tree);
+    let mut parts: Vec<Vec<Span<'static>>> = Vec::new();
+    let has_bar = block.mr.is_some_and(|mr| mr.progress.is_some());
+    if let Some(node) = block.node {
+        // The bar names the issue; without it, or once closed, the line does.
+        if !node.lines.issue.is_empty() && (!has_bar || node.lines.issue.len() > 1) {
+            parts.push(look::spans(&node.lines.issue));
+        }
+        if block.mr.is_none() && !node.lines.mr.is_empty() {
+            parts.push(look::spans(&node.lines.mr));
+        }
+    }
+    if let Some(node) = node {
+        parts.extend(nodes::commit_parts(node));
+    }
+    let reasons: Vec<Reason> = block
+        .mr
+        .map(|mr| {
+            mr.reasons
+                .iter()
+                .filter(|reason| !is_said_elsewhere(reason, node.is_some()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut shown = None;
+    // The line its bar (or its boxes' fold) is on, and that fold's act.
+    let mut fold: Option<(u16, Act)> = None;
+    let has_more = |at: usize, of: usize| at + 1 < of;
+    // The parts before the pipeline, each whole with its ` ·`.
+    let put = |scene: &mut Scene<Act>, part: Vec<Span<'static>>, is_last: bool| {
+        let mut atom = part;
+        if !is_last {
+            atom.push(look::dim(" ·"));
+        }
+        if width_of(&atom) <= scene.width() {
+            scene.atom(atom);
+        } else {
+            look::flow(scene, &atom);
+        }
+    };
+    match block.mr {
+        Some(mr) => {
+            for part in parts {
+                put(scene, part, false);
+            }
+            let has_lacks = mrs::has_lacks(mr, &reasons, ctx);
+            // `pipeline ✗ failed at check:x`: the job its reason names, once.
+            let mut mark = mrs::mark_of(mr);
+            if let Some(job) = mr
+                .reasons
+                .iter()
+                .find_map(|reason| reason.text.strip_prefix("pipeline failed"))
+            {
+                mark.push(look::dim(job));
+            }
+            let mut atom = vec![look::dim("pipeline ")];
+            let at = width_of(&atom);
+            let width = width_of(&mrs::mark_of(mr));
+            atom.extend(mark);
+            if has_bar || has_lacks {
+                atom.push(look::dim(" ·"));
+            }
+            let rects = scene.atom(atom);
+            if let [rect] = rects.as_slice()
+                && rect.width >= at + width
+            {
+                mrs::pipeline_region(scene, mr, Rect::new(rect.x + at, rect.y, width, 1));
+            }
+            if let Some(progress) = &mr.progress {
+                // Its gap before it, its ` ·` after it.
+                let tail = if has_lacks { 2 } else { 0 };
+                let room = scene.width().saturating_sub(scene.x() + 1 + tail);
+                let room = if room < BAR_BESIDE {
+                    scene.end_line();
+                    scene.width().saturating_sub(tail)
+                } else {
+                    room
+                };
+                let after = has_lacks.then(|| look::dim(" ·"));
+                let (boxes, y) = mrs::bar_atom(scene, mr, progress, room.min(MAX_BAR), after, ctx);
+                shown = boxes;
+                fold = y.map(|y| (y, Act::Fold(Fold::MrBoxes(mr.iid))));
+            }
+            if has_lacks {
+                mrs::lacks(scene, mr, &reasons, ctx);
+            }
+            // While the overview merges it: `merging …`, then `merged`.
+            if let Some(phase) = mrs::merge_of(ctx, mr).map(|merge| merge.phase)
+                && matches!(phase, Phase::Running | Phase::Merged)
+            {
+                nodes::right(scene, mrs::status_of(mr, mrs::merge_of(ctx, mr)));
+            }
+        }
+        None => {
+            let of = parts.len();
+            let has_boxes = node.is_some_and(|node| !node.boxes.is_empty() && !ctx.is_once);
+            for (at, part) in parts.into_iter().enumerate() {
+                put(scene, part, !has_more(at, of) && !has_boxes);
+            }
+            if let Some((node, number)) = node.zip(node.and_then(|node| node.number)) {
+                fold = nodes::boxes_atom(scene, node, ctx).map(|y| (y, Act::Fold(Fold::TreeBoxes(number))));
+            }
+        }
+    }
+    scene.end_line();
+    if let Some(sections) = shown {
+        boxes::list(scene, sections, 2);
+    }
+    if let Some(node) = node.filter(|_| block.mr.is_none()) {
+        nodes::boxes_list(scene, node, ctx);
+    }
+    // The fold's block, inside the block's (#346, as before #390): from the
+    // bar's line down its list, a click or Tab and Enter folds it.
+    if let Some((y, act)) = fold {
+        let area = Rect::new(0, y, scene.width(), scene.y() - y);
+        scene.regions.push(Region {
+            area,
+            target: Target::Block(act),
+        });
+    }
+    if let Some(node) = node {
+        nodes::conflict_line(scene, node);
+    }
+}
+
+/// A reason of an MR its block says on another line (#390): the pipeline
+/// (the GitLab line's mark), unpushed commits (its commits), and with a
+/// worktree the MRs it waits for (its state, or what its agent does).
+fn is_said_elsewhere(reason: &Reason, has_tree: bool) -> bool {
+    reason.text == "no pipeline yet"
+        || reason.text.starts_with("pipeline ")
+        || (has_tree && reason.text.ends_with(" not pushed"))
+        || (has_tree && mrs::is_wait(reason))
+}
+
+/// How many lines the problem shows before its fold (#390).
+const PROBLEM_LINES: usize = 2;
+
+/// What the block works on (#390): its title where that says more than the
+/// problem (the MR's, else its issue's, never both when one repeats the
+/// other), then the problem from its issue's Goal (#341), its first
+/// PROBLEM_LINES lines and `▸ more` until a click shows it whole.
+fn description(scene: &mut Scene<Act>, block: &Block, node: &Node, ctx: &Ctx) {
+    let problem = node.problem.as_deref().unwrap_or("");
+    let titles = [block.mr.map(|mr| mr.title.as_str()), Some(node.title.as_str())];
+    let shown = titles
+        .into_iter()
+        .flatten()
+        .find(|title| problem.is_empty() || !is_repeated(title, problem));
+    if let Some(title) = shown {
+        let spans = match block.mr {
+            Some(mr) if mr.title == title => mrs::title_spans(title, mr.is_merged),
+            _ => vec![look::dim(title)],
+        };
+        look::flow(scene, &spans);
+        scene.end_line();
+    }
+    if problem.is_empty() {
+        return;
+    }
+    let Some(number) = node.number.filter(|_| !ctx.is_once) else {
+        look::say(scene, problem, ratatui::style::Style::new());
+        scene.end_line();
+        return;
+    };
+    let is_open = ctx.folds.boxes.problems.contains(&number);
+    let words: Vec<&str> = problem.split_whitespace().collect();
+    let fits = |count: usize, more: bool| {
+        let mut trial: Scene<Act> = Scene::new(scene.width());
+        for word in &words[..count] {
+            trial.atom(vec![Span::raw(word.to_string())]);
+        }
+        if more {
+            trial.atom(vec![Span::raw("… ▸ more")]);
+        }
+        trial.finish();
+        trial.lines.len() <= PROBLEM_LINES
+    };
+    if is_open || fits(words.len(), false) {
+        look::say(scene, problem, ratatui::style::Style::new());
+        if is_open {
+            scene.atom(vec![look::dim("▾ less")]);
+            fold_region(scene, number, "▾ less");
+        }
+        scene.end_line();
+        return;
+    }
+    let count = (0..words.len()).rev().find(|&count| fits(count, true)).unwrap_or(0);
+    for word in &words[..count] {
+        scene.atom(vec![Span::raw(word.to_string())]);
+    }
+    scene.atom(vec![look::dim("… ▸ more")]);
+    fold_region(scene, number, "… ▸ more");
+    scene.end_line();
+}
+
+/// The last atom placed (`label`) folds or shows the whole problem of `number`.
+fn fold_region(scene: &mut Scene<Act>, number: i64, label: &str) {
+    let width = Span::raw(label).width() as u16;
+    let area = Rect::new(scene.x().saturating_sub(width), scene.y(), width, 1);
+    scene.regions.push(Region {
+        area,
+        target: Target::Button {
+            label: label.into(),
+            tone: theme::Tone::Gray,
+            action: Act::Fold(Fold::Problem(number)),
+        },
+    });
+}
+
+/// Whether `title` says little more than `text` (#390): most of its words
+/// (those of four letters or more, a conventional-commit prefix left out)
+/// are in it.
+fn is_repeated(title: &str, text: &str) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|ch: char| !ch.is_alphanumeric())
+            .filter(|word| word.chars().count() >= 4)
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let title = title.split_once(": ").map_or(title, |(_, rest)| rest);
+    let said = words(text);
+    let own = words(title);
+    if own.is_empty() {
+        return true;
+    }
+    let shared = own.iter().filter(|word| said.contains(word)).count();
+    shared * 5 >= own.len() * 3
 }
 
 /// The MR's title with its status at the right (`ready to merge`, `merging
@@ -510,13 +760,16 @@ fn head(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) -> Op
 fn title(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
     let Some(mr) = block.mr else { return };
     look::flow(scene, &mrs::title_spans(&mr.title, mr.is_merged));
-    let mut status = mrs::status_of(mr, mrs::merge_of(ctx, mr));
-    let short = width_of(&mrs::status_of(mr, None)).saturating_sub(width_of(&status));
-    if short > 0 {
-        status.insert(0, Span::raw(" ".repeat(usize::from(short))));
-    }
-    if !status.is_empty() {
-        scene.right(status);
+    // An open one without its worktree has its status on its head.
+    if mr.is_merged || block.is_done {
+        let mut status = mrs::status_of(mr, mrs::merge_of(ctx, mr));
+        let short = width_of(&mrs::status_of(mr, None)).saturating_sub(width_of(&status));
+        if short > 0 {
+            status.insert(0, Span::raw(" ".repeat(usize::from(short))));
+        }
+        if !status.is_empty() {
+            scene.right(status);
+        }
     }
     if mr.is_merged {
         look::ticks(scene);
@@ -536,9 +789,9 @@ mod tests {
     use breadboard_core::model::orchestration::MrRow;
     use breadboard_core::model::resolve::Conflict;
     use breadboard_core::model::tree::AgentLine;
-    use breadboard_core::model::tree::{Lifecycle, TreeOf};
-    use breadboard_core::said::Now;
+    use breadboard_core::model::tree::{Doing, Lifecycle, Lines, TreeOf};
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn node(place: usize, name: &str, key: &'static str, has_tree: bool) -> Node {
         Node {
@@ -563,11 +816,19 @@ mod tests {
                 issues: 3,
                 merged: 2,
                 today: None,
+                spent: None,
             }),
-            facts: vec![
-                vec![model::Span::plain(format!("#{} open", place + 300))],
-                vec![model::Span::plain("↑1")],
-            ],
+            lines: Lines {
+                issue: vec![model::Span::plain(format!("#{}", place + 300))],
+                mr: if has_tree {
+                    vec![model::Span::dim("no MR yet")]
+                } else {
+                    vec![]
+                },
+                commits: vec![model::Span::plain("↑1")],
+                ..Lines::default()
+            },
+            doing: None,
             app: None,
             stack: None,
             docker: Docker::Answered,
@@ -583,7 +844,6 @@ mod tests {
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
             problem: None,
-            now: None,
             boxes: vec![],
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
@@ -662,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn a_block_is_its_name_and_state_its_facts_and_agent_and_title_under_its_name() {
+    fn a_block_is_its_head_its_agent_its_gitlab_line_and_its_title() {
         let scene = draw(&worktrees(0, 0), Folds::default(), 72);
         assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab"));
         assert_eq!(
@@ -673,80 +933,119 @@ mod tests {
                 "   agents 2 · issues 3 · reused 0 · handovers failed 0",
                 "   no .env.local in any worktree: no stack, the app can't run there",
                 "1. 303-every-button                               waits for the pipeline",
-                "   #301 open · ↑1                  ● Mira Albrecht · 3 issues · 2 merged",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "   #301 · no MR yet · ↑1",
                 "   the title of #301",
                 "2. 305-refresh                                    waits for the pipeline",
-                "   #302 open · ↑1                  ● Mira Albrecht · 3 issues · 2 merged",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "   #302 · no MR yet · ↑1",
                 "   the title of #302",
             ]
         );
     }
 
     #[test]
-    fn a_block_says_its_problem_and_what_its_agent_does_now_wrapped_under_their_text() {
+    fn a_block_says_what_its_agent_does_under_it_and_its_problem_after_its_title() {
         let mut worktrees = worktrees(0, 0);
         let live = &mut worktrees.tree.live;
         live[0].problem =
             Some("The overview's node names the topic of its issue but not the problem it works on.".into());
-        live[0].now = Some(Now {
-            text: "cause found, fix pushed".into(),
+        live[0].doing = Some(Doing {
+            parts: vec![
+                model::Span::plain("cause found, fix pushed"),
+                model::Span::new("wt:check running", Paint::Cyan),
+            ],
             at: Some(-4 * 60_000),
-            is_note: true,
         });
-        // Without a note: the problem only.
-        live[1].problem = Some("wt:new hangs.".into());
+        // A title the problem repeats is left out.
+        live[1].title = "breadboard: wt:new hangs".into();
+        live[1].problem = Some("wt:new hangs when the branch exists.".into());
         let lines = text(&draw(&worktrees, Folds::default(), 56));
-        let at = lines
-            .iter()
-            .position(|line| line.ends_with("the title of #301"))
-            .unwrap();
+        let at = first_node(&lines);
         assert_eq!(
-            lines[at..at + 4],
+            lines[at..at + 12],
             [
+                "1. 303-every-button               waits for the pipeline",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "     cause found, fix pushed · wt:check running",
+                "     ·\u{a0}4\u{a0}min\u{a0}ago",
+                "   #301 · no MR yet · ↑1",
                 "   the title of #301",
-                "   problem The overview's node names the topic of its",
-                "           issue but not the problem it works on.",
-                "   now     cause found, fix pushed ·\u{a0}4\u{a0}min\u{a0}ago",
-            ]
+                "   The overview's node names the topic of its issue but",
+                "   not the problem it works on.",
+                "2. 305-refresh                    waits for the pipeline",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "   #302 · no MR yet · ↑1",
+                "   wt:new hangs when the branch exists.",
+            ],
+            "{lines:#?}"
         );
-        let second = lines
-            .iter()
-            .position(|line| line.ends_with("the title of #302"))
-            .unwrap();
-        assert_eq!(
-            lines[second..second + 2],
-            ["   the title of #302", "   problem wt:new hangs."]
-        );
-        // The first line of the last answer, marked as said, without a time.
-        worktrees.tree.live[1].now = Some(Now {
-            text: "Pushed the fix.".into(),
-            at: None,
-            is_note: false,
-        });
-        let lines = text(&draw(&worktrees, Folds::default(), 56));
-        assert!(lines.contains(&"   said    Pushed the fix.".to_string()), "{lines:#?}");
+        // No `said`: the agent's last words stay in its conversation (#390).
+        assert!(!lines.iter().any(|line| line.contains("said")), "{lines:#?}");
     }
 
     #[test]
-    fn facts_that_do_not_fit_beside_the_agent_go_under_it_the_agent_stays_under_the_state() {
-        let lines = text(&draw(&worktrees(0, 0), Folds::default(), 56));
-        let at = first_node(&lines);
-        assert_eq!(
-            lines[at..at + 4],
-            [
-                "1. 303-every-button               waits for the pipeline",
-                "   #301 open · ↑1  ● Mira Albrecht · 3 issues · 2 merged",
-                "   the title of #301",
-                "2. 305-refresh                    waits for the pipeline",
-            ]
+    fn a_long_problem_shows_two_lines_until_a_click_shows_it_whole() {
+        let mut worktrees = worktrees(0, 0);
+        worktrees.tree.live[0].problem = Some(
+            "The worktree block is readable at a glance: a fixed order of lines, each with one kind of \
+             information, nothing said twice, and the problem it works on last."
+                .into(),
         );
-        // Not even the first fact fits: the agent alone at the right, the facts under it.
-        let lines = text(&draw(&worktrees(0, 0), Folds::default(), 46));
-        let at = lines.iter().position(|line| line.contains("● Mira")).unwrap();
-        assert_eq!(
-            lines[at..at + 2],
-            ["         ● Mira Albrecht · 3 issues · 2 merged", "   #301 open · ↑1"]
-        );
+        let fold = Act::Fold(Fold::Problem(301));
+        let folded = draw(&worktrees, Folds::default(), 50);
+        let lines = text(&folded);
+        let at = lines
+            .iter()
+            .position(|line| line.contains("The worktree block"))
+            .unwrap();
+        assert!(lines[at + 1].ends_with("… ▸ more"), "{lines:#?}");
+        assert!(!lines[at + 2].starts_with("   information") && !lines.join(" ").contains("works on last"));
+        let more = folded.regions.iter().find(|region| *region.action() == fold).unwrap();
+        assert_eq!((more.area.y as usize, more.is_button()), (at + 1, true));
+        let mut folds = Folds::default();
+        folds.boxes.problems.insert(301);
+        let lines = text(&draw(&worktrees, folds, 50));
+        let all = lines.join(" ");
+        assert!(all.contains("works on last.") && all.contains("▾ less"), "{lines:#?}");
+    }
+
+    #[test]
+    fn the_dot_of_an_agent_at_work_pulses_and_asks_to_be_drawn_again() {
+        let mut worktrees = worktrees(0, 0);
+        worktrees.tree.live[0].state.key = "working";
+        let dot = |scene: &Scene<Act>| {
+            let line = scene
+                .lines
+                .iter()
+                .find(|line| line.spans.iter().any(|span| span.content.contains("Mira")))
+                .unwrap();
+            line.spans.iter().find(|span| span.content == "●").unwrap().style
+        };
+        let at = |now: i64| {
+            let gitlab = GitlabState::default();
+            let ctx = Ctx {
+                is_once: false,
+                folds: Folds::default(),
+                gitlab: &gitlab,
+                now,
+                main_name: "platform",
+                actor: super::super::actor::idle(),
+                words: super::super::actor::view::no_words(),
+                develop: None,
+            };
+            let mut scene = Scene::new(72);
+            work(&mut scene, &worktrees, &MergeRequests::default(), None, true, &ctx);
+            scene.finish();
+            scene
+        };
+        let (bright, dim) = (at(0), at(800));
+        assert_ne!(dot(&bright), dot(&dim));
+        assert_eq!(dot(&at(1600)), dot(&bright));
+        assert_eq!(bright.redraw_in, Some(Duration::from_millis(800)));
+        // An agent that waits: a steady dot, nothing to draw again.
+        let steady = draw(&super::tests::worktrees(0, 0), Folds::default(), 72);
+        assert_eq!(steady.redraw_in, None);
     }
 
     #[test]
@@ -787,8 +1086,8 @@ mod tests {
         assert_eq!(
             blocks,
             [
-                (4, 3, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
-                (7, 3, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
+                (4, 4, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
+                (8, 4, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
             ]
         );
     }
@@ -868,55 +1167,50 @@ mod tests {
     }
 
     #[test]
-    fn app_and_stack_stand_in_a_column_after_the_names_where_it_collides_under_the_facts() {
+    fn the_stack_has_its_own_line_and_the_collisions_fold_to_one() {
         let scene = draw(&with_stacks(), Folds::default(), 100);
         assert_eq!(scene.note.as_deref(), Some("2 wait for GitLab"));
+        let lines = text(&scene);
         assert_eq!(
-            text(&scene)[3..10],
+            lines[3..12],
             [
-                "1. 303-every-button  ● :3002  stack running                                   waits for the pipeline",
-                "   #301 open · ↑1                                              ● Mira Albrecht · 3 issues · 2 merged",
-                "   ⚠ collides with develop: tree.mjs · #302: web/src/index.ts, core/src/index.ts, a.md +1 more ·",
-                "   #307, #294: c.md",
+                "1. 303-every-button                                                           waits for the pipeline",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "   ● :3002  stack running",
+                "   #301 · no MR yet · ↑1",
+                "   ▸ ⚠ collides with develop · 3 MRs: #302 #307 #294",
                 "   the title of #301",
-                "2. 305-refresh       ⇒ :3000  shared                                          waits for the pipeline",
-                "   #302 open · ↑1                                              ● Mira Albrecht · 3 issues · 2 merged",
+                "2. 305-refresh                                                                waits for the pipeline",
+                "   ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "   ⇒ :3000  shared",
             ]
         );
-        // The whole node is one block: hover lights the collision too.
-        assert_eq!(scene.regions[0].area.height, 5);
-    }
-
-    #[test]
-    fn app_and_stack_go_with_the_facts_where_the_states_leave_no_column() {
-        let lines = text(&draw(&with_stacks(), Folds::default(), 66));
-        // No room beside the agent either: under it, at the right edge.
-        assert_eq!(
-            lines[3..7],
-            [
-                "1. 303-every-button                         waits for the pipeline",
-                "   #301 open · ↑1            ● Mira Albrecht · 3 issues · 2 merged",
-                "                                           ● :3002  stack running",
-                "   ⚠ collides with develop: tree.mjs · #302: web/src/index.ts,",
-            ]
-        );
-        // A long state leaves no column: at the right of the agent's own line.
-        let mut long = with_stacks();
-        long.tree.live[1].state.text = "waits for you: try #1, decide #2, look #3, merge".into();
-        let lines = text(&draw(&long, Folds::default(), 80));
-        assert_eq!(
-            lines[3..7],
-            [
-                "1. 303-every-button                                       waits for the pipeline",
-                "   #301 open · ↑1                          ● Mira Albrecht · 3 issues · 2 merged",
-                "                                                         ● :3002  stack running",
-                "   ⚠ collides with develop: tree.mjs · #302: web/src/index.ts,",
-            ]
-        );
-        // The apps line up down the right edge.
+        // The stacks line up after the widest app.
         let at = |line: &str, mark: &str| line[..line.find(mark).unwrap()].chars().count();
-        let shared = lines.iter().find(|line| line.contains("⇒ :3000")).unwrap();
-        assert_eq!(at(shared, "⇒ :3000"), at(&lines[5], "● :3002"));
+        assert_eq!(at(&lines[5], "stack running"), at(&lines[11], "shared"));
+        // The whole node is one block, the collisions' line a fold inside it.
+        let block = scene
+            .regions
+            .iter()
+            .find(|region| *region.action() == Act::Go(Go::FocusSpace("/w/303-every-button".into())))
+            .unwrap();
+        assert_eq!((block.area.y, block.area.height), (3, 6));
+        let fold = Act::Fold(Fold::Collides(301));
+        let line = scene.regions.iter().find(|region| *region.action() == fold).unwrap();
+        assert_eq!((line.area.y, line.area.height), (7, 1));
+        // A click lists the files each shares, a line each; the merge order keeps all of them.
+        let mut folds = Folds::default();
+        folds.boxes.collides.insert(301);
+        let lines = text(&draw(&with_stacks(), folds, 100));
+        assert_eq!(
+            lines[7..11],
+            [
+                "   ▾ ⚠ collides with develop · 3 MRs: #302 #307 #294",
+                "     develop: tree.mjs",
+                "     #302: web/src/index.ts, core/src/index.ts, a.md, b.md",
+                "     #307, #294: c.md",
+            ]
+        );
     }
 
     #[test]
@@ -968,12 +1262,12 @@ mod tests {
         node.collides[1].files.extend(["b.md".into(), "c.md".into()]);
         // The other worktree changed core's index.ts too: web's is named as such.
         node.near = vec!["products/vita/core/src/index.ts".into()];
-        let scene = draw(&worktrees, Folds::default(), 100);
+        let mut folds = Folds::default();
+        folds.boxes.collides.insert(301);
+        let scene = draw(&worktrees, folds, 100);
         let lines = text(&scene);
         assert!(
-            lines.contains(
-                &"   ⚠ collides with develop: tree.mjs · #302: web/src/index.ts, a.md, b.md +1 more".to_string()
-            ),
+            lines.contains(&"     #302: web/src/index.ts, a.md, b.md, c.md".to_string()),
             "{lines:#?}"
         );
         let links: Vec<(String, Act)> = scene
@@ -993,10 +1287,15 @@ mod tests {
         };
         assert_eq!(links[0], ("tree.mjs".into(), open("packages/breadboard/src/tree.mjs")));
         assert_eq!(links[1].1, open("products/vita/web/src/index.ts"));
-        // `+1 more`: the first not named.
-        assert_eq!(links[4], ("+1 more".into(), open("c.md")));
-        // A link lies on its name only, inside the node's block.
-        let block = scene.regions.iter().find(|region| !region.is_button()).unwrap().area;
+        // Unfolded every file is named.
+        assert_eq!(links[4], ("c.md".into(), open("c.md")));
+        // A link lies on its name only, inside the node's block and its collisions' fold.
+        let block = scene
+            .regions
+            .iter()
+            .find(|region| *region.action() == Act::Go(Go::FocusSpace("/w/303-every-button".into())))
+            .unwrap()
+            .area;
         let tree = scene
             .regions
             .iter()
@@ -1038,10 +1337,7 @@ mod tests {
     fn the_app_opens_where_it_is_and_a_stack_that_is_down_starts_on_a_click() {
         let scene = draw(&down(), Folds::default(), 100);
         let lines = text(&scene);
-        assert_eq!(
-            lines[3],
-            "1. 303-every-button  ○ :3002  ▶ stack down                                    waits for the pipeline"
-        );
+        assert_eq!(lines[5], "   ○ :3002  ▶ stack down");
         let dir = PathBuf::from("/w/303-every-button");
         assert_eq!(
             buttons(&scene),
@@ -1072,7 +1368,7 @@ mod tests {
             .find(|region| region.action() == &Act::StartStack(dir.clone()))
             .unwrap();
         let x = usize::from(start.area.x);
-        assert_eq!(&lines[3].chars().skip(x).take(12).collect::<String>(), "▶ stack down");
+        assert_eq!(&lines[5].chars().skip(x).take(12).collect::<String>(), "▶ stack down");
         // A running stack is no button: the node's click goes to its space.
         let scene = draw(&with_stacks(), Folds::default(), 100);
         assert!(!buttons(&scene).iter().any(|(_, act)| matches!(act, Act::StartStack(_))));
@@ -1096,7 +1392,7 @@ mod tests {
             },
         );
         let lines = at(&actor);
-        assert!(lines[3].contains("○ :3002  ◐ starting …  "), "{lines:#?}");
+        assert_eq!(lines[5], "   ○ :3002  ◐ starting …", "{lines:#?}");
         // Up after docker's last answer: `stack …` until docker tells, never `▶ stack down` again.
         actor.stacks.insert(
             dir.clone(),
@@ -1106,7 +1402,7 @@ mod tests {
             },
         );
         let lines = at(&actor);
-        assert!(lines[3].contains("○ :3002  stack …  "), "{lines:#?}");
+        assert_eq!(lines[5], "   ○ :3002  stack …", "{lines:#?}");
         actor.stacks.insert(
             dir.clone(),
             Run {
@@ -1114,7 +1410,7 @@ mod tests {
                 ..Run::default()
             },
         );
-        assert!(at(&actor)[3].contains("▶ stack down"));
+        assert!(at(&actor)[5].contains("▶ stack down"));
         actor.stacks.insert(
             dir.clone(),
             Run {
@@ -1123,12 +1419,11 @@ mod tests {
             },
         );
         let lines = at(&actor);
-        assert!(lines[3].contains("▶ stack down"));
-        assert_eq!(lines[5], "   ✗ the stack didn't start: port 5434 is taken");
-        // The stack's column holds each of these: the names, cells and state stay where they were.
+        assert!(lines[5].contains("▶ stack down"));
+        assert_eq!(lines[6], "   ✗ the stack didn't start: port 5434 is taken");
+        // The stack's line holds each of these: the lines before it stay as they were.
         let idle = text(&draw(&down(), Folds::default(), 100));
-        assert_eq!(lines[3].find("waits"), idle[3].find("waits"));
-        assert_eq!(lines[4], idle[4]);
+        assert_eq!(lines[3..5], idle[3..5]);
     }
 
     #[test]
@@ -1198,18 +1493,16 @@ mod tests {
         node.collides.truncate(2);
         node.collides[0].files.push("packages/breadboard/src/render.mjs".into());
         node.conflicts = Some(vec!["packages/breadboard/src/render.mjs".into()]);
-        let scene = draw(&worktrees, Folds::default(), 120);
+        let mut open = Folds::default();
+        open.boxes.collides.insert(301);
+        let scene = draw(&worktrees, open.clone(), 120);
         let lines = text(&scene);
         assert!(
             lines.contains(&"   ✗ a merge of develop conflicts in render.mjs".to_string()),
             "{lines:#?}"
         );
         // develop's line keeps the file that merges cleanly, not the conflicting one twice.
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("   ⚠ collides with develop: tree.mjs · #302:"))
-        );
+        assert!(lines.contains(&"     develop: tree.mjs".to_string()), "{lines:#?}");
         assert!(buttons(&scene).contains(&(
             "render.mjs".into(),
             Act::OpenFile {
@@ -1220,11 +1513,9 @@ mod tests {
         )));
         // Every file develop changed too merges cleanly: said where develop is named.
         worktrees.tree.live[0].conflicts = Some(vec![]);
-        let lines = text(&draw(&worktrees, Folds::default(), 120));
+        let lines = text(&draw(&worktrees, open, 120));
         assert!(
-            lines
-                .iter()
-                .any(|line| line.starts_with("   ⚠ collides with develop, merges cleanly: tree.mjs, render.mjs ·")),
+            lines.contains(&"     develop, merges cleanly: tree.mjs, render.mjs".to_string()),
             "{lines:#?}"
         );
         assert!(!lines.iter().any(|line| line.contains("✗")));
@@ -1345,23 +1636,22 @@ mod tests {
         let lines: Vec<String> = text(&scene).iter().map(|line| line.replace('\u{a0}', " ")).collect();
         let at = lines.iter().position(|line| line.contains("305-refresh")).unwrap();
         assert_eq!(
-            lines[at..at + 10],
+            lines[at..at + 9],
             [
-                "●   2. 305-refresh       !320  ✓ passed                                       waits for the pipeline",
+                "●   2. !320  305-refresh                                                      waits for the pipeline",
+                "       ● Mira Albrecht  (3 issues · 2 MRs done)",
+                "       ↑1 · pipeline ✓ passed · ━━━━━━━━━━━━━━━━━━━━──────  9/12 boxes · work 9/9 · acceptance 0/3 ·",
+                "        resolve merge conflicts  3 behind · 2 acceptance boxes open → agent",
                 "       feat(breadboard): the work of !320",
-                "       ━━━━━━━━━━━━━━━━━━━━━━━━────────  9/12 boxes · work 9/9 · acceptance 0/3",
-                "        resolve merge conflicts  3 behind · 2 acceptance boxes open → agent · waits for !330",
-                "       #302 open · ↑1                                          ● Mira Albrecht · 3 issues · 2 merged",
-                "       the title of #302",
                 "├─┘",
-                "●      400-elsewhere     !330  ✓ passed",
-                "       feat(breadboard): the work of !330                                             ready to merge",
-                "       ━━━━━━━━━━━━━━━━━━━━━━━━────────  9/12 boxes · work 9/9 · acceptance 0/3",
+                "●      !330  400-elsewhere                                                            ready to merge",
+                "       pipeline ✓ passed · ━━━━━━━━━━━━━━━━━━━━━━━━────────  9/12 boxes · work 9/9 · acceptance 0/3",
+                "       feat(breadboard): the work of !330",
             ],
             "{lines:#?}"
         );
         // Then the worktree without an MR, in the work order; the done ones fold.
-        assert!(lines[at + 10].starts_with("    1. 303-every-button"), "{lines:#?}");
+        assert!(lines[at + 9].starts_with("    1.       303-every-button"), "{lines:#?}");
         assert!(
             lines.contains(&"▾ done (2) · 1 merged · 1 removed · click to fold".to_string()),
             "{lines:#?}"
@@ -1394,18 +1684,30 @@ mod tests {
             on(at),
             [
                 ("!320".into(), show("https://gitlab/mr/320")),
-                ("✓ passed".into(), show("https://gitlab/pipelines/320")),
                 ("block".into(), Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
             ]
         );
+        // The pipeline and the button that resolves its conflicts on the GitLab line.
+        assert_eq!(on(at + 2), [("✓ passed".into(), show("https://gitlab/pipelines/320"))]);
+        let mark = scene
+            .regions
+            .iter()
+            .find(|region| region.area.y == at + 2)
+            .unwrap()
+            .area;
+        let x = usize::from(mark.x);
+        assert_eq!(
+            &lines[at as usize + 2].chars().skip(x).take(8).collect::<String>(),
+            "✓ passed"
+        );
         assert!(on(at + 3).contains(&("resolve\u{a0}merge\u{a0}conflicts".into(), Act::Resolve(320))));
-        // The whole block lights: its head down to its issue's title.
+        // The whole block lights: its head down to its title.
         let block = scene
             .regions
             .iter()
             .find(|region| region.area.y == at && !region.is_button())
             .unwrap();
-        assert_eq!(block.area.height, 6);
+        assert_eq!(block.area.height, 5);
         // An MR without a worktree opens the MR.
         let other = lines.iter().position(|line| line.contains("400-elsewhere")).unwrap() as u16;
         assert!(on(other).contains(&("block".into(), show("https://gitlab/mr/330"))));
@@ -1427,7 +1729,7 @@ mod tests {
         );
         let lines = text(&scene);
         assert!(
-            lines.iter().any(|line| line.contains("!320  CI: next (2nd) ▸")),
+            lines.iter().any(|line| line.contains("pipeline CI: next (2nd) ▸")),
             "{lines:#?}"
         );
         assert!(
@@ -1444,7 +1746,7 @@ mod tests {
         let fold = lines.iter().position(|line| line.starts_with("▾ done (2)")).unwrap();
         // !299 merged, with its removed worktree #320 (place 20), then the other removed one.
         assert!(
-            lines[fold + 1].starts_with("   20. gone              !299  ✓ passed"),
+            lines[fold + 1].starts_with("   20. !299  gone              ✓ passed"),
             "{lines:#?}"
         );
         assert!(
@@ -1452,7 +1754,7 @@ mod tests {
             "{lines:#?}"
         );
         // Two lines each: no facts, the removed one its issue's title.
-        assert!(lines[fold + 3].starts_with("   21. gone"), "{lines:#?}");
+        assert!(lines[fold + 3].starts_with("   21.       gone"), "{lines:#?}");
         assert_eq!(lines[fold + 4].trim(), "the title of #321", "{lines:#?}");
         assert!(!lines.iter().any(|line| line.contains("#320 open")), "{lines:#?}");
         // Folded: one line, both counted.
@@ -1491,14 +1793,13 @@ mod tests {
             "⇶ breadboard",
             ".claude/orchestrations/breadboard.json",
             "agents 2 · issues 3",
-            "2. 305-refresh",
+            "2. !320  305-refresh",
             "● :3002",
             "stack running",
             "waits for the pipeline",
-            "Mira Albrecht · 3 issues · 2 merged",
-            "#302 open · ↑1",
+            "Mira Albrecht  (3 issues · 2 MRs done)",
+            "↑1 · pipeline",
             "⚠ collides with develop",
-            "the title of #302",
             // MERGE REQUESTS: the MR, its boxes, what it lacks with who, the graph, the merged.
             "!320",
             "✓ passed",
@@ -1507,7 +1808,6 @@ mod tests {
             "resolve merge conflicts",
             "3 behind",
             "2 acceptance boxes open → agent",
-            "waits for !330",
             "├─┘",
             "400-elsewhere",
             "ready to merge",
@@ -1599,25 +1899,32 @@ mod tests {
         let fold = Act::Fold(Fold::MrBoxes(320));
         let folded = draw(&worktrees, &merge_requests, Folds::default());
         let lines = text(&folded);
+        // On the GitLab line, its fold mark in front of it.
         let bar = lines.iter().position(|line| line.contains("#302: 9/12 boxes")).unwrap();
-        assert!(lines[bar].trim_start().starts_with("▸ ━"), "{lines:#?}");
+        assert!(lines[bar].contains("pipeline ✓ passed · ▸ ━"), "{lines:#?}");
         assert!(!lines.iter().any(|line| line.contains("• A fold")), "{lines:#?}");
-        let region = |scene: &Scene<Act>| {
+        let regions = |scene: &Scene<Act>| {
             scene
                 .regions
                 .iter()
-                .find(|region| *region.action() == fold && !region.is_button())
-                .map(|region| (region.area.y, region.area.height))
+                .filter(|region| *region.action() == fold)
+                .map(|region| (region.area.y, region.area.height, region.is_button()))
+                .collect::<Vec<_>>()
         };
-        assert_eq!(region(&folded), Some((bar as u16, 1)));
+        // The bar a button, the fold's block from its line down (Tab and Enter, #346): here its lacks too.
+        assert_eq!(regions(&folded), [(bar as u16, 1, true), (bar as u16, 2, false)]);
 
         let mut folds = Folds::default();
         folds.boxes.mrs.insert(320);
         let open = draw(&worktrees, &merge_requests, folds.clone());
         let lines = text(&open);
-        assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
-        assert_eq!(lines[bar + 1].trim(), "Scope", "{lines:#?}");
-        assert!(lines[bar + 2].contains("• A fold control on the MR row"), "{lines:#?}");
+        assert!(lines[bar].contains("▾ ━"), "{lines:#?}");
+        let scope = lines.iter().position(|line| line.trim() == "Scope").unwrap();
+        assert!(scope > bar, "{lines:#?}");
+        assert!(
+            lines[scope + 1].contains("• A fold control on the MR row"),
+            "{lines:#?}"
+        );
         // A plain bullet, its colour the state (#370): a ticked box green, an open one yellow; no ☑/☐.
         let bullet_of = |row: usize| {
             open.lines[row]
@@ -1626,9 +1933,9 @@ mod tests {
                 .find(|span| span.content.contains('•'))
                 .and_then(|span| span.style.fg)
         };
-        assert_eq!(bullet_of(bar + 2), Some(theme::Tone::Green.fg()));
+        assert_eq!(bullet_of(scope + 1), Some(theme::Tone::Green.fg()));
         assert!(
-            (bar..open.lines.len()).any(|row| bullet_of(row) == Some(theme::Tone::Yellow.fg())),
+            (scope..open.lines.len()).any(|row| bullet_of(row) == Some(theme::Tone::Yellow.fg())),
             "{lines:#?}"
         );
         assert!(!lines.iter().any(|line| line.contains(['☑', '☐'])), "{lines:#?}");
@@ -1636,10 +1943,14 @@ mod tests {
             lines.iter().any(|line| line.contains("try #12 looks good")),
             "{lines:#?}"
         );
-        // The list is the fold's block inside the block's: a click on it folds it again.
-        let (y, height) = region(&open).unwrap();
-        assert_eq!(y as usize, bar);
-        assert!(lines[y as usize + height as usize].contains("resolve"), "{lines:#?}");
+        // The list is in the fold's block inside the block's: a click on it folds it again.
+        let list = regions(&open);
+        assert_eq!(list[0], (bar as u16, 1, true));
+        let (y, height, is_button) = list[1];
+        assert!(
+            y as usize == bar && (y + height) as usize > scope + 2 && !is_button,
+            "{list:?}"
+        );
 
         // Open boxes that hold the merge show whole before any click (#354), in the block.
         if let Some(facts) = merge_requests.open[0].mr.as_mut() {
@@ -1653,17 +1964,21 @@ mod tests {
             super::super::actor::idle(),
         );
         let lines = text(&first);
-        assert!(lines[bar].trim_start().starts_with("▾ ━"), "{lines:#?}");
-        assert_eq!(lines[bar + 1].trim(), "Acceptance criteria", "{lines:#?}");
+        assert!(lines[bar].contains("▾ ━"), "{lines:#?}");
+        assert!(
+            lines.iter().any(|line| line.trim() == "Acceptance criteria"),
+            "{lines:#?}"
+        );
         assert!(!lines.iter().any(|line| line.contains("Scope")), "{lines:#?}");
 
         // A worktree without an MR: the fold of its issue's boxes stands where the bar would.
         worktrees.tree.live[0].boxes = boxes();
         let lines = text(&draw(&worktrees, &merge_requests, Folds::default()));
-        let head = lines
-            .iter()
-            .position(|line| line.contains("1. 303-every-button"))
-            .unwrap();
-        assert_eq!(lines[head + 1].trim(), "▸ 1/3 boxes · 2 open", "{lines:#?}");
+        let head = lines.iter().position(|line| line.contains("303-every-button")).unwrap();
+        assert_eq!(
+            lines[head + 2].trim(),
+            "#301 · no MR yet · ↑1 · ▸ 1/3 boxes · 2 open",
+            "{lines:#?}"
+        );
     }
 }
