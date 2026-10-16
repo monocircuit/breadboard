@@ -259,11 +259,74 @@ pub fn newest(dir: &Path, feature: &str) -> Option<Snapshot> {
     list(dir, Some(feature)).into_iter().next()
 }
 
-/// The snapshot applied to the worktree `dir` (`git stash apply`: the
-/// tracked changes and the untracked files; the index only as changes).
-/// Refused by git where it would overwrite a change or a file there now.
+/// The snapshot applied to the worktree `dir`: its tracked changes as
+/// `git stash apply` takes them (the index only as changes), then its
+/// untracked files that are missing. One there with the same content is
+/// left as it is (an agent's `.claude/` files, a restore done twice); one
+/// with other content refuses the restore before anything changes, as git
+/// refuses a tracked change it would overwrite.
 pub fn restore(dir: &Path, snapshot: &Snapshot) -> Result<(), String> {
-    run(dir, &["stash", "apply", &snapshot.sha], &[], None).map(|_| ())
+    let sha = &snapshot.sha;
+    let untracked = format!("{sha}^3");
+    let has_untracked = run(dir, &["rev-parse", "--verify", "--quiet", &untracked], &[], None).is_ok();
+    let mut missing: Vec<u8> = Vec::new();
+    let mut differing: Vec<String> = Vec::new();
+    if has_untracked {
+        let listed = run(dir, &["ls-tree", "-r", "-z", &untracked], &[], None)?;
+        for entry in listed.split('\0').filter(|entry| !entry.is_empty()) {
+            let Some((meta, path)) = entry.split_once('\t') else {
+                continue;
+            };
+            let blob = meta.split(' ').nth(2).unwrap_or_default();
+            if !dir.join(path).exists() {
+                missing.extend(path.as_bytes().iter().copied().chain([0]));
+            } else if run(dir, &["hash-object", "--", path], &[], None).ok().as_deref() != Some(blob) {
+                differing.push(path.to_string());
+            }
+        }
+    }
+    if !differing.is_empty() {
+        let verb = if differing.len() == 1 { "exists" } else { "exist" };
+        return Err(format!("{} already {verb} with other content", differing.join(", ")));
+    }
+    let tree_of = |rev: &str| run(dir, &["rev-parse", &format!("{rev}^{{tree}}")], &[], None);
+    let (head, index) = (tree_of(&format!("{sha}^1"))?, tree_of(&format!("{sha}^2"))?);
+    let tree = tree_of(sha)?;
+    if tree != head || index != head {
+        // The stash without its untracked parent: git applies those only all or none.
+        let tracked = run(
+            dir,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &format!("{sha}^1"),
+                "-p",
+                &format!("{sha}^2"),
+                "-m",
+                "breadboard snapshot, tracked",
+            ],
+            &[],
+            None,
+        )?;
+        run(dir, &["stash", "apply", &tracked], &[], None)?;
+    }
+    if !missing.is_empty() {
+        run(
+            dir,
+            &[
+                "--literal-pathspecs",
+                "restore",
+                &format!("--source={untracked}"),
+                "--worktree",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            &[],
+            Some(&missing),
+        )?;
+    }
+    Ok(())
 }
 
 /// The snapshots that go: older than `KEEP_MS`, or of a feature that is
@@ -359,6 +422,14 @@ mod tests {
         restore(&dir, &snapshot).unwrap();
         assert_eq!(fs::read_to_string(dir.join("only.md")).unwrap(), "only\n");
         assert_eq!(sh(&dir, &["status", "--porcelain"]), "?? only.md");
+        // Twice: the file there with its content is no conflict, one with other content is.
+        restore(&dir, &snapshot).unwrap();
+        fs::write(dir.join("only.md"), "other\n").unwrap();
+        assert_eq!(
+            restore(&dir, &snapshot),
+            Err("only.md already exists with other content".into())
+        );
+        assert_eq!(fs::read_to_string(dir.join("only.md")).unwrap(), "other\n");
     }
 
     #[test]
