@@ -28,7 +28,7 @@ pub fn brief_of(
     // One issue, one MR, into its base (#349).
     let base = breadboard_core::git::base_of(&issue.dir).local;
     let worktree = format!(
-        "{worktree}\nIts base is `{base}`: merge it in, its MR goes into it. That MR handles exactly this one issue (`Closes #{number}`, no other)."
+        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline). That MR handles exactly this one issue (`Closes #{number}`, no other)."
     );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),

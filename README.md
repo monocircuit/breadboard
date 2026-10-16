@@ -373,6 +373,15 @@ breadboard decides which pipelines exist at all:
   a hotfix or anything into `main`, the MRs with a full bar in the merge
   order, fixes after a red run. A pipeline that a person cancelled, or that GitLab
   skipped, for the newest commit stays that way until a click.
+- **A hard wait holds the pipeline** (#392): an MR whose issue needs an open
+  one, or that `wt:wait`s for an open MR of its orchestration, gets none
+  (`CI: held, after !N`) until that one is merged; a click still runs it.
+  MRs that only share files rank by the merge order and start as usual:
+  a shared code file is a soft reason (`goes after !N: shares X`), `.md`
+  overlaps none. A green pipeline stays valid however far develop moves; an
+  MR merges develop in only on a real conflict (GitLab says so, after a
+  merge it is asked to recheck every open MR), and a red develop holds new
+  merge offers (`develop red (job): merges held`).
 - **The overview** shows a waiting MR's place instead of its pipeline mark,
   e.g. `CI: next (2nd) ▸`, `CI: after the boxes (3/7) ▸` or `CI: after wt:check ▸`; a click on it moves the MR to the front
   (`.claude/ci/run-now.json`). The band shows the runner's load:
