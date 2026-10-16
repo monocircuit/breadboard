@@ -155,9 +155,10 @@ pub fn conflicts_of(issues: &[Entry], remote: &Remote) -> Vec<Tell> {
                 return Some(Tell::Send {
                     dir: tree.dir.clone(),
                     line: format!(
-                        "[overview] !{} has conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target})",
+                        "[overview] !{} has conflicts with {target}: merge {target} in with {run} wt:merge-base --resolve, resolve the conflicts, git add, git commit --no-edit, {run} wt:check and push in this run",
                         mr.iid,
-                        target = mr.target()
+                        target = mr.target(),
+                        run = crate::config::run_word()
                     ),
                     key,
                     iid: mr.iid,
@@ -897,13 +898,19 @@ mod tests {
     #[test]
     fn tells_the_agent_of_an_mr_with_conflicts_once_and_forgets_it_after() {
         let (entry, gitlab) = conflicted(true);
-        assert_eq!(conflicts_of(std::slice::from_ref(&entry), &gitlab), [Tell::Send {
-            dir: "/w/a".into(),
-            key: "conflicts:221".into(),
-            line: "[overview] !221 has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)".into(),
-            iid: 221,
-            id: None,
-        }]);
+        assert_eq!(
+            conflicts_of(std::slice::from_ref(&entry), &gitlab),
+            [Tell::Send {
+                dir: "/w/a".into(),
+                key: "conflicts:221".into(),
+                line: format!(
+                    "[overview] !221 has conflicts with develop: merge develop in with {run} wt:merge-base --resolve, resolve the conflicts, git add, git commit --no-edit, {run} wt:check and push in this run",
+                    run = crate::config::run_word()
+                ),
+                iid: 221,
+                id: None,
+            }]
+        );
         let mut told = entry.clone();
         told.tree.as_mut().unwrap().sent = ["conflicts:221".to_string()].into();
         assert!(conflicts_of(std::slice::from_ref(&told), &gitlab).is_empty());
