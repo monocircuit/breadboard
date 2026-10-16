@@ -266,8 +266,8 @@ The CI job watcher (#379): `breadboard serve` reads every finished job of the
 project's pipelines into `.claude/ci/jobs.json` (14 days), samples the CPU and
 memory of the jobs the local runner runs (`docker stats`), and flags a job
 that holds pipelines up. The overview shows it under its band; a slow job
-becomes a `plan` to file an issue, a hung one a `decide` (retry, cancel, let
-it run), both in every orchestration's ACTIONS.
+becomes a `plan` to file an issue, a hung one a `decide` (retry, cancel,
+wait), both in every orchestration's ACTIONS.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -281,6 +281,7 @@ it run), both in every orchestration's ACTIONS.
 | `slowdown_days` | `7` | |
 | `hang_factor` | `2.0` | a running job past this many times its median is hung (and marked on its MR's row) |
 | `hang_seconds` | `120` | … and past this many seconds |
+| `hang_quiet_seconds` | `60` | … and its log hasn't grown for this many seconds: a job that still writes its log is slow (a busy runner), not hung |
 | `idle_seconds` | `300` | a job whose median run is this long … |
 | `idle_cores` | `0.5` | … on fewer cores than this mostly waits |
 | `history_days` | `14` | how long a run is kept |
