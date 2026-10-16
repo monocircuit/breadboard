@@ -25,8 +25,9 @@
 //! (rewrite rule 6): what an overview does stays in the overview, but for
 //! what the user asked of it: the headless task agents (#358, `runs`), whose
 //! queued lines it runs with `claude -p`, staying while any are queued or in
-//! flight; and the CI queue (`ci`, #357), which creates the MR pipelines of a
-//! repo in their order. An overview that can't reach it reads by itself.
+//! flight; the CI queue (`ci`, #357), which creates the MR pipelines of a
+//! repo in their order; and the marks (`ready`, #399), which mark an
+//! orchestration's MR ready once its bar is full. An overview that can't reach it reads by itself.
 //! And one more (#348, `keep_up`): it fast-forwards the main checkouts of
 //! its overviews to origin/develop, when that is safe, and goes on in a
 //! build installed over its binary.
@@ -36,6 +37,7 @@ pub mod client;
 mod feed;
 pub mod gitlab;
 mod keep_up;
+mod ready;
 pub mod runs;
 mod serve;
 pub mod watch;

@@ -23,7 +23,7 @@ use std::time::Duration;
 /// How often the queue is looked at; `BREADBOARD_CI_EVERY_MS` another (the gauntlet's ticks).
 pub const EVERY: Duration = Duration::from_secs(10);
 
-fn every() -> Duration {
+pub(super) fn every() -> Duration {
     std::env::var("BREADBOARD_CI_EVERY_MS")
         .ok()
         .and_then(|ms| ms.parse().ok())
@@ -302,7 +302,7 @@ pub(super) fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<serde
     glab_api(main, glab, &["api", "--method", "POST", endpoint])
 }
 
-fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Value, String> {
+pub(super) fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Value, String> {
     let spawn = || {
         Command::new(glab)
             .args(args)
