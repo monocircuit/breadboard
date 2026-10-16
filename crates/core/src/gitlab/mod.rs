@@ -8,6 +8,7 @@
 pub mod cache;
 pub mod client;
 pub mod read;
+pub mod recheck;
 mod rest;
 
 use regex::Regex;

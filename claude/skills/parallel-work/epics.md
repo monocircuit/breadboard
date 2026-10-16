@@ -30,7 +30,9 @@ Everything that compared with `{{branch}}` compares with the base:
 - `wt:mr` targets the base; `wt:check` checks what the branch changes against it;
 - the worktree view's section is `BASE` on an epic (`DEVELOP` on `{{branch}}`),
   its DIFF reads `against epic/<N>-<name>`, "N behind" is about the base;
-- **merge your base in**, never rebase: `git fetch && git merge origin/<base>`;
+- **merge your base in** only when your MR conflicts with it or the overview/orchestrator
+  tells you to (the base moving is no reason: each merge costs a full
+  pipeline), never rebase: `git fetch && git merge origin/<base>`;
 - `wt:remove` / `wt:prune` count a branch merged into its base as done.
 
 **One issue, one branch, one MR.** `wt:mr` refuses a description that closes

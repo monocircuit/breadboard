@@ -15,6 +15,9 @@ const BOX_WORDS: usize = 4;
 /// How many open acceptance boxes a blocker names before `+n`.
 const NAMED_BOXES: usize = 2;
 
+/// What a row says while GitLab hasn't settled its mergeability; the read asks it to recheck (#391).
+pub const GITLAB_RECHECKS: &str = "GitLab rechecks mergeability";
+
 /// GitLab's `detailed_merge_status` in words, for what a blocker doesn't say
 /// already (the draft, the pipeline); None for `mergeable`.
 pub fn merge_status_text(
@@ -25,7 +28,7 @@ pub fn merge_status_text(
 ) -> Option<String> {
     let status = status.filter(|status| !status.is_empty() && *status != "mergeable")?;
     if ["checking", "unchecked", "preparing", "approvals_syncing"].contains(&status) {
-        return Some("GitLab is checking".into());
+        return Some(GITLAB_RECHECKS.into());
     }
     if status == "draft_status" && is_draft {
         return None;
@@ -461,7 +464,7 @@ mod tests {
                 &[],
             )
         };
-        assert_eq!(with("checking", false), ["GitLab is checking"]);
+        assert_eq!(with("checking", false), [GITLAB_RECHECKS]);
         assert_eq!(with("conflict", false), ["conflicts with develop"]);
         assert_eq!(with("discussions_not_resolved", false), ["open discussions"]);
         assert_eq!(with("conflict", true), ["conflicts with develop"]);
