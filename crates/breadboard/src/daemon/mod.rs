@@ -30,7 +30,9 @@
 //! orchestration's MR ready once its bar is full. An overview that can't reach it reads by itself.
 //! And one more (#348, `keep_up`): it fast-forwards the main checkouts of
 //! its overviews to origin/develop, when that is safe, and goes on in a
-//! build installed over its binary.
+//! build installed over its binary; and it merges develop into each
+//! orchestration's epic checkout once develop moved, pushed when the epic's
+//! wt:check passes, else a look action of the orchestration (#352).
 
 mod ci;
 pub mod client;

@@ -66,6 +66,11 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
             }),
             pipeline_mark(mr.pipeline.as_ref()),
         ],
+        // With tasks in it, how to take them to develop at a milestone (#352).
+        None if in_epic > 0 => vec![Span::dim(format!(
+            "no MR into {develop} yet: pnpm wt:epic {} --mr",
+            local.name
+        ))],
         None => vec![Span::dim(format!("no MR into {develop} yet"))],
     });
     Some(row)
@@ -85,6 +90,7 @@ mod tests {
 
     fn local(behind: Option<u64>) -> OrchestrationLocal {
         OrchestrationLocal {
+            name: "b".into(),
             epic: Some(EpicLocal {
                 branch: "epic/15-b".into(),
                 behind,
@@ -138,7 +144,7 @@ mod tests {
         }));
         assert_eq!(
             text_of_parts(&epic_row_of(&local(Some(0)), Some(&remote)).unwrap()),
-            "epic/15-b · has develop · 1 in epic · ✓ passed · no MR into develop yet"
+            "epic/15-b · has develop · 1 in epic · ✓ passed · no MR into develop yet: pnpm wt:epic b --mr"
         );
         remote.epic.as_mut().unwrap().mr = Some(Mr {
             iid: 400,

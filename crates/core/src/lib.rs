@@ -8,6 +8,7 @@ pub mod ci_watch;
 pub mod config;
 pub mod conversations;
 pub mod epic;
+pub mod epic_sync;
 pub mod git;
 pub mod gitlab;
 pub mod herdr;
