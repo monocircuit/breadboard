@@ -648,6 +648,7 @@ impl LocalReader {
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
             fresh: crate::config::of_main(&self.main).config.orchestrator.clone(),
             spent: crate::spend::spent_of(&self.main, name, record.as_ref(), now),
+            paused: crate::runs::paused_now(&self.main),
             record,
         }
     }

@@ -12,6 +12,7 @@
 //! - `log/<session>.jsonl`: the stream of its last run;
 //! - `limit.json` (`Lifted`): the day a `continue anyway` lifted the daily
 //!   limit for (#372);
+//! - `pause.json` (`Paused`): since when the user paused every run (#397).
 //! - `usage.json` (`Usage`): the Claude usage limit a run stopped at, until
 //!   when it holds every run and the sessions it stopped (#393).
 
@@ -84,6 +85,101 @@ pub fn held_now(main: &Path, now: i64) -> Option<String> {
     held_by(Some(limit), &today, &read_or_default(&limit_file(main)))
 }
 
+pub fn pause_file(main: &Path) -> PathBuf {
+    dir_of(main).join("pause.json")
+}
+
+/// The run engine paused (#397): no run starts, lines keep queueing. The
+/// file is the state, so it outlives `serve`, herdr and a reboot; no file:
+/// the runs go on.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Paused {
+    /// Since when (ms).
+    pub since: i64,
+    /// Whether the pause also switched the CI queue off (`pause --ci`):
+    /// `resume` switches it on again, one the user had off stays off.
+    pub ci: bool,
+}
+
+/// The pause of the repo of `main`, None while the runs go on.
+pub fn paused_of(main: &Path) -> Option<Paused> {
+    let text = std::fs::read_to_string(pause_file(main)).ok()?;
+    Some(serde_json::from_str(&text).unwrap_or_default())
+}
+
+/// Every run of `main` paused from `now` on (an earlier pause keeps its
+/// time); with `ci` the CI queue too (`git config breadboard.ci push`).
+pub fn pause(main: &Path, now: i64, ci: bool) -> std::io::Result<Paused> {
+    let mut paused = paused_of(main).unwrap_or(Paused { since: now, ci: false });
+    let git = |args: &[&str]| crate::git::git(main, args);
+    if ci && git(&["config", "--get", crate::ci::MODE_KEY]).out() != "push" {
+        let set = git(&["config", crate::ci::MODE_KEY, "push"]);
+        if !set.is_ok {
+            return Err(std::io::Error::other(set.stderr.trim().to_string()));
+        }
+        paused.ci = true;
+    }
+    write_whole(&pause_file(main), &paused)?;
+    Ok(paused)
+}
+
+/// The runs of `main` go on: the pause gone, the CI queue on again when
+/// the pause switched it off. The pause that was, None when there was none.
+pub fn resume(main: &Path) -> std::io::Result<Option<Paused>> {
+    let Some(paused) = paused_of(main) else {
+        return Ok(None);
+    };
+    if paused.ci {
+        crate::git::git(main, &["config", "--unset", crate::ci::MODE_KEY]);
+    }
+    match std::fs::remove_file(pause_file(main)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    Ok(Some(paused))
+}
+
+/// `agents paused since 13:05 · 3 lines waiting`: the band's words of a pause.
+pub fn paused_text(paused: &Paused, waiting: usize) -> String {
+    let lines = if waiting == 1 { "line" } else { "lines" };
+    let mut text = format!(
+        "agents paused since {} · {waiting} {lines} waiting",
+        crate::time::hm(paused.since)
+    );
+    if paused.ci {
+        text.push_str(" · CI queue off");
+    }
+    text
+}
+
+/// `paused_text` of the repo of `main` now, None while the runs go on.
+pub fn paused_now(main: &Path) -> Option<String> {
+    let paused = paused_of(main)?;
+    let queue: Queue = read_or_default(&queue_file(main));
+    Some(paused_text(&paused, queue.events.len()))
+}
+
+/// The runs in flight of `main` ended (`pause --now`): SIGTERM to each
+/// live claude of the status table. How many were asked to end. The run
+/// engine gives their lines back to the queue (a run ended in a pause).
+pub fn end_running(main: &Path) -> usize {
+    let table: Table = read_or_default(&status_file(main));
+    let mut ended = 0;
+    for run in table.runs.values().filter(|run| run.state == State::Running) {
+        if let Some(pid) = run.pid.filter(|pid| is_alive(*pid)) {
+            // SAFETY: a signal to a pid, no memory involved.
+            if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+                ended += 1;
+            }
+        }
+    }
+    ended
+}
+
+/// The line put before the lines of a run a pause ended: they come again.
+pub const ENDED_BY_PAUSE: &str =
+    "[overview] your last run was ended by a pause of all agents (breadboard runs pause --now); its lines again:";
 pub fn usage_file(main: &Path) -> PathBuf {
     dir_of(main).join("usage.json")
 }
@@ -814,6 +910,34 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(State::Limit.status(), "limit");
+    }
+
+    #[test]
+    fn pauses_until_resumed_and_says_so() {
+        let scratch = crate::lock::scratch::Scratch::new();
+        let main = scratch.path();
+        assert_eq!(paused_of(main), None);
+        assert_eq!(paused_now(main), None);
+        let first = pause(main, 1_000, false).unwrap();
+        assert_eq!(
+            first,
+            Paused {
+                since: 1_000,
+                ci: false
+            }
+        );
+        // A second pause keeps its time.
+        assert_eq!(pause(main, 9_000, false).unwrap().since, 1_000);
+        enqueue(main, event("a", "one", 1)).unwrap();
+        enqueue(main, event("b", "two", 2)).unwrap();
+        let text = paused_now(main).unwrap();
+        assert!(text.starts_with("agents paused since "), "{text}");
+        assert!(text.ends_with(" · 2 lines waiting"), "{text}");
+        assert!(paused_text(&first, 1).ends_with("1 line waiting"));
+        assert!(paused_text(&Paused { since: 0, ci: true }, 0).ends_with("· CI queue off"));
+        assert_eq!(resume(main).unwrap(), Some(first));
+        assert_eq!(paused_of(main), None);
+        assert_eq!(resume(main).unwrap(), None);
     }
 
     #[test]

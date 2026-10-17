@@ -61,6 +61,8 @@ pub enum Act {
     RunNow(i64),
     /// The daily limit lifted until midnight: the queued runs start (#372).
     LiftLimit,
+    /// Every headless run paused, or resumed (#397): `breadboard runs pause` / `resume`.
+    Pause,
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -197,6 +199,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Resolve(iid) => resolve(app, iid),
         Act::RunNow(iid) => run_now(app, iid),
         Act::LiftLimit => lift_limit(app),
+        Act::Pause => pause(app),
     }
     app.redraw();
     Flow::Redraw
@@ -639,6 +642,33 @@ fn lift_limit(app: &mut Overview) {
                 .log(Paint::Green, "daily limit lifted until midnight: the queued runs start");
         }
         Err(error) => app.actor.log(Paint::Red, format!("daily limit not lifted: {error}")),
+    }
+}
+
+/// The pause toggle (#397): paused, the runs in flight let finish and no
+/// new one starts; resumed, the lines that waited start their runs.
+fn pause(app: &mut Overview) {
+    use breadboard_core::runs;
+    let main = app.actor.main.clone();
+    let done = if runs::paused_of(&main).is_some() {
+        runs::resume(&main).map(|_| {
+            crate::daemon::client::wake_runs(&main);
+            "agents resumed: the lines that waited start their runs"
+        })
+    } else {
+        runs::pause(&main, now_ms(), false).map(|_| "agents paused: no run starts, the lines wait")
+    };
+    match done {
+        Ok(said) => {
+            // Read again now: the band shows it without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
+            app.actor.log(Paint::Green, said);
+        }
+        Err(error) => app
+            .actor
+            .log(Paint::Red, format!("agents not paused or resumed: {error}")),
     }
 }
 
