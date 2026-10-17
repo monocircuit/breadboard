@@ -28,5 +28,6 @@ pub mod setups;
 pub mod spend;
 pub mod stack;
 pub mod time;
+pub mod try_check;
 pub mod wait;
 pub mod wake;

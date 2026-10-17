@@ -28,6 +28,8 @@ pub struct Pipeline {
     #[serde(rename = "ref")]
     pub reference: Option<String>,
     pub created_at: Option<String>,
+    /// When its first job started: none while it waits for the runner.
+    pub started_at: Option<String>,
     pub updated_at: Option<String>,
     pub finished_at: Option<String>,
 }
