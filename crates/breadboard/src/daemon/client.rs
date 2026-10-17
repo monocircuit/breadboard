@@ -468,14 +468,18 @@ mod tests {
                 silent,
                 connect,
             );
-            tokio::time::timeout(silent * 4, follow).await.ok()
+            // Far past `silent`: a loaded runner never reaches it before a `Silent`.
+            tokio::time::timeout(silent * 10, follow).await.ok()
         })
     }
 
     #[test]
     fn gives_up_a_feed_whose_daemon_says_nothing() {
         let silent = Duration::from_millis(200);
-        // It takes the request and never answers: given up after `silent`, not reconnected.
+        // It takes the request and never answers: given up after `silent`, not
+        // reconnected. `Silent` itself says it gave up before `followed`'s own
+        // timeout (`silent * 10`, None): no upper bound on the clock, which a
+        // loaded runner stretches (571 ms for 200 ms on CI, #386).
         let started = std::time::Instant::now();
         let quiet = |stream: tokio::net::UnixStream| {
             tokio::spawn(async move {
@@ -484,7 +488,7 @@ mod tests {
             })
         };
         assert_eq!(followed("silent", silent, quiet), Some(Followed::Silent));
-        assert!(started.elapsed() < silent * 2, "{:?}", started.elapsed());
+        assert!(started.elapsed() >= silent, "{:?}", started.elapsed());
         // It says it is there, nothing else (GitLab slow): followed on.
         let alive = |mut stream: tokio::net::UnixStream| {
             tokio::spawn(async move {
