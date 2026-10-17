@@ -526,6 +526,14 @@ impl OpenMr {
     fn is_into_main(&self) -> bool {
         self.target == "main"
     }
+    /// A product's batch on its way into develop (#411): it runs the full set.
+    fn is_batch(&self) -> bool {
+        self.source.starts_with("batch/")
+    }
+    /// A task MR into a batch: the fast checks only (#412), a short pipeline.
+    fn is_into_batch(&self) -> bool {
+        self.target.starts_with("batch/")
+    }
 }
 
 /// How urgent an MR's pipeline is, lower first (#357's order).
@@ -535,6 +543,8 @@ pub enum Class {
     RunNow,
     /// A hotfix, anything into `main`.
     Hotfix,
+    /// A batch MR into develop (#412): every task in it waits for its pipeline.
+    Batch,
     /// Ready: in the merge order, then the others oldest first.
     Ready,
     /// Its last pipeline failed and it has a fix pushed.
@@ -575,9 +585,10 @@ impl Ranks {
         }
     }
 
-    /// An MR of an orchestration whose order the queue reads: the only ones it touches (#369).
-    pub fn is_member(&self, iid: i64) -> bool {
-        self.bars.contains_key(&iid) || self.place_in_order(iid).is_some()
+    /// An MR of an orchestration whose order the queue reads, or a batch
+    /// (breadboard's own branch, #411): the only ones it touches (#369).
+    pub fn is_member(&self, mr: &OpenMr) -> bool {
+        self.bars.contains_key(&mr.iid) || self.place_in_order(mr.iid).is_some() || mr.is_batch()
     }
 
     /// Where `iid` stands in the merge orders: the same place in two orchestrations ranks the same.
@@ -590,7 +601,8 @@ impl Ranks {
 }
 
 /// Its class; None while a hard wait holds it, its bar isn't full at its
-/// newest commit, or it has no bar (no click asked for it).
+/// newest commit, or it has no bar (no click asked for it). A batch MR
+/// without a bar has its pipeline wanted: it is opened to ship (#414).
 pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
     if ranks.run_now.contains_key(&mr.iid) {
         return Some(Class::RunNow);
@@ -600,7 +612,11 @@ pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
         return None;
     }
     let bar = ranks.bars.get(&mr.iid);
-    if bar.is_none_or(|bar| !bar.is_full_at(mr.sha.as_deref())) {
+    let is_full = match bar {
+        Some(bar) => bar.is_full_at(mr.sha.as_deref()),
+        None => mr.is_batch(),
+    };
+    if !is_full {
         return None;
     }
     let is_fix = mr.pipeline_status() == Some("failed") && !mr.is_head_current();
@@ -610,6 +626,8 @@ pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
             || mr.labels.iter().any(|label| label.eq_ignore_ascii_case("hotfix"))
         {
             Class::Hotfix
+        } else if mr.is_batch() {
+            Class::Batch
         } else if is_fix {
             Class::Fix
         } else {
@@ -721,7 +739,7 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
             continue;
         };
         is_runner_full |= is_waiting(status);
-        if mr.is_head_current() && ranks.is_member(mr.iid) {
+        if mr.is_head_current() && ranks.is_member(mr) {
             let place = if is_waiting(status) {
                 Place::Pending
             } else {
@@ -732,7 +750,7 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     }
     let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
     // An MR of no orchestration is never touched: no place, no start, no cancel (#369).
-    let members = mrs.iter().filter(|mr| ranks.is_member(mr.iid));
+    let members = mrs.iter().filter(|mr| ranks.is_member(mr));
     for mr in members {
         if !wants_pipeline(mr, ranks, started) {
             let is_live_here = mr.is_head_current() && mr.pipeline_status().is_some_and(is_live);
@@ -779,11 +797,13 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     let is_full = is_runner_full || slots.free() == 0;
     // The runner full and the first MR waiting: the live pipeline ranked lowest
     // behind it makes room, one a look, only one the queue created itself
-    // for an orchestration's MR, never one into `main` or of a branch.
+    // for an orchestration's MR, never one into `main` or of a branch. Nor
+    // a task's into a batch: its fast checks free their slots within
+    // minutes, cancelled they start over (#412).
     let preempt = waiting.first().filter(|_| is_full).and_then(|(class, key, first)| {
         let first_rank = (Some(*class), *key);
         mrs.iter()
-            .filter(|mr| mr.iid != first.iid && !mr.is_into_main() && ranks.is_member(mr.iid))
+            .filter(|mr| mr.iid != first.iid && !mr.is_into_main() && !mr.is_into_batch() && ranks.is_member(mr))
             .filter_map(|mr| {
                 let pipeline = mr.pipeline.as_ref()?;
                 (is_live(&pipeline.status) && is_ours(pipeline, ranks)).then(|| (rank_of(mr), mr, pipeline))
@@ -1066,6 +1086,73 @@ mod tests {
         assert_eq!(decision.places[&347], Place::Next { at: 1 });
         // 339 and 342 both ahead of it: nothing to cancel for 347.
         assert_eq!(decision.preempt, None);
+    }
+
+    /// A task MR into breadboard's batch, and the batch MR into develop.
+    fn into_batch(iid: i64, sha: &str, pipeline: Option<Pipeline>) -> OpenMr {
+        OpenMr {
+            target: "batch/breadboard-1".into(),
+            ..mr(iid, sha, pipeline)
+        }
+    }
+    fn batch(iid: i64, sha: &str, pipeline: Option<Pipeline>) -> OpenMr {
+        OpenMr {
+            source: "batch/breadboard-1".into(),
+            ..mr(iid, sha, pipeline)
+        }
+    }
+
+    #[test]
+    fn ranks_the_batch_mr_ahead_of_the_tasks_behind_a_hotfix() {
+        // #412: the batch MR is in no order and has no bar, it was opened to ship.
+        let mut hotfix = mr(5, "h", None);
+        hotfix.labels = vec!["hotfix".into()];
+        let mrs = [into_batch(1, "a", None), mr(2, "b", None), batch(9, "z", None), hotfix];
+        let decision = decide_now(&mrs, &order(&[1, 2, 5]), slots(1, 0));
+        let at = |iid: i64| match decision.places[&iid] {
+            Place::Next { at } => at,
+            _ => usize::MAX,
+        };
+        assert_eq!([at(5), at(9), at(1), at(2)], [1, 2, 3, 4]);
+        // Its boxes open (an overview publishes its bar): it waits for them like any.
+        let mut ranks = order(&[1, 2, 5]);
+        ranks.bars.insert(
+            9,
+            Bar {
+                ticked: 0,
+                total: 1,
+                is_checked: true,
+                ..Default::default()
+            },
+        );
+        let decision = decide_now(&mrs, &ranks, slots(1, 0));
+        assert!(
+            matches!(decision.places[&9], Place::Boxes(_)),
+            "{:?}",
+            decision.places[&9]
+        );
+    }
+
+    #[test]
+    fn never_preempts_a_task_pipeline_into_a_batch() {
+        // The runner full with 1's fast checks into the batch and 2's full set into develop.
+        let mrs = [
+            batch(9, "z", None),
+            into_batch(1, "a", pipeline(10, "running", "a", 1)),
+            mr(2, "b", pipeline(20, "running", "b", 2)),
+        ];
+        let mut ranks = order(&[1, 2]);
+        ranks.ours.extend([10, 20]);
+        let decision = decide_now(&mrs, &ranks, slots(2, 2));
+        assert_eq!(decision.places[&9], Place::Next { at: 1 });
+        assert_eq!(decision.preempt, Some((2, 20, "b".into())));
+        // Only task pipelines run: the batch waits for their few minutes.
+        let mrs = [
+            batch(9, "z", None),
+            into_batch(1, "a", pipeline(10, "running", "a", 1)),
+            into_batch(2, "b", pipeline(20, "running", "b", 2)),
+        ];
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 2)).preempt, None);
     }
 
     #[test]
