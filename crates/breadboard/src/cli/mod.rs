@@ -123,7 +123,8 @@ mod tests {
         assert_eq!(meant("action"), Some("wt:action"));
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
-        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic  wt:merge-base
-"));
+        assert!(
+            usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic  wt:merge-base\n")
+        );
     }
 }
