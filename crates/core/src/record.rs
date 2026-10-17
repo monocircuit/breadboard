@@ -575,6 +575,8 @@ pub fn record_of(main: &Path, name: &str) -> Option<Record> {
     {
         record.chat = Some(chat);
     }
+    // The try checker is a setting (#415): the panel's, else the `auto` of before, else the team's default.
+    record.is_auto = crate::settings::of(main, name).try_checker;
     Some(record)
 }
 

@@ -341,7 +341,17 @@ pub fn command(args: &Args) -> ExitCode {
         }
     }
     // The epic before anything is written: its tasks branch off it (#350).
-    match epic::ensure_epic(&name, &plan, args.value("--epic").as_deref(), is_dry) {
+    // The product it will have decides with its settings whether it batches (#415).
+    let product_of = product::ensure_product(&name, &plan, args.value("--product").as_deref(), true)
+        .ok()
+        .flatten();
+    match epic::ensure_epic(
+        &name,
+        &plan,
+        args.value("--epic").as_deref(),
+        product_of.as_deref(),
+        is_dry,
+    ) {
         Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
         Ok(None) => {}
         Err(why) => fail(&format!("no epic branch: {why}")),

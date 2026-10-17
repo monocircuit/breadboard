@@ -77,7 +77,7 @@ pub fn command(args: &Args) -> Done {
         return fail(format!("{feature} has no agent bound to it ({})", dir.display()));
     };
     let share = context_share_of(&id).unwrap_or(0.0);
-    let limit = context_limit(&repo.main);
+    let limit = context_limit(&repo.main, name);
     let agent = record::record_of(&repo.main, name)
         .and_then(|record| record.worker(&id).cloned())
         .unwrap_or_default();
