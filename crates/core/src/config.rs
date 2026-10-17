@@ -182,8 +182,9 @@ pub struct Stack {
     /// What a worktree may run beside its stack, on a port moved with it (Storybook).
     #[serde(default)]
     pub tools: Vec<Tool>,
-    /// An orchestration's epic stack and the task stacks on it (#351, #365);
+    /// The batch stack (`[stack.batch]`, #411; the epic stack of #351, #365) and the task stacks on it;
     /// None: an orchestration's worktrees get own stacks.
+    #[serde(rename = "batch")]
     pub epic: Option<Epic>,
 }
 
@@ -768,7 +769,7 @@ fn is_product_name(name: &str) -> bool {
 
 impl Epic {
     fn validate(&self, stack: &Stack) -> Result<(), String> {
-        let bad = |key: &str, why: &str| Err(format!("stack.epic.{key}: {why}"));
+        let bad = |key: &str, why: &str| Err(format!("stack.batch.{key}: {why}"));
         if stack.service(&self.service).is_none_or(|service| service.env.is_none()) {
             return bad(
                 "service",
@@ -779,7 +780,7 @@ impl Epic {
             );
         }
         if stack.migrations.is_none() {
-            return Err("stack.epic: needs [stack.migrations], its `run` migrates the template".into());
+            return Err("stack.batch: needs [stack.migrations], its `run` migrates the template".into());
         }
         if self.template.trim().is_empty() {
             return bad("template", "must not be empty");
@@ -1159,16 +1160,16 @@ mod tests {
         let stack = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n\
                      [[stack.services]]\nname = \"postgres\"\nport = 5432\nenv = \"DB_PORT\"\n";
         let migrations = "[stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n";
-        let epic = "[stack.epic]\ntemplate = \"t\"\nstamp = \"db\"\n";
-        let clone = "[[stack.epic.databases]]\nname = \"app\"\nowner = \"o\"\nis_clone = true\n";
+        let epic = "[stack.batch]\ntemplate = \"t\"\nstamp = \"db\"\n";
+        let clone = "[[stack.batch.databases]]\nname = \"app\"\nowner = \"o\"\nis_clone = true\n";
         assert!(Config::parse(&format!("{stack}{migrations}{epic}{clone}")).is_ok());
         let error = Config::parse(&format!("{stack}{epic}{clone}")).unwrap_err();
-        assert!(error.starts_with("stack.epic: needs [stack.migrations]"), "{error}");
+        assert!(error.starts_with("stack.batch: needs [stack.migrations]"), "{error}");
         let error = Config::parse(&format!("{stack}{migrations}{epic}")).unwrap_err();
-        assert!(error.starts_with("stack.epic.databases: exactly one"), "{error}");
+        assert!(error.starts_with("stack.batch.databases: exactly one"), "{error}");
         let error = Config::parse(&format!("{stack}{migrations}{epic}service = \"db\"\n{clone}")).unwrap_err();
         assert!(
-            error.starts_with("stack.epic.service: \"db\" is no [[stack.services]]"),
+            error.starts_with("stack.batch.service: \"db\" is no [[stack.services]]"),
             "{error}"
         );
     }

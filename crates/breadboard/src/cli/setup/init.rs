@@ -228,7 +228,7 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
             ("app.port", stack.app.port.to_string()),
             ("app.port_1", (u32::from(stack.app.port) + 1).to_string()),
         ]);
-        // The epic stack's names (`[stack.epic]`, #365): its template, the cloned database, the others.
+        // The epic stack's names (`[stack.batch]`, #365): its template, the cloned database, the others.
         if let Some(epic) = &stack.epic {
             let others: Vec<String> = epic
                 .databases
@@ -638,9 +638,9 @@ mod tests {
                      [[stack.services]]\nname = \"db\"\nlabel = \"DB\"\nport = 5432\nenv = \"DB_PORT\"\n\
                      [[stack.services]]\nname = \"auth\"\nlabel = \"Auth\"\nport = 8080\nenv = \"AUTH_PORT\"\n\
                      [stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n[products.app]\npaths = [\"app\"]\n";
-        let epic = "[stack.epic]\nservice = \"db\"\ntemplate = \"app_tpl\"\nstamp = \"db\"\n\
-                    [[stack.epic.databases]]\nname = \"app\"\nis_clone = true\nowner = \"app\"\n\
-                    [[stack.epic.databases]]\nname = \"auth\"\nowner = \"auth\"\n";
+        let epic = "[stack.batch]\nservice = \"db\"\ntemplate = \"app_tpl\"\nstamp = \"db\"\n\
+                    [[stack.batch.databases]]\nname = \"app\"\nis_clone = true\nowner = \"app\"\n\
+                    [[stack.batch.databases]]\nname = \"auth\"\nowner = \"auth\"\n";
         let epics = config::Config::parse(stack).unwrap();
         let epic_stack = config::Config::parse(&format!("{stack}{epic}")).unwrap();
         let rendered = |config: config::Config| {
@@ -666,7 +666,7 @@ mod tests {
                 .map(|(_, text)| text.clone())
                 .unwrap()
         };
-        // Without [stack.epic] an orchestration's worktrees get own stacks: no batch stack to describe (#365).
+        // Without [stack.batch] an orchestration's worktrees get own stacks: no batch stack to describe (#365).
         assert!(!epics_md(&rendered(epics)).contains("The batch stack and task stacks"));
         let text = epics_md(&rendered(epic_stack));
         assert!(text.contains("template\n  database `app_tpl`"), "{text}");

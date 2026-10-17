@@ -125,14 +125,14 @@ WHERE and a herdr tab of its name.
 | `url` | `http://localhost:{port}` | where it is looked at |
 | `is_with_stack` | `false` | its tab opens while the stack runs, as `dev` does; else WHERE has a button that starts it |
 
-### `[stack.epic]`
+### `[stack.batch]`
 
-An orchestration's epic stack and the task stacks on it. The orchestration's
-checkout runs a full stack. Its database service keeps a template database,
+The batch stack (#411, the epic stack of #351) and the task stacks on it.
+The orchestration's checkout, on its product's batch, runs a full stack. Its database service keeps a template database,
 migrated and seeded, that nothing connects to. A worktree of the orchestration
-gets a task stack: its own stack without that service, on the epic's compose
-network, with its databases made on the epic's service. A task stack starts on
-demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.epic]`, an
+gets a task stack: its own stack without that service, on the batch stack's compose
+network, with its databases made on the batch stack's service. A task stack starts on
+demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.batch]`, an
 orchestration's worktrees get own stacks like any other. It needs
 `[stack.migrations]`, whose `run` migrates the template.
 
@@ -147,7 +147,7 @@ orchestration's worktrees get own stacks like any other. It needs
 | `task_setup` | none | what a task stack runs, in order, after its containers are up and its migrations applied |
 | `env` | none | a table of what a task stack's env file sets besides; `{network}` is the epic's compose network |
 
-`[[stack.epic.databases]]` are the databases a task gets, `<name>_<feature>`:
+`[[stack.batch.databases]]` are the databases a task gets, `<name>_<feature>`:
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -159,15 +159,15 @@ orchestration's worktrees get own stacks like any other. It needs
 | `name_env` | none | the env file's variable set to its name |
 
 ```toml
-[stack.epic]
+[stack.batch]
 template = "app_tpl"
 stamp = "db"
 seed = "npm run seed"
 
-[stack.epic.env]
+[stack.batch.env]
 NETWORK = "{network}"
 
-[[stack.epic.databases]]
+[[stack.batch.databases]]
 name = "app"
 is_clone = true
 owner = "app"
