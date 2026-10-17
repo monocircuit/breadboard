@@ -367,6 +367,15 @@ impl Leftovers {
     }
 }
 
+/// The orchestrations of a space: a product's every one (#405), else the one of `⇶ <title>`.
+fn orchestrations_of(main: &Path, label: &str, names: &[(String, String)]) -> Vec<String> {
+    if breadboard_core::record::is_product(main, label) {
+        breadboard_core::record::orchestrations_of_product(main, label)
+    } else {
+        orchestration_of_label(label, names).into_iter().collect()
+    }
+}
+
 /// Every orchestration's chat written down (`rememberChats`): the claude of
 /// its tab `orchestrator`; a lone claude in a space without it gets that name.
 fn remember_chats(
@@ -377,7 +386,8 @@ fn remember_chats(
     logged: &mut Vec<Logged>,
 ) {
     for space in all_spaces {
-        let Some(name) = orchestration_of_label(&space.label, names) else {
+        // A product's space (#405) has one chat for its orchestrations: written as the first's, into the product's.
+        let Some(name) = orchestrations_of(main, &space.label, names).into_iter().next() else {
             continue;
         };
         if record_of(main, &name).is_none() {
@@ -668,7 +678,7 @@ fn notify_changes(
 ) {
     let open: HashSet<String> = all_spaces
         .iter()
-        .filter_map(|space| orchestration_of_label(&space.label, names))
+        .flat_map(|space| orchestrations_of(main, &space.label, names))
         .collect();
     for tree in trees.iter().filter(|tree| tree.dir != main) {
         if tree.origin.as_ref().is_some_and(|origin| open.contains(&origin.name)) {

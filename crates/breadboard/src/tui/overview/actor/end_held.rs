@@ -3,10 +3,13 @@
 //! on ACTIONS' `held` row (and `breadboard runs release <dir>`) ends it once
 //! herdr says it is idle, so no answer is cut off; its lines then run
 //! headless again. One herdr's restore started (a bare `claude --resume`,
-//! no click's `--name`) the overview ends by itself once it idles.
+//! no click's `--name`) the overview ends by itself once it idles. Each
+//! keeps the worktree's uncommitted work as a snapshot first (#395).
 
 use breadboard_core::conversations::{bound_session, interactive_pids_of};
 use breadboard_core::git::feature_of;
+use breadboard_core::snapshot;
+use breadboard_core::time::now_ms;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -43,6 +46,8 @@ pub fn end(main: &Path, dir: &Path) -> Result<String, String> {
     if pids.is_empty() {
         return Ok(format!("{feature}: no open claude runs it any more"));
     }
+    // Its uncommitted work is kept before it ends (#395).
+    let _ = snapshot::before_ending(dir, now_ms());
     for pid in &pids {
         // SAFETY: a signal to a pid read from /proc a moment ago; SIGTERM lets claude save.
         unsafe { libc::kill(*pid as libc::pid_t, libc::SIGTERM) };
@@ -63,6 +68,7 @@ pub fn end_herdr_resume(main: &Path, dir: &Path, id: &str, pid: i64) -> Option<S
     if !is_quiet(Some(&status)) {
         return None;
     }
+    let _ = snapshot::before_ending(dir, now_ms());
     // SAFETY: a signal to a pid read from /proc a moment ago; SIGTERM lets claude save.
     (unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0).then(|| {
         crate::daemon::client::wake_runs(main);

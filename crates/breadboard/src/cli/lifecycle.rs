@@ -1,5 +1,5 @@
 //! The commands that end or rearrange work (#314, group "lifecycle"):
-//! `wt:remove`, `wt:prune`, `wt:herdr`, and the handover, which people and
+//! `wt:remove`, `wt:prune`, `wt:herdr`, `wt:snapshot`, and the handover, which people and
 //! the overview call as `wt:orchestrate <name> <issue> --to <agent>`
 //! (`--after !<mr>…`): that call comes here, every other `wt:orchestrate`
 //! goes on to the setup group. A change for an MR is `wt:action change`, the
@@ -22,6 +22,7 @@ mod prune;
 pub mod remove;
 pub mod repo;
 pub mod retire;
+mod snapshot;
 
 use std::process::ExitCode;
 
@@ -37,6 +38,7 @@ pub fn run(command: &str, words: &[String]) -> Option<ExitCode> {
         "wt:remove" | "remove" => remove::command,
         "wt:prune" | "prune" => prune::command,
         "wt:herdr" => layout::command,
+        "wt:snapshot" => snapshot::command,
         "wt:orchestrate" | "orchestrate" if retire::is_retire(words) => retire::command,
         "wt:orchestrate" | "orchestrate" if handover::is_handover(words) => handover::command,
         _ => return None,

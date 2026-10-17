@@ -3,8 +3,13 @@
 //!
 //! ```text
 //! <main space>          root · overview (live, --herdr) · changelog · stack tabs
+//! ├─ <product>           root · overview (every orchestration of it) · orchestrator · changelog · changes
 //! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim · stack tabs
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
+//!
+//! With `[products.*]` in breadboard.toml (#405) an orchestration works in
+//! its product's space, and the main space keeps `root` and `overview`: the
+//! changelog is the products'. An orchestration of no product keeps `⇶ <title>`.
 //! ```
 //!
 //! Idempotent: also the way back after a herdr restart (the plugin runs it
@@ -209,11 +214,11 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
 
-    // The spaces of the orchestrations; after a restart the orchestrator's conversation comes back (#287).
+    // The spaces of the orchestrations and the products (#405); after a restart the orchestrator's conversation comes back (#287).
     let mut orchestrations: Vec<String> = Vec::new();
     for name in herdr::spaces()
         .iter()
-        .filter_map(|space| repo.orchestration_of(s(space, "label")))
+        .flat_map(|space| repo.orchestrations_of(s(space, "label")))
     {
         if !orchestrations.contains(&name) {
             orchestrations.push(name);
@@ -224,10 +229,10 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         // Its epic stack's tabs (#351), in the orchestration's space.
         let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
         if !changed.is_empty() {
-            report.push(format!("{}: {}", repo.orchestrator_label(&name), changed.join(" ")));
+            report.push(format!("{}: {}", repo.space_label_of(&name), changed.join(" ")));
         }
         if let Some(resumed) = should_resume.then(|| restore_chat(repo, &name)).flatten() {
-            report.push(format!("{}: {resumed}", repo.orchestrator_label(&name)));
+            report.push(format!("{}: {resumed}", repo.space_label_of(&name)));
         }
     }
 
@@ -329,6 +334,8 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
             let label = s(&space, "label");
             let command = if label == SPACE.get() {
                 tabs::overview_command(tabs::View::Herdr)
+            } else if repo.is_product(label) {
+                tabs::overview_command(tabs::View::Product(label))
             } else if let Some(name) = repo.orchestration_of(label) {
                 tabs::overview_command(tabs::View::Orchestration(&name))
             } else if let Some(tree) = trees.iter().find(|tree| {

@@ -386,6 +386,9 @@ pub fn cli(args: &[String]) -> ExitCode {
                 if let Some(line) = held_line(&queue, &session, &run.dir, now, interactive_pids_of(&session)) {
                     println!("  {line}");
                 }
+                if let Some(line) = snapshot_of(&main, &run.dir, now) {
+                    println!("  {line}");
+                }
             }
             ExitCode::SUCCESS
         }
@@ -473,6 +476,29 @@ pub fn cli(args: &[String]) -> ExitCode {
     }
 }
 
+/// The line under a run's row naming the newest snapshot of its worktree's
+/// uncommitted work (#395), None when it has none.
+fn snapshot_of(main: &Path, dir: &Path, now: i64) -> Option<String> {
+    if dir == main {
+        return None;
+    }
+    let feature = breadboard_core::git::feature_of(main, dir);
+    let newest = breadboard_core::snapshot::newest(main, &feature)?;
+    Some(snapshot_line(
+        &feature,
+        &newest.time,
+        &breadboard_core::time::ago(newest.at, now),
+    ))
+}
+
+/// `snapshot 20261016T142233Z (3 h ago): pnpm wt:snapshot restore 7-x`.
+pub fn snapshot_line(feature: &str, time: &str, ago: &str) -> String {
+    format!(
+        "snapshot {time} ({ago}): {} wt:snapshot restore {feature}",
+        breadboard_core::config::run_word()
+    )
+}
+
 /// What `breadboard runs` says under an agent whose lines an open claude
 /// (`pids`) holds past ten minutes (#386), None for any other.
 fn held_line(queue: &Queue, session: &str, dir: &Path, now: i64, pids: Vec<i64>) -> Option<String> {
@@ -497,6 +523,13 @@ fn held_line(queue: &Queue, session: &str, dir: &Path, now: i64, pids: Vec<i64>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_the_newest_snapshot_and_how_to_restore_it() {
+        let line = snapshot_line("7-x", "20261016T142233Z", "3 h ago");
+        assert!(line.starts_with("snapshot 20261016T142233Z (3 h ago): "));
+        assert!(line.ends_with(" wt:snapshot restore 7-x"));
+    }
 
     #[test]
     fn a_queue_held_by_an_open_claude_says_so_after_ten_minutes() {

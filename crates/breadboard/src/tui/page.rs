@@ -184,6 +184,11 @@ impl<A: Clone> Page<A> {
         self.picked.as_ref()
     }
 
+    /// The columns of the page.
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
     /// The columns inside an island: a column of margin on both sides.
     pub fn inner(&self) -> u16 {
         self.width.saturating_sub(2).max(1)
@@ -277,6 +282,19 @@ impl<A: Clone> Page<A> {
         part.rows.push(Row::new(Line::default(), Ground::Plain));
     }
 
+    /// The page of a part of the view under this one (an orchestration of a
+    /// product's view, #405): its rows, regions and sections as they are,
+    /// its actions `tag`ged; its sticky sections stay on top with
+    /// `is_sticky_kept`, else they scroll with the rest, in their place.
+    pub fn embed<B>(&mut self, child: Page<B>, tag: impl Fn(B) -> A, is_sticky_kept: bool) {
+        if let Some(after) = child.redraw_in {
+            self.redraw_in = Some(self.redraw_in.map_or(after, |was| was.min(after)));
+        }
+        let top = if is_sticky_kept { &mut self.top } else { &mut self.rest };
+        append(top, child.top, &tag);
+        append(&mut self.rest, child.rest, &tag);
+    }
+
     pub fn finish(self) -> Sheet<A> {
         let sticky = self.top.rows.len() as u16;
         let mut rows = self.top.rows;
@@ -301,6 +319,31 @@ impl<A: Clone> Page<A> {
             redraw_in: self.redraw_in,
         }
     }
+}
+
+/// The part `from` of another page at the end of `into`, its actions `tag`ged.
+fn append<A, B>(into: &mut Part<A>, from: Part<B>, tag: &impl Fn(B) -> A) {
+    let at = into.rows.len() as u16;
+    into.rows.extend(from.rows);
+    into.regions.extend(from.regions.into_iter().map(|region| Region {
+        area: Rect {
+            y: region.area.y + at,
+            ..region.area
+        },
+        target: match region.target {
+            Target::Block(action) => Target::Block(tag(action)),
+            Target::Button { label, tone, action } => Target::Button {
+                label,
+                tone,
+                action: tag(action),
+            },
+        },
+    }));
+    into.sections.extend(from.sections.into_iter().map(|placed| Placed {
+        from: placed.from + at,
+        to: placed.to + at,
+        ..placed
+    }));
 }
 
 impl<A> Sheet<A> {
@@ -493,6 +536,35 @@ mod tests {
             sheet.hit(button.area.x, button.area.y).map(|(_, r)| *r.action()),
             Some(3)
         );
+    }
+
+    #[test]
+    fn an_embedded_page_keeps_its_rows_and_tags_its_actions() {
+        let mut child = Page::<u8>::new(40);
+        child.section(Section::new("NEXT").sticky().plain(), |scene| {
+            scene.text("next", Style::new())
+        });
+        child.section("WORK", |scene| scene.button("merge", Tone::Cyan, 7));
+        let mut page = Page::<(char, u8)>::new(40);
+        page.section("A", |scene| scene.text("a", Style::new()));
+        page.embed(child, |action| ('b', action), false);
+        let sheet = page.finish();
+        assert_eq!(sheet.sticky, 0, "its NEXT scrolls with the rest");
+        let text = sheet.text().join("\n");
+        assert!(text.contains(" A\n a\n\n next\n\n WORK\n  merge "), "{text}");
+        let button = sheet.regions.iter().find(|r| r.is_button()).unwrap();
+        assert_eq!(sheet.rows[usize::from(button.area.y)].line.to_string().trim(), "merge");
+        assert_eq!(*button.action(), ('b', 7));
+        assert_eq!(
+            sheet
+                .sections
+                .iter()
+                .map(|placed| placed.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "NEXT", "WORK"]
+        );
+        let work = &sheet.sections[2];
+        assert_eq!(sheet.rows[usize::from(work.from)].line.to_string().trim(), "WORK");
     }
 
     #[test]

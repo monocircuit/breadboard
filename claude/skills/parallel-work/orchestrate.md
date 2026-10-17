@@ -27,6 +27,7 @@ spaces stay empty.
 | ------ | ---- |
 | `<name>` | kebab-case, names the orchestration: the space `⇶ <name>`, the origin of its worktrees |
 | `--title "<text>"` | what the overview's title band, the space and the sidebar show instead: `⇶ <title>` (e.g. `@acme/web`). Recorded, so a later run keeps it; `wt:orchestrate <name> --title "…"` alone changes it. Commands, files and `SendMessage` keep the name |
+| `--product <name>` | the product of `breadboard.toml` it belongs to (#405): it works in the product's space with the product's other orchestrations. Without it the issues' milestone names it (`vita · …` → `vita`); recorded |
 | `<issue>` | a number (the worktree is named after the issue's title, `fix/` with the label `bug`), or `<n>-<feature>` to name it yourself |
 | `--shared` | every worktree on the shared stack: for issues that never start the app (~1 GB RAM less each) |
 | `--queue` | start none: the overview hands each to a free agent (the one that knows its files first), else starts a fresh one by itself, memory permitting, in the work order of `wt:plan` |
@@ -38,7 +39,7 @@ What it does, in this order:
 
 1. Reads every issue. Closed ones, ones another branch claims and ones with a
    worktree already are skipped and listed; nothing to start stops here.
-2. Opens the space `⇶ <name>` (`root`, `overview`, `orchestrator`,
+2. Opens the space `⇶ <name>`, or its product's (`<product>`), (`root`, `overview`, `orchestrator`,
    `changelog` and `changes`, see The changelog) and
    moves the tab it runs in there: the orchestrator's own tab. That happens only
    when the space has no orchestrator yet and the calling tab is nobody's:

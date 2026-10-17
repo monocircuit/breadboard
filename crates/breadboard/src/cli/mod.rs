@@ -33,7 +33,7 @@ const COMMANDS: [&[&str]; 7] = [
         "wt:epic",
         "wt:merge-base",
     ],
-    &["wt:prune", "wt:remove", "wt:herdr"],
+    &["wt:prune", "wt:remove", "wt:herdr", "wt:snapshot"],
     &["stack:up", "stack:down", "stack:reset", "stack:ps"],
     &[
         "changelog",
