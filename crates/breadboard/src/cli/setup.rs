@@ -52,7 +52,6 @@ fn shape_of(command: &str) -> Option<Shape> {
             &[
                 "--title",
                 "--auto",
-                "--epic",
                 "--product",
                 "--shared",
                 "--peer",
@@ -77,7 +76,6 @@ fn shape_of(command: &str) -> Option<Shape> {
             &[
                 "--title",
                 "--auto",
-                "--epic",
                 "--product",
                 "--peer",
                 "--brief",
