@@ -73,6 +73,18 @@ pub fn header(view: &View, model: Option<&Model>, remote: Option<&RemoteOf>, ctx
         status.push(Span::styled(" · ", quiet));
     }
     status.push(Span::styled(ctx.gitlab.fresh(), quiet));
+    // The runs paused (#397), first: `agents paused since 13:05 · 3 lines waiting`.
+    if let Some(Model::Orchestration(model)) = model
+        && let Some(paused) = &model.paused
+    {
+        status.splice(
+            0..0,
+            [
+                Span::styled(paused.clone(), theme::tone(Tone::Red)),
+                Span::styled(" · ", quiet),
+            ],
+        );
+    }
     // How the main checkout followed develop (#348): in the views that look at all of it.
     if let Some((text, is_warning)) = ctx.develop.filter(|_| !matches!(view, View::Worktree(_))) {
         let style = if *is_warning { theme::tone(Tone::Yellow) } else { quiet };
@@ -120,6 +132,11 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                     }
                 });
             }
+            pause_toggle(scene, model, ctx);
+        });
+    } else if let Some(paused) = &model.paused {
+        page.section(Section::new("PAUSED").sticky().plain(), |scene| {
+            look::say(scene, &format!("⏸ {paused}"), theme::tone(Tone::Red));
         });
     }
     let journal = &model.orchestrator.journal;
@@ -159,6 +176,32 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
             look::say(scene, error, theme::tone(Tone::Red));
         });
     }
+}
+
+/// The switch of every headless run (#397), under the chat: `⏸ pause
+/// agents`, or while paused why nothing runs and `▶ resume agents`.
+fn pause_toggle(scene: &mut crate::tui::scene::Scene<Act>, model: &OrchestrationModel, ctx: &Ctx) {
+    scene.block(Act::Pause, |scene| {
+        scene.pad_to(1);
+        scene.indent(2);
+        match &model.paused {
+            Some(paused) => {
+                if !super::actor::view::button(scene, ctx, "▶ resume agents", Tone::Yellow, Act::Pause) {
+                    look::flow(scene, &[look::span(format!("⏸ {paused}"), theme::tone(Tone::Red))]);
+                }
+            }
+            None => {
+                if !super::actor::view::button(scene, ctx, "⏸ pause agents", Tone::Cyan, Act::Pause) {
+                    look::flow(
+                        scene,
+                        &[look::dim(
+                            "no new run starts, the runs in flight finish, the lines wait",
+                        )],
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]

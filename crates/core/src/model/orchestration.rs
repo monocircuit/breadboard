@@ -105,6 +105,8 @@ pub struct OrchestrationLocal {
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
     pub spent: crate::spend::Spent,
+    /// The runs paused (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
 }
 
 /// What the writing side keeps between frames: the removals, starts and
@@ -240,6 +242,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The user paused every headless run (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
     /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
     pub ci_watch: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
@@ -1043,6 +1047,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        paused: local.paused.clone(),
         ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
         turn_records: Vec::new(),

@@ -6,7 +6,9 @@
 //! interactive claude (`~/.claude/sessions`, a live pid that isn't a run's)
 //! holds its queue. Runs start while memory allows (`runs::room_for`), in
 //! merge order, then by age. One engine per repo across daemons of other
-//! builds: `.claude/runs/engine.pid`.
+//! builds: `.claude/runs/engine.pid`. While the user paused them (#397,
+//! `breadboard runs pause`) none starts; a run a pause ended gives its
+//! lines back.
 
 use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
@@ -85,8 +87,8 @@ fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
     if queue.events.is_empty() {
         return Vec::new();
     }
-    // Past the daily limit the lines wait (#372); the overview says why.
-    if runs::held_now(main, now_ms()).is_some() {
+    // Paused (#397), or past the daily limit (#372): the lines wait; the overview says why.
+    if runs::paused_of(main).is_some() || runs::held_now(main, now_ms()).is_some() {
         return Vec::new();
     }
     let table: Table = read_or_default(&status_file(main));
@@ -241,6 +243,24 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         }
     }
     let code = child.wait().await.ok().and_then(|status| status.code());
+    // Ended by `pause --now` (#397): its lines come again after the resume, nothing lost.
+    if code != Some(0) && runs::paused_of(&main).is_some() {
+        let mut again = events.clone();
+        if let Some(first) = events.first() {
+            again.insert(
+                0,
+                Event {
+                    line: runs::ENDED_BY_PAUSE.into(),
+                    allowed: Vec::new(),
+                    ..first.clone()
+                },
+            );
+        }
+        let _ = change_queue(&main, |queue| {
+            again.append(&mut queue.events);
+            queue.events = again;
+        });
+    }
     let denials = asked_of(&dir, &name, &lines);
     let state = if denials.is_empty() { State::Idle } else { State::Asks };
     change_table(&main, &table, |read| {
@@ -268,9 +288,12 @@ fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
         .collect()
 }
 
-/// `breadboard runs [tell <dir> <line…> | continue]`: the status table of
-/// the repo's headless agents with what they spent today, a line queued for
-/// the agent of the worktree `dir`, or the daily limit lifted until midnight.
+/// `breadboard runs [tell <dir> <line…> | continue | pause [--now] [--ci] |
+/// resume]`: the status table of the repo's headless agents with what they
+/// spent today, a line queued for the agent of the worktree `dir`, the daily
+/// limit lifted until midnight, or every run paused (#397: the runs in
+/// flight let finish, or ended with `--now`; the CI queue off too with
+/// `--ci`) and resumed.
 pub fn cli(args: &[String]) -> ExitCode {
     let Ok(cwd) = std::env::current_dir() else {
         return ExitCode::FAILURE;
@@ -288,6 +311,10 @@ pub fn cli(args: &[String]) -> ExitCode {
             let now = now_ms();
             let today = breadboard_core::spend::today_of(&main, now);
             println!("today {}", today.total.text());
+            match runs::paused_now(&main) {
+                Some(text) => println!("{text} (breadboard runs resume)"),
+                None => println!("agents run (breadboard runs pause stops them)"),
+            }
             if let Some(why) = runs::held_now(&main, now) {
                 println!("{why}: no run starts (breadboard runs continue lifts it until midnight)");
             }
@@ -325,8 +352,48 @@ pub fn cli(args: &[String]) -> ExitCode {
             println!("the daily limit is lifted until midnight");
             ExitCode::SUCCESS
         }
+        Some("pause") if args[1..].iter().all(|arg| arg == "--now" || arg == "--ci") => {
+            let has = |flag: &str| args[1..].iter().any(|arg| arg == flag);
+            let paused = match runs::pause(&main, now_ms(), has("--ci")) {
+                Ok(paused) => paused,
+                Err(error) => {
+                    eprintln!("breadboard runs: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            if has("--now") {
+                let ended = runs::end_running(&main);
+                println!("{ended} runs ended: their lines wait for the resume");
+            }
+            if paused.ci {
+                println!("the CI queue is off (git config breadboard.ci push) until the resume");
+            }
+            println!(
+                "{}: no run starts until breadboard runs resume",
+                runs::paused_now(&main).unwrap_or_default()
+            );
+            ExitCode::SUCCESS
+        }
+        Some("resume") if args.len() == 1 => match runs::resume(&main) {
+            Ok(None) => {
+                println!("the agents weren't paused");
+                ExitCode::SUCCESS
+            }
+            Ok(Some(paused)) => {
+                crate::daemon::client::wake_runs(&main);
+                if paused.ci {
+                    println!("the CI queue is on again");
+                }
+                println!("the agents run again: the lines that waited start their runs");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("breadboard runs: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
-            eprintln!("usage: breadboard runs [tell <dir> <line…> | continue]");
+            eprintln!("usage: breadboard runs [tell <dir> <line…> | continue | pause [--now] [--ci] | resume]");
             ExitCode::from(2)
         }
     }
