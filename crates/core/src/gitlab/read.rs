@@ -175,7 +175,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
@@ -284,6 +284,7 @@ pub fn pipeline_of(value: &Value, web: &str) -> Option<Pipeline> {
         sha: str_at(value, "sha").map(String::from),
         reference: str_at(value, "ref").map(String::from),
         created_at: str_at(value, "createdAt").map(String::from),
+        started_at: str_at(value, "startedAt").map(String::from),
         updated_at: str_at(value, "updatedAt").map(String::from),
         finished_at: str_at(value, "finishedAt").map(String::from),
     })
@@ -322,7 +323,9 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
         is_draft: value.get("draft").and_then(Value::as_bool).unwrap_or(false),
         state: str_at(value, "state").unwrap_or_default().to_string(),
         merged_at: str_at(value, "mergedAt").map(String::from),
-        has_conflicts: value.get("conflicts").and_then(Value::as_bool).unwrap_or(false),
+        // GitLab's `conflict` is a conflict even where `conflicts` lags behind it (#416).
+        has_conflicts: value.get("conflicts").and_then(Value::as_bool).unwrap_or(false)
+            || str_at(value, "detailedMergeStatus").is_some_and(|status| status.eq_ignore_ascii_case("conflict")),
         merge_status: str_at(value, "detailedMergeStatus").map(str::to_lowercase),
         merge_check: str_at(value, "mergeStatusEnum").map(str::to_lowercase),
         sha: str_at(value, "diffHeadSha").map(String::from),

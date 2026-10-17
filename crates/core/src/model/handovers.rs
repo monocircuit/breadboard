@@ -38,6 +38,7 @@ pub fn refusal_of(pane: Option<Option<&str>>, share: Option<f64>, limit: f64) ->
     match status {
         "working" => return Some("it is working".into()),
         "blocked" => return Some("it waits for an answer".into()),
+        "limit" => return Some("its run stopped at the usage limit".into()),
         "idle" | "done" => {}
         other => return Some(format!("herdr can't tell what it does ({other})")),
     }

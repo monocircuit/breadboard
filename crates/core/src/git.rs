@@ -351,6 +351,21 @@ pub fn merge_base(dir: &Path) -> Option<String> {
     Some(out.out().to_string()).filter(|sha| out.is_ok && !sha.is_empty())
 }
 
+/// When the merge open in `dir` began (its MERGE_HEAD's time, ms), None
+/// without one (#396).
+pub fn merge_head_at(dir: &Path) -> Option<i64> {
+    let path = git(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD"],
+    );
+    if !path.is_ok {
+        return None;
+    }
+    let modified = std::fs::metadata(path.out()).and_then(|meta| meta.modified()).ok()?;
+    let ms = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis();
+    Some(ms as i64)
+}
+
 /// How much of a worktree's branch is on origin (change.mjs `pushStateOf`):
 /// from the refs git has, no fetch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

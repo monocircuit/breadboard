@@ -20,11 +20,12 @@ pub fn place_in(order: &[i64], number: Option<i64>) -> i64 {
 pub const FOLLOW_UPS: [&str; 5] = ["clean up", "pipeline", "end", "hand over", "start"];
 /// The kinds of ACTIONS by what blocks most: an agent that stands still, work
 /// only a worktree has, then the merges, then what only looks.
-const BLOCKS: [&str; 9] = [
+const BLOCKS: [&str; 10] = [
     "permission",
     "waits",
     "decide",
     "plan",
+    "half-merged",
     "push",
     "merge",
     "try",
@@ -94,6 +95,9 @@ pub enum Go {
     StartFresh(i64),
     /// Two clicks end the orchestration.
     End,
+    /// The claude open in the tab of the worktree's agent ended once it idles:
+    /// its lines run headless again (#386).
+    EndHeld(PathBuf),
 }
 
 /// An action as a row of ACTIONS, UP NEXT or NEXT (render-orchestration.mjs

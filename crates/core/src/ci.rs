@@ -23,6 +23,10 @@ pub const MODE_KEY: &str = "breadboard.ci";
 pub const QUEUE_STALE_MS: i64 = 60_000;
 /// Runner slots assumed when its config can't be read.
 pub const SLOTS_UNKNOWN: u32 = 2;
+/// How long a pipeline may run and still be preempted (#419): past it, it finishes.
+pub const PREEMPT_GRACE_MS: i64 = 2 * 60_000;
+/// How long an MR preempted once is never preempted again (#419).
+pub const PREEMPT_AGAIN_MS: i64 = 30 * 60_000;
 
 /// A pipeline still to finish.
 pub fn is_live(status: &str) -> bool {
@@ -168,6 +172,16 @@ pub struct Asked {
     /// The pipelines it cancelled itself, oldest first (#383): a head pipeline
     /// among them is no person's cancel.
     pub cancelled: Vec<i64>,
+    /// iid → the last preemption of its pipeline (#419), kept PREEMPT_AGAIN_MS.
+    pub preempts: BTreeMap<i64, Preemption>,
+}
+
+/// A pipeline cancelled to make room (#419): for which MR, and when (ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preemption {
+    pub by: i64,
+    pub at: i64,
 }
 
 impl Asked {
@@ -228,9 +242,18 @@ pub struct Bar {
     /// The commit `wt:check` passed at; None without a worktree here (its boxes say it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
+    /// What keeps it a draft though its boxes are ticked (#399): an open
+    /// try, a requested change. None: a full bar marks it ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holds: Option<String>,
 }
 
 impl Bar {
+    /// Every box ticked, at least one (#399): its MR is ready, whatever wt:check says.
+    pub fn is_boxes_full(&self) -> bool {
+        self.total > 0 && self.ticked >= self.total
+    }
+
     /// Every box ticked and checked: its pipeline may start.
     pub fn is_full(&self) -> bool {
         self.ticked >= self.total && self.is_checked
@@ -281,6 +304,8 @@ pub enum Place {
     /// A hard wait holds it (#392): `after !339`, `waits for !339`. No pipeline
     /// by itself before that MR is merged; a click starts one anyway.
     Held { why: String },
+    /// Its pipeline was cancelled to make room for `by` (#419): it starts first once a slot is free.
+    Preempted { by: i64 },
     /// No pipeline of its newest commit runs and none starts by itself (#383):
     /// why, in a few words (a person cancelled it, GitLab took none).
     Stopped { why: String },
@@ -289,7 +314,10 @@ pub enum Place {
 impl Place {
     /// Waiting for its pipeline: next or held.
     pub fn is_waiting(&self) -> bool {
-        matches!(self, Place::Next { .. } | Place::Boxes(_) | Place::Held { .. })
+        matches!(
+            self,
+            Place::Next { .. } | Place::Preempted { .. } | Place::Boxes(_) | Place::Held { .. }
+        )
     }
 
     /// `CI: running`, `CI: next (2nd)`, `CI: held, after !339`.
@@ -299,6 +327,7 @@ impl Place {
             Place::Pending => "CI: pending".into(),
             Place::Next { at: 1 } => "CI: next".into(),
             Place::Next { at } => format!("CI: next ({})", ordinal(*at)),
+            Place::Preempted { by } => format!("CI: preempted by !{by}, restarts next"),
             Place::Boxes(bar) if bar.ticked < bar.total => {
                 format!("CI: after the boxes ({}/{})", bar.ticked, bar.total)
             }
@@ -517,6 +546,14 @@ impl OpenMr {
     fn is_into_main(&self) -> bool {
         self.target == "main"
     }
+    /// A product's batch on its way into develop (#411): it runs the full set.
+    fn is_batch(&self) -> bool {
+        self.source.starts_with("batch/")
+    }
+    /// A task MR into a batch: the fast checks only (#412), a short pipeline.
+    fn is_into_batch(&self) -> bool {
+        self.target.starts_with("batch/")
+    }
 }
 
 /// How urgent an MR's pipeline is, lower first (#357's order).
@@ -526,6 +563,8 @@ pub enum Class {
     RunNow,
     /// A hotfix, anything into `main`.
     Hotfix,
+    /// A batch MR into develop (#412): every task in it waits for its pipeline.
+    Batch,
     /// Ready: in the merge order, then the others oldest first.
     Ready,
     /// Its last pipeline failed and it has a fix pushed.
@@ -550,6 +589,10 @@ pub struct Ranks {
     pub rescued: HashMap<i64, i64>,
     /// The pipelines the queue cancelled itself (#383): no person's cancel.
     pub cancelled: HashSet<i64>,
+    /// The last preemption of each MR's pipeline (`Asked::preempts`).
+    pub preempts: HashMap<i64, Preemption>,
+    /// Now (ms): how long a pipeline ran, how long ago an MR was preempted.
+    pub now: i64,
 }
 
 impl Ranks {
@@ -563,12 +606,20 @@ impl Ranks {
             ours: HashSet::new(),
             rescued: HashMap::new(),
             cancelled: HashSet::new(),
+            preempts: HashMap::new(),
+            now: 0,
         }
     }
 
-    /// An MR of an orchestration whose order the queue reads: the only ones it touches (#369).
-    pub fn is_member(&self, iid: i64) -> bool {
-        self.bars.contains_key(&iid) || self.place_in_order(iid).is_some()
+    /// An MR of an orchestration whose order the queue reads, or a batch
+    /// (breadboard's own branch, #411): the only ones it touches (#369).
+    pub fn is_member(&self, mr: &OpenMr) -> bool {
+        self.bars.contains_key(&mr.iid) || self.place_in_order(mr.iid).is_some() || mr.is_batch()
+    }
+
+    /// Its newest commit's pipeline was preempted and waits to start again (#419).
+    fn was_preempted(&self, mr: &OpenMr) -> bool {
+        mr.sha.is_some() && self.preempted.get(&mr.iid) == mr.sha.as_ref()
     }
 
     /// Where `iid` stands in the merge orders: the same place in two orchestrations ranks the same.
@@ -581,7 +632,8 @@ impl Ranks {
 }
 
 /// Its class; None while a hard wait holds it, its bar isn't full at its
-/// newest commit, or it has no bar (no click asked for it).
+/// newest commit, or it has no bar (no click asked for it). A batch MR
+/// without a bar has its pipeline wanted: it is opened to ship (#414).
 pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
     if ranks.run_now.contains_key(&mr.iid) {
         return Some(Class::RunNow);
@@ -591,7 +643,11 @@ pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
         return None;
     }
     let bar = ranks.bars.get(&mr.iid);
-    if bar.is_none_or(|bar| !bar.is_full_at(mr.sha.as_deref())) {
+    let is_full = match bar {
+        Some(bar) => bar.is_full_at(mr.sha.as_deref()),
+        None => mr.is_batch(),
+    };
+    if !is_full {
         return None;
     }
     let is_fix = mr.pipeline_status() == Some("failed") && !mr.is_head_current();
@@ -601,6 +657,8 @@ pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
             || mr.labels.iter().any(|label| label.eq_ignore_ascii_case("hotfix"))
         {
             Class::Hotfix
+        } else if mr.is_batch() {
+            Class::Batch
         } else if is_fix {
             Class::Fix
         } else {
@@ -622,14 +680,54 @@ pub struct Start {
     pub after: Option<i64>,
 }
 
+/// A live pipeline to cancel for the MR ahead (#419: a click's or a hotfix's).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preempt {
+    pub iid: i64,
+    pub pipeline: i64,
+    pub sha: String,
+    /// The MR it makes room for.
+    pub by: i64,
+}
+
 /// What the scheduler does now and what the rows say.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Decision {
     pub places: BTreeMap<i64, Place>,
     pub start: Option<Start>,
-    /// A live pipeline to cancel for the MR ahead, while the runner is full:
-    /// (iid, pipeline, sha), the lowest-ranked of those behind it.
-    pub preempt: Option<(i64, i64, String)>,
+    /// A live pipeline to cancel while the runner is full: the lowest-ranked
+    /// of those behind the first MR waiting.
+    pub preempt: Option<Preempt>,
+}
+
+/// Whether a live pipeline may still be preempted (#419): waiting for the
+/// runner, or running for less than PREEMPT_GRACE_MS. One that runs since
+/// a time not known is left to finish.
+fn is_young(pipeline: &Pipeline, now: i64) -> bool {
+    if is_waiting(&pipeline.status) {
+        return true;
+    }
+    pipeline
+        .started_at
+        .as_deref()
+        .and_then(crate::time::parse_iso)
+        .is_some_and(|started| now - started < PREEMPT_GRACE_MS)
+}
+
+/// Whether a pipeline's jobs have gone past its first stage (#419, the
+/// build): a job of a later stage runs or ended. `jobs`: (id, stage, status)
+/// as GitLab lists them; the first stage is the one of its first job.
+pub fn is_past_first_stage(jobs: &[(i64, String, String)]) -> bool {
+    let Some((_, first, _)) = jobs.iter().min_by_key(|(id, _, _)| *id) else {
+        return false;
+    };
+    jobs.iter().any(|(_, stage, status)| {
+        stage != first
+            && !matches!(
+                status.as_str(),
+                "created" | "pending" | "manual" | "skipped" | "scheduled"
+            )
+    })
 }
 
 /// Whether the head pipeline of `mr` answers for its newest commit: one of
@@ -666,7 +764,7 @@ fn wants_pipeline(mr: &OpenMr, ranks: &Ranks, started: &HashMap<i64, (String, i6
         return ranks.rescued.get(&mr.iid) != Some(&blocking);
     }
     let clicked = ranks.run_now.get(&mr.iid).copied();
-    let was_preempted = ranks.preempted.get(&mr.iid) == Some(sha);
+    let was_preempted = ranks.was_preempted(mr);
     if let Some((asked, at)) = started.get(&mr.iid)
         && asked == sha
         && !clicked.is_some_and(|clicked| clicked > *at)
@@ -712,7 +810,7 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
             continue;
         };
         is_runner_full |= is_waiting(status);
-        if mr.is_head_current() && ranks.is_member(mr.iid) {
+        if mr.is_head_current() && ranks.is_member(mr) {
             let place = if is_waiting(status) {
                 Place::Pending
             } else {
@@ -723,7 +821,7 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     }
     let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
     // An MR of no orchestration is never touched: no place, no start, no cancel (#369).
-    let members = mrs.iter().filter(|mr| ranks.is_member(mr.iid));
+    let members = mrs.iter().filter(|mr| ranks.is_member(mr));
     for mr in members {
         if !wants_pipeline(mr, ranks, started) {
             let is_live_here = mr.is_head_current() && mr.pipeline_status().is_some_and(is_live);
@@ -747,7 +845,9 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
         match class {
             // The latest click first.
             Class::RunNow => (0, -ranks.run_now.get(&mr.iid).copied().unwrap_or(0), mr.iid),
-            Class::Ready | Class::Fix => (ranks.place_in_order(mr.iid).unwrap_or(usize::MAX), 0, mr.iid),
+            // One preempted gets its slot back first (#419), then the merge order.
+            Class::Ready | Class::Fix if ranks.was_preempted(mr) => (0, 0, mr.iid),
+            Class::Ready | Class::Fix => (ranks.place_in_order(mr.iid).map_or(usize::MAX, |at| at + 1), 0, mr.iid),
             _ => (0, 0, mr.iid),
         }
     }
@@ -765,24 +865,48 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     };
     waiting.sort_by_key(|a| (a.0, a.1));
     for (at, (_, _, mr)) in waiting.iter().enumerate() {
-        places.insert(mr.iid, Place::Next { at: at + 1 });
+        let place = match ranks.preempts.get(&mr.iid).filter(|_| ranks.was_preempted(mr)) {
+            Some(preemption) => Place::Preempted { by: preemption.by },
+            None => Place::Next { at: at + 1 },
+        };
+        places.insert(mr.iid, place);
     }
     let is_full = is_runner_full || slots.free() == 0;
-    // The runner full and the first MR waiting: the live pipeline ranked lowest
-    // behind it makes room, one a look, only one the queue created itself
-    // for an orchestration's MR, never one into `main` or of a branch.
-    let preempt = waiting.first().filter(|_| is_full).and_then(|(class, key, first)| {
-        let first_rank = (Some(*class), *key);
-        mrs.iter()
-            .filter(|mr| mr.iid != first.iid && !mr.is_into_main() && ranks.is_member(mr.iid))
-            .filter_map(|mr| {
-                let pipeline = mr.pipeline.as_ref()?;
-                (is_live(&pipeline.status) && is_ours(pipeline, ranks)).then(|| (rank_of(mr), mr, pipeline))
-            })
-            .filter(|(rank, _, _)| worse(rank, &first_rank))
-            .reduce(|a, b| if worse(&b.0, &a.0) { b } else { a })
-            .map(|(_, mr, pipeline)| (mr.iid, pipeline.id, pipeline.sha.clone().unwrap_or_default()))
-    });
+    // The runner full and a click or a hotfix first (#419: a mere rank in the
+    // merge order waits): the live pipeline ranked lowest behind it makes
+    // room, one a look, only one the queue created itself for an
+    // orchestration's MR, never one into `main` or of a branch, nor one
+    // that runs past PREEMPT_GRACE_MS or of an MR preempted within PREEMPT_AGAIN_MS.
+    // Nor a task's into a batch: its fast checks free their slots within
+    // minutes, cancelled they start over (#412).
+    let is_urgent = |class: &Class| matches!(class, Class::RunNow | Class::Hotfix);
+    let preempt = waiting
+        .first()
+        .filter(|(class, _, _)| is_full && is_urgent(class))
+        .and_then(|(class, key, first)| {
+            let first_rank = (Some(*class), *key);
+            mrs.iter()
+                .filter(|mr| mr.iid != first.iid && !mr.is_into_main() && !mr.is_into_batch() && ranks.is_member(mr))
+                .filter(|mr| {
+                    ranks
+                        .preempts
+                        .get(&mr.iid)
+                        .is_none_or(|preemption| ranks.now - preemption.at >= PREEMPT_AGAIN_MS)
+                })
+                .filter_map(|mr| {
+                    let pipeline = mr.pipeline.as_ref()?;
+                    (is_live(&pipeline.status) && is_ours(pipeline, ranks) && is_young(pipeline, ranks.now))
+                        .then(|| (rank_of(mr), mr, pipeline))
+                })
+                .filter(|(rank, _, _)| worse(rank, &first_rank))
+                .reduce(|a, b| if worse(&b.0, &a.0) { b } else { a })
+                .map(|(_, mr, pipeline)| Preempt {
+                    iid: mr.iid,
+                    pipeline: pipeline.id,
+                    sha: pipeline.sha.clone().unwrap_or_default(),
+                    by: first.iid,
+                })
+        });
     let start = waiting.first().filter(|_| !is_full).map(|(_, _, mr)| {
         let cancel = mr
             .pipeline
@@ -848,7 +972,7 @@ mod tests {
             ticked: 1,
             total: 1,
             is_checked: true,
-            sha: None,
+            ..Default::default()
         };
         Ranks {
             orders: vec![iids.to_vec()],
@@ -928,7 +1052,7 @@ mod tests {
                 ticked: 2,
                 total: 5,
                 is_checked: true,
-                sha: None,
+                ..Default::default()
             },
         );
         ranks.run_now.insert(6, NOW - 1000);
@@ -1009,7 +1133,7 @@ mod tests {
             ticked,
             total,
             is_checked,
-            sha: None,
+            ..Default::default()
         };
         ranks.bars.insert(349, bar(0, 11, true));
         ranks.bars.insert(351, bar(8, 8, false));
@@ -1027,36 +1151,223 @@ mod tests {
         assert_eq!(decide_now(&mrs, &ranks, slots(4, 1)).start.unwrap().iid, 349);
     }
 
+    /// A running pipeline of an MR, started `ago` ms before NOW.
+    fn running(id: i64, sha: &str, iid: i64, ago: i64) -> Option<Pipeline> {
+        let mut pipeline = pipeline(id, "running", sha, iid)?;
+        pipeline.started_at = Some(crate::time::to_iso(NOW - ago));
+        Some(pipeline)
+    }
+    fn at_now(mut ranks: Ranks) -> Ranks {
+        ranks.now = NOW;
+        ranks
+    }
+
     #[test]
-    fn makes_room_for_the_mr_ahead_by_cancelling_the_lowest_one_behind_it() {
-        // The runner full with 342 and 347, both behind 339 in the order: 347 goes, the last.
+    fn makes_room_for_a_click_by_cancelling_the_lowest_one_behind_it() {
+        // The runner full with 342 and 347, both behind 339, which a click moved up: 347 goes, the last.
         let mrs = [
             mr(339, "a", None),
-            mr(342, "b", pipeline(42, "running", "b", 342)),
-            mr(347, "c", pipeline(47, "running", "c", 347)),
+            mr(342, "b", running(42, "b", 342, 30_000)),
+            mr(347, "c", running(47, "c", 347, 30_000)),
         ];
-        let mut ranks = order(&[339, 342, 347]);
+        let mut ranks = at_now(order(&[339, 342, 347]));
+        ranks.run_now.insert(339, NOW - 1000);
         // Only a pipeline the queue created is cancelled: 47 one a push started, 342's goes.
         ranks.ours.insert(42);
+        let preempt = |iid, pipeline: i64, sha: &str| Preempt {
+            iid,
+            pipeline,
+            sha: sha.into(),
+            by: 339,
+        };
         assert_eq!(
             decide_now(&mrs, &ranks, slots(2, 2)).preempt,
-            Some((342, 42, "b".into()))
+            Some(preempt(342, 42, "b"))
         );
         ranks.ours.insert(47);
         let decision = decide_now(&mrs, &ranks, slots(2, 2));
         assert_eq!(decision.start, None);
-        assert_eq!(decision.preempt, Some((347, 47, "c".into())));
-        // Requeued: once the slot is free, 347 waits behind 339 again.
-        ranks.preempted.insert(347, "c".into());
+        assert_eq!(decision.preempt, Some(preempt(347, 47, "c")));
+        // A hotfix makes room too.
+        let mut hotfix = mrs.clone();
+        hotfix[0].source = "hotfix/339-x".into();
+        ranks.run_now.clear();
+        assert_eq!(
+            decide_now(&hotfix, &ranks, slots(2, 2)).preempt,
+            Some(preempt(347, 47, "c"))
+        );
+    }
+
+    #[test]
+    fn never_preempts_for_a_mere_rank_in_the_merge_order() {
+        // #419, !381: cancelled twice for !371, !373, !375 as the order shifted.
         let mrs = [
-            mr(339, "a", pipeline(39, "running", "a", 339)),
-            mr(342, "b", pipeline(42, "running", "b", 342)),
+            mr(371, "a", None),
+            mr(381, "b", running(81, "b", 381, 30_000)),
+            mr(382, "c", pipeline(82, "pending", "c", 382)),
+        ];
+        let mut ranks = at_now(order(&[371, 381, 382]));
+        ranks.ours.extend([81, 82]);
+        let decision = decide_now(&mrs, &ranks, slots(2, 2));
+        assert_eq!((decision.start, decision.preempt), (None, None));
+        assert_eq!(decision.places[&371], Place::Next { at: 1 });
+        assert_eq!(decision.places[&381], Place::Running);
+    }
+
+    #[test]
+    fn lets_a_pipeline_running_longer_than_two_minutes_finish() {
+        let mrs = [
+            mr(1, "a", None),
+            mr(2, "b", running(20, "b", 2, PREEMPT_GRACE_MS + 1000)),
+        ];
+        let mut ranks = at_now(order(&[1, 2]));
+        ranks.ours.insert(20);
+        ranks.run_now.insert(1, NOW - 1000);
+        assert_eq!(decide_now(&mrs, &ranks, slots(1, 1)).preempt, None);
+        // One running since a time not known finishes too.
+        let mut unknown = mrs.clone();
+        unknown[1].pipeline.as_mut().unwrap().started_at = None;
+        assert_eq!(decide_now(&unknown, &ranks, slots(1, 1)).preempt, None);
+        // A young one makes room.
+        let young = [mr(1, "a", None), mr(2, "b", running(20, "b", 2, 60_000))];
+        assert_eq!(decide_now(&young, &ranks, slots(1, 1)).preempt.map(|p| p.iid), Some(2));
+    }
+
+    #[test]
+    fn tells_a_pipeline_past_its_first_stage() {
+        let job = |id, stage: &str, status: &str| (id, stage.to_string(), status.to_string());
+        assert!(!is_past_first_stage(&[]));
+        assert!(!is_past_first_stage(&[
+            job(1, "check", "running"),
+            job(2, "build", "created")
+        ]));
+        assert!(is_past_first_stage(&[
+            job(1, "check", "success"),
+            job(2, "build", "running")
+        ]));
+        assert!(is_past_first_stage(&[
+            job(2, "build", "failed"),
+            job(1, "check", "success")
+        ]));
+    }
+
+    #[test]
+    fn gives_a_preempted_mr_its_slot_back_first_and_never_preempts_it_twice_in_30_minutes() {
+        let mut ranks = at_now(order(&[339, 342, 347]));
+        ranks.preempted.insert(347, "c".into());
+        ranks.preempts.insert(
+            347,
+            Preemption {
+                by: 339,
+                at: NOW - 60_000,
+            },
+        );
+        ranks.ours.extend([39, 42, 47]);
+        // A slot free again: 347 starts before 342, which ranks ahead of it in the order.
+        let mrs = [
+            mr(339, "a", running(39, "a", 339, 60_000)),
+            mr(342, "b", None),
             mr(347, "c", pipeline(47, "canceled", "c", 347)),
         ];
-        let decision = decide_now(&mrs, &ranks, slots(2, 2));
-        assert_eq!(decision.places[&347], Place::Next { at: 1 });
-        // 339 and 342 both ahead of it: nothing to cancel for 347.
-        assert_eq!(decision.preempt, None);
+        let decision = decide_now(&mrs, &ranks, slots(2, 1));
+        assert_eq!(decision.start.map(|start| start.iid), Some(347));
+        assert_eq!(decision.places[&347].text(), "CI: preempted by !339, restarts next");
+        assert_eq!(decision.places[&342], Place::Next { at: 2 });
+        // Running again, a click on 342: 347 is not preempted a second time within 30 min.
+        ranks.preempted.clear();
+        ranks.run_now.insert(342, NOW - 1000);
+        let mrs = [
+            mr(339, "a", running(39, "a", 339, PREEMPT_GRACE_MS)),
+            mr(342, "b", None),
+            mr(347, "c", running(48, "c", 347, 10_000)),
+        ];
+        ranks.ours.insert(48);
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 2)).preempt, None);
+        // 30 minutes on, it may be again.
+        ranks.preempts.insert(
+            347,
+            Preemption {
+                by: 339,
+                at: NOW - PREEMPT_AGAIN_MS,
+            },
+        );
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 2)).preempt.map(|p| p.iid), Some(347));
+    }
+
+    /// A task MR into breadboard's batch, and the batch MR into develop.
+    fn into_batch(iid: i64, sha: &str, pipeline: Option<Pipeline>) -> OpenMr {
+        OpenMr {
+            target: "batch/breadboard-1".into(),
+            ..mr(iid, sha, pipeline)
+        }
+    }
+    fn batch(iid: i64, sha: &str, pipeline: Option<Pipeline>) -> OpenMr {
+        OpenMr {
+            source: "batch/breadboard-1".into(),
+            ..mr(iid, sha, pipeline)
+        }
+    }
+
+    #[test]
+    fn ranks_the_batch_mr_ahead_of_the_tasks_behind_a_hotfix() {
+        // #412: the batch MR is in no order and has no bar, it was opened to ship.
+        let mut hotfix = mr(5, "h", None);
+        hotfix.labels = vec!["hotfix".into()];
+        let mrs = [into_batch(1, "a", None), mr(2, "b", None), batch(9, "z", None), hotfix];
+        let decision = decide_now(&mrs, &order(&[1, 2, 5]), slots(1, 0));
+        let at = |iid: i64| match decision.places[&iid] {
+            Place::Next { at } => at,
+            _ => usize::MAX,
+        };
+        assert_eq!([at(5), at(9), at(1), at(2)], [1, 2, 3, 4]);
+        // Its boxes open (an overview publishes its bar): it waits for them like any.
+        let mut ranks = order(&[1, 2, 5]);
+        ranks.bars.insert(
+            9,
+            Bar {
+                ticked: 0,
+                total: 1,
+                is_checked: true,
+                ..Default::default()
+            },
+        );
+        let decision = decide_now(&mrs, &ranks, slots(1, 0));
+        assert!(
+            matches!(decision.places[&9], Place::Boxes(_)),
+            "{:?}",
+            decision.places[&9]
+        );
+    }
+
+    #[test]
+    fn never_preempts_a_task_pipeline_into_a_batch() {
+        // The runner full with 1's fast checks into the batch and 2's full set
+        // into develop, a hotfix waits: 2 makes room, 1 never.
+        let mut hotfix = mr(5, "h", None);
+        hotfix.labels = vec!["hotfix".into()];
+        let mrs = [
+            hotfix.clone(),
+            into_batch(1, "a", running(10, "a", 1, 30_000)),
+            mr(2, "b", running(20, "b", 2, 30_000)),
+        ];
+        let mut ranks = at_now(order(&[1, 2, 5]));
+        ranks.ours.extend([10, 20]);
+        let preempt = decide_now(&mrs, &ranks, slots(2, 2)).preempt;
+        assert_eq!(preempt.map(|preempt| preempt.iid), Some(2));
+        // Only task pipelines run: the hotfix waits for their few minutes.
+        let mrs = [
+            hotfix,
+            into_batch(1, "a", running(10, "a", 1, 30_000)),
+            into_batch(2, "b", running(20, "b", 2, 30_000)),
+        ];
+        assert_eq!(decide_now(&mrs, &ranks, slots(2, 2)).preempt, None);
+        // A batch MR first is no click or hotfix (#419): it waits for a slot.
+        let mrs = [batch(9, "z", None), mr(2, "b", running(20, "b", 2, 30_000))];
+        let decision = decide_now(&mrs, &ranks, slots(1, 1));
+        assert_eq!(
+            (decision.places[&9].clone(), decision.preempt),
+            (Place::Next { at: 1 }, None)
+        );
     }
 
     #[test]
@@ -1352,6 +1663,7 @@ mod tests {
                     total: 2,
                     is_checked: true,
                     sha: Some("abc".into()),
+                    ..Default::default()
                 },
             )]),
             held: BTreeMap::from([(1, "after !3".to_string())]),

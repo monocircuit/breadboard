@@ -5,6 +5,7 @@
 //! conflicts and failed pipelines, as data: the writing side sends them.
 
 use super::change::{is_change_open, unpushed_action_of};
+use super::half_merged::half_merged_action_of;
 use super::merge::checks_of;
 use super::order::{Go, Item, Target};
 use super::resolve::is_conflict_settled;
@@ -154,9 +155,10 @@ pub fn conflicts_of(issues: &[Entry], remote: &Remote) -> Vec<Tell> {
                 return Some(Tell::Send {
                     dir: tree.dir.clone(),
                     line: format!(
-                        "[overview] !{} has conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target})",
+                        "[overview] !{} has conflicts with {target}: merge {target} in with {run} wt:merge-base --resolve, resolve the conflicts, git add, git commit --no-edit, {run} wt:check and push in this run",
                         mr.iid,
-                        target = mr.target()
+                        target = mr.target(),
+                        run = crate::config::run_word()
                     ),
                     key,
                     iid: mr.iid,
@@ -209,8 +211,10 @@ pub struct AutoFacts<'a> {
 /// - `merge`: ready and green, every check done, GitLab says mergeable; a ready draft too;
 /// - `pipeline`: the pipeline of the open MR failed and its line didn't get in yet;
 /// - `push`: commits sit unpushed for long;
+/// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
-/// - `waits`: the agent asks something or stopped on a question.
+/// - `waits`: the agent asks something or stopped on a question;
+/// - `held`: a claude open in its tab holds its lines past ten minutes (#386).
 pub fn auto_actions_of(
     issues: &[Entry],
     remote: Option<&Remote>,
@@ -350,6 +354,29 @@ pub fn auto_actions_of(
                 go,
             ));
         }
+        let is_running = agent.is_some_and(|agent| agent.status.as_deref() == Some("working"));
+        if let Some(tree) = tree
+            && let Some(half) = half_merged_action_of(&issue.branch, tree, is_running, facts.now)
+        {
+            let focus = Go::FocusAgent(tree.dir.clone());
+            let go = if half.is_sent {
+                focus
+            } else {
+                Go::Send {
+                    dir: tree.dir.clone(),
+                    key: half.key.clone(),
+                    line: half.line.clone(),
+                    fallback: Box::new(focus),
+                }
+            };
+            actions.push(base(
+                "half-merged",
+                format!("half-merged:{}", issue.branch),
+                half.text,
+                Some(&half.at),
+                go,
+            ));
+        }
         if let Some(mr) = mr.filter(|mr| mr.is_merged()) {
             let merged_at = mr.merged_at.as_deref().and_then(crate::time::parse_iso).map(to_iso);
             // The automatic one does the rest: a row only for one that failed.
@@ -393,6 +420,20 @@ pub fn auto_actions_of(
                     },
                 ));
             }
+        }
+        // A claude open in its tab holds its lines past ten minutes (#386), one
+        // herdr may have resumed by itself after a restart: a click ends it once it idles.
+        if let (Some(agent), Some(tree)) = (agent, tree)
+            && agent.status.as_deref() == Some(crate::runs::HELD)
+        {
+            actions.push(base(
+                "held",
+                format!("held:{}", issue.branch),
+                "an open claude in its tab holds its lines: a click ends it once it is idle, they run headless again"
+                    .into(),
+                None,
+                Go::EndHeld(tree.dir.clone()),
+            ));
         }
         // A headless agent at a would-be question has its `permission` action
         // (#360): that is what it waits for, no `waits` beside it.
@@ -648,6 +689,23 @@ mod tests {
     }
 
     #[test]
+    fn flags_a_worktree_half_merged_for_long_unless_its_agent_runs() {
+        let mut half = issue();
+        half.tree.as_mut().unwrap().merge_head_at = Some(NOW - 11 * 60_000);
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let found = kinds_with(&[half.clone()], &Remote::default(), &agents("idle"), &facts);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, "half-merged");
+        assert!(found[0].1.starts_with("half-merged since "));
+        assert!(kinds_with(&[half.clone()], &Remote::default(), &agents("working"), &facts).is_empty());
+        half.tree.as_mut().unwrap().merge_head_at = Some(NOW - 60_000);
+        assert!(kinds_with(&[half], &Remote::default(), &agents("idle"), &facts).is_empty());
+    }
+
+    #[test]
     fn names_the_failed_job_and_why_its_line_didnt_get_in() {
         let failed = Mr {
             pipeline: Some(Pipeline {
@@ -807,6 +865,19 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_holding_its_lines_has_a_row_that_ends_it() {
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let items = auto_actions_of(&[issue()], Some(&Remote::default()), &agents(crate::runs::HELD), &facts);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].kind, "held");
+        assert_eq!(items[0].go, Go::EndHeld("/w/7".into()));
+        assert!(items[0].text.contains("ends it once it is idle"));
+    }
+
+    #[test]
     fn finds_what_is_new_since_the_last_read() {
         let items = [
             Item {
@@ -855,13 +926,19 @@ mod tests {
     #[test]
     fn tells_the_agent_of_an_mr_with_conflicts_once_and_forgets_it_after() {
         let (entry, gitlab) = conflicted(true);
-        assert_eq!(conflicts_of(std::slice::from_ref(&entry), &gitlab), [Tell::Send {
-            dir: "/w/a".into(),
-            key: "conflicts:221".into(),
-            line: "[overview] !221 has conflicts with develop: merge develop in (git fetch origin, git merge origin/develop)".into(),
-            iid: 221,
-            id: None,
-        }]);
+        assert_eq!(
+            conflicts_of(std::slice::from_ref(&entry), &gitlab),
+            [Tell::Send {
+                dir: "/w/a".into(),
+                key: "conflicts:221".into(),
+                line: format!(
+                    "[overview] !221 has conflicts with develop: merge develop in with {run} wt:merge-base --resolve, resolve the conflicts, git add, git commit --no-edit, {run} wt:check and push in this run",
+                    run = crate::config::run_word()
+                ),
+                iid: 221,
+                id: None,
+            }]
+        );
         let mut told = entry.clone();
         told.tree.as_mut().unwrap().sent = ["conflicts:221".to_string()].into();
         assert!(conflicts_of(std::slice::from_ref(&told), &gitlab).is_empty());

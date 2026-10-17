@@ -31,6 +31,7 @@ const COMMANDS: [&[&str]; 7] = [
         "wt:wait",
         "wt:journal",
         "wt:epic",
+        "wt:merge-base",
     ],
     &["wt:prune", "wt:remove", "wt:herdr", "wt:snapshot"],
     &["stack:up", "stack:down", "stack:reset", "stack:ps"],
@@ -122,6 +123,8 @@ mod tests {
         assert_eq!(meant("action"), Some("wt:action"));
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
-        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic\n"));
+        assert!(
+            usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic  wt:merge-base\n")
+        );
     }
 }

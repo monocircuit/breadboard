@@ -495,6 +495,7 @@ pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit
         "working" => return Some("it is working".into()),
         "blocked" => return Some("it waits for an answer".into()),
         "queued" => return Some("lines wait for its next run".into()),
+        "limit" => return Some("its run stopped at the usage limit".into()),
         "idle" | "done" => {}
         other => return Some(format!("herdr can't tell what it does ({other})")),
     }

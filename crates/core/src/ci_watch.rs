@@ -2,8 +2,8 @@
 //! finished jobs (`.claude/ci/jobs.json`, a rolling history per job name)
 //! and what it flags in them (`.claude/ci/watch.json`): a job that is the
 //! critical path of most of its pipelines, one whose median grows, one
-//! running far past its median now (hung), one that mostly waits (idle, from
-//! the local runner's CPU samples). Pure: the daemon reads GitLab and docker,
+//! running far past its median now whose log stopped growing (hung, #398),
+//! one that mostly waits (idle, from the local runner's CPU samples). Pure: the daemon reads GitLab and docker,
 //! the overview reads the report.
 
 use crate::ci::dir_of;
@@ -158,6 +158,16 @@ impl Samples {
     }
 }
 
+/// A running job's log as the watcher last read it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Trace {
+    /// Its length in bytes.
+    pub len: usize,
+    /// When it last grew, or was first read (ms).
+    pub grew: i64,
+}
+
 /// What the watcher keeps between its ticks and restarts.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -167,6 +177,8 @@ pub struct History {
     pub seen: BTreeMap<i64, String>,
     /// Running jobs' CPU samples by job id.
     pub samples: BTreeMap<i64, Samples>,
+    /// The logs of running jobs past their median, by job id.
+    pub traces: BTreeMap<i64, Trace>,
     /// The flags posted as actions (`slow:<job>`, `hung:<id>`): each
     /// orchestration's record and the action's id in it.
     pub posted: BTreeMap<String, Vec<(String, i64)>>,
@@ -190,6 +202,16 @@ impl History {
                 None => self.runs.push(run),
             }
         }
+    }
+
+    /// A running job's log is `len` long now: the seconds since it last
+    /// grew. The first read counts as growth, there is nothing to compare with.
+    pub fn progress(&mut self, id: i64, len: usize, now: i64) -> f64 {
+        let trace = self.traces.entry(id).or_insert(Trace { len, grew: now });
+        if trace.len != len {
+            *trace = Trace { len, grew: now };
+        }
+        (now - trace.grew).max(0) as f64 / 1000.0
     }
 
     /// What is older than `days` goes, and pipelines past SEEN_KEPT.
@@ -245,7 +267,7 @@ pub struct Flag {
     pub why: Vec<Why>,
 }
 
-/// A job running far past its median.
+/// A job running far past its median, its log not growing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hung {
@@ -256,6 +278,10 @@ pub struct Hung {
     pub elapsed: f64,
     pub median: f64,
     pub url: Option<String>,
+    /// Seconds its log hasn't grown.
+    pub quiet: f64,
+    /// The local runner's load while it is busy, when the job runs there.
+    pub load: Option<f64>,
 }
 
 /// What the watcher found, for the overview.
@@ -390,8 +416,9 @@ pub fn flags_of(runs: &[Run], watch: &CiWatch, now: i64) -> Vec<Flag> {
     flags
 }
 
-/// The running jobs past `hang_factor` times their median.
-pub fn hung_of(running: &[Running], runs: &[Run], watch: &CiWatch) -> Vec<Hung> {
+/// The running jobs past `hang_factor` times their median: hung once their
+/// log stays quiet (`is_hung`).
+pub fn overdue_of(running: &[Running], runs: &[Run], watch: &CiWatch) -> Vec<Hung> {
     running
         .iter()
         .filter_map(|job| {
@@ -407,6 +434,7 @@ pub fn hung_of(running: &[Running], runs: &[Run], watch: &CiWatch) -> Vec<Hung> 
                 elapsed: job.elapsed,
                 median,
                 url: job.url.clone(),
+                ..Hung::default()
             })
         })
         .collect()
@@ -444,16 +472,30 @@ impl Flag {
 }
 
 impl Hung {
-    /// `check:x of !353 runs 25:10, 2.4× its median 10:38`.
+    /// Whether its log stayed quiet long enough: one that still writes is slow, not hung.
+    pub fn is_hung(&self, watch: &CiWatch) -> bool {
+        self.quiet >= watch.hang_quiet_seconds
+    }
+
+    /// `check:x of !353 runs 25:10, 2.4× its median 10:38, no new log for 1:10`.
     pub fn line(&self) -> String {
         let of = self.mr.map(|mr| format!(" of !{mr}")).unwrap_or_default();
         format!(
-            "{}{of} runs {}, {:.1}× its median {}",
+            "{}{of} runs {}, {:.1}× its median {}, no new log for {}",
             self.job,
             minutes(self.elapsed),
             self.elapsed / self.median.max(1.0),
-            minutes(self.median)
+            minutes(self.median),
+            minutes(self.quiet)
         )
+    }
+
+    /// What it may be: `hung?`, or `slow: runner at load 24` on a busy local runner.
+    pub fn verdict(&self) -> String {
+        match self.load {
+            Some(load) => format!("slow: runner at load {load:.0}"),
+            None => "hung?".into(),
+        }
     }
 
     pub fn key(&self) -> String {
@@ -614,19 +656,37 @@ mod tests {
             elapsed,
             url: None,
         };
-        assert!(hung_of(&[running(1200.0)], &runs, &watch).is_empty());
-        let hung = hung_of(&[running(1500.0)], &runs, &watch);
+        assert!(overdue_of(&[running(1200.0)], &runs, &watch).is_empty());
+        let mut hung = overdue_of(&[running(1500.0)], &runs, &watch);
         assert_eq!(hung.len(), 1);
+        // Past its median but its log just read: not hung yet.
+        assert!(!hung[0].is_hung(&watch));
+        hung[0].quiet = 70.0;
+        assert!(hung[0].is_hung(&watch));
         assert_eq!(
             hung[0].line(),
-            "check:gauntlet of !353 runs 25:00, 2.4× its median 10:38"
+            "check:gauntlet of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10"
         );
+        assert_eq!(hung[0].verdict(), "hung?");
+        hung[0].load = Some(23.6);
+        assert_eq!(hung[0].verdict(), "slow: runner at load 24");
         // A job without enough history: nothing to compare with.
         let new = Running {
             name: "check:new".into(),
             ..running(5000.0)
         };
-        assert!(hung_of(&[new], &runs, &watch).is_empty());
+        assert!(overdue_of(&[new], &runs, &watch).is_empty());
+    }
+
+    #[test]
+    fn a_log_that_grows_is_progress() {
+        let mut history = History::default();
+        // The first read: nothing to compare with, it counts as growth.
+        assert_eq!(history.progress(7, 100, NOW), 0.0);
+        assert_eq!(history.progress(7, 100, NOW + 30_000), 30.0);
+        // New output: quiet again.
+        assert_eq!(history.progress(7, 180, NOW + 60_000), 0.0);
+        assert_eq!(history.progress(7, 180, NOW + 130_000), 70.0);
     }
 
     #[test]

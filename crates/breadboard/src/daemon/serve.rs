@@ -83,6 +83,13 @@ impl Drop for Open {
 /// first; the overview that starts it waits only until it listens (exit 0)
 /// or can't (1: the overview reads by itself at once).
 pub fn main(args: &[String]) -> ExitCode {
+    // No pane's (#386): a daemon started from a pane, or one that execs its
+    // update (`--foreground`) with the environment it had, would hand the
+    // pane to every `claude -p` it runs, and herdr would resume those there.
+    for name in breadboard_core::herdr::PANE_ENV {
+        // SAFETY: the first thing the process does, before any thread runs.
+        unsafe { std::env::remove_var(name) };
+    }
     let ready = if args.iter().any(|arg| arg == "--foreground") {
         None
     } else {
@@ -272,7 +279,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             write.write_all(b"true\n").await
         }
         Ok(Request::Gitlab { main, view, ask }) => {
-            // The first overview of a repo starts its CI queue, for as long as the daemon runs.
+            // The first overview of a repo starts its CI queue and its marks, for as long as the daemon runs.
             if main.is_absolute()
                 && state
                     .queues
@@ -281,6 +288,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
                     .insert(main.clone())
             {
                 tokio::spawn(super::ci::schedule(main.clone()));
+                tokio::spawn(super::ready::mark(main.clone()));
                 tokio::spawn(super::watch::watch(main.clone()));
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.

@@ -6,7 +6,8 @@
 
 use super::Tree;
 use super::merge_order::After;
-use super::mr_blockers::{Reason, row_blockers_of};
+pub use super::mr_blockers::MARK_READY;
+use super::mr_blockers::{Reason, is_draft_reason, row_blockers_of};
 use crate::gitlab::{IssueBox, Job, Mr};
 use crate::json::{self, ints_of, str_of};
 use serde_json::{Value, json};
@@ -28,9 +29,6 @@ pub enum MergeTurn {
     Lacks,
 }
 
-/// The reason a draft gives: the merge action marks it ready.
-pub const MARK_READY: &str = "draft: mark ready";
-
 /// The turn of an MR from the reasons of its row: a reason on another MR
 /// (`who` is `!N`) waits for it, the draft is the merge's own step, any
 /// other reason is its own lack and goes first.
@@ -38,7 +36,7 @@ pub fn turn_of(reasons: &[Reason]) -> MergeTurn {
     let mut waits: Vec<i64> = Vec::new();
     let mut lacks = false;
     for reason in reasons {
-        if reason.text == MARK_READY {
+        if is_draft_reason(&reason.text) {
             continue;
         }
         match reason.who.strip_prefix('!').and_then(|iid| iid.parse::<i64>().ok()) {

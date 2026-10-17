@@ -171,10 +171,20 @@ of your own keeps its claude in a tab (#361).
   starts, the lines wait and the overview says why. Its `continue anyway`,
   or `breadboard runs continue`, lifts it until midnight
   (`.claude/runs/limit.json`).
+- **The Claude usage limit** (#393): a run whose result is the limit (an
+  error with a 429 or the limit's words, `resets 11:30pm`) leaves its
+  session `limit` and holds every run until a minute after the reset, or
+  15 min, 30 min, then 1 h when it names no time
+  (`.claude/runs/usage.json`, `breadboard_core::runs::Usage`). Lines
+  meanwhile wait; at the reset each stopped session gets one run with
+  `[breadboard] the usage limit reset: continue where you stopped` ahead of
+  them. The band says `usage limit until 23:30`, and the orchestrator's
+  chat is told once when it holds and once when the runs go on.
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
-  `asks` (the run was denied a tool, its `permission_denials`), and
-  `queued` from the queue. The overview reads it as herdr's agent states
-  (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
+  `asks` (the run was denied a tool, its `permission_denials`), `limit`
+  (the usage limit), and `queued` from the queue. The overview reads it as
+  herdr's agent states (`working`, `idle`, `blocked`, `queued for a run`,
+  `waits for the usage limit`). `breadboard runs`
   prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
 ## The main checkout follows develop
@@ -330,10 +340,15 @@ breadboard decides which pipelines exist at all:
   `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
   per look, for the MR's newest commit, while a slot is free and no pipeline
   waits for the runner. An older pipeline of that MR still running is
-  cancelled. While the runner is full and the first MR waits, the
-  lowest-ranked running MR pipeline behind it is cancelled to make room,
-  one per 30 s, and queued again. A pipeline into `main`, of develop or
-  of a tag is never cancelled, and neither is one a click started.
+  cancelled. While the runner is full and a click or a hotfix waits first
+  (a mere rank in the merge order never does, #419), the lowest-ranked MR
+  pipeline behind it is cancelled to make room, one per 30 s: only one
+  still waiting for the runner or running for less than 2 minutes with no
+  job past its first stage (read back over REST right before), and not
+  of an MR preempted in the last 30 minutes. The preempted MR starts
+  first once a slot is free, its row says `CI: preempted by !N, restarts
+  next`. A pipeline into `main`, of develop or of a tag is never
+  cancelled, and neither is one a click started.
 - **One pipeline per commit** (#369): an MR's newest pipeline is the one
   with the highest id (in a list of MRs gitlab.com gives their pipelines in
   no order of time). Right before creating one the queue reads the MR and

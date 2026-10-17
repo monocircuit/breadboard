@@ -70,6 +70,8 @@ pub struct CiWatch {
     pub hang_factor: f64,
     /// … and past this many seconds.
     pub hang_seconds: f64,
+    /// … and its log hasn't grown for this many seconds: one that still writes is slow, not hung (#398).
+    pub hang_quiet_seconds: f64,
     /// A job that runs this long on fewer cores than `idle_cores` mostly waits.
     pub idle_seconds: f64,
     pub idle_cores: f64,
@@ -90,6 +92,7 @@ impl Default for CiWatch {
             slowdown_days: 7,
             hang_factor: 2.0,
             hang_seconds: 120.0,
+            hang_quiet_seconds: 60.0,
             idle_seconds: 300.0,
             idle_cores: 0.5,
             history_days: 14,
@@ -409,6 +412,9 @@ pub struct Tries {
     pub deploy_job: Option<String>,
     /// The last step where a pipeline has no `deploy_job`.
     pub publish_job: Option<String>,
+    /// The model that checks and answers a try while its orchestration's
+    /// auto mode is on (#384): `claude -p --model <it>`.
+    pub checker: String,
 }
 
 /// The main checkout keeps itself on the default branch (#348): the daemon
@@ -444,6 +450,7 @@ impl Default for Tries {
             deploy_jobs: Vec::new(),
             deploy_job: None,
             publish_job: None,
+            checker: "haiku".into(),
         }
     }
 }

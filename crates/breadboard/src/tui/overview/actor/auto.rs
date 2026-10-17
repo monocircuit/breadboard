@@ -21,10 +21,12 @@ use breadboard_core::model::display_names::names_of;
 use breadboard_core::model::handovers::agent_name_of;
 use breadboard_core::model::next::stamped;
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
+use breadboard_core::model::order::Target;
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
 use breadboard_core::model::{Entry, Paint, Tree, issues_of};
 use breadboard_core::record::{Worker, record_file, write_plan, write_worker};
+use breadboard_core::runs::{self, Usage};
 use breadboard_core::time::{now_ms, to_iso};
 use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
 use serde_json::json;
@@ -64,6 +66,8 @@ pub struct Auto {
     waits_in_flight: HashSet<PathBuf>,
     /// Per worktree, since when each awaited MR has had conflicts.
     wait_conflicts: Arc<Mutex<HashMap<PathBuf, HashMap<i64, i64>>>>,
+    /// The panes whose herdr record of a headless session was released, with it (#386).
+    released: HashSet<(String, String)>,
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
@@ -138,6 +142,8 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     if is_deliverer && is_local {
         let dirs: Vec<PathBuf> = local.trees.iter().map(|tree| tree.dir.clone()).collect();
         super::merge::retry_lines(&app.actor, dirs);
+        // In auto mode a checker answers the open tries (#384).
+        super::checker::after_read(app, &local);
     }
     // Every live overview computes the same order: whichever reads first writes it.
     if remote.is_some() {
@@ -161,7 +167,11 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         is_changed |= follow_merge_order(app, &name, &model);
         if is_in_herdr() {
             is_changed |= remove_merged(app, &name, &local, remote, &model);
+            tell_usage(app, &name, &model);
         }
+    }
+    if is_local && is_deliverer && is_in_herdr() {
+        end_herdr_resumes(app, &local);
     }
     if is_deliverer {
         super::fresh::after_read(app, &name, &model);
@@ -169,6 +179,65 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
     notify_new(app, &model);
     if is_changed {
         app.redraw();
+    }
+}
+
+/// A headless agent's claude herdr's restore resumed in a pane (#386, a bare
+/// `claude --resume`, no click's) holds its lines: ended once herdr says it
+/// idles, said in DONE. One at a time per claude, on the actor's thread.
+fn end_herdr_resumes(app: &mut Overview, local: &OrchestrationLocal) {
+    let main = app.actor.main.clone();
+    let headless: HashMap<String, PathBuf> = local
+        .trees
+        .iter()
+        .filter(|tree| breadboard_core::runs::is_headless(&main, &tree.dir))
+        // Its binding, not its transcript: one herdr resumed may not have written yet.
+        .filter_map(|tree| {
+            Some((
+                breadboard_core::conversations::bound_session(&tree.dir)?,
+                tree.dir.clone(),
+            ))
+        })
+        .collect();
+    // herdr's record of a headless session on a pane that doesn't run it (one
+    // the daemon's pane id put there before #386, the overview's tab too): a
+    // restart would resume it there. Released once per pane and session.
+    for pane in breadboard_core::herdr::all_panes() {
+        let Some(session) = pane.session.clone().filter(|session| headless.contains_key(session)) else {
+            continue;
+        };
+        if pane.agent.is_some() || !app.actor.auto.released.insert((pane.id.clone(), session.clone())) {
+            continue;
+        }
+        let dir = headless[&session].clone();
+        let main = main.clone();
+        app.actor.queue(move || {
+            let did = super::end_held::release_record(&main, &dir, &pane.id);
+            Some(Box::new(move |app: &mut Overview| {
+                if let Some(did) = did {
+                    app.actor.log(Paint::Dim, did);
+                }
+            }))
+        });
+    }
+    for (pid, id) in breadboard_core::conversations::unnamed_resumes() {
+        let Some(dir) = headless.get(&id).cloned() else {
+            continue;
+        };
+        let key = format!("herdr-resume:{pid}");
+        if !app.actor.auto.in_flight.insert(key.clone()) {
+            continue;
+        }
+        let main = main.clone();
+        app.actor.queue(move || {
+            let ended = super::end_held::end_herdr_resume(&main, &dir, &id, pid);
+            Some(Box::new(move |app: &mut Overview| {
+                app.actor.auto.in_flight.remove(&key);
+                if let Some(ended) = ended {
+                    app.actor.log(Paint::Yellow, ended);
+                }
+            }))
+        });
     }
 }
 
@@ -967,6 +1036,45 @@ fn deliver_wait(
     clear_wait(dir);
     conflicts.lock().unwrap_or_else(|e| e.into_inner()).remove(dir);
     Some(herdr::overview_line(&line))
+}
+
+/// The orchestrator's chat told once that the Claude usage limit holds the
+/// runs and once that they go on (#393), not each agent's: who was told is
+/// in `usage.json`, so a restarted overview doesn't tell again.
+fn tell_usage(app: &mut Overview, name: &str, model: &OrchestrationModel) {
+    const KEY: &str = "usage-limit";
+    let main = app.actor.main.clone();
+    let usage: Usage = runs::read_or_default(&runs::usage_file(&main));
+    let is_told = usage.told.iter().any(|told| told == name);
+    let line = match (&model.usage, is_told) {
+        (Some(until), false) => {
+            format!("{until}: no run of your agents starts, the stopped ones go on by themselves after it")
+        }
+        (None, true) => "the usage limit reset: the runs it stopped go on".to_string(),
+        _ => return,
+    };
+    if !app.actor.auto.in_flight.insert(KEY.into()) {
+        return;
+    }
+    let (name, is_holding) = (name.to_string(), model.usage.is_some());
+    app.actor.queue(move || {
+        let pane = herdr::agent_pane_of(&main, &Target::Orchestration(name.clone()));
+        let is_in = herdr::type_into(pane.as_ref(), &line);
+        if is_in {
+            let _ = runs::change_usage(&main, |usage| {
+                usage.told.retain(|told| *told != name);
+                if is_holding {
+                    usage.told.push(name);
+                }
+            });
+        }
+        Some(Box::new(move |app: &mut Overview| {
+            app.actor.auto.in_flight.remove(KEY);
+            if is_in {
+                app.actor.log(Paint::Yellow, format!("told the orchestrator: {line}"));
+            }
+        }))
+    });
 }
 
 /// A herdr notification for each action new since the last read

@@ -12,6 +12,18 @@ use super::resolve::is_conflict_settled;
 use crate::gitlab::{IssueBox, Job, Mr};
 use std::collections::HashSet;
 
+/// The reason of a draft without boxes: the merge action marks it ready.
+pub const MARK_READY: &str = "draft: mark ready";
+/// The reason of a draft whose bar is full (#399): breadboard marks it ready.
+pub const READY_BAR_FULL: &str = "ready (bar full)";
+/// The reason of such a draft a person set back after breadboard marked it ready.
+pub const DRAFT_BY_HAND: &str = "draft by hand: ready after the next push";
+
+/// The reasons that are the draft alone: the merge's own step, no lack.
+pub fn is_draft_reason(text: &str) -> bool {
+    matches!(text, MARK_READY | READY_BAR_FULL | DRAFT_BY_HAND)
+}
+
 /// A reason an open MR can't be merged yet: what, who acts on it (`agent`,
 /// `you`, `GitLab`, or the `!N` it waits for), and whether it is about
 /// conflicts (the row's conflict cell says those).
@@ -92,30 +104,55 @@ pub fn row_blockers_of(
         );
     }
     if open.is_empty() && checks.is_empty() && mr.is_draft {
-        // All done: the merge action marks it ready, the agent's or the overview's own once the pipeline passed.
-        let is_posted = actions.iter().any(|action| action.kind == "merge");
-        add(
-            "draft: mark ready".into(),
-            if is_posted || status == Some("success") {
-                "you"
-            } else {
-                "agent"
-            },
-            false,
-        );
+        let bar = progress_of(boxes).unwrap_or_default();
+        let is_changed = tree.is_some_and(|tree| is_change_open(Some(tree), Some(mr)));
+        if bar.total > 0 && bar.ticked < bar.total {
+            // Boxes of neither Work nor acceptance (`## Scope`): the bar isn't full.
+            let left = bar.total - bar.ticked;
+            add(
+                format!("{left} box{} open", if left == 1 { "" } else { "es" }),
+                "agent",
+                false,
+            );
+        } else if bar.total > 0 && !is_changed {
+            // The bar is full: breadboard marks it ready by itself (#399).
+            add(READY_BAR_FULL.into(), "breadboard", false);
+        } else if bar.total == 0 {
+            // No boxes: the merge action marks it ready, the agent's or the overview's own once the pipeline passed.
+            let is_posted = actions.iter().any(|action| action.kind == "merge");
+            add(
+                MARK_READY.into(),
+                if is_posted || status == Some("success") {
+                    "you"
+                } else {
+                    "agent"
+                },
+                false,
+            );
+        }
     }
 
+    // GitLab's `conflict` is one even where `has_conflicts` lags (#416): its agent's, never yours.
+    let has_conflicts = mr.has_conflicts || mr.merge_status.as_deref() == Some("conflict");
     if !is_conflict_settled(mr, tree) {
         add("GitLab checks for conflicts".into(), "GitLab", true);
-    } else if mr.has_conflicts {
-        let behind = if behind > 0 {
-            format!(" ({behind} behind)")
-        } else {
+    } else if has_conflicts {
+        let files = tree.and_then(|tree| tree.conflicts.as_deref()).unwrap_or(&[]);
+        let detail: Vec<String> = [
+            (!files.is_empty()).then(|| files_text(files)),
+            (behind > 0).then(|| format!("{behind} behind")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let detail = if detail.is_empty() {
             String::new()
+        } else {
+            format!(" ({})", detail.join(" · "))
         };
         add(
             format!(
-                "conflicts with {target}{behind}: merge {target} in",
+                "conflicts with {target}{detail}: merge {target} in",
                 target = mr.target()
             ),
             "agent",
@@ -127,7 +164,14 @@ pub fn row_blockers_of(
         status != Some("success"),
         mr.target(),
     ) {
-        let who = if text == GITLAB_RECHECKS { "GitLab" } else { "you" };
+        // A rebase is its agent's too; what is left (discussions, an approval) is yours.
+        let who = if text == GITLAB_RECHECKS {
+            "GitLab"
+        } else if text.starts_with("needs a rebase") {
+            "agent"
+        } else {
+            "you"
+        };
         add(text, who, false);
     }
 
@@ -162,6 +206,39 @@ pub fn row_blockers_of(
         }
     }
     reasons
+}
+
+/// How many conflicting files a reason names before `+n`.
+const NAMED_FILES: usize = 2;
+
+/// `README.md, view.rs +2`: the files a merge of develop stops at, by their names.
+pub fn files_text(files: &[String]) -> String {
+    let names: Vec<&str> = files
+        .iter()
+        .take(NAMED_FILES)
+        .map(|file| file.rsplit('/').next().unwrap_or(file))
+        .collect();
+    let more = if files.len() > NAMED_FILES {
+        format!(" +{}", files.len() - NAMED_FILES)
+    } else {
+        String::new()
+    };
+    format!("{}{more}", names.join(", "))
+}
+
+/// `conflicts with develop`: a conflict reason as the title row of its
+/// worktree says it, without its files and what to do (#416).
+pub fn short_of(reason: &Reason) -> String {
+    let text = reason.text.as_str();
+    if !reason.is_conflict {
+        return text.to_string();
+    }
+    let end = [" (", ": "]
+        .iter()
+        .filter_map(|cut| text.find(cut))
+        .min()
+        .unwrap_or(text.len());
+    text[..end].to_string()
 }
 
 /// How far an MR is by its issue's boxes (#294, mr-blockers.mjs `progressOf`):
@@ -356,13 +433,46 @@ mod tests {
         );
         assert_eq!(
             reasons(&draft(), &[work("Tests", true)], Some(&Tree::default())),
-            ["draft: mark ready → you"]
+            ["ready (bar full) → breadboard"]
         );
     }
 
     #[test]
-    fn gives_a_ticked_green_draft_to_the_user() {
+    fn leaves_a_full_bar_to_breadboard_and_names_boxes_of_neither_kind() {
+        // #399: every box ticked, breadboard marks it ready, whatever the pipeline.
         let boxes = [work("Tests", true)];
+        assert_eq!(reasons(&draft(), &boxes, None), ["ready (bar full) → breadboard"]);
+        let scope = |is_ticked| IssueBox {
+            heading: Some("Scope".into()),
+            text: "Marked ready by the daemon".into(),
+            is_ticked,
+            line: 0,
+        };
+        assert_eq!(
+            reasons(&draft(), &[scope(false), scope(true), scope(false)], None),
+            ["2 boxes open → agent"]
+        );
+        assert_eq!(
+            reasons(&draft(), &[scope(true)], None),
+            ["ready (bar full) → breadboard"]
+        );
+        // A change requested holds the draft: the change says it, no ready.
+        let changed = Tree {
+            change: Some(crate::actions::Change {
+                text: "rename it".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasons(&draft(), &boxes, Some(&changed)),
+            ["change requested: rename it → agent"]
+        );
+    }
+
+    #[test]
+    fn gives_a_green_draft_without_boxes_to_the_user() {
+        let boxes = [];
         assert_eq!(reasons(&draft(), &boxes, None), ["draft: mark ready → you"]);
         let running = Mr {
             pipeline: Some(Pipeline {
@@ -434,6 +544,40 @@ mod tests {
                 "change requested: shorter title → agent",
                 "2 commits not pushed → agent",
             ]
+        );
+    }
+
+    #[test]
+    fn a_conflict_names_its_files_and_goes_to_the_agent() {
+        // GitLab's `conflict` without `has_conflicts` (!381): still the agent's.
+        let found = Mr {
+            merge_status: Some("conflict".into()),
+            ..mr()
+        };
+        assert_eq!(
+            reasons(&found, &[], None),
+            ["conflicts with develop: merge develop in → agent"]
+        );
+        let tree = Tree {
+            conflicts: Some(vec!["README.md".into(), "src/a/view.rs".into(), "b.rs".into()]),
+            ..Default::default()
+        };
+        let all = row_blockers_of(&found, &[], 3, &[], &[], Some(&tree), &HashSet::new());
+        assert_eq!(
+            all[0].text,
+            "conflicts with develop (README.md, view.rs +1 · 3 behind): merge develop in"
+        );
+        assert_eq!(short_of(&all[0]), "conflicts with develop");
+        assert_eq!(
+            reasons(
+                &Mr {
+                    merge_status: Some("need_rebase".into()),
+                    ..mr()
+                },
+                &[],
+                None
+            ),
+            ["needs a rebase onto develop → agent"]
         );
     }
 
