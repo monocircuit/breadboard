@@ -12,7 +12,8 @@ to call `herdr` by hand. There is a space per purpose:
 | Space | Tabs |
 | ----- | ---- |
 | `{{space}}` | `root` (a shell in the main checkout), `overview` (`{{run}} overview --herdr`, live), and while the default stack runs its stack tabs |
-| `⇶ <name>`, one per orchestration | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
+| `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview` |
+| `⇶ <name>`, one per orchestration of no product | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
 | `<feature>`, one per worktree | `root` (a shell in the worktree), `overview` (`{{run}} overview --worktree <dir>`: branch, work, issue, MR and pipeline, the URLs and ports, the containers), `<feature>` (a claude a human runs there, or an orchestration's agent opened on demand: its agents run headless without one, [orchestrate.md](orchestrate.md) "How agents run"), `nvim` (nvim in the worktree when it is on the PATH: neo-tree with the files changed against {{branch}} marked, the file with gitsigns' marks against {{branch}}, `:Changes` below, see "The nvim tab" in `packages/breadboard/README.md`; it listens on `.claude/nvim.sock`, so a click on a file in the overview opens it there at the change), and while its **own** stack runs its stack tabs |
 
 The space of a worktree hangs under `{{space}}` in the sidebar,

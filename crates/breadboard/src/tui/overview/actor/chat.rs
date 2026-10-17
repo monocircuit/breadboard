@@ -9,8 +9,7 @@ use breadboard_core::conversations::running_claudes;
 use breadboard_core::herdr::{Pane, Tab, all_panes, is_idle, panes_of, spaces, tabs_of};
 use breadboard_core::local::ORCHESTRATOR_TAB;
 use breadboard_core::model::Paint;
-use breadboard_core::record::{is_session_id, orchestrator_label, record_of, update_record};
-use serde_json::json;
+use breadboard_core::record::{is_session_id, record_of, space_label_of, write_chat};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -67,8 +66,7 @@ pub fn record_chat(main: &Path, name: &str, chat: Option<(String, PathBuf)>) {
     if chat_of(main, name).is_some_and(|known| known == (session.clone(), cwd.clone())) {
         return;
     }
-    let fields = json!({ "orchestrator": { "sessionId": session, "cwd": cwd } });
-    let _ = update_record(main, name, fields.as_object().cloned().unwrap_or_default());
+    let _ = write_chat(main, name, &session, &cwd.to_string_lossy());
 }
 
 /// Whether a conversation runs in some claude on this machine (`isConversationRunning`).
@@ -141,7 +139,7 @@ fn chat_command(main: &Path, chat: Option<&(String, PathBuf)>) -> String {
 /// it running, then in front. What happened, None when herdr did nothing.
 fn restore(main: &Path, name: &str) -> Option<String> {
     use crate::cli::lifecycle::layout::{orchestrations, tabs::keep_order};
-    let label = orchestrator_label(main, name);
+    let label = space_label_of(main, name);
     let repo = crate::cli::lifecycle::repo::Repo {
         main: main.to_path_buf(),
     };

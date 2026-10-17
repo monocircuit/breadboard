@@ -511,7 +511,7 @@ pub fn chat_status(main: &Path, name: &str, chat: Option<&RecordChat>, all: &[he
         return None;
     }
     let session_id = chat.map(|chat| chat.session_id.clone());
-    let label = record::orchestrator_label(main, name);
+    let label = record::space_label_of(main, name);
     let Some(space) = herdr::spaces().into_iter().find(|space| space.label == label) else {
         return Some(Chat {
             state: ChatState::Gone,

@@ -7,7 +7,7 @@ use breadboard_core::git::feature_of;
 use breadboard_core::herdr::{self, Pane, Tab, is_in_herdr};
 use breadboard_core::model::order::Target;
 use breadboard_core::reader::{LocalReader, View};
-use breadboard_core::record::{SPACE, orchestrator_label};
+use breadboard_core::record::{SPACE, space_label_of};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -69,8 +69,8 @@ pub fn space_label(main: &Path, dir: &Path) -> String {
     if dir == main {
         SPACE.to_string()
     } else if let Ok(name) = dir.strip_prefix(breadboard_core::git::orchestrations_dir(main)) {
-        // An orchestration's checkout carries its space `⇶ <title>`.
-        orchestrator_label(main, &name.to_string_lossy())
+        // An orchestration's checkout carries its space: `⇶ <title>`, its product's (#405).
+        space_label_of(main, &name.to_string_lossy())
     } else {
         feature_of(main, dir)
     }
@@ -91,7 +91,7 @@ fn tab_of(main: &Path, to: &Target) -> (String, String) {
     match to {
         Target::Dir(dir) => (space_label(main, dir), feature_of(main, dir)),
         Target::Orchestration(name) => (
-            orchestrator_label(main, name),
+            space_label_of(main, name),
             breadboard_core::local::ORCHESTRATOR_TAB.to_string(),
         ),
     }
