@@ -1,7 +1,9 @@
 //! The commands that write: `wt:action`, `wt:tick`, `wt:note`, `wt:mr`,
-//! `wt:wait`, `wt:journal`, `wt:merge-base` (worktree/commands/*.mjs). They write the files other sessions
-//! read (`.claude/actions.json`, the records, `.claude/wait.json`) exactly as
-//! today, and GitLab exactly where today's breadboard does (rewrite rules 5, 6).
+//! `wt:wait`, `wt:journal`, `wt:merge-base` (worktree/commands/*.mjs), and
+//! `status`, `submit`: a task's steps in one (`bb status`, #427). They write
+//! the files other sessions read (`.claude/actions.json`, the records,
+//! `.claude/wait.json`) exactly as today, and GitLab exactly where today's
+//! breadboard does (rewrite rules 5, 6).
 
 mod action;
 mod boxes;
@@ -13,6 +15,8 @@ mod journal;
 mod merge_base;
 pub(crate) mod mr;
 mod note;
+mod status;
+mod submit;
 mod tick;
 mod wait;
 
@@ -30,6 +34,8 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:epic" => epic::run(&argv),
         "wt:journal" => journal::run(&argv),
         "wt:merge-base" => merge_base::run(&argv),
+        "status" => status::run(&argv),
+        "submit" => submit::run(&argv),
         _ => return None,
     };
     Some(common::finish(outcome))

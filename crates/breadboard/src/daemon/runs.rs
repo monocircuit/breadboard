@@ -261,7 +261,22 @@ fn run_command(dir: &Path, args: Vec<String>) -> tokio::process::Command {
     for name in breadboard_core::herdr::PANE_ENV {
         command.env_remove(name);
     }
+    if let Some(path) = path_with_bb(dir, &std::env::var_os("PATH").unwrap_or_default()) {
+        command.env("PATH", path);
+    }
     command
+}
+
+/// `path` with the folder of `bb` (#427) of the worktree `dir` first: the
+/// agent's `bb status` and `bb submit`. None where the repo has no `bb`.
+fn path_with_bb(dir: &Path, path: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let bin = dir.join("packages/breadboard/bin");
+    if !bin.join("bb").is_file() {
+        return None;
+    }
+    let mut dirs = vec![bin.clone()];
+    dirs.extend(std::env::split_paths(path).filter(|dir| *dir != bin));
+    std::env::join_paths(dirs).ok()
 }
 
 /// One run of `start`: `claude -p` in its worktree, its stream into its
@@ -641,6 +656,21 @@ mod tests {
             .collect();
         assert_eq!(removed, ["HERDR_PANE_ID", "HERDR_TAB_ID"]);
         assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/w/1-x")));
+    }
+
+    #[test]
+    fn a_run_finds_bb_on_its_path() {
+        let dir = std::env::temp_dir().join(format!("runs-bb-{}", std::process::id()));
+        let bin = dir.join("packages/breadboard/bin");
+        assert_eq!(path_with_bb(&dir, "/usr/bin".as_ref()), None);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("bb"), "").unwrap();
+        let path = format!("/usr/bin:{}", bin.display());
+        assert_eq!(
+            path_with_bb(&dir, path.as_ref()),
+            Some(format!("{}:/usr/bin", bin.display()).into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

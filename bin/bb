@@ -1,0 +1,16 @@
+#!/bin/sh
+# `bb`, the short name of breadboard (#427): `bb status`, `bb submit`, and
+# every other command (`bb wt:tick 34 2`). The breadboard of the checkout it
+# runs in, as `pnpm <command>` runs it: that checkout's launcher, else the
+# launcher next to this file, else the breadboard on PATH. The headless runs
+# and herdr's panes find it on PATH (daemon/runs.rs, herdr/session.rs).
+case $0 in
+  */*) here=${0%/*} ;;
+  *) here=. ;;
+esac
+top=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$top" ] && [ -f "$top/packages/breadboard/herdr/breadboard.sh" ]; then
+  exec sh "$top/packages/breadboard/herdr/breadboard.sh" "$@"
+fi
+[ -f "$here/../herdr/breadboard.sh" ] && exec sh "$here/../herdr/breadboard.sh" "$@"
+exec breadboard "$@"

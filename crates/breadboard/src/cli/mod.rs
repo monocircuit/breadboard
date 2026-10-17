@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 /// The commands, as the root package.json names them, by what they work on.
 const COMMANDS: [&[&str]; 7] = [
-    &["overview"],
+    &["status", "submit", "overview"],
     &[
         "wt:new",
         "wt:orchestrate",
