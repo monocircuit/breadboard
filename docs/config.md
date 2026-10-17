@@ -217,6 +217,7 @@ journal says it (`auto-merge into batch: off (by you)`).
 | `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
 | `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
 | `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
+| (panel only) `agent fresh start` | `[agents] fresh_above` | the share of its context past which an agent retires at its merge (#381); its team default stays `[agents] fresh_above` |
 
 ## `[orchestrator]`
 

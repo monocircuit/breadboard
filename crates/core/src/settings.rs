@@ -38,9 +38,10 @@ pub const SHIP_TASKS: &str = "ship_after_tasks";
 pub const SHIP_DAYS: &str = "ship_after_days";
 pub const TRY_CHECKER: &str = "try_checker";
 pub const AUTO_FRESH: &str = "auto_fresh";
+pub const AGENT_FRESH: &str = "agent_fresh_above";
 
 /// Every setting, in the panel's order.
-pub const DEFS: [Def; 6] = [
+pub const DEFS: [Def; 7] = [
     Def {
         key: BATCHING,
         label: "batching",
@@ -85,6 +86,16 @@ pub const DEFS: [Def; 6] = [
         about: "the overview starts the orchestrator's chat fresh at a quiet point by itself; off: it offers a click",
         kind: Kind::Switch,
     },
+    Def {
+        key: AGENT_FRESH,
+        label: "agent fresh start",
+        about: "an agent past this share of its context retires at its merge, its next issue goes to a fresh one (#381)",
+        kind: Kind::Count {
+            unit: "%",
+            min: 1,
+            max: 100,
+        },
+    },
 ];
 
 /// The setting of `key`.
@@ -110,6 +121,7 @@ pub fn defaults_of(config: &Config) -> Map<String, Value> {
         AUTO_FRESH.into(),
         json!(given.auto_fresh.unwrap_or(config.orchestrator.auto_fresh)),
     );
+    out.insert(AGENT_FRESH.into(), json!(config.agents.fresh_above));
     out
 }
 
@@ -219,7 +231,7 @@ fn rows_from(main: &Path, overrides: &Map<String, Value>) -> Vec<Row> {
 }
 
 /// What holds for the orchestration `name`, read where it acts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub batching: bool,
     pub auto_merge_into_batch: bool,
@@ -227,6 +239,8 @@ pub struct Settings {
     pub ship_after_days: i64,
     pub try_checker: bool,
     pub auto_fresh: bool,
+    /// `agent fresh start` as a share of the context window, 0.4 (`[agents] fresh_above`, #381).
+    pub agent_limit: f64,
 }
 
 pub fn of(main: &Path, name: &str) -> Settings {
@@ -244,6 +258,7 @@ fn settings_of(rows: &[Row]) -> Settings {
         ship_after_days: count(SHIP_DAYS),
         try_checker: switch(TRY_CHECKER),
         auto_fresh: switch(AUTO_FRESH),
+        agent_limit: count(AGENT_FRESH) as f64 / 100.0,
     }
 }
 
@@ -331,6 +346,7 @@ mod tests {
             (json!(5), json!(2))
         );
         assert_eq!(defaults[TRY_CHECKER], json!(false));
+        assert_eq!(defaults[AGENT_FRESH], json!(40), "[agents] fresh_above");
         let config = Config::parse(
             "[orchestration]\nepic_branches = true\n[settings]\nauto_merge_into_batch = false\nship_after_tasks = 8\n",
         )
@@ -372,6 +388,9 @@ mod tests {
         assert_eq!(line, "auto-merge into batch: on (the default again)");
         assert!(of(&main, "a").auto_merge_into_batch);
         assert!(!rows_of(&main, "a").iter().any(|row| row.is_overridden));
+        assert!((of(&main, "a").agent_limit - 0.4).abs() < 1e-9);
+        set(&main, "a", AGENT_FRESH, Some(json!(60)), 0).unwrap();
+        assert!((of(&main, "b").agent_limit - 0.6).abs() < 1e-9);
         // One of no product keeps its own, in its record.
         set(&main, "alone", SHIP_TASKS, Some(json!(3)), 0).unwrap();
         assert_eq!(of(&main, "alone").ship_after_tasks, 3);

@@ -70,7 +70,7 @@ pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
         .into_iter()
         .map(|tree| (tree.dir, tree.branch))
         .collect();
-    let limit = context_limit(&repo::main_dir());
+    let limit = context_limit(&repo::main_dir(), name);
     let candidates: Vec<(Worker, Option<f64>)> = workers_of(name)
         .into_iter()
         .map(|worker| {

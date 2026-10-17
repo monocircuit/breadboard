@@ -632,7 +632,8 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
-    let limit = breadboard_core::config::of_main(&app.actor.main).config.agents.limit();
+    // The setting `agent fresh start` (#415), by default `[agents] fresh_above`.
+    let limit = breadboard_core::settings::of(&app.actor.main, &model.name).agent_limit;
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
