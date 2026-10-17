@@ -222,7 +222,7 @@ pub fn merged_since(dir: &Path, green: &str, red: &str) -> Vec<Merged> {
         .collect()
 }
 
-/// `See merge request monocircuit/platform!412` → 412.
+/// `See merge request group/project!412` → 412.
 fn mr_of(body: &str) -> Option<i64> {
     let (_, after) = body.split_once("See merge request ")?;
     let (_, number) = after.lines().next()?.rsplit_once('!')?;
@@ -333,8 +333,11 @@ build:breadboard:
     }
 
     #[test]
-    fn reads_the_repo_s_own_ci_file() {
-        let ci = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../.gitlab-ci.yml")).unwrap();
+    fn reads_the_ci_file_of_the_repo_it_is_developed_in() {
+        // The mirror has none: there the fixture above stands in for it.
+        let Ok(ci) = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../.gitlab-ci.yml")) else {
+            return;
+        };
         let jobs = job_files(&ci);
         assert!(covers(
             &jobs["check:breadboard-rs"],
@@ -410,7 +413,7 @@ build:breadboard:
             run(&main, &["commit", "--quiet", "-m", "feat: task"]);
             run(&main, &["checkout", "--quiet", "batch/breadboard-1"]);
             let subject = format!("Merge branch '{branch}' into 'batch/breadboard-1'");
-            let body = format!("See merge request monocircuit/platform!{}", number - 20);
+            let body = format!("See merge request group/project!{}", number - 20);
             run(
                 &main,
                 &["merge", "--quiet", "--no-ff", "-m", &subject, "-m", &body, &branch],
