@@ -89,6 +89,10 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         turn,
         blocker,
     } = facts;
+    // A claude open in a tab holds its lines past ten minutes (#386): ACTIONS ends it once it idles.
+    if *status == Some(crate::runs::HELD) {
+        return state(crate::runs::HELD, "held by an open claude in its tab", Tone::You);
+    }
     if *status == Some("working") {
         return state("working", "at work", Tone::Work);
     }
@@ -289,6 +293,14 @@ mod tests {
         assert_eq!(queued, state(RUN_QUEUED, "queued for a run", Tone::Work));
         // The tree folds every node keyed `queued` into the queue of issues to start.
         assert_ne!(queued.key, "queued");
+    }
+
+    #[test]
+    fn a_queue_held_by_an_open_claude_waits_for_you() {
+        assert_eq!(
+            at(&tree(), Some(&mr("success")), crate::runs::HELD),
+            state(crate::runs::HELD, "held by an open claude in its tab", Tone::You)
+        );
     }
 
     #[test]

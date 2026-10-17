@@ -125,14 +125,24 @@ pub fn wake_runs(main: &Path) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let is_started = Command::new(exe)
+    let is_started = serve_command(&exe).status().is_ok_and(|status| status.success());
+    is_started && ask()
+}
+
+/// `<exe> serve`, no pane's (#386): the daemon outlives the pane it was
+/// started from, and every `claude -p` it runs would report its session as
+/// that pane's agent to herdr, which resumes it there after a restart.
+fn serve_command(exe: &Path) -> Command {
+    let mut command = Command::new(exe);
+    command
         .arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    is_started && ask()
+        .stderr(Stdio::null());
+    for name in breadboard_core::herdr::PANE_ENV {
+        command.env_remove(name);
+    }
+    command
 }
 
 /// A connection to the daemon, which is started when none answers; None when it can't be.
@@ -143,11 +153,7 @@ pub async fn connect() -> Option<UnixStream> {
     connect_at(super::socket(), || {
         let exe = std::env::current_exe().ok()?;
         // It detaches: what is waited for is its first half, until the daemon listens or can't.
-        Command::new(exe)
-            .arg("serve")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+        serve_command(&exe)
             .status()
             .ok()
             .filter(|status| status.success())
@@ -295,6 +301,17 @@ async fn send(write: &mut tokio::net::unix::OwnedWriteHalf, what: &impl serde::S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_daemon_is_no_panes() {
+        let command = serve_command(Path::new("/x/breadboard"));
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, ["HERDR_PANE_ID", "HERDR_TAB_ID"]);
+    }
     use std::path::PathBuf;
 
     /// A folder of its own per test, gone after it (short: a socket's path is).
@@ -451,14 +468,18 @@ mod tests {
                 silent,
                 connect,
             );
-            tokio::time::timeout(silent * 4, follow).await.ok()
+            // Far past `silent`: a loaded runner never reaches it before a `Silent`.
+            tokio::time::timeout(silent * 10, follow).await.ok()
         })
     }
 
     #[test]
     fn gives_up_a_feed_whose_daemon_says_nothing() {
         let silent = Duration::from_millis(200);
-        // It takes the request and never answers: given up after `silent`, not reconnected.
+        // It takes the request and never answers: given up after `silent`, not
+        // reconnected. `Silent` itself says it gave up before `followed`'s own
+        // timeout (`silent * 10`, None): no upper bound on the clock, which a
+        // loaded runner stretches (571 ms for 200 ms on CI, #386).
         let started = std::time::Instant::now();
         let quiet = |stream: tokio::net::UnixStream| {
             tokio::spawn(async move {
@@ -467,7 +488,7 @@ mod tests {
             })
         };
         assert_eq!(followed("silent", silent, quiet), Some(Followed::Silent));
-        assert!(started.elapsed() < silent * 2, "{:?}", started.elapsed());
+        assert!(started.elapsed() >= silent, "{:?}", started.elapsed());
         // It says it is there, nothing else (GitLab slow): followed on.
         let alive = |mut stream: tokio::net::UnixStream| {
             tokio::spawn(async move {
