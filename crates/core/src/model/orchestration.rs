@@ -563,7 +563,7 @@ fn actions_of(
                     id: action.id,
                 }
             } else {
-                Go::FocusSpace(tree.dir.clone())
+                Go::Detail(tree.dir.clone())
             };
             let mut item = Item {
                 key: format!("{}#{}", file.display(), action.id),

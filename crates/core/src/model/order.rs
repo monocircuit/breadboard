@@ -70,8 +70,8 @@ pub enum Go {
     },
     /// Opens the spot of a try (try.mjs `clickTry`), or the page of its failed deployment.
     Try { dir: Option<PathBuf>, id: i64 },
-    /// The worktree's space in front.
-    FocusSpace(PathBuf),
+    /// The worktree beside the overview: its nvim in the detail pane, or that pane closed (#406).
+    Detail(PathBuf),
     /// The agent's tab in front.
     FocusAgent(PathBuf),
     /// A page in the browser, in the tab group of a worktree when there is one.

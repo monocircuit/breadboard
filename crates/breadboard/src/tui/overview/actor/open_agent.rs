@@ -63,6 +63,28 @@ fn is_running(id: &str) -> bool {
     running_claudes().iter().any(|claude| claude.id == id) || interactive_resumes().contains(id)
 }
 
+/// Waits until no headless run of the conversation `id` is in flight (#406:
+/// the detail pane resumes it then); Err when a claude runs it already, or
+/// its run did not end in time.
+pub fn wait_turn(main: &Path, dir: &Path, id: &str) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        match step_of(is_running(id), run_of(main, id)) {
+            Step::Open => return Ok(()),
+            Step::Focus => {
+                let tab = herdr::agent_tab_of_session(id);
+                herdr::focus_tab(main, dir, tab.as_deref());
+                return Err(format!(
+                    "{}'s claude runs already: its tab in front",
+                    feature_of(main, dir)
+                ));
+            }
+            Step::Wait if started.elapsed() < RUN_WAIT => std::thread::sleep(Duration::from_secs(2)),
+            Step::Wait => return Err("its run did not end within 15 min".into()),
+        }
+    }
+}
+
 /// Opens the agent of the worktree `dir` (on the actor's thread: a wait may
 /// take minutes). What it did, for the log; Err why not.
 pub fn open(main: &Path, dir: &Path) -> Result<String, String> {
