@@ -400,14 +400,9 @@ to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
 
-No agent marks an MR ready (#399): `breadboard serve` does it once its bar
-is full, every box of its issue ticked (after-deploy ones excepted) and no
-try or change holding it, once per head, and notes `!N marked ready
-automatically` in the orchestration's journal. Its row says `ready (bar
-full) → breadboard` until then. A box unticked again puts an MR it marked
-ready back to draft; a person who sets it back to draft is respected until
-the next push (`draft by hand: ready after the next push → you`). Into
-develop and into an epic alike, for a repo GitLab serves.
+`breadboard serve` marks an MR ready once its bar is full and no try or
+change holds it, and back to draft when a box is unticked (#399); a draft set
+by hand holds until the next push.
 
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
@@ -420,8 +415,8 @@ names it in one line, and a click opens the MR instead. After the merge the
 agent gets `[overview] !N merged`, NEXT moves on to the next ready MR, and that
 MR's agent gets `merge <base> in` only when GitLab says the merge conflicts with it (#392);
 an MR that merges cleanly keeps its green pipeline and stays offered;
-`clean up` offers the worktree. Agents still never run `glab mr merge`: the
-click is the user's (`core/src/model/merge.rs`).
+`clean up` offers the worktree. The click is the user's, never an agent's
+(`core/src/model/merge.rs`).
 
 **Into an epic the merge needs no click.** A task MR whose target is its
 orchestration's epic branch merges by itself under the same rule (bar full,
@@ -456,16 +451,10 @@ after the text: `try` `looks good` / `broken`, `look` `done`, `plan` `ok` /
 `different`, a merge only `✓`, which ticks it off. The rest of a block does
 the action. NEXT shows its first action as the same block.
 
-A decide is answered from its row, so `wt:action decide` asks for it
-precisely and refuses one that lacks a part:
-
-- the question: what is decided, in one sentence, with its `?`; a second
-  sentence may give the recommendation's why, in one line;
-- two or more options, each a short label (the answer the agent gets) and
-  what happens, its consequence: `--option "Go" --why "phases 2-4 build
-  the Skia painter"`, or `--option "Go: phases 2-4 …"` split at the first
-  colon; a label alone must say it in a few words (`keep both lines`, not `A`);
-- `--recommend <label>` (or its number), marked `(Recommended)`.
+A decide is answered from its row, so `wt:action decide` refuses one that
+lacks a part: the question (one sentence with its `?`, a second may give the
+recommendation's why), two or more options each a short label with its
+consequence (`--why`, or `--option "<label>: <what happens>"`), `--recommend`.
 
 ```sh
 {{run}} wt:action decide "Which line of the merge hint stays? The new one says what the two clicks do." \
@@ -488,14 +477,8 @@ prompt under the action, and Enter queues the whole line `[overview] #3 try
 line, never from the bare word. A `broken` on a try of a ready MR also puts
 the MR back to draft and withdraws its merge (see Merging).
 
-The Stop hook (`breadboard hook stop-answers`, `breadboard init` puts it
-into `.claude/settings.json`) is the safety net for a line that came while a
-run was ending: it only reads the worktree's `.claude/actions.json` (in the
-main checkout, the orchestrator's actions whose `pane` is its
-`$HERDR_PANE_ID`), blocks the stop with the lines and takes them out.
-Without an answer it exits silently. `{{run}} wt:action --answers` does the
-same by hand. Each answer arrives once, and no agent turn is spent waiting
-for one.
+The Stop hook `stop-answers` hands over an answer that came while a run was
+ending (`{{run}} wt:action --answers` by hand); each arrives once.
 
 A click on a button shows at once (#303): the buttons give way to `→
 looks good` and where it is (`queued for its agent`, `in its run`), before

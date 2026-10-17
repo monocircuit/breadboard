@@ -1,6 +1,6 @@
 ---
 name: parallel-work
-description: Start every task (feature, issue, fix, docs) in its own git worktree of {{repo}} with {{run}} wt:new, and clean it up with {{run}} wt:remove after the merge. Use at the start of any work that will change files, when another session works in the same checkout, when two branches must run in the browser or migrate the database at the same time, or when asked to work on several issues at once ({{run}} wt:orchestrate).
+description: Start every task (feature, issue, fix, docs) in its own git worktree of {{repo}} with {{run}} wt:new, and clean it up with {{run}} wt:remove after the merge. Use at the start of any work that will change files, when another session works in the same checkout, when two branches must run in the browser or migrate the database at the same time, when asked to work on several issues at once ({{run}} wt:orchestrate), and for every question or step of breadboard's workflow: the wt:*, stack:* and overview commands, herdr spaces, epics, and an orchestration's agents (their brief, waiting for another MR with wt:wait, wt:check before a push). Load it before answering how or when to post a wt:action (note, merge, try, decide, plan, look).
 ---
 
 # Every task in its own worktree
@@ -19,12 +19,8 @@ under each other and mix their uncommitted changes.
   (`{{run}} wt:new 34-full-test-pipeline` → `feature/34-full-test-pipeline`),
   otherwise it is named after the task (`chronicle-tags`,
   `login-theme`).
-- **The claim on the issue is `wt:new`'s job**: it looks for a branch of
-  origin carrying the number and stops if there is one — another session or
-  colleague is on the issue, so say so instead of starting. Otherwise it
-  pushes the still empty branch itself, so the claim is visible to everyone
-  before the first change. Nothing to run by hand; a local branch would claim
-  nothing anyway.
+- `wt:new` claims the issue (pushes the empty branch); it stops when origin
+  has a branch with the number: say so instead of starting.
 - Reading, answering questions and reviewing need no worktree.
 - **An agent that starts a worktree moves into it**: right after `wt:new`,
   `EnterWorktree(path: "<the directory wt:new printed>")`. That changes the
@@ -39,15 +35,16 @@ under each other and mix their uncommitted changes.
 - At the end of the session, Claude Code asks whether to keep or remove the
   worktree: **keep** — `{{run}} wt:remove <feature>` closes it after the merge,
   not here. `ExitWorktree` never deletes a worktree entered with `path`.
-- breadboard's hook `pre-edit` enforces it: Edit/Write on a tracked
-  file of the main checkout is blocked with the `wt:new` command. Files git
-  ignores (an env file) stay editable. Only when the user explicitly wants
-  an edit in the main checkout, they start the session with
-  `CLAUDE_ALLOW_MAIN_CHECKOUT=1`. Shell commands (`sed -i`, `>`) are not
-  checked: don't use them to get around it.
+- The hook `pre-edit` blocks Edit/Write on tracked files of the main
+  checkout (`CLAUDE_ALLOW_MAIN_CHECKOUT=1` only when the user asks); never
+  get around it with `sed -i` or `>`.
 
 If `git status` shows changes you didn't make, or the branch changed without
 you, another session is working here: don't touch them.
+
+Rare details sit next to this file, read when needed:
+[orchestrate.md](orchestrate.md) (orchestrations and their agents), [herdr.md](herdr.md),
+[cleanup.md](cleanup.md){{#epics}}, [epics.md](epics.md){{/epics}}.
 
 ## Commands
 
@@ -66,7 +63,7 @@ repo is to it comes from its `breadboard.toml`):
 | `{{run}} wt:stack` | inside a worktree: move it from the shared stack to an own one |
 {{/stack}}
 | `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its orchestration's epic; `wt:new --base <branch>`) once, for **exactly one issue** (a description closing a second, or one other than the branch's, is refused) — title from the last commit, description from the template with `Closes #<issue>`, the **labels and the milestone of the work item**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
-| `{{run}} wt:check` | inside a worktree, **before every push**: {{check}}. Stamps the tree it passed in `.claude/checked.json`; the pre-push hook refuses a commit with another tree (a docs-only one passes). Uncommitted changes count: check, commit, push. The overview shows `✓ tested <sha>` / `untested: N commits` / `checking…` / `✗ tests failed: …` per worktree |
+| `{{run}} wt:check` | inside a worktree, **before every push**: {{check}}. The pre-push hook refuses a commit whose tree it didn't pass (`.claude/checked.json`; docs-only passes): check, commit, push. The overview shows `✓ tested <sha>` / `untested: N commits` / `checking…` / `✗ tests failed: …` per worktree |
 | `{{run}} wt:herdr` | inside herdr: the main space (`root`, `overview`), a space per worktree, the tabs of every running stack (see below) |
 | `{{run}} wt:prune [--dry-run]` | **after merges**: every worktree whose branch is gone from origin and fully in its base is closed with `wt:remove`, its leftover local branches deleted. Everything with own commits or uncommitted changes is only listed |
 | `{{run}} wt:merge-base [--resolve]` | inside a worktree, **the only way to merge its base in** (and only on a conflict or when told): fetches `origin/<base>`, `git merge --no-commit`; clean, it commits; on a conflict it names the files and runs `git merge --abort`, so the worktree is never left half-merged. `--resolve` keeps the conflicted merge open: resolve, `git add`, `git commit --no-edit`, `wt:check`, push in the same run. The overview flags a merge left open for 10 min with no run in flight (`half-merged since 14:02`) |
