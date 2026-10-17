@@ -71,6 +71,8 @@ pub struct LifeFacts<'a> {
     pub merged: Option<&'a HashSet<i64>>,
     /// Its MR's merge turn (merge_turn.rs): offered, waits for other MRs, lacks.
     pub turn: Option<&'a MergeTurn>,
+    /// Its MR row's first reason: the state names it (#416).
+    pub blocker: Option<&'a super::mr_blockers::Reason>,
     pub setup: Option<&'a Setup>,
     pub handover: Option<&'a NextIssue>,
     pub checks: &'a [String],
@@ -124,6 +126,7 @@ pub fn lifecycle_of(issue: &Entry, facts: &LifeFacts) -> Lifecycle {
             handover: facts.handover,
             checks: facts.checks,
             turn: facts.turn,
+            blocker: facts.blocker,
         },
     );
     if key == "free" && tree.claude.is_none() && facts.status.is_none() {
@@ -863,6 +866,15 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                         .number
                         .and_then(|number| facts.turns.and_then(|turns| turns.get(&number)))
                         .map(|(_, turn)| turn),
+                    // The draft is the merge's own step, not what it lacks.
+                    blocker: issue
+                        .number
+                        .and_then(|number| facts.turns.and_then(|turns| turns.get(&number)))
+                        .and_then(|(reasons, _)| {
+                            reasons
+                                .iter()
+                                .find(|reason| reason.text != super::merge_turn::MARK_READY)
+                        }),
                     setup: tree.and_then(|tree| {
                         facts
                             .setups
