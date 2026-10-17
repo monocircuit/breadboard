@@ -13,13 +13,13 @@ use super::resume::resume;
 use super::spaces::space_of;
 use super::tabs::{
     CHANGELOG, CHANGES, ORCHESTRATOR_TAB, OVERVIEW, ROOT, TOKEN_SOURCE, View, Want, drop_duplicates, ensure_space,
-    ensure_tab, ensure_worktree_space, keep_order, move_into, overview_command,
+    ensure_tab, ensure_worktree_space, keep_order, move_into, overall_changelog_command, overview_command,
 };
 use breadboard_core::epic::epic_of;
 use breadboard_core::git::orchestrator_checkouts;
 use breadboard_core::json;
 use breadboard_core::record::{self, ORCHESTRATOR, Origin, Record, SLOTS, SPACE, is_session_id};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -155,11 +155,15 @@ fn changelog_command(name: &str) -> String {
 /// `changelog` and, with nvim, `changes`, in that order; renamed after a new
 /// title, an older space's tabs taken over. A free agent has no tab (#345):
 /// nothing of it comes back after a restart, the record keeps it.
+/// An orchestration of a product works in the product's space (#405): the
+/// same tabs, its overview every orchestration of the product, the repo's
+/// changelog; its `⇶ <title>` space of before hands its tabs over.
 pub fn orchestrator_space(repo: &Repo, name: &str) -> Option<String> {
     let main = repo.main.as_path();
-    let label = repo.orchestrator_label(name);
+    let product = record::product_of(main, name);
+    let label = repo.space_label_of(name);
     let all = herdr::spaces();
-    if !all.iter().any(|space| s(space, "label") == label) {
+    if product.is_none() && !all.iter().any(|space| s(space, "label") == label) {
         let prefix = format!("{ORCHESTRATOR} ");
         let retitled = all.iter().find(|space| {
             s(space, "label").starts_with(&prefix) && repo.orchestration_of(s(space, "label")).as_deref() == Some(name)
@@ -191,15 +195,30 @@ pub fn orchestrator_space(repo: &Repo, name: &str) -> Option<String> {
         })
         .map(|space| s(space, "workspace_id").to_string())
         .collect();
+    // Into a product's space go only what isn't made again there: its chat, a shell.
+    let made: &[&str] = if product.is_some() {
+        &[OVERVIEW, CHANGELOG, CHANGES]
+    } else {
+        &[OVERVIEW]
+    };
     for old in olds {
-        if let Some(overview) = herdr::tabs_of(&old).iter().find(|tab| s(tab, "label") == OVERVIEW) {
-            call(&["tab", "close", s(overview, "tab_id")]);
+        for tab in herdr::tabs_of(&old)
+            .iter()
+            .filter(|tab| made.contains(&s(tab, "label")))
+        {
+            call(&["tab", "close", s(tab, "tab_id")]);
         }
         move_into(&old, &workspace);
         drop_duplicates(&workspace, ROOT);
+        if product.is_some() {
+            drop_duplicates(&workspace, ORCHESTRATOR_TAB);
+        }
     }
     let tabs = herdr::tabs_of(&workspace);
-    let overview = overview_command(View::Orchestration(name));
+    let overview = match &product {
+        Some(product) => overview_command(View::Product(product)),
+        None => overview_command(View::Orchestration(name)),
+    };
     ensure_tab(
         &workspace,
         &Want {
@@ -215,7 +234,10 @@ pub fn orchestrator_space(repo: &Repo, name: &str) -> Option<String> {
         &Want {
             label: CHANGELOG,
             cwd: main,
-            command: Some(changelog_command(name)),
+            command: Some(match &product {
+                Some(_) => overall_changelog_command(),
+                None => changelog_command(name),
+            }),
         },
         &tabs,
     );
@@ -344,18 +366,22 @@ pub fn mark_origins(repo: &Repo) {
 /// The space of an orchestration closes once its last worktree is gone, but
 /// never while something runs in it or its record keeps a free agent (#345:
 /// it has no tab that would); the record goes with the space, and so does one
-/// whose space and worktrees are both gone. What closed.
+/// whose space and worktrees are both gone. A product's space (#405) closes
+/// once that holds for every orchestration of it, their records with it.
+/// What closed.
 pub fn prune_orchestrators(repo: &Repo) -> Vec<String> {
     let live: HashSet<String> = repo.orchestrated().into_iter().map(|(_, origin)| origin.name).collect();
     let mut closed = Vec::new();
     let mut open: HashSet<String> = HashSet::new();
     for space in herdr::spaces() {
-        let Some(name) = repo.orchestration_of(s(&space, "label")) else {
+        let names = repo.orchestrations_of(s(&space, "label"));
+        if names.is_empty() {
             continue;
-        };
-        open.insert(name.clone());
-        let has_free = record::record_of(&repo.main, &name).is_some_and(|found| !found.free_agents().is_empty());
-        if live.contains(&name) || has_free {
+        }
+        open.extend(names.iter().cloned());
+        let has_free =
+            |name: &String| record::record_of(&repo.main, name).is_some_and(|found| !found.free_agents().is_empty());
+        if names.iter().any(|name| live.contains(name) || has_free(name)) {
             continue;
         }
         let workspace = s(&space, "workspace_id");
@@ -374,12 +400,14 @@ pub fn prune_orchestrators(repo: &Repo) -> Vec<String> {
             continue;
         }
         if call(&["workspace", "close", workspace]).is_some() {
-            open.remove(&name);
             closed.push(format!(
                 "closed the space {}, its worktrees are gone",
                 s(&space, "label")
             ));
-            closed.extend(remove_orchestrator_checkout(repo, &name));
+            for name in &names {
+                open.remove(name);
+                closed.extend(remove_orchestrator_checkout(repo, name));
+            }
         }
     }
     for name in record::recorded(&repo.main) {
@@ -455,9 +483,7 @@ pub fn record_chat(repo: &Repo, name: &str, chat: Option<Chat>) {
     {
         return;
     }
-    let mut fields = Map::new();
-    fields.insert("orchestrator".into(), json!({ "sessionId": id, "cwd": text(&cwd) }));
-    let _ = record::update_record(&repo.main, name, fields);
+    let _ = record::write_chat(&repo.main, name, &id, &text(&cwd));
 }
 
 fn session_of(pane: &Value) -> &str {
@@ -551,7 +577,7 @@ pub fn restore_chat(repo: &Repo, name: &str) -> Option<String> {
     if !herdr::is_in() {
         return None;
     }
-    let label = repo.orchestrator_label(name);
+    let label = repo.space_label_of(name);
     let workspace = herdr::space_labelled(&label).map(|space| s(&space, "workspace_id").to_string())?;
     let chat = chat_of(repo, record::record_of(&repo.main, name).as_ref());
     let tabs = herdr::tabs_of(&workspace);
@@ -687,25 +713,39 @@ pub fn group_move(
 /// for what moved.
 pub fn sort_spaces(repo: &Repo) -> Option<String> {
     let list = herdr::spaces();
+    // A space stands for an orchestration, or for a product (#405): its worktrees follow it.
+    let products: HashMap<String, String> = record::recorded(&repo.main)
+        .into_iter()
+        .filter_map(|name| Some((name.clone(), record::product_of(&repo.main, &name)?)))
+        .collect();
+    let space_of = |name: String| products.get(&name).cloned().unwrap_or(name);
     let origins: HashMap<String, String> = repo
         .orchestrated()
         .into_iter()
-        .map(|(dir, origin)| (repo.feature_of(&dir), origin.name))
+        .map(|(dir, origin)| (repo.feature_of(&dir), space_of(origin.name)))
         .collect();
     let titles = record::titles(&repo.main);
     let orchestration_of = |label: &str| {
-        if label.contains(ORCHESTRATOR) {
+        if repo.is_product(label) {
+            Some(label.to_string())
+        } else if label.contains(ORCHESTRATOR) {
             record::orchestration_of_label(label, &titles)
         } else {
             None
         }
     };
-    let moved = group_move(
-        &list,
-        |label| origins.get(label).cloned(),
-        |name| work_order_of(record::record_of(&repo.main, name).as_ref()),
-        orchestration_of,
-    )?;
+    let work_order = |key: &str| {
+        let names = if repo.is_product(key) {
+            record::orchestrations_of_product(&repo.main, key)
+        } else {
+            vec![key.to_string()]
+        };
+        names
+            .iter()
+            .flat_map(|name| work_order_of(record::record_of(&repo.main, name).as_ref()))
+            .collect()
+    };
+    let moved = group_move(&list, |label| origins.get(label).cloned(), work_order, orchestration_of)?;
     herdr::api("workspace.move_block", moved).map(|_| format!("spaces of {SPACE} sorted by orchestration"))
 }
 

@@ -1032,7 +1032,7 @@ fn no_agent(label: &str, who: &str, workers: &[Worker]) -> Fail {
 /// The issue goes to an idle agent of the orchestration (handover.mjs).
 pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let name = request.name;
-    let label = repo.orchestrator_label(name);
+    let label = repo.space_label_of(name);
     let limit = match request.limit {
         None => context_limit(&repo.main),
         Some(percent) => percent

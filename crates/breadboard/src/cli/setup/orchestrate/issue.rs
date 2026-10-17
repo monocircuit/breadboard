@@ -97,7 +97,7 @@ pub fn brief_of(brief: &Brief) -> String {
     let mut text = handover::brief_of(
         brief.item,
         brief.name,
-        &record::orchestrator_label(&main, brief.name),
+        &record::space_label_of(&main, brief.name),
         brief.peer,
         brief.extra,
         brief.before.as_deref(),

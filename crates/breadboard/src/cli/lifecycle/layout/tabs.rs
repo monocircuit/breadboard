@@ -38,6 +38,8 @@ pub enum View<'a> {
     Herdr,
     Worktree(&'a Path),
     Orchestration(&'a str),
+    /// Every orchestration of a product (#405).
+    Product(&'a str),
 }
 
 /// The command of a tab `overview`: this binary, where today's ran
@@ -47,11 +49,12 @@ pub fn overview_command(view: View) -> String {
         View::Herdr => "--herdr".to_string(),
         View::Worktree(dir) => format!("--worktree {}", quote(&text(dir))),
         View::Orchestration(name) => format!("--orchestration {name}"),
+        View::Product(name) => format!("--product {name}"),
     };
     format!("{} overview {what}", quote(&exe()))
 }
 
-/// What the tab `changelog` of the main space runs: the repo's changelog, live.
+/// What the tab `changelog` of the main space (of a product's space, #405) runs: the repo's changelog, live.
 pub fn overall_changelog_command() -> String {
     format!("{} changelog --watch", quote(&exe()))
 }

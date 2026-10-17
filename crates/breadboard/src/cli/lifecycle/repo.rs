@@ -89,6 +89,26 @@ impl Repo {
     pub fn orchestrator_label(&self, name: &str) -> String {
         record::orchestrator_label(&self.main, name)
     }
+
+    /// The label of the space the orchestration works in: its product's (#405), else `⇶ <title>`.
+    pub fn space_label_of(&self, name: &str) -> String {
+        record::space_label_of(&self.main, name)
+    }
+
+    /// The orchestrations of a space's label: a product's every one (#405), `⇶ <title>`'s one.
+    pub fn orchestrations_of(&self, label: &str) -> Vec<String> {
+        record::orchestrations_of_space(&self.main, label)
+    }
+
+    /// Whether breadboard.toml names products (#405): each has a space, the main space no changelog.
+    pub fn has_products(&self) -> bool {
+        !breadboard_core::config::of(&self.main).config.products.is_empty()
+    }
+
+    /// Whether a space's label is a product's (#405).
+    pub fn is_product(&self, label: &str) -> bool {
+        record::is_product(&self.main, label)
+    }
 }
 
 /// The env file of a checkout's stack (breadboard.toml); a path nothing is at without a stack.

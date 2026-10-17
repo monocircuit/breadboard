@@ -519,13 +519,63 @@ impl Record {
     }
 }
 
-/// The record of `name`, None without one (or one without `issues`).
+/// The record of `name`, None without one (or one without `issues`). The
+/// orchestrator's chat of an orchestration of a product is the product's
+/// (#405), its own until the product has one.
 pub fn record_of(main: &Path, name: &str) -> Option<Record> {
     let mut record = Record::from_value(json::read(&record_file(main, name))?)?;
     // The repo's default branch is no epic: read from `main`, never the process's cwd (#380).
-    let develop = crate::config::of(main).branch.clone();
-    record.base = record.base.filter(|base| *base != develop);
+    let loaded = crate::config::of(main);
+    record.base = record.base.filter(|base| *base != loaded.branch);
+    record.product = record
+        .product
+        .filter(|product| loaded.config.products.contains_key(product));
+    if let Some(chat) = record
+        .product
+        .as_deref()
+        .and_then(|product| product_chat(main, product))
+    {
+        record.chat = Some(chat);
+    }
     Some(record)
+}
+
+/// Where a product's own state is kept (#405): `.claude/products/<name>.json`.
+pub fn product_file(main: &Path, product: &str) -> PathBuf {
+    main.join(".claude").join("products").join(format!("{product}.json"))
+}
+
+/// The orchestrator's chat of a product: one for all its orchestrations.
+pub fn product_chat(main: &Path, product: &str) -> Option<Chat> {
+    let raw = json::read(&product_file(main, product))?;
+    let chat = raw.get("orchestrator")?;
+    let session_id = str_of(chat, "sessionId").filter(|id| is_session_id(id))?;
+    Some(Chat {
+        session_id: session_id.to_string(),
+        cwd: str_of(chat, "cwd").filter(|cwd| !cwd.is_empty()).map(String::from),
+    })
+}
+
+/// The orchestrator's chat of `name` written: into its product's file for
+/// an orchestration of a product (#405), else into its record.
+pub fn write_chat(main: &Path, name: &str, session_id: &str, cwd: &str) -> io::Result<()> {
+    let chat = json!({ "sessionId": session_id, "cwd": cwd });
+    match product_of(main, name) {
+        Some(product) => {
+            let file = product_file(main, &product);
+            let mut raw = object_of(json::read(&file));
+            raw.insert("orchestrator".into(), chat);
+            if let Some(dir) = file.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            json::write_pretty(&file, &Value::Object(raw))
+        }
+        None => {
+            let mut fields = Map::new();
+            fields.insert("orchestrator".into(), chat);
+            update_record(main, name, fields)
+        }
+    }
 }
 
 /// The base a new worktree of the orchestration `name` gets (`wt:new
@@ -554,12 +604,35 @@ pub fn base_for(main: &Path, name: &str, dir: &Path) -> crate::git::Base {
 /// The product the orchestration `name` belongs to (#405): its record's,
 /// while breadboard.toml still names it; None for one of its own space.
 pub fn product_of(main: &Path, name: &str) -> Option<String> {
-    let product = record_of(main, name)?.product?;
+    let product = str_of(&json::read(&record_file(main, name))?, "product")?.to_string();
     crate::config::of(main)
         .config
         .products
         .contains_key(&product)
         .then_some(product)
+}
+
+/// Whether a space's label is a product's (#405).
+pub fn is_product(main: &Path, label: &str) -> bool {
+    crate::config::of(main).config.products.contains_key(label)
+}
+
+/// The label of the space the orchestration `name` works in: its product's
+/// (#405), else its own `⇶ <title>`.
+pub fn space_label_of(main: &Path, name: &str) -> String {
+    product_of(main, name).unwrap_or_else(|| orchestrator_label(main, name))
+}
+
+/// The orchestrations of a space's label: every one of a product's (#405),
+/// the one of `⇶ <title>`, none of any other.
+pub fn orchestrations_of_space(main: &Path, label: &str) -> Vec<String> {
+    if is_product(main, label) {
+        return orchestrations_of_product(main, label);
+    }
+    if !label.contains(ORCHESTRATOR) {
+        return Vec::new();
+    }
+    orchestration_of_label(label, &titles(main)).into_iter().collect()
 }
 
 /// Every orchestration of `product` with a record, by name.
@@ -895,6 +968,51 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, format!("{RECORD}\n")).unwrap();
         (scratch, main)
+    }
+
+    #[test]
+    fn an_orchestration_of_a_product_shares_its_space_and_chat() {
+        let (_scratch, main) = scratch_record();
+        fs::write(
+            main.join(crate::config::FILE),
+            "[products.breadboard]\npaths = [\"packages/breadboard\"]\n",
+        )
+        .unwrap();
+        assert_eq!(product_of(&main, "breadboard"), None);
+        assert_eq!(space_label_of(&main, "breadboard"), "⇶ @monocircuit/breadboard");
+        let mut fields = Map::new();
+        fields.insert("product".into(), json!("breadboard"));
+        update_record(&main, "breadboard", fields).unwrap();
+        write_raw(
+            &main,
+            "other",
+            json!({ "issues": [], "product": "breadboard" })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        )
+        .unwrap();
+        write_raw(
+            &main,
+            "gone",
+            json!({ "issues": [], "product": "vita" }).as_object().cloned().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(space_label_of(&main, "breadboard"), "breadboard");
+        assert_eq!(orchestrations_of_space(&main, "breadboard"), ["breadboard", "other"]);
+        // A product breadboard.toml no longer names: the orchestration's own space.
+        assert_eq!(space_label_of(&main, "gone"), "⇶ gone");
+        assert_eq!(orchestrations_of_space(&main, "⇶ gone"), ["gone"]);
+        assert!(orchestrations_of_space(&main, "vita").is_empty());
+        // Its own chat until the product has one, then the product's for each.
+        let own = record_of(&main, "breadboard").unwrap().chat.unwrap();
+        assert_eq!(own.session_id, "62eabed2-3a26-46a3-88f2-d50d0cd6f88d");
+        let id = "0b9c7e8a-1d2f-4e3a-9b5c-6d7e8f9a0b1c";
+        write_chat(&main, "other", id, "/r/platform").unwrap();
+        for name in ["breadboard", "other"] {
+            assert_eq!(record_of(&main, name).unwrap().chat.unwrap().session_id, id);
+        }
+        assert!(record_of(&main, "other").unwrap().raw.get("orchestrator").is_none());
     }
 
     #[test]
