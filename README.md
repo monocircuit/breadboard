@@ -228,7 +228,9 @@ one of "The nvim tab" below. There is one per overview: a click on another
 worktree ends what runs in it (nvim quits; with unsaved changes it refuses
 and the band says so) and runs that one's nvim in the same pane; a click on
 the worktree it shows, or Esc, closes it. A click on a file opens it there,
-at its line. Keys of the overview switch it:
+at its line, and a click on a try with a terminal (`--run`) runs its command
+there: the same try again runs again once it ended, another try replaces it
+(a `--url` try stays a page in the browser). Keys of the overview switch it:
 
 | Key | What the pane shows |
 | --- | ------------------- |
@@ -238,7 +240,8 @@ at its line. Keys of the overview switch it:
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
 The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
-so a reload of the overview finds it again; one herdr closed is forgotten.
+with the try it runs, so a reload of the overview finds it again; one herdr
+closed is forgotten.
 
 ## The nvim tab
 

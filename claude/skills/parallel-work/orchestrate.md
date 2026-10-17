@@ -298,7 +298,7 @@ a merge and never once the plan is stale. ACTIONS holds only what needs the user
 `{{run}} wt:action <kind> <text>` — `merge` (the human merges on two clicks,
 see Merging; gone once merged; each agent posts its own), `try`
 (what only the human can check, and the click that opens its spot:
-`--run <command>` a tab `try` in the worktree's space running it in the
+`--run <command>` the overview's detail pane running it in the
 worktree, `--url <page>` the page on the worktree's app in its tab group, a
 path `/atlas/…` on the worktree's port, its stack and app started
 first when the app is down; the row shows the command or page before;

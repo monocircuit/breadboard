@@ -4,8 +4,9 @@
 //! (its dev server while the app is down) and the agent's conversation; a
 //! click on the row it shows, or Esc, closes it. One per overview: a click
 //! on another row ends what runs there and runs its command in the same
-//! pane. Its pane is kept in a file next to the overview's folds, so a
-//! reload of the overview in its pane finds it again.
+//! pane. A click on a try with a terminal runs it there (#408). Its pane is
+//! kept in a file next to the overview's folds, so a reload of the overview
+//! in its pane finds it again.
 //!
 //! Everything here runs on the actor's thread: it waits for herdr, nvim and
 //! a headless run of the agent.
@@ -60,6 +61,9 @@ pub struct Shown {
     pub pane: String,
     pub dir: PathBuf,
     pub shows: Shows,
+    /// The try whose terminal runs there (#408, was `.claude/try-tab.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub try_id: Option<i64>,
 }
 
 /// A file opened at a line in the detail pane's nvim.
@@ -123,7 +127,44 @@ impl Detail {
                 return Ok(format!("{feature}: {} in nvim beside", at.file));
             }
         }
-        let command = command_of(main, dir, shows, at.as_ref())?;
+        let (command, try_id) = command_of(main, dir, shows, at.as_ref())?;
+        self.run(open, dir, shows, try_id, &command)?;
+        Ok(format!("{feature}: {} beside · {KEYS}", shows.word()))
+    }
+
+    /// A click on the try `id` of `dir` with the terminal `run` (#408): the
+    /// same try again runs again once its command ended, another replaces
+    /// what runs in the pane. What happened, for the try's row.
+    pub fn run_try(&self, dir: &Path, id: i64, run: &str) -> Result<String, String> {
+        let open = self.shown_alive();
+        let is_same = |open: &Shown| open.dir == dir && open.shows == Shows::Try && open.try_id == Some(id);
+        if let Some(open) = open.as_ref().filter(|open| is_same(open)) {
+            if !is_idle_now(&open.pane) {
+                return Ok("runs beside already".into());
+            }
+            run_in(&open.pane, &try_command(dir, run))?;
+            return Ok("runs again beside".into());
+        }
+        let replaced = open
+            .as_ref()
+            .filter(|open| open.dir == dir && open.shows == Shows::Try)
+            .and_then(|open| open.try_id);
+        self.run(open, dir, Shows::Try, Some(id), &try_command(dir, run))?;
+        Ok(match replaced {
+            Some(old) => format!("replaced the try of #{old}, runs beside"),
+            None => "runs beside".into(),
+        })
+    }
+
+    /// `command` in the open pane once what runs there ended, else in a split made for it.
+    fn run(
+        &self,
+        open: Option<Shown>,
+        dir: &Path,
+        shows: Shows,
+        try_id: Option<i64>,
+        command: &str,
+    ) -> Result<(), String> {
         let pane = match open {
             Some(open) => {
                 end(&open)?;
@@ -131,16 +172,15 @@ impl Detail {
             }
             None => split(dir)?,
         };
-        if herdr_here(&["pane", "run", &pane, &command]).is_none() {
-            return Err(format!("herdr ran nothing in the detail pane {pane}"));
-        }
+        run_in(&pane, command)?;
         self.keep(Some(Shown {
             overview: here().unwrap_or_default(),
             pane,
             dir: dir.to_path_buf(),
             shows,
+            try_id,
         }));
-        Ok(format!("{feature}: {} beside · {KEYS}", shows.word()))
+        Ok(())
     }
 
     /// The pane closed, nvim quit first: nvim with unsaved changes keeps it open.
@@ -246,6 +286,17 @@ fn split(dir: &Path) -> Result<String, String> {
         .ok_or_else(|| format!("herdr split no pane off {overview}"))
 }
 
+fn run_in(pane: &str, command: &str) -> Result<(), String> {
+    herdr_here(&["pane", "run", pane, command])
+        .map(|_| ())
+        .ok_or_else(|| format!("herdr ran nothing in the detail pane {pane}"))
+}
+
+/// A try's terminal `run`, in its worktree.
+fn try_command(dir: &Path, run: &str) -> String {
+    format!("cd {} && {run}", quote(&dir.to_string_lossy()))
+}
+
 /// What runs in the pane ended, its shell idle again: nvim quits (one with
 /// unsaved changes refuses, and that is said), anything else gets Ctrl-C
 /// (twice: claude asks for a second).
@@ -282,21 +333,20 @@ fn end(open: &Shown) -> Result<(), String> {
     ))
 }
 
-/// The shell line that shows `shows` of `dir`.
-fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<String, String> {
-    let cd = format!("cd {} && ", quote(&dir.to_string_lossy()));
+/// The shell line that shows `shows` of `dir`, and the try it runs.
+fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<(String, Option<i64>), String> {
     let feature = feature_of(main, dir);
-    match shows {
-        Shows::Editor => Ok(editor_command(main, dir, at)),
+    let command = match shows {
+        Shows::Editor => editor_command(main, dir, at),
         Shows::Try => {
             let file = breadboard_core::actions::actions_file(dir);
-            let run = breadboard_core::actions::actions_of(&file)
+            let (id, run) = breadboard_core::actions::actions_of(&file)
                 .into_iter()
                 .rev()
                 .filter(|action| action.is_try() && action.answer.is_none())
-                .find_map(|action| action.run)
+                .find_map(|action| Some((action.id, action.run?)))
                 .ok_or_else(|| format!("{feature} has no open try with a terminal (--run)"))?;
-            Ok(format!("{cd}{run}"))
+            return Ok((try_command(dir, &run), Some(id)));
         }
         Shows::Logs => {
             let stack = breadboard_core::stack::of(dir).ok_or_else(|| format!("{feature} has no stack"))?;
@@ -308,19 +358,20 @@ fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<
             // Its dev server and tools in the background (#407), or an app up by hand: the logs.
             if is_running || breadboard_core::local::is_app_of(port, dir) {
                 let compose = breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]);
-                Ok(format!("cd {stack_dir} && {}", logs_command(&compose.join(" "), &logs)))
+                format!("cd {stack_dir} && {}", logs_command(&compose.join(" "), &logs))
             } else {
                 // Down: its dev server in the pane.
-                Ok(format!("cd {stack_dir} && {}", stack.app.dev))
+                format!("cd {stack_dir} && {}", stack.app.dev)
             }
         }
         Shows::Agent => {
             let id = breadboard_core::conversations::bound_session(dir)
                 .ok_or_else(|| format!("{feature}'s worktree binds no conversation"))?;
             super::open_agent::wait_turn(main, dir, &id)?;
-            Ok(super::open_agent::open_command(dir, &id, &feature))
+            super::open_agent::open_command(dir, &id, &feature)
         }
-    }
+    };
+    Ok((command, None))
 }
 
 /// The services' logs from compose (`docker <compose>`) and the files
@@ -407,9 +458,11 @@ mod tests {
             pane: "w1:p2".into(),
             dir: "/r/p-1".into(),
             shows: Shows::Logs,
+            try_id: None,
         };
         let text = serde_json::to_string(&shown).unwrap();
         assert!(text.contains("\"shows\":\"logs\""), "{text}");
+        assert!(!text.contains("try_id"), "{text}");
         assert_eq!(serde_json::from_str::<Shown>(&text).unwrap(), shown);
     }
 }
