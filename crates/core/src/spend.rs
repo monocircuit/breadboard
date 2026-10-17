@@ -436,6 +436,8 @@ pub struct Spent {
     pub daily_limit: Option<Limit>,
     /// Why no run starts: the daily limit reached (`runs::held_by`).
     pub held: Option<String>,
+    /// The Claude usage limit holding the runs (#393): `usage limit until 23:30`.
+    pub usage: Option<String>,
     /// Each issue's, over every agent that worked on it.
     pub by_issue: HashMap<i64, Spend>,
     /// The orchestration's: its agents' and its orchestrator's, all time.
@@ -458,12 +460,14 @@ pub fn spent_of(main: &Path, name: &str, record: Option<&crate::record::Record>,
         && now - at < SPENT_FOR_MS
     {
         spent.held = crate::runs::held_by(spent.daily_limit, &spent.today, &lifted);
+        spent.usage = crate::runs::usage_now(main, now);
         return spent;
     }
     let config = crate::config::of_main(main);
     let today = today_of(main, now);
     let mut spent = Spent {
         held: crate::runs::held_by(config.config.agents.daily_limit, &today, &lifted),
+        usage: crate::runs::usage_now(main, now),
         today,
         daily_limit: config.config.agents.daily_limit,
         budget: config.config.agents.orchestration_budget,

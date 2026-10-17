@@ -638,6 +638,7 @@ impl LocalReader {
             test_origin: test_origin(&self.main),
             ci: crate::ci::Queue::read(&self.main, now),
             ci_watch: crate::ci_watch::Report::read(&self.main, now),
+            ready: crate::ready::Marks::read(&self.main),
             epic: epic_local(&self.main, record.as_ref()),
             orchestrator_share: record
                 .as_ref()
