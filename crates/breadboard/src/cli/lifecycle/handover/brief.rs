@@ -28,8 +28,14 @@ pub fn brief_of(
     // One issue, one MR, into its base (#349).
     // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
     let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
+    let loaded = breadboard_core::config::of(main);
+    let (repo, run, branch_name) = (
+        loaded.name(),
+        loaded.config.repo.run.clone().unwrap_or_else(|| "breadboard".into()),
+        loaded.branch.clone(),
+    );
     let worktree = format!(
-        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline). That MR handles exactly this one issue (`Closes #{number}`, no other)."
+        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline), and only with `{run} wt:merge-base`, never a plain `git merge` (#396): on a conflict it aborts and names the files, `--resolve` keeps the merge open to finish in the same run. That MR handles exactly this one issue (`Closes #{number}`, no other)."
     );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
@@ -45,12 +51,6 @@ pub fn brief_of(
     if !extra.trim().is_empty() {
         tail.push_str(&format!("\n## From the orchestrator\n\n{}\n", extra.trim()));
     }
-    let loaded = breadboard_core::config::of(main);
-    let (repo, run, branch_name) = (
-        loaded.name(),
-        loaded.config.repo.run.clone().unwrap_or_else(|| "breadboard".into()),
-        loaded.branch.clone(),
-    );
     format!(
         r#"# #{number} {title}
 
@@ -151,6 +151,7 @@ mod tests {
         std::fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
         assert!(brief.contains("Its base is `develop`: its MR goes into it"), "{brief}");
+        assert!(brief.contains("wt:merge-base"), "{brief}");
         let record = breadboard_core::record::record_file(&main, "o");
         std::fs::create_dir_all(record.parent().unwrap()).unwrap();
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();

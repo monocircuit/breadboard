@@ -307,7 +307,16 @@ pub(super) fn glab_put(main: &Path, glab: &str, endpoint: &str) -> Result<serde_
     glab_api(main, glab, &["api", "--method", "PUT", endpoint])
 }
 
+/// `glab api <endpoint>` of a text answer (a job's log), as the user, from the main checkout.
+pub(super) fn glab_text(main: &Path, glab: &str, endpoint: &str) -> Result<String, String> {
+    glab_out(main, glab, &["api", endpoint]).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
 pub(super) fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Value, String> {
+    glab_out(main, glab, args).map(|out| serde_json::from_slice(&out).unwrap_or(serde_json::Value::Null))
+}
+
+fn glab_out(main: &Path, glab: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let spawn = || {
         Command::new(glab)
             .args(args)
@@ -326,7 +335,7 @@ pub(super) fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_j
     }
     let output = output.map_err(|error| format!("glab: {error}"))?;
     if output.status.success() {
-        return Ok(serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null));
+        return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(if stderr.is_empty() {

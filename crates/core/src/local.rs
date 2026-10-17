@@ -490,6 +490,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.unpushed = push.unpushed;
     tree.unpushed_at = push.unpushed_at;
     tree.has_remote_branch = push.has_remote_branch;
+    tree.merge_head_at = git::merge_head_at(&dir);
     tree.sent = sent_of(&dir).into_iter().collect();
     tree.pending = tree
         .claude

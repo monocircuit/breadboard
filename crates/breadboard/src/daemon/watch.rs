@@ -5,13 +5,15 @@
 //! (`docker stats`) and writes what holds pipelines up to
 //! `.claude/ci/watch.json` for the overview. A flagged job becomes an action
 //! in every orchestration's record, once: a `plan` to file an issue for a
-//! slow one, a `decide` (retry, cancel, let it run) for a hung one, which
-//! goes again once the job no longer runs and nobody answered it. It reads
-//! GitLab only: what the user answers, the orchestrator does.
+//! slow one, a `decide` (retry, cancel, wait) for a hung one, which goes
+//! again once the job no longer runs or writes its log again and nobody
+//! answered it. A job far past its median is hung only once its log stops
+//! growing (#398): on a busy runner it is slow, and a retry throws its work
+//! away. It reads GitLab only: what the user answers, the orchestrator does.
 
 use breadboard_core::actions::{NewAction, actions_of, add_action, done_action};
 use breadboard_core::ci_watch::{
-    self, Flag, History, Hung, Report, Run, Running, flags_of, hung_of, run_of, running_of, usage_of,
+    self, Flag, History, Hung, Report, Run, Running, flags_of, overdue_of, run_of, running_of, usage_of,
 };
 use breadboard_core::config::CiWatch;
 use breadboard_core::time::now_ms;
@@ -148,20 +150,51 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
         }
     }
     // What the local runner's jobs use now, kept until each one ends.
-    for (job, (cores, mem)) in sample(docker) {
-        if running.iter().any(|run| run.id == job) {
-            history.samples.entry(job).or_default().add(cores, mem);
+    let usage = sample(docker);
+    for (job, (cores, mem)) in &usage {
+        if running.iter().any(|run| run.id == *job) {
+            history.samples.entry(*job).or_default().add(*cores, *mem);
         }
     }
     history
         .samples
         .retain(|job, _| running.iter().any(|run| run.id == *job));
+    // A job past its median is hung once its log stopped growing; on a busy local runner, slow.
+    let busy = busy_load();
+    let mut hung = overdue_of(&running, &history.runs, watch);
+    hung.retain_mut(|job| {
+        // GitLab didn't answer: the log as last read, nothing without one.
+        let len = super::ci::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id))
+            .map(|trace| trace.len())
+            .ok()
+            .or_else(|| history.traces.get(&job.id).map(|trace| trace.len));
+        let Some(len) = len else {
+            return false;
+        };
+        job.quiet = history.progress(job.id, len, now);
+        job.load = busy.filter(|_| usage.contains_key(&job.id));
+        job.is_hung(watch)
+    });
+    history.traces.retain(|job, _| running.iter().any(|run| run.id == *job));
     history.prune(watch.history_days, now);
     Some(Report {
         at: now,
         flags: flags_of(&history.runs, watch, now),
-        hung: hung_of(&running, &history.runs, watch),
+        hung,
     })
+}
+
+/// This machine's load (`/proc/loadavg`, the last minute) while it is at
+/// least half its cores: a job of the local runner is slower then.
+fn busy_load() -> Option<f64> {
+    let load: f64 = std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    let cores = std::thread::available_parallelism().map_or(1, usize::from) as f64;
+    (load >= cores / 2.0).then_some(load)
 }
 
 /// What the local runner's job containers use now: job id → (cores, MB). Nothing without docker.
@@ -207,7 +240,7 @@ pub fn plan_text(flag: &Flag) -> String {
 /// The question of a hung job, its id and page to act on.
 pub fn hung_text(hung: &Hung) -> String {
     let url = hung.url.as_deref().map(|url| format!(", {url}")).unwrap_or_default();
-    format!("{}: hung? (job {}{url})", hung.line(), hung.id)
+    format!("{}: {} (job {}{url})", hung.line(), hung.verdict(), hung.id)
 }
 
 /// The report's flags as actions, each once into every orchestration's
@@ -234,12 +267,13 @@ fn post(main: &Path, history: &mut History, report: &Report) {
             NewAction {
                 kind: "decide".into(),
                 text: hung_text(hung),
-                options: vec!["retry".into(), "cancel".into(), "let it run".into()],
+                options: vec!["retry".into(), "cancel".into(), "wait".into()],
                 descriptions: vec![
                     format!("glab ci retry {}", hung.id),
                     format!("glab ci cancel job {}", hung.id),
                     "it may still finish".into(),
                 ],
+                // Only a job whose log stopped is asked about: a retry loses nothing.
                 recommend: Some("retry".into()),
                 ..NewAction::default()
             },
@@ -257,7 +291,8 @@ fn post(main: &Path, history: &mut History, report: &Report) {
         }
         history.posted.insert(key.clone(), posted);
     }
-    // Gone from the report: a slow job's plan stays for the user, a hung job's unanswered question goes.
+    // Gone from the report: a slow job's plan stays for the user, a hung
+    // job's unanswered question goes (it ended, or writes its log again).
     let gone: Vec<String> = history
         .posted
         .keys()
@@ -313,10 +348,20 @@ mod tests {
             elapsed: 1500.0,
             median: 638.0,
             url: Some("https://g/jobs/5".into()),
+            quiet: 70.0,
+            load: None,
         };
         assert_eq!(
             hung_text(&hung),
-            "check:g of !353 runs 25:00, 2.4× its median 10:38: hung? (job 5, https://g/jobs/5)"
+            "check:g of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10: hung? (job 5, https://g/jobs/5)"
+        );
+        let busy = Hung {
+            load: Some(23.6),
+            ..hung
+        };
+        assert_eq!(
+            hung_text(&busy),
+            "check:g of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10: slow: runner at load 24 (job 5, https://g/jobs/5)"
         );
     }
 }
