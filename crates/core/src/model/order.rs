@@ -17,7 +17,7 @@ pub fn place_in(order: &[i64], number: Option<i64>) -> i64 {
 }
 
 /// The automatic follow-ups: a click, not a thought, so they wait under UP NEXT.
-pub const FOLLOW_UPS: [&str; 5] = ["clean up", "pipeline", "end", "hand over", "start"];
+pub const FOLLOW_UPS: [&str; 6] = ["clean up", "pipeline", "end", "hand over", "start", "milestone"];
 /// The kinds of ACTIONS by what blocks most: an agent that stands still, work
 /// only a worktree has, then the merges, then what only looks.
 const BLOCKS: [&str; 10] = [
@@ -70,8 +70,8 @@ pub enum Go {
     },
     /// Opens the spot of a try (try.mjs `clickTry`), or the page of its failed deployment.
     Try { dir: Option<PathBuf>, id: i64 },
-    /// The worktree's space in front.
-    FocusSpace(PathBuf),
+    /// The worktree beside the overview: its nvim in the detail pane, or that pane closed (#406).
+    Detail(PathBuf),
     /// The agent's tab in front.
     FocusAgent(PathBuf),
     /// A page in the browser, in the tab group of a worktree when there is one.
@@ -95,6 +95,8 @@ pub enum Go {
     StartFresh(i64),
     /// Two clicks end the orchestration.
     End,
+    /// `wt:epic <name> --mr`: the milestone MR epic → develop (#402).
+    EpicMr,
     /// The claude open in the tab of the worktree's agent ended once it idles:
     /// its lines run headless again (#386).
     EndHeld(PathBuf),

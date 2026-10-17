@@ -107,6 +107,8 @@ pub struct OrchestrationLocal {
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
     pub spent: crate::spend::Spent,
+    /// The runs paused (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
 }
 
 /// What the writing side keeps between frames: the removals, starts and
@@ -248,6 +250,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The user paused every headless run (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
     /// The Claude usage limit holding the headless runs (#393): `usage limit until 23:30`.
     pub usage: Option<String>,
     /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
@@ -563,7 +567,7 @@ fn actions_of(
                     id: action.id,
                 }
             } else {
-                Go::FocusSpace(tree.dir.clone())
+                Go::Detail(tree.dir.clone())
             };
             let mut item = Item {
                 key: format!("{}#{}", file.display(), action.id),
@@ -633,6 +637,7 @@ fn actions_of(
         items.push(item);
     }
     items.extend(workers.actions.iter().cloned());
+    items.extend(super::milestone::milestone_of(local, remote));
     // The end: once all is merged and no worktree is left.
     let has_next_merge = next_merge(issues, remote, order, turns).is_some();
     if remote.is_some() && local.trees.is_empty() && !issues.iter().any(|issue| issue.is_queued) && !has_next_merge {
@@ -1139,6 +1144,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        paused: local.paused.clone(),
         usage: local.spent.usage.clone(),
         ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
@@ -1400,6 +1406,7 @@ mod tests {
                     work: vec![2, 1],
                     merge: vec![1, 2],
                     why: Some("#1 first".into()),
+                    ..Plan::default()
                 }),
                 ..Default::default()
             }),
@@ -1815,6 +1822,7 @@ mod tests {
                 work: vec![2, 1],
                 merge: vec![1, 2],
                 why: Some("#1 first".into()),
+                ..Plan::default()
             })
         );
         let actions = model.actions.unwrap();

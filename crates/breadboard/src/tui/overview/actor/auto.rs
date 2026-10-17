@@ -276,6 +276,7 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
             Some(plan.work.clone()),
             Some(plan.merge.clone()),
             Some(why),
+            None,
         )
     });
     match written {
@@ -499,7 +500,8 @@ fn about_of(key: &str) -> String {
 fn fallback_text(go: &Go) -> &'static str {
     match go {
         Go::Show { .. } => "opened the page instead",
-        Go::FocusAgent(_) | Go::FocusSpace(_) => "its tab in front instead",
+        Go::FocusAgent(_) => "its tab in front instead",
+        Go::Detail(_) => "shown beside instead",
         _ => "",
     }
 }

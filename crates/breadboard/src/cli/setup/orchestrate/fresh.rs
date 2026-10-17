@@ -398,6 +398,7 @@ mod tests {
                 work: vec![3, 4],
                 merge: vec![3, 4],
                 why: Some("4 builds on 3".into()),
+                ..Plan::default()
             }),
             ..Record::default()
         };

@@ -171,6 +171,13 @@ of your own keeps its claude in a tab (#361).
   starts, the lines wait and the overview says why. Its `continue anyway`,
   or `breadboard runs continue`, lifts it until midnight
   (`.claude/runs/limit.json`).
+- **Pause** (#397): `breadboard runs pause` (or `⏸ pause agents` under the
+  orchestration overview's chat) starts no run until `breadboard runs
+  resume`; runs in flight finish, `--now` ends them and puts their lines
+  back in the queue, `--ci` switches the CI queue off too
+  (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
+  band says `agents paused since 13:05 · N lines waiting`. The state is
+  `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.
 - **The Claude usage limit** (#393): a run whose result is the limit (an
   error with a 429 or the limit's words, `resets 11:30pm`) leaves its
   session `limit` and holds every run until a minute after the reset, or
@@ -185,7 +192,7 @@ of your own keeps its claude in a tab (#361).
   (the usage limit), and `queued` from the queue. The overview reads it as
   herdr's agent states (`working`, `idle`, `blocked`, `queued for a run`,
   `waits for the usage limit`). `breadboard runs`
-  prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
+  prints it, paused or not; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
 ## The main checkout follows develop
 
@@ -212,6 +219,26 @@ overview ends once no merge of its own runs and starts the new binary with
 the same arguments and its folds (the scroll starts at the top); the daemon,
 once no headless run is queued or in flight, gives up its socket and starts
 the new binary in its place.
+
+## The detail pane
+
+A click on a worktree or an MR in the overview splits the overview's pane
+to the right (herdr, half its width) and runs that worktree's nvim there, the
+one of "The nvim tab" below. There is one per overview: a click on another
+worktree ends what runs in it (nvim quits; with unsaved changes it refuses
+and the band says so) and runs that one's nvim in the same pane; a click on
+the worktree it shows, or Esc, closes it. A click on a file opens it there,
+at its line. Keys of the overview switch it:
+
+| Key | What the pane shows |
+| --- | ------------------- |
+| `e` | the worktree's nvim |
+| `t` | the terminal of its newest open try (`wt:action try … --run`) |
+| `l` | its stack's logs, or its dev server while its app is down |
+| `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
+
+The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
+so a reload of the overview finds it again; one herdr closed is forgotten.
 
 ## The nvim tab
 

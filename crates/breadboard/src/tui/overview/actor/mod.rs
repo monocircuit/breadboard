@@ -21,6 +21,7 @@ pub mod auto;
 pub mod browser;
 pub mod chat;
 pub mod checker;
+pub mod detail;
 pub mod end_held;
 pub mod fresh;
 pub mod glab;
@@ -89,6 +90,8 @@ pub struct Actor {
     pub auto: auto::Auto,
     /// The end of the orchestration: armed, running, failed.
     pub end: Option<Run>,
+    /// `wt:epic --mr` of the milestone row (#402): running, or how it ended.
+    pub epic_mr: Option<Run>,
     /// What the last click on the orchestrator's chat did, shown for a while.
     pub chat: Option<String>,
     /// The orchestrator's fresh start (#382): running, or how it ended.
@@ -111,6 +114,8 @@ pub struct Actor {
     pub names: Names,
     /// The prompt a headless agent's `broken` / `different` opened (#359).
     pub prompt: Option<super::actions::Prompt>,
+    /// The pane beside the overview a click on a worktree opens (#406).
+    pub detail: detail::Detail,
 }
 
 impl Actor {
@@ -126,6 +131,7 @@ impl Actor {
             merges: merge::Merges::default(),
             auto: auto::Auto::default(),
             end: None,
+            epic_mr: None,
             chat: None,
             fresh: None,
             fresh_for: None,
@@ -137,6 +143,7 @@ impl Actor {
             did: VecDeque::new(),
             names: Names::default(),
             prompt: None,
+            detail: detail::Detail::new(main, view, is_once),
         }
     }
 

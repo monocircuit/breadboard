@@ -1,11 +1,12 @@
-//! `wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]`
-//! (plan.mjs): the order the orchestrator works and merges its issues in,
-//! printed, and set with the flags. The overview's NEXT and WORK and herdr's
-//! space order read it from the record.
+//! `wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]
+//! [--milestone after <issue>…]` (plan.mjs): the order the orchestrator works
+//! and merges its issues in, printed, and set with the flags. The overview's
+//! NEXT and WORK and herdr's space order read it from the record; UP NEXT
+//! offers the milestone MR once the tasks up to a mark are in the epic (#402).
 
 use super::args::{Takes, fail, first, flag_value, main_dir};
 use breadboard_core::lock::{lock_of, with_dir_lock};
-use breadboard_core::record::{self, Plan, is_name, record_file, record_of};
+use breadboard_core::record::{self, Milestone, Plan, is_name, record_file, record_of};
 use serde_json::Value;
 use std::fs;
 use std::io;
@@ -13,17 +14,20 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime};
 
-const USAGE: &str = "usage: pnpm wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>]";
+const USAGE: &str = "usage: pnpm wt:plan <orchestration> [--work <issue>…] [--merge <issue>…] [--why <text>] [--milestone after <issue>…]
+
+  --milestone after <issue>…   the epic goes to develop after each: once every task up to it
+                               in the merge order is in the epic, UP NEXT offers the milestone MR";
 /// How long the record's `<file>.lock` holds before another takes it over (as actions.json's).
 const LOCK_STALE: Duration = Duration::from_millis(5000);
 
 pub const TAKES: Takes = Takes {
     valued: &["--why"],
-    lists: &["--work", "--merge"],
+    lists: &["--work", "--merge", "--milestone"],
     optional: &[],
     switches: &[],
     words: 1,
-    about: "The order an orchestration works and merges its issues in: printed, and set with the flags. A list flag without issues clears that list.",
+    about: "The order an orchestration works and merges its issues in, and its milestone marks: printed, and set with the flags. A list flag without issues clears that list.",
     usage: USAGE,
 };
 
@@ -48,6 +52,10 @@ pub fn run(args: &[String]) -> ExitCode {
         (Err(value), _) | (_, Err(value)) => return fail(&format!("{value} is no issue number\n{USAGE}")),
     };
     let why = flag_value(args, "--why");
+    let marks = match numbers_after(&without_after(args), "--milestone") {
+        Ok(marks) => marks,
+        Err(value) => return fail(&format!("{value} is no issue number\n{USAGE}")),
+    };
 
     let mut known: Vec<i64> = Vec::new();
     for number in record.issues.iter().filter_map(|issue| issue.number) {
@@ -58,6 +66,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let strangers: Vec<i64> = work
         .iter()
         .chain(merge.iter())
+        .chain(marks.iter())
         .flatten()
         .copied()
         .filter(|number| !known.contains(number))
@@ -70,7 +79,28 @@ pub fn run(args: &[String]) -> ExitCode {
         ));
     }
 
-    let plan = if work.is_some() || merge.is_some() || why.is_some() {
+    // A mark takes the merge order up to it, the one this call sets or the one there.
+    let milestones = match marks {
+        Some(marks) => {
+            let order = merge
+                .clone()
+                .or_else(|| record.plan.as_ref().map(|plan| plan.merge.clone()))
+                .unwrap_or_default();
+            let mut milestones = Vec::new();
+            for after in marks {
+                let Some(mark) = Milestone::in_order(&order, after) else {
+                    return fail(&format!(
+                        "#{after} is not in the merge order of ⇶ {name}: a mark goes after an issue of it ({run} wt:plan {name} --merge <issue>…)",
+                        run = breadboard_core::config::run_word()
+                    ));
+                };
+                milestones.push(mark);
+            }
+            Some(milestones)
+        }
+        None => None,
+    };
+    let plan = if work.is_some() || merge.is_some() || why.is_some() || milestones.is_some() {
         // Under the record's lock, as wt:action --orchestration changes it.
         // Held by another, the wait (up to LOCK_STALE) is said, not a silent hang.
         if let Some(age) = age_of(&lock_of(&record_file(&main, name))) {
@@ -81,7 +111,7 @@ pub fn run(args: &[String]) -> ExitCode {
             );
         }
         let written = with_dir_lock(&record_file(&main, name), LOCK_STALE, || {
-            record::write_plan(&main, name, work, merge, why)
+            record::write_plan(&main, name, work, merge, why, milestones)
         });
         match written {
             Ok(Ok(plan)) => Some(plan),
@@ -133,10 +163,17 @@ fn text_of(name: &str, plan: Option<&Plan>) -> String {
         _ => "not set".to_string(),
     };
     let why = plan.and_then(|plan| plan.why.as_deref()).filter(|why| !why.is_empty());
+    let marks = plan.map(|plan| &plan.milestones[..]).unwrap_or(&[]);
     format!(
-        "\n⇶ {name}\n  work:  {}\n  merge: {}{}\n",
+        "\n⇶ {name}\n  work:  {}\n  merge: {}{}{}\n",
         list(plan.map(|plan| &plan.work)),
         list(plan.map(|plan| &plan.merge)),
+        if marks.is_empty() {
+            String::new()
+        } else {
+            let afters: Vec<i64> = marks.iter().map(|mark| mark.after).collect();
+            format!("\n  milestone after: {}", hashes(&afters, ", "))
+        },
         why.map(|why| format!("\n  why:   {why}")).unwrap_or_default()
     )
 }
@@ -161,6 +198,19 @@ fn numbers_after(args: &[String], flag: &str) -> Result<Option<Vec<i64>>, String
         .map(|value| number_of(value).ok_or_else(|| value.clone()))
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
+}
+
+/// The arguments with the word `after` that follows `--milestone` left out:
+/// `--milestone after #12` reads as the list `#12`.
+fn without_after(args: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    for (at, arg) in args.iter().enumerate() {
+        if arg == "after" && at > 0 && args[at - 1] == "--milestone" {
+            continue;
+        }
+        kept.push(arg.clone());
+    }
+    kept
 }
 
 /// `Number(value.replace(/^#/, ""))` when it is a positive integer.
@@ -191,6 +241,22 @@ mod tests {
     }
 
     #[test]
+    fn a_milestone_reads_after_and_its_issues() {
+        let args = strings(&["x", "--milestone", "after", "#12", "15", "--why", "after"]);
+        assert_eq!(
+            numbers_after(&without_after(&args), "--milestone"),
+            Ok(Some(vec![12, 15]))
+        );
+        let bare = strings(&["x", "--milestone"]);
+        assert_eq!(numbers_after(&without_after(&bare), "--milestone"), Ok(Some(vec![])));
+        let no_after = strings(&["x", "--milestone", "12"]);
+        assert_eq!(
+            numbers_after(&without_after(&no_after), "--milestone"),
+            Ok(Some(vec![12]))
+        );
+    }
+
+    #[test]
     fn says_what_is_wrong_with_a_broken_record() {
         let main = std::env::temp_dir().join(format!("breadboard-plan-broken-{}", std::process::id()));
         let _ = fs::remove_dir_all(&main);
@@ -217,6 +283,7 @@ mod tests {
             work: vec![306, 303],
             merge: vec![],
             why: Some(String::new()),
+            ..Plan::default()
         };
         assert_eq!(
             text_of("breadboard", Some(&plan)),
@@ -228,5 +295,14 @@ mod tests {
         };
         assert!(text_of("breadboard", Some(&plan)).ends_with("  merge: not set\n  why:   first the fix\n"));
         assert_eq!(text_of("b", None), "\n⇶ b\n  work:  not set\n  merge: not set\n");
+        let plan = Plan {
+            merge: vec![3, 4],
+            milestones: vec![Milestone::in_order(&[3, 4], 4).unwrap()],
+            ..Plan::default()
+        };
+        assert_eq!(
+            text_of("b", Some(&plan)),
+            "\n⇶ b\n  work:  not set\n  merge: #3 → #4\n  milestone after: #4\n"
+        );
     }
 }

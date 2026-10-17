@@ -67,23 +67,13 @@ impl State {
 }
 
 /// Where the view's worktree is, for the editor and herdr.
-fn checkout_of<'a>(model: &'a WorktreeModel, main: &'a Path) -> Option<Checkout<'a>> {
+fn checkout_of(model: &WorktreeModel) -> Option<Checkout<'_>> {
     let tree = model.local.tree.as_ref()?;
     Some(Checkout {
         dir: &model.local.dir,
-        main,
         is_main: model.local.is_main,
         feature: &tree.name,
     })
-}
-
-/// A file in the worktree's nvim; the line under the dir says why not.
-pub fn open_file(state: &mut State, model: &WorktreeModel, main: &Path, file: &str, line: Option<u64>) -> Flow {
-    let Some(checkout) = checkout_of(model, main) else {
-        return Flow::Same;
-    };
-    state.nvim = editor::open_file(&checkout, file, line).err();
-    Flow::Redraw
 }
 
 /// A file's hunks under the row clicked; a second click on it closes them,
@@ -231,8 +221,8 @@ pub fn migrate(state: &mut State, dir: &Path) -> Flow {
 }
 
 /// A tool in the tab of its name in the worktree's space; the row says it is on its way.
-pub fn start_tool(state: &mut State, model: &WorktreeModel, main: &Path, name: &str) -> Flow {
-    let Some(checkout) = checkout_of(model, main) else {
+pub fn start_tool(state: &mut State, model: &WorktreeModel, name: &str) -> Flow {
+    let Some(checkout) = checkout_of(model) else {
         return Flow::Same;
     };
     let Some(tool) = model.local.stack.as_ref().and_then(|stack| stack.tool(name)) else {

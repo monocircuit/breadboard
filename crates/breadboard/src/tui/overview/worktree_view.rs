@@ -12,6 +12,7 @@ mod started;
 
 pub use acts::State;
 
+use super::actor::detail::Shows;
 use super::{Act, Ctx, Overview, look};
 use crate::tui::theme::{self, Tone};
 use crate::tui::{Flow, KeyEvent, Page, Scene, Section};
@@ -45,6 +46,9 @@ const MERGES: usize = 6;
 
 /// A click in the view: what it starts is kept in the app's state of the view.
 pub fn act(app: &mut Overview, act: Act) -> Flow {
+    if let Act::OpenFile { file, line, .. } = &act {
+        return open_file(app, file, *line);
+    }
     let Some(Model::Worktree(model)) = &app.model else {
         return Flow::Same;
     };
@@ -56,11 +60,28 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Delete => acts::delete(state, model, &main),
         Act::StartStack(dir) => acts::start_stack(state, &dir),
         Act::Migrate(dir) => acts::migrate(state, &dir),
-        Act::Tool(_, name) => acts::start_tool(state, model, &main, &name),
-        Act::OpenFile { file, line, .. } => acts::open_file(state, model, &main, &file, line),
+        Act::Tool(_, name) => acts::start_tool(state, model, &name),
         Act::Hunks { file, at, is_whole } => acts::toggle_hunks(state, file, at, is_whole),
         _ => Flow::Same,
     }
+}
+
+/// A file in the detail pane's nvim (#406); the line under the dir says why
+/// a file can't be opened, the band what the pane did.
+fn open_file(app: &mut Overview, file: &str, line: Option<u64>) -> Flow {
+    let Some(Model::Worktree(model)) = &app.model else {
+        return Flow::Same;
+    };
+    let dir = model.local.dir.clone();
+    match editor::at_of(&dir, file, line) {
+        Ok(at) => {
+            app.worktree.nvim = None;
+            let (main, detail) = (app.actor.main.clone(), app.actor.detail.clone());
+            super::act::in_detail(app, move || detail.show(&main, &dir, Shows::Editor, Some(at)));
+        }
+        Err(why) => app.worktree.nvim = Some(why),
+    }
+    Flow::Redraw
 }
 
 /// Tab moved the pick: hunks that show follow it to the file of its row (acts.rs `follow`).
