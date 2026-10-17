@@ -125,6 +125,20 @@ and a reboot. `resume` runs every waiting line, one run per agent, and
 switches the CI queue on again if the pause switched it off. Never end runs
 or daemons by hand to pause.
 
+**A headless agent waits only through a line** (#417). A background command
+(a backgrounded Bash call, a Monitor) is stopped when its run ends, and its
+notification never comes: an agent runs `wt:check`, the gauntlet and builds
+in the foreground, and waits for something external only with `wt:wait`,
+never with a background command and "I'll wait". The engine wakes one that
+does anyway: a run that ends with a background task still running (from its
+stream) leaves `.claude/wake.json` in its worktree, and once the processes it
+left behind (they carry `BREADBOARD_RUN=<id>`) are gone, at the latest after
+15 min, the line `[breadboard] your background command finished: <cmd>,
+continue. …` is queued. A run whose last answer says it waits, with no
+`wt:wait` recorded and no open action, gets its line after 15 min (not a
+second time in a row); until then its node says `waits on itself since
+00:25`. A run or a queued line before drops the wake.
+
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
 runs `cd <worktree> && claude --resume <id> --name <feature>` in the

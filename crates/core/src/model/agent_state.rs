@@ -75,7 +75,7 @@ pub const RUN_LIMIT: &str = "run-limit";
 pub const NOT_READY: &str = "not ready to merge: its MR row says why";
 
 /// What an agent waits for, the first that holds: at work; queued for a run; the usage limit; asks you; waits
-/// for the pipeline; pipeline failed; waits for you (its open actions, the
+/// on itself (#417); waits for the pipeline; pipeline failed; waits for you (its open actions, the
 /// merge while its turn offers it, #344); waits for the MRs its turn comes
 /// after; checks open; done without a known turn; waits for other MRs; the
 /// next issue announced; change requested; not pushed; free.
@@ -113,6 +113,15 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         .is_some();
     if *status == Some("blocked") || is_asking {
         return state("asks", "asks you", Tone::You);
+    }
+    // Its run ended saying it waits, with nothing recorded to end that (#417): the engine wakes it,
+    // even one that said it waits for its pipeline, as its end alone wakes nobody.
+    if let Some(wake) = tree.wake.as_ref().filter(|wake| wake.kind == crate::wake::Kind::Itself) {
+        return state(
+            "itself",
+            format!("waits on itself since {}", crate::time::hm(wake.since)),
+            Tone::Work,
+        );
     }
     let is_open = mr.is_some_and(|mr| mr.is_open());
     let pipeline = mr.and_then(|mr| mr.pipeline_status());
@@ -513,6 +522,40 @@ mod tests {
         };
         assert_eq!(agent_state_of(&tree(), &facts).text, "→ next #226 after !232");
         assert_eq!(agent_state_of(&waiting, &facts).text, "waits for !271, !272");
+    }
+
+    #[test]
+    fn says_an_agent_waits_on_itself() {
+        let since = crate::time::now_ms();
+        let wake = |kind| crate::wake::Wake {
+            kind,
+            session: "c1".into(),
+            since,
+            due: since + 1,
+            commands: Vec::new(),
+            pids: Vec::new(),
+        };
+        let facts = Facts {
+            status: Some("idle"),
+            ..Default::default()
+        };
+        let itself = Tree {
+            wake: Some(wake(crate::wake::Kind::Itself)),
+            ..tree()
+        };
+        assert_eq!(
+            agent_state_of(&itself, &facts),
+            state(
+                "itself",
+                format!("waits on itself since {}", crate::time::hm(since)),
+                Tone::Work
+            )
+        );
+        let background = Tree {
+            wake: Some(wake(crate::wake::Kind::Background)),
+            ..tree()
+        };
+        assert_eq!(agent_state_of(&background, &facts).key, "free");
     }
 
     #[test]
