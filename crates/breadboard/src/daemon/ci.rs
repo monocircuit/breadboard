@@ -302,6 +302,11 @@ pub(super) fn glab_post(main: &Path, glab: &str, endpoint: &str) -> Result<serde
     glab_api(main, glab, &["api", "--method", "POST", endpoint])
 }
 
+/// `glab api --method PUT <endpoint>` as the user, from the main checkout: its JSON.
+pub(super) fn glab_put(main: &Path, glab: &str, endpoint: &str) -> Result<serde_json::Value, String> {
+    glab_api(main, glab, &["api", "--method", "PUT", endpoint])
+}
+
 fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Value, String> {
     let spawn = || {
         Command::new(glab)
