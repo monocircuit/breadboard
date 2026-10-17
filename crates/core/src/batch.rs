@@ -202,6 +202,77 @@ pub fn planned_of(main: &Path, product: &str) -> Option<Batch> {
         .flatten()
 }
 
+/// The branch an orchestration's head row and GitLab read are about: its
+/// epic still open (#350), else its product's batch (#411); None on develop.
+pub fn branch_of_record(main: &Path, record: &crate::record::Record) -> Option<String> {
+    crate::epic::epic_of(&record.raw).or_else(|| {
+        let product = record.product.as_deref()?;
+        planned_of(main, product).map(|batch| batch.branch)
+    })
+}
+
+/// The files `batch` conflicts with origin's `develop` in, as the clone
+/// fetched both (a hotfix that went past it, #411): None when develop is in
+/// the batch already or the two merge cleanly, or git can't tell.
+pub fn conflicts_with_develop(main: &Path, batch: &str, develop: &str) -> Option<Vec<String>> {
+    let (batch, develop) = (
+        format!("refs/remotes/origin/{batch}"),
+        format!("refs/remotes/origin/{develop}"),
+    );
+    if git(main, &["merge-base", "--is-ancestor", &develop, &batch]).is_ok {
+        return None;
+    }
+    let out = git(
+        main,
+        &[
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--no-messages",
+            &batch,
+            &develop,
+        ],
+    );
+    // 1: conflicts, the tree's id first and the files after it; anything else is no conflict git names.
+    (out.status == 1)
+        .then(|| out.lines().skip(1).map(String::from).collect::<Vec<_>>())
+        .filter(|files| !files.is_empty())
+}
+
+/// What the daemon last looked at of a product's batch, kept in the store
+/// (`batch-<product>.json`): one look per pair of heads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Looked {
+    pub batch: String,
+    pub develop: String,
+}
+
+pub fn looked_file(store: &Path, product: &str) -> std::path::PathBuf {
+    store.join(format!("batch-{product}.json"))
+}
+
+pub fn read_looked(store: &Path, product: &str) -> Looked {
+    std::fs::read_to_string(looked_file(store, product))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_looked(store: &Path, product: &str, looked: &Looked) {
+    if let Ok(text) = serde_json::to_string(looked) {
+        let _ = std::fs::write(looked_file(store, product), text + "\n");
+    }
+}
+
+/// The heads of `batch` and `develop` on origin as the clone knows them.
+pub fn heads_of(main: &Path, batch: &str, develop: &str) -> Looked {
+    Looked {
+        batch: remote_head(main, batch).unwrap_or_default(),
+        develop: remote_head(main, develop).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +352,30 @@ mod tests {
         );
         // The product's other fields stay.
         assert_eq!(current_of(&main, "vita"), None);
+    }
+
+    #[test]
+    fn a_hotfix_in_develop_conflicts_with_the_batch_or_not() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        ensure_current(&main, "vita", "develop", false).unwrap();
+        let commit = |base: &str, to: &str, file: &str, text: &str| {
+            run(&main, &["checkout", "--quiet", "--detach", base]);
+            std::fs::write(main.join(file), text).unwrap();
+            run(&main, &["add", file]);
+            run(&main, &["commit", "--quiet", "-m", "feat: x"]);
+            run(&main, &["push", "--quiet", "origin", &format!("HEAD:refs/heads/{to}")]);
+            run(&main, &["fetch", "--quiet", "origin"]);
+        };
+        assert_eq!(conflicts_with_develop(&main, "batch/vita-1", "develop"), None);
+        commit("origin/batch/vita-1", "batch/vita-1", "README.md", "the batch\n");
+        commit("origin/develop", "develop", "other.md", "a hotfix\n");
+        assert_eq!(conflicts_with_develop(&main, "batch/vita-1", "develop"), None, "clean");
+        commit("origin/develop", "develop", "README.md", "a hotfix\n");
+        assert_eq!(
+            conflicts_with_develop(&main, "batch/vita-1", "develop"),
+            Some(vec!["README.md".to_string()])
+        );
     }
 
     #[test]
