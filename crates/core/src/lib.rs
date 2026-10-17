@@ -28,3 +28,4 @@ pub mod spend;
 pub mod stack;
 pub mod time;
 pub mod wait;
+pub mod wake;

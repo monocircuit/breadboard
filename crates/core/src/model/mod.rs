@@ -213,6 +213,8 @@ pub struct Tree {
     /// Commits develop doesn't have by patch (`git cherry`).
     pub own_commits: usize,
     pub wait: Option<Wait>,
+    /// What wakes its headless agent whose run ended with nothing else to (#417).
+    pub wake: Option<crate::wake::Wake>,
     /// Its MR's merge turn as the orchestration's overview left it, for herdr's sidebar (#344).
     pub merge_turn: Option<merge_turn::TurnRecord>,
     pub change: Option<Change>,

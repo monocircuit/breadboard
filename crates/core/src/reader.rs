@@ -331,6 +331,7 @@ impl LocalReader {
         let other = [
             "actions.json",
             "wait.json",
+            "wake.json",
             "origin",
             "checked.json",
             "merge-turn.json",

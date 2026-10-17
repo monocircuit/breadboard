@@ -57,6 +57,7 @@ pub fn brief_of(
 You work on issue #{number} of {repo}, started by the orchestration `{name}` (herdr space `{label}`).
 {worktree}
 You run headless: breadboard resumes your conversation (`claude -p`) whenever something comes for you, and nothing runs while you wait. Every line for you (an answer, a merge, a failed pipeline, the end of a wait) starts your next run; when you stop, you are done until then.
+Run long commands (`{run} wt:check`, the gauntlet, builds) in the foreground: a background command or Monitor is stopped when your run ends, and its notification never reaches you. To wait for something external use `{run} wt:wait`; never end a run with "I'll wait for …".
 
 1. Read the issue: `glab issue view {number} --comments`, then the AGENTS.md files and skills it touches.
 2. Work as AGENTS.md says: commit, `{run} wt:check`, push per step (green means wt:check passed on that commit: the pre-push hook refuses any other, never `--no-verify`; a failing test is fixed; one that fails on {branch_name} too is fixed once, in its own fix MR, and the others wait for it with `{run} wt:wait`), the draft MR with the first commit (`{run} wt:mr`), boxes ticked with `{run} wt:tick`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
@@ -133,6 +134,8 @@ mod tests {
         assert!(brief.contains("\nYou run headless: breadboard resumes your conversation (`claude -p`)"));
         assert!(brief.contains("\n   A tool call auto mode would ask the user about is denied in your run"));
         assert!(!brief.contains("run_in_background"));
+        // A background command dies with the run (#417): long ones in the foreground.
+        assert!(brief.contains("\nRun long commands (`breadboard wt:check`, the gauntlet, builds) in the foreground:"));
         assert!(!brief.contains("this tab"));
         assert!(brief.contains("You come from another worktree: before any work `git rev-parse --show-toplevel` prints `/r/p-12-a-title`; when it prints another directory, `ExitWorktree(action: \"keep\")`, then `EnterWorktree(path: \"/r/p-12-a-title\")`, once."));
         assert!(brief.contains("   The orchestrator is the session `s-1` (`ListAgents`).\n"));
