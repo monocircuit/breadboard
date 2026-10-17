@@ -98,6 +98,10 @@ pub enum Fold {
     MrBoxes(i64),
     /// The boxes under a worktree's node, by its issue (#346).
     TreeBoxes(i64),
+    /// Where a worktree's work collides, by its issue (#390).
+    Collides(i64),
+    /// The whole problem of a worktree's issue, past its first two lines (#390).
+    Problem(i64),
 }
 
 /// Opens what was folded, folds what was open.
@@ -139,9 +143,13 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
                 Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
+                Fold::Collides(number) => toggle(&mut folds.boxes.collides, number),
+                Fold::Problem(number) => toggle(&mut folds.boxes.problems, number),
             }
-            if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
-                && let Some(file) = &app.folds_file
+            if matches!(
+                fold,
+                Fold::MrBoxes(_) | Fold::TreeBoxes(_) | Fold::Collides(_) | Fold::Problem(_)
+            ) && let Some(file) = &app.folds_file
             {
                 app.folds.boxes.write(file);
             }
