@@ -331,12 +331,14 @@ impl LocalReader {
         let other = [
             "actions.json",
             "wait.json",
+            "wake.json",
             "origin",
             "checked.json",
             "merge-turn.json",
             "herdr-session",
             "overview-sent.json",
             "note.json",
+            "try-checks.json",
         ]
         .iter()
         .map(|name| claude.join(name))
@@ -991,10 +993,13 @@ pub fn model_of(local: &Local, remote: Option<&RemoteOf>, state: &mut ViewState,
 
 /// The agents by conversation: the run engine's status table (#358, an
 /// agent is a session that runs only when something is queued for it), and
-/// over it herdr's panes, where a click opened one in a tab (#361).
+/// over it herdr's panes, where a click opened one in a tab (#361); one
+/// such whose lines wait past ten minutes `held` (#386).
 fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent> {
     let mut agents = crate::runs::agents_of(main);
     agents.extend(herdr::agents_in(panes));
+    let queue: crate::runs::Queue = crate::runs::read_or_default(&crate::runs::queue_file(main));
+    crate::runs::mark_held(&mut agents, &queue, crate::time::now_ms());
     agents
 }
 

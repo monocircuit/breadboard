@@ -473,6 +473,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.left = left_in(&dir, claudes, bound_session(&dir).as_deref());
     tree.actions = actions_of(&file);
     tree.answered = answered_of(&file);
+    tree.checks = crate::try_check::checks_of(&dir);
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
     tree.on_base = git::on_base(&dir, &tree.files);
@@ -484,6 +485,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.behind = behind_base(&dir);
     tree.own_commits = own_commits(&dir, &tree.branch);
     tree.wait = wait_of(&dir);
+    tree.wake = crate::wake::wake_of_dir(&dir);
     tree.merge_turn = crate::model::merge_turn::turn_record_of(&dir);
     let push = push_state(&dir, Some(&tree.branch));
     tree.pushed = push.pushed;
@@ -510,7 +512,7 @@ pub fn chat_status(main: &Path, name: &str, chat: Option<&RecordChat>, all: &[he
         return None;
     }
     let session_id = chat.map(|chat| chat.session_id.clone());
-    let label = record::orchestrator_label(main, name);
+    let label = record::space_label_of(main, name);
     let Some(space) = herdr::spaces().into_iter().find(|space| space.label == label) else {
         return Some(Chat {
             state: ChatState::Gone,

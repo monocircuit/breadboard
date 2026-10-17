@@ -580,6 +580,11 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         if !run_inherit("git", &["branch", "-D", branch], &repo.main) {
             return fail(format!("git branch -D {branch} failed"));
         }
+        // Merged and gone: its snapshots are of no use any more (#395).
+        let pruned = breadboard_core::snapshot::prune(&repo.main, now_ms());
+        if !pruned.is_empty() {
+            step(&format!("{} snapshot(s) of uncommitted work pruned", pruned.len()));
+        }
         // Its claim on origin too, while empty: the issue can start again (#272).
         let remote = format!("refs/remotes/origin/{branch}");
         let is_on_origin = git(&repo.main, &["rev-parse", "--verify", "--quiet", &remote], None).is_ok;

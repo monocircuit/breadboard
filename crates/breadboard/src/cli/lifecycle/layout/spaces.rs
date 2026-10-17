@@ -19,7 +19,9 @@ pub fn space_of(repo: &Repo, dir: &Path) -> Option<String> {
 }
 
 /// The main space: `root`, `overview` and `changelog`; a tab `develop` of
-/// before is renamed `root`. None when herdr does not answer.
+/// before is renamed `root`. With products (#405) only `root` and
+/// `overview`: the changelog is in each product's space, the main space's
+/// of before closes. None when herdr does not answer.
 pub fn main_space(repo: &Repo) -> Option<String> {
     let main = repo.main.as_path();
     let workspace = ensure_space(
@@ -58,6 +60,21 @@ pub fn main_space(repo: &Repo) -> Option<String> {
         },
         &tabs,
     );
+    if repo.has_products() {
+        let changelogs: Vec<&Value> = tabs.iter().filter(|tab| s(tab, "label") == CHANGELOG).collect();
+        if !changelogs.is_empty() {
+            let panes = herdr::panes_of(&workspace);
+            let current = herdr::current_pane();
+            for tab in changelogs
+                .into_iter()
+                .filter(|tab| !is_busy(tab, &panes, current.as_ref()))
+            {
+                did(&["tab", "close", s(tab, "tab_id")]);
+            }
+        }
+        keep_order(&workspace, &[ROOT, OVERVIEW]);
+        return Some(workspace);
+    }
     ensure_tab(
         &workspace,
         &Want {

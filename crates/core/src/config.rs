@@ -36,6 +36,18 @@ pub struct Config {
     pub releases: Vec<Release>,
     /// What breadboard watches of the project's CI (#379).
     pub ci: Ci,
+    /// The products of a monorepo (#405): each one herdr space holding its
+    /// orchestrations; by name.
+    pub products: std::collections::BTreeMap<String, Product>,
+}
+
+/// A product of the repo (`[products.vita]`, #405): its folders. An
+/// orchestration of it works in one herdr space with the product's others.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Product {
+    /// The folders that are the product's.
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -412,6 +424,9 @@ pub struct Tries {
     pub deploy_job: Option<String>,
     /// The last step where a pipeline has no `deploy_job`.
     pub publish_job: Option<String>,
+    /// The model that checks and answers a try while its orchestration's
+    /// auto mode is on (#384): `claude -p --model <it>`.
+    pub checker: String,
 }
 
 /// The main checkout keeps itself on the default branch (#348): the daemon
@@ -447,6 +462,7 @@ impl Default for Tries {
             deploy_jobs: Vec::new(),
             deploy_job: None,
             publish_job: None,
+            checker: "haiku".into(),
         }
     }
 }
@@ -689,6 +705,17 @@ impl Config {
         if !self.main_checkout.install_when.is_empty() && self.main_checkout.install.is_none() {
             return bad("main_checkout.install_when", "needs an `install` to run");
         }
+        for (name, product) in &self.products {
+            if !is_product_name(name) {
+                return bad(
+                    &format!("products.{name}"),
+                    "must be a name of letters, digits, - and _ (it labels a herdr space)",
+                );
+            }
+            if product.paths.is_empty() {
+                return bad(&format!("products.{name}.paths"), "must name at least one folder");
+            }
+        }
         for (at, test) in self.mr.tests.iter().enumerate() {
             for path in &test.paths {
                 // Parsed, not compiled: a compile of each was a sixth of every start's work (#342).
@@ -703,6 +730,14 @@ impl Config {
         Ok(())
     }
 
+    /// The product an issue's milestone names (`vita · Epic 12: …` → vita),
+    /// when the file has it (#405).
+    pub fn product_of_milestone(&self, milestone: &str) -> Option<String> {
+        let (name, _) = milestone.split_once(" · ")?;
+        let name = name.trim();
+        self.products.contains_key(name).then(|| name.to_string())
+    }
+
     /// The branch named, else None (the caller asks origin).
     pub fn branch(&self) -> Option<&str> {
         self.repo.default_branch.as_deref()
@@ -712,6 +747,11 @@ impl Config {
     pub fn command(&self, command: &str) -> String {
         format!("{} {command}", self.repo.run.as_deref().unwrap_or("breadboard"))
     }
+}
+
+/// A product's name labels its herdr space: letters, digits, - and _.
+fn is_product_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 impl Epic {
@@ -1143,6 +1183,28 @@ mod tests {
         assert_eq!(error, "main_checkout.every_minutes: must be 1 or more");
         let error = Config::parse("[main_checkout]\ninstall_when = [\"x.lock\"]\n").unwrap_err();
         assert_eq!(error, "main_checkout.install_when: needs an `install` to run");
+    }
+
+    #[test]
+    fn a_product_is_named_by_its_milestone() {
+        let config = Config::parse("[products.vita]\npaths = [\"products/vita\"]\n").unwrap();
+        assert_eq!(config.products["vita"].paths, ["products/vita"]);
+        assert_eq!(
+            config.product_of_milestone("vita · Epic 12: The app").as_deref(),
+            Some("vita")
+        );
+        assert_eq!(
+            config.product_of_milestone("breadboard · Epic 15: The dev workflow"),
+            None
+        );
+        assert_eq!(config.product_of_milestone("vita"), None);
+        let error = Config::parse("[products.vita]\npaths = []\n").unwrap_err();
+        assert_eq!(error, "products.vita.paths: must name at least one folder");
+        let error = Config::parse("[products.\"a b\"]\npaths = [\"x\"]\n").unwrap_err();
+        assert!(error.starts_with("products.a b: must be a name"), "{error}");
+        let Some(text) = platform() else { return };
+        let products = Config::parse(&text).unwrap().products;
+        assert_eq!(products.keys().collect::<Vec<_>>(), ["breadboard", "vita"]);
     }
 
     #[test]

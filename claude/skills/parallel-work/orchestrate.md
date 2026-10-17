@@ -27,6 +27,7 @@ spaces stay empty.
 | ------ | ---- |
 | `<name>` | kebab-case, names the orchestration: the space `⇶ <name>`, the origin of its worktrees |
 | `--title "<text>"` | what the overview's title band, the space and the sidebar show instead: `⇶ <title>` (e.g. `@acme/web`). Recorded, so a later run keeps it; `wt:orchestrate <name> --title "…"` alone changes it. Commands, files and `SendMessage` keep the name |
+| `--product <name>` | the product of `breadboard.toml` it belongs to (#405): it works in the product's space with the product's other orchestrations. Without it the issues' milestone names it (`vita · …` → `vita`); recorded |
 | `<issue>` | a number (the worktree is named after the issue's title, `fix/` with the label `bug`), or `<n>-<feature>` to name it yourself |
 | `--shared` | every worktree on the shared stack: for issues that never start the app (~1 GB RAM less each) |
 | `--queue` | start none: the overview hands each to a free agent (the one that knows its files first), else starts a fresh one by itself, memory permitting, in the work order of `wt:plan` |
@@ -38,7 +39,7 @@ What it does, in this order:
 
 1. Reads every issue. Closed ones, ones another branch claims and ones with a
    worktree already are skipped and listed; nothing to start stops here.
-2. Opens the space `⇶ <name>` (`root`, `overview`, `orchestrator`,
+2. Opens the space `⇶ <name>`, or its product's (`<product>`), (`root`, `overview`, `orchestrator`,
    `changelog` and `changes`, see The changelog) and
    moves the tab it runs in there: the orchestrator's own tab. That happens only
    when the space has no orchestrator yet and the calling tab is nobody's:
@@ -107,6 +108,20 @@ state the overview and the sidebar show (the table replaces herdr's state of
 a pane): `running` (a run in flight), `idle`, `asks` (its last run was
 denied a tool and waits for the user, see Permissions) and `queued` (lines
 wait for memory, or for its tab, below).
+
+**A headless agent waits only through a line** (#417). A background command
+(a backgrounded Bash call, a Monitor) is stopped when its run ends, and its
+notification never comes: an agent runs `wt:check`, the gauntlet and builds
+in the foreground, and waits for something external only with `wt:wait`,
+never with a background command and "I'll wait". The engine wakes one that
+does anyway: a run that ends with a background task still running (from its
+stream) leaves `.claude/wake.json` in its worktree, and once the processes it
+left behind (they carry `BREADBOARD_RUN=<id>`) are gone, at the latest after
+15 min, the line `[breadboard] your background command finished: <cmd>,
+continue. …` is queued. A run whose last answer says it waits, with no
+`wt:wait` recorded and no open action, gets its line after 15 min (not a
+second time in a row); until then its node says `waits on itself since
+00:25`. A run or a queued line before drops the wake.
 
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
@@ -312,20 +327,27 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   MR's pipeline passed and no try or acceptance box is open, else `checks
   open: …`), `waits for !N` (wt:wait), `→ next #N after !M` (an announced
   handover), `change requested`, `not pushed: N commits`, else `free` (or
-  `no agent`). Coloured by whom it waits for, in herdr's theme colours: at
-  work yellow, GitLab blue, you red, free teal;
+  `no agent`); a done MR that still lacks something names its first
+  blocker (`conflicts with develop`, `waits for !N`, #416). Coloured by
+  whom it waits for, in herdr's theme colours: at work yellow, GitLab
+  blue, you red, free teal;
 - **title**: the MR's, with `ready to merge` (`merging …`, `merged`) or a
   merged one's age at the right;
 - **bar** of its issue's boxes (#294): `9/12 boxes · work 9/9 · acceptance 0/3`;
-- **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`):
-  the button `resolve merge conflicts` while GitLab reports some (its click
+- **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`;
+  `you` only for your steps: merge clicks, tries, decides): the button
+  `resolve merge conflicts` with GitLab's `conflicts with develop (files…)
+  → agent` in red while GitLab reports some, its last answer kept while it
+  rechecks the same head (#416) (its click
   queues the order to merge its base in, resolve, check and push for the
   MR's agent; grey with the reason when it can't help; after a
   click the block says where it stands: `queued for its agent (at work)`,
   `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
   resolved`, #290), `checking for conflicts …` (GitLab lacks the pushed
   head), `GitLab rechecks mergeability …` (GitLab hasn't computed it: the
-  overview asks it to, #391), the reasons; nothing when nothing lacks;
+  overview asks it to, #391), the reasons (`push blocked: develop red
+  (<test>) → a hotfix on develop` when wt:check fails on a test develop's
+  pipeline fails too, #416); nothing when nothing lacks;
 - **facts**: its issue, work, whether its HEAD passed `{{run}} wt:check`
   (`✓ tested <sha>`, `untested: N commits`, `checking…`, `✗ tests failed:
   <package> (<tests>)`, #298), its agent (`agent <name>` when it isn't the

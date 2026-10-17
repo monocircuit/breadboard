@@ -1,7 +1,7 @@
 //! `pnpm wt:orchestrate` (commands/orchestrate.mjs, handover.mjs): one
 //! session orchestrates several issues, each in its own worktree with a
 //! briefed claude; `--to` hands one to an idle agent (`--after`: once MRs are
-//! merged), `--title`, `--end`, `--changelog [--watch]`, `--changes`.
+//! merged), `--title`, `--auto on|off`, `--end`, `--changelog [--watch]`, `--changes`.
 
 mod changes;
 mod end;
@@ -9,6 +9,7 @@ mod epic;
 mod fresh;
 mod heal;
 mod issue;
+mod product;
 pub mod setups;
 mod space;
 mod workers;
@@ -26,13 +27,14 @@ use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
        pnpm wt:orchestrate <name> --fresh
        pnpm wt:orchestrate <name> --changelog [--watch]
-       pnpm wt:orchestrate <name> --changes";
+       pnpm wt:orchestrate <name> --changes
+       pnpm wt:orchestrate <name> --auto on|off";
 
 /// `--after`'s values and where they stand, the MRs in them: the handover's
 /// reading, one for `--queue --after` and `--to … --after`.
@@ -42,7 +44,9 @@ use crate::cli::lifecycle::handover::{after_args, parse_after};
 pub const SHAPE: Shape = Shape::new(
     &[
         "--title",
+        "--auto",
         "--epic",
+        "--product",
         "--shared",
         "--peer",
         "--brief",
@@ -64,7 +68,16 @@ pub const SHAPE: Shape = Shape::new(
         "--mr",
     ],
     &[
-        "--title", "--epic", "--peer", "--brief", "--to", "--limit", "--retire", "--mr",
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--peer",
+        "--brief",
+        "--to",
+        "--limit",
+        "--retire",
+        "--mr",
     ],
     None,
     USAGE,
@@ -109,10 +122,11 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
 
 /// The flags a form that only ends, reads or watches takes besides its own:
 /// `--end --dry-run` would end it for real, so any other is refused.
-const FORMS: [(&str, &[&str]); 4] = [
+const FORMS: [(&str, &[&str]); 5] = [
     ("--end", &[]),
     ("--changelog", &["--watch"]),
     ("--changes", &[]),
+    ("--auto", &["--dry-run"]),
     ("--fresh", &[]),
 ];
 
@@ -132,7 +146,16 @@ fn stray_flag(args: &Args) -> Option<String> {
 pub fn command(args: &Args) -> ExitCode {
     let argv = &args.all;
     let after = after_args(argv);
-    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--epic"];
+    let valued = [
+        "--peer",
+        "--brief",
+        "--to",
+        "--limit",
+        "--title",
+        "--epic",
+        "--auto",
+        "--product",
+    ];
     // The words, wherever the flags stand (`--dry-run breadboard 301`): the
     // orchestration, then its issues; the MRs after `--after` are none.
     let positional: Vec<&String> = argv
@@ -169,6 +192,17 @@ pub fn command(args: &Args) -> ExitCode {
         }
         crate::cli::setup::heal_plugin();
         return end::command(name.as_deref().unwrap_or_default());
+    }
+    if args.has("--auto") {
+        if !is_valid {
+            refuse_name();
+        }
+        let is_on = match args.value("--auto").as_deref() {
+            Some("on") => true,
+            Some("off") => false,
+            _ => fail(&format!("--auto takes on or off\n{USAGE}")),
+        };
+        return set_auto(name.as_deref().unwrap_or_default(), is_on, args.has("--dry-run"));
     }
     if args.has("--fresh") {
         if !is_valid {
@@ -311,6 +345,12 @@ pub fn command(args: &Args) -> ExitCode {
         Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
         Ok(None) => {}
         Err(why) => fail(&format!("no epic branch: {why}")),
+    }
+    // Its product before its space opens: the product's space is its space (#405).
+    match product::ensure_product(&name, &plan, args.value("--product").as_deref(), is_dry) {
+        Ok(Some(product)) => outln!("  product {product}: its space is the product's, with its other orchestrations"),
+        Ok(None) => {}
+        Err(why) => fail(&why),
     }
     // Its checkout up to its base, its briefs naming the base each worktree has (#380).
     if !is_dry {
@@ -612,6 +652,32 @@ pub fn command(args: &Args) -> ExitCode {
 }
 
 /// `wt:orchestrate <name> --title "<text>"`: the title into the record, its space and marks renamed.
+/// `wt:orchestrate <name> --auto on|off` (#384): the orchestration's auto
+/// mode into its record; while on, a checker answers its tries. The title
+/// band's chip switches it too.
+fn set_auto(name: &str, is_on: bool, is_dry: bool) -> ExitCode {
+    let main = repo::main_dir();
+    let label = record::orchestrator_label(&main, name);
+    let word = if is_on { "on" } else { "off" };
+    if is_dry {
+        outln!("\n▸ nothing was done (--dry-run): auto mode of {label} → {word}\n");
+        return ExitCode::SUCCESS;
+    }
+    if let Err(error) = record::update_record(&main, name, object(json!({ "auto": is_on }))) {
+        fail(&format!(
+            "couldn't write {}: {error}",
+            record::record_file(&main, name).display()
+        ));
+    }
+    let what = if is_on {
+        "a checker answers its tries"
+    } else {
+        "its tries wait for you"
+    };
+    outln!("\n✓ auto mode of {label} {word}: {what}\n");
+    ExitCode::SUCCESS
+}
+
 fn retitle(name: &str, title: &str, is_dry: bool) -> ExitCode {
     let main = repo::main_dir();
     let before = record::orchestrator_label(&main, name);

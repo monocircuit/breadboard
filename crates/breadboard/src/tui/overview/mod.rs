@@ -1,5 +1,7 @@
-//! `breadboard overview [--orchestration <name> | --worktree <dir>] [--once]
-//! [--herdr]`: the three views of the overview on the frame of `tui`.
+//! `breadboard overview [--orchestration <name> | --product <name> |
+//! --worktree <dir>] [--once] [--herdr]`: the views of the overview on the
+//! frame of `tui`; a product's (#405) holds each of its orchestrations' as a
+//! section (`product`).
 //!
 //! The readers run beside the view: the local one on a thread of its own
 //! (git, herdr and the disk block), every 2 s but only when a file it reads
@@ -34,6 +36,7 @@ mod look;
 mod merge_requests;
 mod next;
 mod overall;
+mod product;
 mod work;
 mod worktree_view;
 mod worktrees;
@@ -67,6 +70,8 @@ pub struct Args {
     pub is_once: bool,
     /// The main space's overview keeps herdr in step (`--herdr`): the actor's piece.
     pub is_herdr: bool,
+    /// `--product <name>` (#405): every orchestration of the product, each a section.
+    pub product: Option<String>,
 }
 
 /// `--orchestration <name>` wins over `--worktree <dir>`; a flag without its
@@ -89,6 +94,7 @@ pub fn args_of(args: &[String], cwd: &Path) -> Args {
         view,
         is_once: args.iter().any(|arg| arg == "--once"),
         is_herdr: args.iter().any(|arg| arg == "--herdr"),
+        product: value("--product").flatten(),
     }
 }
 
@@ -105,9 +111,16 @@ pub fn main(args: &[String]) -> ExitCode {
     let main = reader.main.clone();
     let _ = std::env::set_current_dir(&main);
     look::init(&main);
+    if let Some(name) = &args.product {
+        return product::main(name, &args, &main, &cwd);
+    }
     let mut app = Overview::new(&args, &main);
     if args.is_once {
-        return once(app, reader);
+        let code = once(&mut app, reader);
+        if code == ExitCode::SUCCESS {
+            print!("{}", view::once(&app, super::columns()));
+        }
+        return code;
     }
     // The folds of the overview this one replaced (#348): it went on in a new build.
     if let Some(folds) = std::env::var(RESUME)
@@ -129,21 +142,8 @@ pub fn main(args: &[String]) -> ExitCode {
         }
     };
     let (sender, models) = mpsc::unbounded_channel();
-    let (asks, asked) = watch::channel(None);
-    let (refresh, refreshes) = mpsc::unbounded_channel();
-    app.refresh = Some(refresh);
-    let (wake, woken) = std::sync::mpsc::sync_channel(1);
-    app.wake_local = Some(wake);
-    act::start(&mut app, sender.clone());
     daemon::client::share_reads();
-    read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
-    runtime.spawn(read_gitlab(
-        main,
-        view_key(&args.view),
-        asked,
-        refreshes,
-        sender.clone(),
-    ));
+    start_reading(&mut app, reader, runtime.handle(), &sender);
     let replaced = std::sync::Arc::new(binary);
     runtime.spawn(watch_binary(replaced.clone(), sender));
     let code = super::serve(runtime, &mut app, models);
@@ -155,6 +155,25 @@ pub fn main(args: &[String]) -> ExitCode {
         eprintln!("overview: the new build didn't start: {error}");
     }
     code
+}
+
+/// The readers of a live view started, their models to `sender`: the local
+/// one on its thread, GitLab's on `runtime`, the actor's jobs.
+fn start_reading(
+    app: &mut Overview,
+    reader: LocalReader,
+    runtime: &tokio::runtime::Handle,
+    sender: &mpsc::UnboundedSender<Msg>,
+) {
+    let (asks, asked) = watch::channel(None);
+    let (refresh, refreshes) = mpsc::unbounded_channel();
+    app.refresh = Some(refresh);
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    app.wake_local = Some(wake);
+    act::start(app, sender.clone());
+    let (main, key) = (reader.main.clone(), view_key(&app.view));
+    read_locally(reader, sender.clone(), asks, woken, app.actor.is_sync);
+    runtime.spawn(read_gitlab(main, key, asked, refreshes, sender.clone()));
 }
 
 /// The folds an overview hands the build it goes on in.
@@ -172,8 +191,8 @@ async fn watch_binary(binary: std::sync::Arc<crate::binary::Started>, sender: mp
     }
 }
 
-/// `--once`: the local read, then GitLab's, the frame printed (a print never acts).
-fn once(mut app: Overview, mut reader: LocalReader) -> ExitCode {
+/// `--once`: the local read, then GitLab's, into `app`, to be printed (a print never acts).
+fn once(app: &mut Overview, mut reader: LocalReader) -> ExitCode {
     // One frame: with docker's answer in it.
     reader.should_wait_for_docker = true;
     let local = reader.read();
@@ -193,7 +212,6 @@ fn once(mut app: Overview, mut reader: LocalReader) -> ExitCode {
         at: now_ms(),
         rate: remote.gitlab.rate(),
     }));
-    print!("{}", view::once(&app, super::columns()));
     ExitCode::SUCCESS
 }
 
@@ -665,6 +683,8 @@ mod tests {
         assert_eq!(args(&["--worktree", "x"]).view, View::Worktree("/nowhere/x".into()));
         assert_eq!(args(&["--worktree"]).view, View::Worktree("/nowhere".into()));
         assert_eq!(args(&["--orchestration", "--once"]).view, View::Everything);
+        assert_eq!(args(&["--product", "vita"]).product.as_deref(), Some("vita"));
+        assert_eq!(args(&["--once"]).product, None);
         let once = args(&["--once", "--herdr"]);
         assert_eq!(once.view, View::Everything);
         assert!(once.is_once && once.is_herdr);

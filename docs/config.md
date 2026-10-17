@@ -187,6 +187,19 @@ urls = ["DATABASE_URL"]
 | --- | ------- | ------------ |
 | `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
 
+## `[products.<name>]`
+
+The products of a monorepo (#405). An orchestration belongs to one: its
+issues' milestone names it (`vita · Epic 12: …` → `vita`), or
+`wt:orchestrate --product <name>`; the record keeps it (`product`). Every
+orchestration of a product works in the product's one herdr space, its
+overview showing each as a section. Without any, an orchestration has a
+space of its own (`⇶ <title>`).
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `paths` | none | the folders that are the product's; at least one. The name labels the herdr space: letters, digits, `-` and `_` |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.
@@ -229,6 +242,7 @@ opens its path there.
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
 | `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
+| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree |
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).

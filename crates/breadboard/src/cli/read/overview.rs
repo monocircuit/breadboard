@@ -10,13 +10,13 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 pub const TAKES: Takes = Takes {
-    valued: &["--orchestration"],
+    valued: &["--orchestration", "--product"],
     lists: &[],
     optional: &["--worktree"],
     switches: &["--once", "--herdr"],
     words: 0,
-    about: "The overview: everything, one orchestration (--orchestration <name>) or one worktree (--worktree [<dir>]). Live in a terminal; printed once with --once or into a pipe.",
-    usage: "usage: pnpm overview [--orchestration <name> | --worktree [<dir>]] [--once] [--herdr]",
+    about: "The overview: everything, one orchestration (--orchestration <name>), every orchestration of a product (--product <name>) or one worktree (--worktree [<dir>]). Live in a terminal; printed once with --once or into a pipe.",
+    usage: "usage: pnpm overview [--orchestration <name> | --product <name> | --worktree [<dir>]] [--once] [--herdr]",
 };
 
 /// The exit code of a command line the overview doesn't run, None to run it.
@@ -31,11 +31,16 @@ fn has(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
 }
 
-/// One view at a time: `--orchestration` and `--worktree` refused together.
+/// One view at a time: two of `--orchestration`, `--product` and `--worktree` refused together.
 fn exclusive(args: &[String]) -> Option<ExitCode> {
-    (has(args, "--orchestration") && has(args, "--worktree")).then(|| {
+    let given: Vec<&str> = ["--orchestration", "--product", "--worktree"]
+        .into_iter()
+        .filter(|flag| has(args, flag))
+        .collect();
+    (given.len() > 1).then(|| {
         fail(&format!(
-            "--orchestration and --worktree exclude each other: one view at a time\n{}",
+            "{} exclude each other: one view at a time\n{}",
+            given.join(" and "),
             TAKES.usage
         ))
     })
@@ -87,6 +92,8 @@ mod tests {
     fn refuses_two_views_and_unknown_flags() {
         assert!(exclusive(&strings(&["--orchestration", "b", "--worktree"])).is_some());
         assert!(exclusive(&strings(&["--orchestration=b", "--once"])).is_none());
+        assert!(exclusive(&strings(&["--product", "vita", "--orchestration", "b"])).is_some());
+        assert!(check(&strings(&["--product", "vita", "--once"]), &TAKES).is_none());
         assert!(check(&strings(&["--onec"]), &TAKES).is_some());
         assert!(check(&strings(&["--orchestration", "b", "--once", "--herdr"]), &TAKES).is_none());
     }

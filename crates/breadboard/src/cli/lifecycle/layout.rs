@@ -3,8 +3,13 @@
 //!
 //! ```text
 //! <main space>          root · overview (live, --herdr) · changelog · stack tabs
+//! ├─ <product>           root · overview (every orchestration of it) · orchestrator · changelog · changes
 //! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim · stack tabs
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
+//!
+//! With `[products.*]` in breadboard.toml (#405) an orchestration works in
+//! its product's space, and the main space keeps `root` and `overview`: the
+//! changelog is the products'. An orchestration of no product keeps `⇶ <title>`.
 //! ```
 //!
 //! Idempotent: also the way back after a herdr restart (the plugin runs it
@@ -24,6 +29,7 @@ use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
 use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
 use breadboard_core::record::SPACE;
+use breadboard_core::runs;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
 use serde_json::Value;
 use spaces::{busy_reason, is_busy, main_space, worktree_space};
@@ -208,11 +214,11 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
 
-    // The spaces of the orchestrations; after a restart the orchestrator's conversation comes back (#287).
+    // The spaces of the orchestrations and the products (#405); after a restart the orchestrator's conversation comes back (#287).
     let mut orchestrations: Vec<String> = Vec::new();
     for name in herdr::spaces()
         .iter()
-        .filter_map(|space| repo.orchestration_of(s(space, "label")))
+        .flat_map(|space| repo.orchestrations_of(s(space, "label")))
     {
         if !orchestrations.contains(&name) {
             orchestrations.push(name);
@@ -223,10 +229,10 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         // Its epic stack's tabs (#351), in the orchestration's space.
         let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
         if !changed.is_empty() {
-            report.push(format!("{}: {}", repo.orchestrator_label(&name), changed.join(" ")));
+            report.push(format!("{}: {}", repo.space_label_of(&name), changed.join(" ")));
         }
         if let Some(resumed) = should_resume.then(|| restore_chat(repo, &name)).flatten() {
-            report.push(format!("{}: {resumed}", repo.orchestrator_label(&name)));
+            report.push(format!("{}: {resumed}", repo.space_label_of(&name)));
         }
     }
 
@@ -237,6 +243,15 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     for tree in &trees {
         let feature = repo.feature_of(&tree.dir);
         let before = known.get(&feature);
+        // A headless agent's space closed by hand stays closed (#386): its
+        // agent needs no tab; only a running stack or an open try does, and
+        // the overview opens it again on a click (`open_space`).
+        let is_headless = runs::is_headless(&repo.main, &tree.dir);
+        if !is_space_wanted(before.is_some(), is_headless, || {
+            has_open_try(&tree.dir) || is_stack_up(repo, &tree.dir)
+        }) {
+            continue;
+        }
         let workspace = worktree_space(repo, &tree.dir, true);
         match (before, &workspace) {
             (None, Some(_)) => report.push(format!("space {feature} opened")),
@@ -267,6 +282,44 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     Some((main, report))
 }
 
+/// Whether the layout keeps a worktree's space: one that is there, any of a
+/// worktree whose agent has a tab, and a headless one's only while something
+/// of it needs a tab (`is_needed`: a running stack, an open try) (#386).
+pub fn is_space_wanted(has_space: bool, is_headless: bool, is_needed: impl FnOnce() -> bool) -> bool {
+    has_space || !is_headless || is_needed()
+}
+
+/// Whether a try of the worktree `dir` waits for the user's answer.
+fn has_open_try(dir: &Path) -> bool {
+    breadboard_core::actions::actions_of(&breadboard_core::actions::actions_file(dir))
+        .iter()
+        .any(|action| action.is_try() && action.answer.is_none())
+}
+
+/// Whether the own stack of `dir` has a container running.
+fn is_stack_up(repo: &Repo, dir: &Path) -> bool {
+    if dir == repo.main || !env_file_of(dir).exists() || offset_of(dir) == 0 {
+        return false;
+    }
+    let Some(all) = compose_args(dir, &["ps", "--status", "running", "-q"]) else {
+        return false;
+    };
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    !super::proc::output("docker", &all, &stack_dir(dir), None)
+        .out()
+        .is_empty()
+}
+
+/// A worktree's space for a click (the overview, #386): there already, or
+/// made now when the layout left it closed. Its id.
+pub fn open_space(repo: &Repo, dir: &Path) -> Option<String> {
+    exclusive(|| {
+        let workspace = worktree_space(repo, dir, true)?;
+        sync_stack_tabs(repo, dir, Some(&workspace));
+        Some(workspace)
+    })
+}
+
 /// The `overview` tabs that hold only a shell run their overview again
 /// (#388): after a herdr server or machine restart herdr brings the tabs
 /// back as bare shells, and the startup's layout may come late or not at
@@ -281,6 +334,8 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
             let label = s(&space, "label");
             let command = if label == SPACE.get() {
                 tabs::overview_command(tabs::View::Herdr)
+            } else if repo.is_product(label) {
+                tabs::overview_command(tabs::View::Product(label))
             } else if let Some(name) = repo.orchestration_of(label) {
                 tabs::overview_command(tabs::View::Orchestration(&name))
             } else if let Some(tree) = trees.iter().find(|tree| {
@@ -550,6 +605,17 @@ pub fn prune_spaces(repo: &Repo) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_space_of_a_headless_agent_stays_closed_until_needed() {
+        let never = || -> bool { panic!("asked what a space it keeps needs") };
+        // A space that is there is kept, and so is any of an agent with a tab.
+        assert!(is_space_wanted(true, true, never));
+        assert!(is_space_wanted(false, false, never));
+        // A headless agent's missing space comes back only for a stack or a try.
+        assert!(!is_space_wanted(false, true, || false));
+        assert!(is_space_wanted(false, true, || true));
+    }
 
     #[test]
     fn a_panic_in_a_layout_lets_the_lock_go() {

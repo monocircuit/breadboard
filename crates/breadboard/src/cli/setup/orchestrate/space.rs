@@ -48,7 +48,7 @@ pub fn stay_reason(name: &str, here: Option<&str>, is_worktree: bool, has_live: 
         return Some("it is a worktree's".into());
     }
     if has_live {
-        let label = record::orchestrator_label(&repo::main_dir(), name);
+        let label = record::space_label_of(&repo::main_dir(), name);
         return Some(format!("{label} has its {ORCHESTRATOR_TAB}"));
     }
     None
@@ -62,7 +62,8 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
         }
         let lifecycle = repo::lifecycle();
         crate::cli::lifecycle::layout::spaces::main_space(&lifecycle)?;
-        let label = lifecycle.orchestrator_label(name);
+        let label = lifecycle.space_label_of(name);
+        let product = record::product_of(&lifecycle.main, name);
         let workspace = orchestrator_space(name)?;
         let pane = herdr::current_pane();
         let from = pane.as_ref().and_then(|pane| {
@@ -72,7 +73,12 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
                 .map(|space| field(&space, "label").to_string())
         });
         let why = pane.as_ref().and_then(|_| {
-            let here = from.as_deref().and_then(herdr::orchestration_of);
+            // In a product's space (#405) the tab is the orchestrator of each of its orchestrations.
+            let here = from.as_deref().and_then(|label| match &product {
+                Some(product) if label == product => Some(name.to_string()),
+                _ if lifecycle.is_product(label) => Some(label.to_string()),
+                _ => herdr::orchestration_of(label),
+            });
             let is_worktree = repo::worktrees()
                 .iter()
                 .skip(1)
@@ -114,9 +120,11 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
         }
         keep_order(&workspace, &ORDER);
         crate::cli::lifecycle::layout::spaces::main_space(&lifecycle);
-        if let Some(found) = spaces()
-            .into_iter()
-            .find(|space| field(space, "workspace_id") == workspace)
+        // A product's space holds several: its label says which space it is, no orchestration's mark.
+        if product.is_none()
+            && let Some(found) = spaces()
+                .into_iter()
+                .find(|space| field(space, "workspace_id") == workspace)
         {
             herdr::mark_space(
                 &found,
@@ -136,10 +144,21 @@ pub fn open_orchestrator(name: &str) -> Option<String> {
     })
 }
 
-/// The space `⇶ <name>`, its entry, or None.
+/// The space `⇶ <name>`, its entry, or None; of an orchestration of a
+/// product (#405) the product's, only while it is the product's last.
 pub fn space_of_orchestration(name: &str) -> Option<Value> {
     if !herdr::is_in_herdr() {
         return None;
+    }
+    let main = repo::main_dir();
+    if let Some(product) = record::product_of(&main, name) {
+        if record::orchestrations_of_product(&main, &product)
+            .iter()
+            .any(|other| other != name)
+        {
+            return None;
+        }
+        return spaces().into_iter().find(|space| field(space, "label") == product);
     }
     spaces()
         .into_iter()

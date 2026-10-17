@@ -22,6 +22,7 @@ mod prune;
 pub mod remove;
 pub mod repo;
 pub mod retire;
+mod snapshot;
 
 use std::process::ExitCode;
 
@@ -40,6 +41,7 @@ const COMMANDS: &[Command] = &[
     ("wt:herdr", None, layout::command),
     ("wt:prune", Some("prune"), prune::command),
     ("wt:remove", Some("remove"), remove::command),
+    ("wt:snapshot", None, snapshot::command),
 ];
 
 /// The group's commands, as `usage` lists them.
