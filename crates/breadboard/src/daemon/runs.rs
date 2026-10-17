@@ -8,7 +8,9 @@
 //! merge order, then by age. One engine per repo across daemons of other
 //! builds: `.claude/runs/engine.pid`. A run that stopped at the Claude usage
 //! limit holds every run until it resets; then the runs it stopped go on
-//! (#393, core's `Usage`).
+//! (#393, core's `Usage`). A run that ends on a background command or
+//! saying it waits leaves a wake (#417, core's `wake`): its line is queued
+//! here once it is due.
 
 use breadboard_core::conversations::{interactive_pids_of, interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
@@ -18,6 +20,7 @@ use breadboard_core::runs::{
     change_usage, prompt_of, read_or_default, room_for, status_file, write_whole,
 };
 use breadboard_core::time::now_ms;
+use breadboard_core::wake;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{ExitCode, Stdio};
@@ -44,6 +47,7 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
     let in_flight: InFlight = Arc::default();
     let table = Arc::new(Mutex::new(()));
     let mut held: Option<PidFile> = None;
+    let mut is_wake_pending = false;
     loop {
         if !main.is_dir() {
             busy.store(false, Ordering::SeqCst);
@@ -53,12 +57,16 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
             held = PidFile::hold(&runs::dir_of(&main).join("engine.pid"));
         }
         if held.is_some() {
-            let starts = {
+            let (starts, is_waking) = {
                 let (main, in_flight, table) = (main.clone(), in_flight.clone(), table.clone());
-                tokio::task::spawn_blocking(move || take_starts(&main, &in_flight, &table))
-                    .await
-                    .unwrap_or_default()
+                tokio::task::spawn_blocking(move || {
+                    let is_waking = wake_due(&main, &in_flight, now_ms());
+                    (take_starts(&main, &in_flight, &table), is_waking)
+                })
+                .await
+                .unwrap_or_default()
             };
+            is_wake_pending = is_waking;
             for start in starts {
                 tokio::spawn(run(main.clone(), start, in_flight.clone(), table.clone()));
             }
@@ -67,7 +75,7 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
         // Runs the usage limit stopped wait for its reset here (#393).
         let is_stopped = !read_or_default::<Usage>(&runs::usage_file(&main)).sessions.is_empty();
         busy.store(
-            is_queued || is_stopped || !locked(&in_flight).is_empty(),
+            is_queued || is_stopped || is_wake_pending || !locked(&in_flight).is_empty(),
             Ordering::SeqCst,
         );
         tokio::time::sleep(EVERY).await;
@@ -152,6 +160,53 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
     .unwrap_or_default()
 }
 
+/// The wakes of the sessions without a run (#417): a due one's line queued,
+/// one overtaken dropped (a line queued for its session anyway, a `wt:wait`
+/// recorded since it said it waits). Whether any is left to wait for.
+fn wake_due(main: &Path, in_flight: &InFlight, now: i64) -> bool {
+    let table: Table = read_or_default(&status_file(main));
+    let queue: Queue = read_or_default(&runs::queue_file(main));
+    let flying = locked(in_flight).clone();
+    let idle = table
+        .runs
+        .iter()
+        .filter(|(session, run)| run.state != State::Running && !flying.contains_key(*session));
+    let mut is_left = false;
+    for (dir, found) in wake::wakes_in(idle.map(|(session, run)| (session.as_str(), run.dir.as_path()))) {
+        let is_overtaken = queue.events.iter().any(|event| event.session == found.session)
+            || (found.kind == wake::Kind::Itself && breadboard_core::wait::wait_of(&dir).is_some());
+        if is_overtaken {
+            wake::clear_wake(&dir);
+            continue;
+        }
+        let Some(line) = wake::due_line(&found, now, breadboard_core::lock::is_alive) else {
+            is_left = true;
+            continue;
+        };
+        let name = table
+            .runs
+            .get(&found.session)
+            .map(|run| run.name.clone())
+            .unwrap_or_default();
+        let queued = runs::enqueue(
+            main,
+            Event {
+                session: found.session.clone(),
+                dir: dir.clone(),
+                name,
+                line,
+                at: now,
+                allowed: Vec::new(),
+            },
+        );
+        match queued {
+            Ok(()) => wake::clear_wake(&dir),
+            Err(_) => is_left = true,
+        }
+    }
+    is_left
+}
+
 /// Whether runs may start at `now` as far as the Claude usage limit goes
 /// (#393): false while it holds; once it reset, each session it stopped
 /// gets `runs::RESET_LINE` ahead of the lines queued for it meanwhile.
@@ -224,7 +279,12 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     if let Some(folder) = log.parent() {
         let _ = std::fs::create_dir_all(folder);
     }
-    let spawned = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events))).spawn();
+    // A wake of a run before is overtaken by this one (#417).
+    wake::clear_wake(&dir);
+    let mut command = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events)));
+    // What it leaves running is found by this (`wake::leftover_of`).
+    command.env(wake::RUN_ENV, &session);
+    let spawned = command.spawn();
     let row = |state, pid, code, denials| Run {
         dir: dir.clone(),
         name: name.clone(),
@@ -291,6 +351,18 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         None if denials.is_empty() => State::Idle,
         None => State::Asks,
     };
+    // A run the usage limit stopped goes on at its reset (#393): nothing to wake.
+    if hit.is_none() {
+        let left = {
+            let session = session.clone();
+            tokio::task::spawn_blocking(move || wake::leftover_of(&session))
+                .await
+                .unwrap_or_default()
+        };
+        if let Some(found) = wake::wake_of(&lines, &prompt, &session, &dir, now, &left) {
+            let _ = wake::write_wake(&dir, &found);
+        }
+    }
     change_table(&main, &table, |read| {
         read.runs.insert(session.clone(), row(state, None, code, denials));
     });
