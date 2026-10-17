@@ -20,6 +20,7 @@ pub mod nvim;
 pub mod orchestrations;
 pub mod resume;
 pub mod spaces;
+pub mod stale;
 pub mod tabs;
 
 use super::args::{Args, Takes};
@@ -28,6 +29,7 @@ use super::herdr::{self, call, s};
 use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
 use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
+use breadboard_core::git::Worktree;
 use breadboard_core::record::SPACE;
 use breadboard_core::runs;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
@@ -332,17 +334,7 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
         let mut started = Vec::new();
         for space in herdr::spaces() {
             let label = s(&space, "label");
-            let command = if label == SPACE.get() {
-                tabs::overview_command(tabs::View::Herdr)
-            } else if repo.is_product(label) {
-                tabs::overview_command(tabs::View::Product(label))
-            } else if let Some(name) = repo.orchestration_of(label) {
-                tabs::overview_command(tabs::View::Orchestration(&name))
-            } else if let Some(tree) = trees.iter().find(|tree| {
-                repo.feature_of(&tree.dir) == label && !breadboard_core::record::is_orchestrated(&repo.main, &tree.dir)
-            }) {
-                tabs::overview_command(tabs::View::Worktree(&tree.dir))
-            } else {
+            let Some(command) = overview_command_of(repo, &trees, label) else {
                 continue;
             };
             let workspace = s(&space, "workspace_id");
@@ -355,6 +347,23 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
         }
         started
     })
+}
+
+/// What the `overview` tab of the space `label` runs; None for a space with none.
+pub fn overview_command_of(repo: &Repo, trees: &[Worktree], label: &str) -> Option<String> {
+    let view = if label == SPACE.get() {
+        tabs::View::Herdr
+    } else if repo.is_product(label) {
+        tabs::View::Product(label)
+    } else if let Some(name) = repo.orchestration_of(label) {
+        return Some(tabs::overview_command(tabs::View::Orchestration(&name)));
+    } else {
+        let tree = trees.iter().find(|tree| {
+            repo.feature_of(&tree.dir) == label && !breadboard_core::record::is_orchestrated(&repo.main, &tree.dir)
+        })?;
+        tabs::View::Worktree(&tree.dir)
+    };
+    Some(tabs::overview_command(view))
 }
 
 fn is_port_free(port: i64) -> bool {
