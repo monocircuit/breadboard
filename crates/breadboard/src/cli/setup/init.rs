@@ -28,7 +28,7 @@ use std::sync::LazyLock;
 pub const USAGE: &str = "usage: breadboard init [--check]   breadboard's skill, hooks and herdr plugin into this repo";
 
 /// The skill's templates, by their file name.
-const SKILL: [(&str, &str); 5] = [
+const SKILL: [(&str, &str); 6] = [
     (
         "SKILL.md",
         include_str!("../../../../../claude/skills/parallel-work/SKILL.md"),
@@ -40,6 +40,11 @@ const SKILL: [(&str, &str); 5] = [
     (
         "orchestrate.md",
         include_str!("../../../../../claude/skills/parallel-work/orchestrate.md"),
+    ),
+    // What an orchestrated agent's brief leaves out (#429).
+    (
+        "agent.md",
+        include_str!("../../../../../claude/skills/parallel-work/agent.md"),
     ),
     (
         "cleanup.md",
