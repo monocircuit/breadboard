@@ -803,9 +803,19 @@ fn merge_requests_of(
                 (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
                 // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
                 // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
+                // Quiet while it packs its cache (#424): working, dim and no alarm.
                 (None, Some(hung)) => Span {
-                    text: format!("⧗ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
-                    paint: super::Paint::Red,
+                    text: format!(
+                        "⧗ {} {}{}",
+                        hung.job,
+                        crate::ci_watch::minutes(hung.elapsed),
+                        if hung.is_caching() { " caching" } else { "" }
+                    ),
+                    paint: if hung.is_caching() {
+                        super::Paint::Dim
+                    } else {
+                        super::Paint::Red
+                    },
                     url: hung
                         .url
                         .clone()
