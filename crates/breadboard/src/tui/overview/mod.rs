@@ -343,6 +343,10 @@ pub struct BoxFolds {
     pub mrs: std::collections::BTreeSet<i64>,
     pub worktrees: std::collections::BTreeSet<i64>,
     pub folded_mrs: std::collections::BTreeSet<i64>,
+    /// The worktrees (by issue) whose collisions are listed (#390): folded until a click.
+    pub collides: std::collections::BTreeSet<i64>,
+    /// The worktrees (by issue) whose whole problem shows (#390): two lines until a click.
+    pub problems: std::collections::BTreeSet<i64>,
 }
 
 impl BoxFolds {
