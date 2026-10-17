@@ -7,9 +7,10 @@ mod action;
 mod boxes;
 mod change;
 mod common;
+mod epic;
 mod glab;
 mod journal;
-pub(super) mod mr;
+pub(crate) mod mr;
 mod note;
 mod tick;
 mod wait;
@@ -25,6 +26,7 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:note" => note::run(&argv),
         "wt:mr" => mr::run(&argv),
         "wt:wait" => wait::run(&argv),
+        "wt:epic" => epic::run(&argv),
         "wt:journal" => journal::run(&argv),
         _ => return None,
     };
