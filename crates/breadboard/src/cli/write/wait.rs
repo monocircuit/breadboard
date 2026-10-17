@@ -221,8 +221,10 @@ fn line_of(parsed: &Parsed, verdict: &Verdict, base: &str, behind: Option<u64>) 
         Verdict::Merged => {
             let merge = match behind {
                 Some(0) => format!("{base} is in already"),
-                Some(behind) => format!("merge {base} in ({behind} behind)"),
-                None => format!("merge {base} in"),
+                Some(behind) => {
+                    format!("{base} is {behind} behind: merge it in only if your work needs it or it conflicts")
+                }
+                None => format!("merge {base} in only if your work needs it or it conflicts"),
             };
             let then = parsed
                 .then
@@ -620,7 +622,7 @@ mod tests {
         let parsed = parse_wait(&args(&["!313", "!315", "--then", "go on"])).unwrap();
         assert_eq!(
             line_of(&parsed, &Verdict::Merged, "develop", Some(3)),
-            "!313 and !315 are merged: merge develop in (3 behind), then go on"
+            "!313 and !315 are merged: develop is 3 behind: merge it in only if your work needs it or it conflicts, then go on"
         );
         let one = parse_wait(&args(&["!313"])).unwrap();
         assert_eq!(
@@ -629,7 +631,7 @@ mod tests {
         );
         assert_eq!(
             line_of(&one, &Verdict::Merged, "develop", None),
-            "!313 is merged: merge develop in"
+            "!313 is merged: merge develop in only if your work needs it or it conflicts"
         );
         let short = parse_wait(&args(&["!316", "--hours", "0.0001"])).unwrap();
         assert_eq!(
