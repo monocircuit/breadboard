@@ -646,7 +646,12 @@ impl LocalReader {
                 .and_then(|record| record.chat.as_ref())
                 .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
-            fresh: crate::config::of_main(&self.main).config.orchestrator.clone(),
+            settings: crate::settings::rows_of(&self.main, name),
+            fresh: crate::config::Orchestrator {
+                // A setting (#415): the panel's, else `[orchestrator] auto_fresh`.
+                auto_fresh: crate::settings::of(&self.main, name).auto_fresh,
+                ..crate::config::of_main(&self.main).config.orchestrator.clone()
+            },
             spent: crate::spend::spent_of(&self.main, name, record.as_ref(), now),
             paused: crate::runs::paused_now(&self.main),
             record,

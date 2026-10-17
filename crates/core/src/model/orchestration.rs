@@ -103,6 +103,8 @@ pub struct OrchestrationLocal {
     pub orchestrator_share: Option<f64>,
     /// The last lines of its journal (#382), oldest first.
     pub journal: Vec<String>,
+    /// Its settings as they hold now (#415), the panel's rows.
+    pub settings: Vec<crate::settings::Row>,
     /// When the orchestrator gets a fresh start (`[orchestrator]`).
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
@@ -221,6 +223,8 @@ pub struct OrchestrationModel {
     /// Its auto mode (#384): a checker answers its tries; the model that does.
     pub is_auto: bool,
     pub checker: String,
+    /// Its settings (#415): what the settings panel shows.
+    pub settings: Vec<crate::settings::Row>,
     pub chat: Option<Chat>,
     /// No issues recorded: the view says how to start one, nothing else.
     pub is_empty: bool,
@@ -1127,6 +1131,7 @@ pub fn orchestration_of(
         label,
         chat: local.chat.clone(),
         is_auto: record.is_some_and(|record| record.is_auto),
+        settings: local.settings.clone(),
         checker: crate::config::here().config.tries.checker.clone(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),

@@ -302,6 +302,10 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
 /// (#350): the second click's merge, one at a time, never twice at one head;
 /// into develop or main it stays the user's two clicks.
 fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
+    // The setting `auto-merge into batch` (#415): off, the merge waits for the user's click.
+    if !breadboard_core::settings::of(&app.actor.main, &model.name).auto_merge_into_batch {
+        return false;
+    }
     if app
         .actor
         .merges
