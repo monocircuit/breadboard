@@ -10,7 +10,7 @@
 //! their pipelines themselves then. With `BREADBOARD_CI_DRY` set (a try) it
 //! decides and says so, and writes nothing to GitLab.
 
-use breadboard_core::ci::{self, Asked, Decision, MODE_KEY, Queue, Ranks, RunNow, Slots};
+use breadboard_core::ci::{self, Asked, Decision, MODE_KEY, Preempt, Preemption, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
 use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
 use breadboard_core::time::now_ms;
@@ -85,6 +85,7 @@ pub async fn schedule(main: PathBuf) {
         let ours = asked.ours.iter().copied().collect();
         let rescued = asked.rescued.clone().into_iter().collect();
         let own_cancels = asked.cancelled.iter().copied().collect();
+        let preempts = asked.preempts.clone().into_iter().collect();
         let step = tokio::task::spawn_blocking(move || {
             let now = now_ms();
             let running = mrs
@@ -102,6 +103,8 @@ pub async fn schedule(main: PathBuf) {
             ranks.ours = ours;
             ranks.rescued = rescued;
             ranks.cancelled = own_cancels;
+            ranks.preempts = preempts;
+            ranks.now = now;
             (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
         });
         let Ok((decision, slots, run_now, mrs, now)) = step.await else {
@@ -114,24 +117,25 @@ pub async fn schedule(main: PathBuf) {
                 .map(|start| format!("would start !{}", start.iid))
                 .or(preempt
                     .as_ref()
-                    .map(|(iid, _, _)| format!("would hold !{iid} for the MR ahead")))
+                    .map(|preempt| format!("would hold !{} for !{}", preempt.iid, preempt.by)))
                 .or(last);
-        } else if let Some((iid, id, sha)) =
-            preempt.filter(|_| preempted_at.is_none_or(|at| at.elapsed() >= PREEMPT_EVERY))
-        {
+        } else if let Some(preempt) = preempt.filter(|_| preempted_at.is_none_or(|at| at.elapsed() >= PREEMPT_EVERY)) {
             preempted_at = Some(std::time::Instant::now());
             let main = main.clone();
             let said = tokio::task::spawn_blocking(move || {
-                glab_post(&main, "glab", &format!("projects/:fullpath/pipelines/{id}/cancel"))
+                let said = cancel_young(&main, "glab", &preempt, now_ms());
+                (preempt, said)
             })
             .await;
-            if let Ok(said) = said {
+            if let Ok((Preempt { iid, pipeline, sha, by }, said)) = said {
                 last = Some(match said {
-                    Ok(_) => {
+                    Ok(true) => {
                         asked.preempted.insert(iid, sha);
-                        asked.add_cancelled(id);
-                        format!("!{iid} held for the MR ahead")
+                        asked.preempts.insert(iid, Preemption { by, at: now });
+                        asked.add_cancelled(pipeline);
+                        format!("!{iid} preempted by !{by}")
                     }
+                    Ok(false) => format!("!{iid} kept, it finishes"),
                     Err(error) => format!("!{iid} not held: {}", first_line(&error)),
                 });
             }
@@ -185,6 +189,9 @@ pub async fn schedule(main: PathBuf) {
         asked.started.retain(|iid, _| open.contains_key(iid));
         asked.preempted.retain(|iid, _| open.contains_key(iid));
         asked.rescued.retain(|iid, _| open.contains_key(iid));
+        asked
+            .preempts
+            .retain(|iid, preemption| open.contains_key(iid) && now - preemption.at < ci::PREEMPT_AGAIN_MS);
         if !is_dry {
             let _ = ci::write_whole(&ci::asked_file(&main), &asked);
         }
@@ -240,6 +247,57 @@ enum Ran {
     Exists(i64),
     /// The MR has a newer commit than the one decided for: nothing done.
     Superseded,
+}
+
+/// The pipeline to preempt read back first (#419): cancelled only while it
+/// is still young (`ci::PREEMPT_GRACE_MS`) and none of its jobs went past
+/// its first stage; true when it was cancelled.
+fn cancel_young(main: &Path, glab: &str, preempt: &Preempt, now: i64) -> Result<bool, String> {
+    let id = preempt.pipeline;
+    let pipeline = glab_get(main, glab, &format!("projects/:fullpath/pipelines/{id}"))?;
+    let status = pipeline
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let started = pipeline
+        .get("started_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(breadboard_core::time::parse_iso);
+    let is_young = match started {
+        Some(started) => now - started < ci::PREEMPT_GRACE_MS,
+        None => status != "running",
+    };
+    if !ci::is_live(status) || !is_young {
+        return Ok(false);
+    }
+    let jobs = glab_get(
+        main,
+        glab,
+        &format!("projects/:fullpath/pipelines/{id}/jobs?per_page=100"),
+    )?;
+    let jobs: Vec<(i64, String, String)> = jobs
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|job| {
+            let text = |key: &str| {
+                job.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            (
+                job.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0),
+                text("stage"),
+                text("status"),
+            )
+        })
+        .collect();
+    if ci::is_past_first_stage(&jobs) {
+        return Ok(false);
+    }
+    glab_post(main, glab, &format!("projects/:fullpath/pipelines/{id}/cancel"))?;
+    Ok(true)
 }
 
 /// GitLab read back first (#369: its list may lag or be read wrong): the MR
@@ -459,6 +517,47 @@ mod tests {
             2,
             "{log}"
         );
+        std::fs::remove_dir_all(&scratch).unwrap();
+    }
+
+    #[test]
+    fn preempts_only_a_pipeline_still_young_and_in_its_first_stage() {
+        // #419: GitLab read back right before the cancel; the queue's read may be old.
+        let scratch = std::env::temp_dir().join(format!("ci-preempt-test-{}", std::process::id()));
+        let now = 1_790_000_000_000;
+        let preempt = Preempt {
+            iid: 381,
+            pipeline: 42,
+            sha: "b".into(),
+            by: 371,
+        };
+        const PIPELINE: &str = "api projects/:fullpath/pipelines/42";
+        const JOBS: &str = "api projects/:fullpath/pipelines/42/jobs?per_page=100";
+        const CANCEL: &str = "api --method POST projects/:fullpath/pipelines/42/cancel";
+        let started = |ago: i64| {
+            format!(
+                r#"{{"status":"running","started_at":"{}"}}"#,
+                breadboard_core::time::to_iso(now - ago)
+            )
+        };
+        let check = r#"[{"id":1,"stage":"check","status":"running"},{"id":2,"stage":"build","status":"created"}]"#;
+        let build = r#"[{"id":1,"stage":"check","status":"success"},{"id":2,"stage":"build","status":"running"}]"#;
+        for (pipeline, jobs, is_cancelled) in [
+            (started(30_000), check, true),
+            (started(30_000), build, false),
+            (started(ci::PREEMPT_GRACE_MS), check, false),
+            (r#"{"status":"success"}"#.to_string(), check, false),
+        ] {
+            let _ = std::fs::remove_file(scratch.join("glab.log"));
+            let glab = fake_glab(&scratch, &[(PIPELINE, &pipeline), (JOBS, jobs)]);
+            assert_eq!(
+                cancel_young(&scratch, &glab, &preempt, now),
+                Ok(is_cancelled),
+                "{pipeline} {jobs}"
+            );
+            let log = std::fs::read_to_string(scratch.join("glab.log")).unwrap();
+            assert_eq!(log.contains(CANCEL), is_cancelled, "{log}");
+        }
         std::fs::remove_dir_all(&scratch).unwrap();
     }
 

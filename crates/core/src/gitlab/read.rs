@@ -175,7 +175,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
@@ -284,6 +284,7 @@ pub fn pipeline_of(value: &Value, web: &str) -> Option<Pipeline> {
         sha: str_at(value, "sha").map(String::from),
         reference: str_at(value, "ref").map(String::from),
         created_at: str_at(value, "createdAt").map(String::from),
+        started_at: str_at(value, "startedAt").map(String::from),
         updated_at: str_at(value, "updatedAt").map(String::from),
         finished_at: str_at(value, "finishedAt").map(String::from),
     })

@@ -330,10 +330,15 @@ breadboard decides which pipelines exist at all:
   `BREADBOARD_RUNNER_CONFIG` names another config). It creates one MR pipeline
   per look, for the MR's newest commit, while a slot is free and no pipeline
   waits for the runner. An older pipeline of that MR still running is
-  cancelled. While the runner is full and the first MR waits, the
-  lowest-ranked running MR pipeline behind it is cancelled to make room,
-  one per 30 s, and queued again. A pipeline into `main`, of develop or
-  of a tag is never cancelled, and neither is one a click started.
+  cancelled. While the runner is full and a click or a hotfix waits first
+  (a mere rank in the merge order never does, #419), the lowest-ranked MR
+  pipeline behind it is cancelled to make room, one per 30 s: only one
+  still waiting for the runner or running for less than 2 minutes with no
+  job past its first stage (read back over REST right before), and not
+  of an MR preempted in the last 30 minutes. The preempted MR starts
+  first once a slot is free, its row says `CI: preempted by !N, restarts
+  next`. A pipeline into `main`, of develop or of a tag is never
+  cancelled, and neither is one a click started.
 - **One pipeline per commit** (#369): an MR's newest pipeline is the one
   with the highest id (in a list of MRs gitlab.com gives their pipelines in
   no order of time). Right before creating one the queue reads the MR and
