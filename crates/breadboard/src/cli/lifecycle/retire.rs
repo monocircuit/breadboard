@@ -179,7 +179,8 @@ pub fn command(args: &Args) -> Done {
 /// One run of the conversation `id` in `dir` with `prompt`, waited for up to
 /// `LAST_RUN`: what became of it, for the line when no handoff came.
 fn last_run(dir: &Path, id: &str, name: &str, prompt: &str) -> String {
-    let spawned = Command::new("claude")
+    // Run from the overview's pane: herdr would resume it there after a restart (#425).
+    let spawned = breadboard_core::herdr::off_pane(&mut Command::new("claude"))
         .args(args_of(id, name, prompt, true, &[]))
         .current_dir(dir)
         .stdin(Stdio::null())

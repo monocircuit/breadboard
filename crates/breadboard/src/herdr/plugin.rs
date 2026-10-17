@@ -14,7 +14,8 @@
 //! key was pressed in comes from the context herdr passes; an action gets
 //! it, a pane it opens may not, so the action writes it down for the pane.
 
-use super::{SPACE, USAGE};
+use super::USAGE;
+use crate::cli::lifecycle::layout::stale::ours;
 use crate::cli::lifecycle::layout::tabs::OVERVIEW;
 use breadboard_core::git::{self, git};
 use breadboard_core::herdr::{plugin_context, plugin_id, save_context, where_from};
@@ -140,6 +141,10 @@ fn heal() -> ExitCode {
     let Ok(repo) = crate::cli::lifecycle::repo::Repo::here() else {
         return no_repo();
     };
+    // A stale record first (#425): its pane replaced, a claude herdr resumed from it ended.
+    for line in crate::cli::lifecycle::layout::stale::sweep(&repo) {
+        println!("{line}");
+    }
     for label in crate::cli::lifecycle::layout::heal_overviews(&repo) {
         println!("the overview runs again in {label}");
     }
@@ -261,7 +266,9 @@ fn status() -> ExitCode {
     if let Some(main) = main.as_deref() {
         let ours = ours(Some(main), spaces.as_ref());
         let tabs = (!ours.is_empty()).then(|| ask(&["tab", "list"])).flatten();
-        if !bare_overviews(&ours, tabs.as_ref(), panes.as_ref(), is_bare).is_empty() {
+        if !bare_overviews(&ours, tabs.as_ref(), panes.as_ref(), is_bare).is_empty()
+            || has_stale(main, &ours, tabs.as_ref(), panes.as_ref())
+        {
             start_heal(main);
         }
     }
@@ -335,31 +342,6 @@ fn needs_you(main: Option<&Path>, spaces: Option<&Value>, panes: impl FnOnce() -
         })
 }
 
-/// The ids of the repo's spaces: the main space, its worktrees' and the
-/// orchestrations' (`repo_root` is the main checkout, or the label starts
-/// with the main space's).
-fn ours<'a>(main: Option<&Path>, spaces: Option<&'a Value>) -> Vec<&'a str> {
-    let main = main.map(|main| main.display().to_string());
-    spaces
-        .and_then(|result| result.get("workspaces"))
-        .and_then(Value::as_array)
-        .map(|spaces| {
-            spaces
-                .iter()
-                .filter(|space| {
-                    let root = space
-                        .get("worktree")
-                        .and_then(|tree| tree.get("repo_root"))
-                        .and_then(Value::as_str);
-                    let label = space.get("label").and_then(Value::as_str).unwrap_or_default();
-                    (root.is_some() && root == main.as_deref()) || label.starts_with(&SPACE.get())
-                })
-                .filter_map(|space| space.get("workspace_id").and_then(Value::as_str))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The panes of the `overview` tabs in the spaces `ours` that hold only a
 /// shell (`is_bare`): a tab of one pane, its overview not running. A tab
 /// split by hand is the user's.
@@ -391,6 +373,33 @@ fn bare_overviews(
         .collect()
 }
 
+/// Whether a pane of the spaces `ours` holds a record herdr must not resume
+/// (#425): no read beyond the lists unless one names a conversation.
+fn has_stale(main: &Path, ours: &[&str], tabs: Option<&Value>, panes: Option<&Value>) -> bool {
+    let listed = |result: Option<&Value>, key: &str| -> Vec<Value> {
+        result
+            .and_then(|result| result.get(key)?.as_array().cloned())
+            .unwrap_or_default()
+    };
+    let panes = listed(panes, "panes");
+    if !panes
+        .iter()
+        .any(|pane| pane.get("agent_session").is_some_and(|session| !session.is_null()))
+    {
+        return false;
+    }
+    let agents = crate::cli::lifecycle::layout::stale::agent_sessions(main);
+    !crate::cli::lifecycle::layout::stale::plan(
+        ours,
+        &listed(tabs, "tabs"),
+        &panes,
+        &agents,
+        breadboard_core::conversations::unnamed_resumes,
+        is_bare,
+    )
+    .is_empty()
+}
+
 /// Whether the pane's shell is in front: nothing runs in it.
 fn is_bare(pane: &str) -> bool {
     ask(&["pane", "process-info", "--pane", pane])
@@ -404,7 +413,7 @@ fn is_bare(pane: &str) -> bool {
 /// `heal` in the main checkout `main`, on its own: in a process group of
 /// its own (herdr's timeout of the status doesn't end it), not waited for.
 /// It runs inside herdr, so the layout's lock holds for it too.
-fn start_heal(main: &Path) {
+pub fn start_heal(main: &Path) {
     let _ = this(&["herdr", "heal"], main)
         .env("HERDR_ENV", "1")
         .stdin(Stdio::null())
