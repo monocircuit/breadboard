@@ -41,7 +41,9 @@ pub(super) fn mr_of(value: &Value) -> (Mr, Option<String>) {
         is_draft: value.get("draft").and_then(Value::as_bool).unwrap_or(false),
         state: str_at(value, "state").unwrap_or_default().to_string(),
         merged_at: str_at(value, "merged_at").map(String::from),
-        has_conflicts: value.get("has_conflicts").and_then(Value::as_bool).unwrap_or(false),
+        // GitLab's `conflict` is a conflict even where `has_conflicts` lags behind it (#416).
+        has_conflicts: value.get("has_conflicts").and_then(Value::as_bool).unwrap_or(false)
+            || str_at(value, "detailed_merge_status").is_some_and(|status| status.eq_ignore_ascii_case("conflict")),
         merge_status: str_at(value, "detailed_merge_status").map(str::to_lowercase),
         merge_check: str_at(value, "merge_status").map(str::to_lowercase),
         sha: str_at(value, "sha").map(String::from),

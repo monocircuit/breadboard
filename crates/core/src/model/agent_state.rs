@@ -5,6 +5,7 @@
 use super::change::is_change_open;
 use super::handovers::next_text;
 use super::merge_turn::{MergeTurn, waits_for_text};
+use super::mr_blockers::{Reason, short_of};
 use super::{Tone, Tree, counted};
 use crate::conversations::question_of;
 use crate::gitlab::Mr;
@@ -47,7 +48,8 @@ pub struct NextIssue {
 /// What agentStateOf knows besides the worktree: its MR, herdr's state of the
 /// agent, the iids known merged (a wait names only the others), the announced
 /// handover, what the human's checks still lack (merge.rs `checks_of`), its
-/// MR's merge turn (merge_turn.rs; None where the merge order isn't known).
+/// MR's merge turn (merge_turn.rs; None where the merge order isn't known),
+/// the first reason its MR row gives (mr_blockers.rs; None where the row isn't known).
 #[derive(Debug, Clone, Default)]
 pub struct Facts<'a> {
     pub mr: Option<&'a Mr>,
@@ -56,6 +58,7 @@ pub struct Facts<'a> {
     pub handover: Option<&'a NextIssue>,
     pub checks: &'a [String],
     pub turn: Option<&'a MergeTurn>,
+    pub blocker: Option<&'a Reason>,
 }
 
 /// A done MR whose merge order isn't known here (herdr's sidebar without the
@@ -65,7 +68,8 @@ pub const MERGE_TURN: &str = "done: waits for its merge turn";
 /// The key of a headless agent whose lines wait for a run (#358).
 pub const RUN_QUEUED: &str = "run-queued";
 /// A green MR whose turn says it lacks something no check names (work
-/// boxes, conflicts, a change): its MR row says what.
+/// boxes, conflicts, a change), where its row's first reason isn't known:
+/// its MR row says what. Known, the state names it (#416).
 pub const NOT_READY: &str = "not ready to merge: its MR row says why";
 
 /// What an agent waits for, the first that holds: at work; queued for a run; asks you; waits
@@ -81,6 +85,7 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         handover,
         checks,
         turn,
+        blocker,
     } = facts;
     if *status == Some("working") {
         return state("working", "at work", Tone::Work);
@@ -110,7 +115,12 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         return state("pipeline", "waits for the pipeline", Tone::Gitlab);
     }
     if is_open && pipeline == Some("failed") {
-        return state("failed", "pipeline failed", Tone::You);
+        // `pipeline failed at check:test`, where its row names the job.
+        let text = blocker
+            .map(|reason| reason.text.as_str())
+            .filter(|text| text.starts_with("pipeline failed"))
+            .unwrap_or("pipeline failed");
+        return state("failed", text, Tone::You);
     }
     let mut kinds: Vec<String> = Vec::new();
     // A posted merge is the user's only while it is offered (ACTIONS shows it then).
@@ -145,8 +155,16 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
         return state("waitsForMr", waits_for_text(iids), Tone::Gitlab);
     }
     if is_green && checks.is_empty() {
-        let text = if turn.is_none() { MERGE_TURN } else { NOT_READY };
-        return state("turn", text, Tone::Gitlab);
+        if turn.is_none() {
+            return state("turn", MERGE_TURN, Tone::Gitlab);
+        }
+        // Its first blocker itself: `conflicts with develop`, `waits for !N` (#416).
+        return match blocker {
+            // What its agent or you have to do red, a wait for others blue.
+            Some(reason) if reason.who == "agent" || reason.who == "you" => state("turn", short_of(reason), Tone::You),
+            Some(reason) => state("turn", short_of(reason), Tone::Gitlab),
+            None => state("turn", NOT_READY, Tone::Gitlab),
+        };
     }
     if is_green {
         return state("checks", format!("checks open: {}", checks.join(", ")), Tone::You);
@@ -349,6 +367,44 @@ mod tests {
             ..facts.clone()
         };
         assert_eq!(agent_state_of(&tree(), &lacks).text, NOT_READY);
+    }
+
+    #[test]
+    fn a_green_mr_that_lacks_something_names_its_first_blocker() {
+        let reason = |text: &str, who: &str, is_conflict: bool| Reason {
+            text: text.into(),
+            who: who.into(),
+            is_conflict,
+        };
+        let with = |blocker: &Reason, pipeline: &str| {
+            agent_state_of(
+                &tree(),
+                &Facts {
+                    mr: Some(&mr(pipeline)),
+                    status: Some("idle"),
+                    turn: Some(&MergeTurn::Lacks),
+                    blocker: Some(blocker),
+                    ..Default::default()
+                },
+            )
+        };
+        let conflict = reason(
+            "conflicts with develop (README.md · 3 behind): merge develop in",
+            "agent",
+            true,
+        );
+        assert_eq!(
+            with(&conflict, "success"),
+            state("turn", "conflicts with develop", Tone::You)
+        );
+        assert_eq!(
+            with(&reason("waits for !311", "!311", false), "success"),
+            state("turn", "waits for !311", Tone::Gitlab)
+        );
+        assert_eq!(
+            with(&reason("pipeline failed at check:test", "agent", false), "failed"),
+            state("failed", "pipeline failed at check:test", Tone::You)
+        );
     }
 
     #[test]

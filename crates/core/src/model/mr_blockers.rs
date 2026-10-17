@@ -105,17 +105,27 @@ pub fn row_blockers_of(
         );
     }
 
+    // GitLab's `conflict` is one even where `has_conflicts` lags (#416): its agent's, never yours.
+    let has_conflicts = mr.has_conflicts || mr.merge_status.as_deref() == Some("conflict");
     if !is_conflict_settled(mr, tree) {
         add("GitLab checks for conflicts".into(), "GitLab", true);
-    } else if mr.has_conflicts {
-        let behind = if behind > 0 {
-            format!(" ({behind} behind)")
-        } else {
+    } else if has_conflicts {
+        let files = tree.and_then(|tree| tree.conflicts.as_deref()).unwrap_or(&[]);
+        let detail: Vec<String> = [
+            (!files.is_empty()).then(|| files_text(files)),
+            (behind > 0).then(|| format!("{behind} behind")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let detail = if detail.is_empty() {
             String::new()
+        } else {
+            format!(" ({})", detail.join(" · "))
         };
         add(
             format!(
-                "conflicts with {target}{behind}: merge {target} in",
+                "conflicts with {target}{detail}: merge {target} in",
                 target = mr.target()
             ),
             "agent",
@@ -127,7 +137,14 @@ pub fn row_blockers_of(
         status != Some("success"),
         mr.target(),
     ) {
-        let who = if text == GITLAB_RECHECKS { "GitLab" } else { "you" };
+        // A rebase is its agent's too; what is left (discussions, an approval) is yours.
+        let who = if text == GITLAB_RECHECKS {
+            "GitLab"
+        } else if text.starts_with("needs a rebase") {
+            "agent"
+        } else {
+            "you"
+        };
         add(text, who, false);
     }
 
@@ -162,6 +179,39 @@ pub fn row_blockers_of(
         }
     }
     reasons
+}
+
+/// How many conflicting files a reason names before `+n`.
+const NAMED_FILES: usize = 2;
+
+/// `README.md, view.rs +2`: the files a merge of develop stops at, by their names.
+pub fn files_text(files: &[String]) -> String {
+    let names: Vec<&str> = files
+        .iter()
+        .take(NAMED_FILES)
+        .map(|file| file.rsplit('/').next().unwrap_or(file))
+        .collect();
+    let more = if files.len() > NAMED_FILES {
+        format!(" +{}", files.len() - NAMED_FILES)
+    } else {
+        String::new()
+    };
+    format!("{}{more}", names.join(", "))
+}
+
+/// `conflicts with develop`: a conflict reason as the title row of its
+/// worktree says it, without its files and what to do (#416).
+pub fn short_of(reason: &Reason) -> String {
+    let text = reason.text.as_str();
+    if !reason.is_conflict {
+        return text.to_string();
+    }
+    let end = [" (", ": "]
+        .iter()
+        .filter_map(|cut| text.find(cut))
+        .min()
+        .unwrap_or(text.len());
+    text[..end].to_string()
 }
 
 /// How far an MR is by its issue's boxes (#294, mr-blockers.mjs `progressOf`):
@@ -434,6 +484,40 @@ mod tests {
                 "change requested: shorter title → agent",
                 "2 commits not pushed → agent",
             ]
+        );
+    }
+
+    #[test]
+    fn a_conflict_names_its_files_and_goes_to_the_agent() {
+        // GitLab's `conflict` without `has_conflicts` (!381): still the agent's.
+        let found = Mr {
+            merge_status: Some("conflict".into()),
+            ..mr()
+        };
+        assert_eq!(
+            reasons(&found, &[], None),
+            ["conflicts with develop: merge develop in → agent"]
+        );
+        let tree = Tree {
+            conflicts: Some(vec!["README.md".into(), "src/a/view.rs".into(), "b.rs".into()]),
+            ..Default::default()
+        };
+        let all = row_blockers_of(&found, &[], 3, &[], &[], Some(&tree), &HashSet::new());
+        assert_eq!(
+            all[0].text,
+            "conflicts with develop (README.md, view.rs +1 · 3 behind): merge develop in"
+        );
+        assert_eq!(short_of(&all[0]), "conflicts with develop");
+        assert_eq!(
+            reasons(
+                &Mr {
+                    merge_status: Some("need_rebase".into()),
+                    ..mr()
+                },
+                &[],
+                None
+            ),
+            ["needs a rebase onto develop → agent"]
         );
     }
 

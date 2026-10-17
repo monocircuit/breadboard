@@ -1562,6 +1562,7 @@ mod tests {
                     model::Span::new("ready to merge", Paint::Green)
                 }),
                 conflict: (!is_merged).then_some(Conflict::None),
+                conflicts: None,
                 reasons: vec![],
                 progress: (!is_merged).then(|| Progress {
                     ticked: 9,
@@ -1619,6 +1620,37 @@ mod tests {
             counts: "2 open · 1 merged · in merge order, side by side where independent".into(),
         };
         (worktrees, merge_requests)
+    }
+
+    #[test]
+    fn gitlabs_conflict_is_said_red_and_its_agents() {
+        let (worktrees, mut merge_requests) = joined();
+        if let Some(facts) = merge_requests.open[0].mr.as_mut() {
+            facts.conflicts = Some("conflicts with develop (README.md)".into());
+            facts.reasons.clear();
+        }
+        let scene = draw_all(
+            &worktrees,
+            &merge_requests,
+            Folds::default(),
+            120,
+            super::super::actor::idle(),
+        );
+        let lines: Vec<String> = text(&scene).iter().map(|line| line.replace('\u{a0}', " ")).collect();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line
+                    .contains("resolve merge conflicts  conflicts with develop (README.md) → agent · 3 behind")),
+            "{lines:#?}"
+        );
+        let span = scene
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.starts_with("conflicts\u{a0}with"))
+            .unwrap();
+        assert_eq!(span.style.fg, Some(theme::Tone::Red.fg()));
     }
 
     fn draw_joined(folds: Folds, width: u16) -> Scene<Act> {
