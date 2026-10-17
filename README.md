@@ -234,7 +234,7 @@ at its line. Keys of the overview switch it:
 | --- | ------------------- |
 | `e` | the worktree's nvim |
 | `t` | the terminal of its newest open try (`wt:action try … --run`) |
-| `l` | its stack's logs, or its dev server while its app is down |
+| `l` | its stack's logs, the services' and its background processes' (`.claude/stack/*.log`) together, or its dev server while nothing runs |
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
 The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),

@@ -288,6 +288,11 @@ pub fn command(args: &Args) -> ExitCode {
         sweep::stale_issue_count().unwrap_or(0)
     };
     let space = herdr::open_space(&feature, &dir, origin.as_ref(), stays.as_deref());
+    // Its stack set up and running: its dev server in the background (#407).
+    let procs = stack::procs_of(&dir);
+    if !procs.is_empty() {
+        step(&format!("in the background: {}", procs.join(" ")));
+    }
     // An orchestration's worktree opens no app tab (#337): nobody looks at it
     // yet, and a tab that comes to the front then passes for another's page.
     if origin.is_none() {

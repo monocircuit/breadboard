@@ -64,7 +64,7 @@ A checkout's dev stack: containers in docker compose, the app on the host. A
 worktree shares the main checkout's stack, or gets its own (`wt:stack`, or
 `wt:new` without `--shared`) with every port moved by an offset and a compose
 project `<project>-<feature>`, written into its env file. Without `[stack]`
-there is no env file, no offset, no stack tabs, no `stack:*`.
+there is no env file, no offset, no stack processes, no `stack:*`.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -84,7 +84,7 @@ of its own (`COMPOSE_PROJECT_NAME`). So at least one port needs an `env`.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `port` | (required) | the app's port; an own stack's is moved by its offset |
-| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); the `dev` tab runs it while the stack is up |
+| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); it runs in the background while the stack is up, its output in `.claude/stack/dev.log` |
 | `env` | none | the variable it is moved with |
 
 ### `[[stack.services]]`
