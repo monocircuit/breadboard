@@ -171,11 +171,18 @@ of your own keeps its claude in a tab (#361).
   starts, the lines wait and the overview says why. Its `continue anyway`,
   or `breadboard runs continue`, lifts it until midnight
   (`.claude/runs/limit.json`).
+- **Pause** (#397): `breadboard runs pause` (or `⏸ pause agents` under the
+  orchestration overview's chat) starts no run until `breadboard runs
+  resume`; runs in flight finish, `--now` ends them and puts their lines
+  back in the queue, `--ci` switches the CI queue off too
+  (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
+  band says `agents paused since 13:05 · N lines waiting`. The state is
+  `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
   `asks` (the run was denied a tool, its `permission_denials`), and
   `queued` from the queue. The overview reads it as herdr's agent states
   (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
-  prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
+  prints it, paused or not; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
 ## The main checkout follows develop
 

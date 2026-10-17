@@ -108,6 +108,22 @@ a pane): `running` (a run in flight), `idle`, `asks` (its last run was
 denied a tool and waits for the user, see Permissions) and `queued` (lines
 wait for memory, or for its tab, below).
 
+**Pause all agents** (#397): when the user says "pause", run
+
+```sh
+sh packages/breadboard/herdr/breadboard.sh runs pause [--now] [--ci]
+sh packages/breadboard/herdr/breadboard.sh runs resume
+```
+
+or click `⏸ pause agents` / `▶ resume agents` under the overview's chat.
+Paused, runs in flight finish (`--now` ends them, their lines come back to
+the queue), no run starts and lines keep queueing; the band says `agents
+paused since 13:05 · N lines waiting`. `--ci` switches the CI queue off too.
+The state is a file (`.claude/runs/pause.json`): it outlives `serve`, herdr
+and a reboot. `resume` runs every waiting line, one run per agent, and
+switches the CI queue on again if the pause switched it off. Never end runs
+or daemons by hand to pause.
+
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
 runs `cd <worktree> && claude --resume <id> --name <feature>` in the
