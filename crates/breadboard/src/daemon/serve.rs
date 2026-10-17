@@ -83,6 +83,13 @@ impl Drop for Open {
 /// first; the overview that starts it waits only until it listens (exit 0)
 /// or can't (1: the overview reads by itself at once).
 pub fn main(args: &[String]) -> ExitCode {
+    // No pane's (#386): a daemon started from a pane, or one that execs its
+    // update (`--foreground`) with the environment it had, would hand the
+    // pane to every `claude -p` it runs, and herdr would resume those there.
+    for name in breadboard_core::herdr::PANE_ENV {
+        // SAFETY: the first thing the process does, before any thread runs.
+        unsafe { std::env::remove_var(name) };
+    }
     let ready = if args.iter().any(|arg| arg == "--foreground") {
         None
     } else {

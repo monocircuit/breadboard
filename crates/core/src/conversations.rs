@@ -24,6 +24,29 @@ const PROMPT_BYTES: u64 = 1 << 23;
 const PENDING_BYTES: u64 = 1 << 16;
 
 /// Where the conversation bound to a worktree's space is written down.
+/// A random conversation id (UUID v4).
+pub fn new_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    let is_read = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !is_read {
+        let seed = crate::time::now_ms() as u128 ^ (u128::from(std::process::id()) << 64);
+        bytes = seed.to_le_bytes();
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
 pub fn session_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("herdr-session")
 }
@@ -457,6 +480,24 @@ pub fn interactive_resume_in(cmdline: &[u8]) -> Option<String> {
         .filter(|id| !id.starts_with('-'))
 }
 
+/// Whether a claude's command line (NUL-separated) names its conversation
+/// (`--name`, `-n`): the overview's click does (#361), herdr's restore of a
+/// pane's agent (`resume_agents_on_restore`) runs a bare `claude --resume <id>`.
+pub fn is_named_in(cmdline: &[u8]) -> bool {
+    cmdline
+        .split(|byte| *byte == 0)
+        .any(|arg| arg == b"--name" || arg == b"-n" || arg.starts_with(b"--name="))
+}
+
+/// `(pid, conversation)` of each interactive `claude --resume <id>` that
+/// names nothing (`is_named_in`): what herdr's restore started, no click (#386).
+pub fn unnamed_resumes() -> Vec<(i64, String)> {
+    resumes_in_proc()
+        .into_iter()
+        .filter(|(pid, _)| fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| !is_named_in(&cmdline)))
+        .collect()
+}
+
 /// The conversations an interactive claude resumes now, from `/proc`: one
 /// at its folder's trust question has no file in `~/.claude/sessions` yet
 /// (#361's probe), its command line says it already. Empty without `/proc`.
@@ -581,6 +622,12 @@ mod tests {
             None
         );
         assert_eq!(interactive_resume_in(&cmdline(&["claude", "--resume"])), None);
+        // herdr's restore resumes bare, the overview's click names it (#386).
+        assert!(!is_named_in(&cmdline(&["claude", "--resume", "e970"])));
+        assert!(is_named_in(&cmdline(&[
+            "claude", "--resume", "e970", "--name", "1-probe"
+        ])));
+        assert!(is_named_in(&cmdline(&["claude", "--resume", "e970", "--name=1-probe"])));
         assert_eq!(interactive_resume_in(&cmdline(&["vim", "--resume", "e970"])), None);
         assert_eq!(interactive_resume_in(b""), None);
         assert_eq!(

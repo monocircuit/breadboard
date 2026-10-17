@@ -412,6 +412,9 @@ pub struct Tries {
     pub deploy_job: Option<String>,
     /// The last step where a pipeline has no `deploy_job`.
     pub publish_job: Option<String>,
+    /// The model that checks and answers a try while its orchestration's
+    /// auto mode is on (#384): `claude -p --model <it>`.
+    pub checker: String,
 }
 
 /// The main checkout keeps itself on the default branch (#348): the daemon
@@ -447,6 +450,7 @@ impl Default for Tries {
             deploy_jobs: Vec::new(),
             deploy_job: None,
             publish_job: None,
+            checker: "haiku".into(),
         }
     }
 }

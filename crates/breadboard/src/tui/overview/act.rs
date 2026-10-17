@@ -42,6 +42,13 @@ pub enum Act {
     },
     /// The orchestrator's chat: focused, or opened again (#287).
     Chat,
+    /// The orchestration's auto mode switched (#384).
+    Auto,
+    /// A try a checker answered opened again for the user (#384).
+    Overturn {
+        dir: PathBuf,
+        id: i64,
+    },
     /// The orchestrator's fresh start at a quiet point (#382).
     Fresh,
     /// Two clicks dismiss a free agent (#289).
@@ -184,6 +191,8 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Answer { file, id, answer } => return super::actions::answer(app, &file, id, &answer),
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
+        Act::Auto => toggle_auto(app),
+        Act::Overturn { dir, id } => overturn(app, &dir, id),
         Act::Fresh => fresh::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
         Act::CopyResume(id) => copy_resume(app, &id),
@@ -259,6 +268,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
             tries::click(app, dir.clone(), id, state);
         }
         Go::FocusSpace(dir) => app.actor.queue(move || {
+            // A headless agent's space the layout left closed opens on the click (#386).
+            if herdr::space_of(&main, &dir).is_none() {
+                let repo = crate::cli::lifecycle::repo::Repo { main: main.clone() };
+                crate::cli::lifecycle::layout::open_space(&repo, &dir);
+            }
             herdr::focus_space(&main, &dir);
             None
         }),
@@ -268,6 +282,14 @@ pub fn go_to(app: &mut Overview, go: Go) {
             Some(Box::new(move |app: &mut Overview| match opened {
                 Ok(did) => app.actor.log(Paint::Green, did),
                 Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
+            }))
+        }),
+        // ACTIONS' `held` row (#386): the open claude ended once it idles.
+        Go::EndHeld(dir) => app.actor.queue(move || {
+            let ended = super::actor::end_held::end(&main, &dir);
+            Some(Box::new(move |app: &mut Overview| match ended {
+                Ok(did) => app.actor.log(Paint::Green, did),
+                Err(why) => app.actor.log(Paint::Red, why),
             }))
         }),
         Go::FocusAgent(dir) => {
@@ -472,6 +494,53 @@ fn dismiss(app: &mut Overview, id: &str) {
 /// typed into its agent's pane; nothing while the button isn't there.
 /// An MR waiting in the CI queue to its front (#357): the daemon's queue
 /// starts its pipeline as the next one, once the runner has a free slot.
+/// `overturn` on a checked try (#384): the try open again, unanswered, its
+/// check marked overturned (no checker takes it again at this head); the
+/// user answers it in ACTIONS.
+fn overturn(app: &mut Overview, dir: &Path, id: i64) {
+    use breadboard_core::try_check::{checks_of, last_check, write_check};
+    let file = breadboard_core::actions::actions_file(dir);
+    match breadboard_core::actions::reopen(&file, id) {
+        Ok(true) => {
+            if let Some(check) = last_check(&checks_of(dir), id).cloned() {
+                let _ = write_check(
+                    dir,
+                    &breadboard_core::try_check::Check {
+                        is_overturned: true,
+                        ..check
+                    },
+                );
+            }
+            app.actor
+                .log(Paint::Green, format!("try #{id} is open again: answer it in ACTIONS"));
+        }
+        Ok(false) => app.actor.log(Paint::Dim, format!("try #{id} is open already")),
+        Err(error) => app
+            .actor
+            .log(Paint::Red, format!("try #{id} not opened again: {error}")),
+    }
+}
+
+/// A click on the auto mode row (#384): its record says the other way,
+/// the next read shows it.
+fn toggle_auto(app: &mut Overview) {
+    let (Some(name), Some(model)) = (app.orchestration_name(), app.orchestration()) else {
+        return;
+    };
+    let is_on = !model.is_auto;
+    let checker = model.checker.clone();
+    let mut fields = serde_json::Map::new();
+    fields.insert("auto".into(), serde_json::json!(is_on));
+    match breadboard_core::record::update_record(&app.actor.main, &name, fields) {
+        Ok(()) if is_on => app.actor.log(
+            Paint::Green,
+            format!("auto mode on: {checker} checks and answers the tries"),
+        ),
+        Ok(()) => app.actor.log(Paint::Green, "auto mode off: the tries wait for you"),
+        Err(error) => app.actor.log(Paint::Red, format!("auto mode not switched: {error}")),
+    }
+}
+
 fn run_now(app: &mut Overview, iid: i64) {
     use breadboard_core::ci::{RunNow, read_or_default, run_now_file, write_whole};
     let file = run_now_file(&app.actor.main);

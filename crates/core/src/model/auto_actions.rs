@@ -213,7 +213,8 @@ pub struct AutoFacts<'a> {
 /// - `push`: commits sit unpushed for long;
 /// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
-/// - `waits`: the agent asks something or stopped on a question.
+/// - `waits`: the agent asks something or stopped on a question;
+/// - `held`: a claude open in its tab holds its lines past ten minutes (#386).
 pub fn auto_actions_of(
     issues: &[Entry],
     remote: Option<&Remote>,
@@ -419,6 +420,20 @@ pub fn auto_actions_of(
                     },
                 ));
             }
+        }
+        // A claude open in its tab holds its lines past ten minutes (#386), one
+        // herdr may have resumed by itself after a restart: a click ends it once it idles.
+        if let (Some(agent), Some(tree)) = (agent, tree)
+            && agent.status.as_deref() == Some(crate::runs::HELD)
+        {
+            actions.push(base(
+                "held",
+                format!("held:{}", issue.branch),
+                "an open claude in its tab holds its lines: a click ends it once it is idle, they run headless again"
+                    .into(),
+                None,
+                Go::EndHeld(tree.dir.clone()),
+            ));
         }
         // A headless agent at a would-be question has its `permission` action
         // (#360): that is what it waits for, no `waits` beside it.
@@ -847,6 +862,19 @@ mod tests {
             ..Default::default()
         }];
         assert!(kinds_with(&[asking], &none, &agents("blocked"), &facts).is_empty());
+    }
+
+    #[test]
+    fn a_claude_holding_its_lines_has_a_row_that_ends_it() {
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let items = auto_actions_of(&[issue()], Some(&Remote::default()), &agents(crate::runs::HELD), &facts);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].kind, "held");
+        assert_eq!(items[0].go, Go::EndHeld("/w/7".into()));
+        assert!(items[0].text.contains("ends it once it is idle"));
     }
 
     #[test]
