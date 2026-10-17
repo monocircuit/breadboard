@@ -128,7 +128,7 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         return gap.map(|gap| {
             format!(
                 "✗ push refused: {branch} at {short} isn't checked (#298), its check left out what it changes: {gap} (#366).
-  Run pnpm wt:check again: it checks every package git says the branch changes."
+  Run bb submit: wt:check again, of every package git says the branch changes, then the push."
             )
         });
     }
@@ -146,23 +146,21 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
             .unwrap_or_default();
         format!(
             "its last check failed: {}.
-  Fix it, commit, run {run} wt:check again. Red on develop too: it is fixed once, in its own fix MR,
-  and you wait for that with {run} wt:wait !<mr>.",
+  Fix it, commit, then bb submit: wt:check again, then the push. Red on develop too: it is fixed once,
+  in its own fix MR, and you wait for that with {run} wt:wait !<mr>.",
             breadboard_core::check::failures_text(&failures),
             run = breadboard_core::config::run_word()
         )
     } else if let Some(Err(error)) = plan {
         format!(
             "which packages it changes can't be told ({error}).
-  Run pnpm install, then {run} wt:check.",
-            run = breadboard_core::config::run_word()
+  Run pnpm install, then bb submit: wt:check, then the push."
         )
     } else if let Some(passed) = record.get("passed") {
         let checked: String = str_of(passed, "sha").unwrap_or_default().chars().take(8).collect();
         format!(
             "the last check that passed was of {checked}, not of this commit.
-  Run {run} wt:check (it runs only what changed, a second run is quick).",
-            run = breadboard_core::config::run_word()
+  Run bb submit: wt:check (only what changed, a second run is quick), then the push."
         )
     } else {
         let packages = match plan {
@@ -175,8 +173,7 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         };
         format!(
             "no check of it ran in this worktree yet.
-  Run {run} wt:check: lint, typecheck and test of {packages}.",
-            run = breadboard_core::config::run_word()
+  Run bb submit: wt:check (lint, typecheck and test of {packages}), then the push."
         )
     };
     Some(format!(
@@ -296,7 +293,7 @@ pub fn command(words: &[String]) -> ExitCode {
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
     }
-    errln!("{}", refusals.join("\n\n"));
+    errln!("{}", breadboard_core::config::in_repo(&refusals.join("\n\n")));
     ExitCode::FAILURE
 }
 
