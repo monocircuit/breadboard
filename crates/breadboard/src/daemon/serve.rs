@@ -348,6 +348,11 @@ fn start_engine(state: &State, main: &Path) {
     let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
     engines.insert(main.to_path_buf(), busy.clone());
     tokio::spawn(super::runs::schedule(main.to_path_buf(), busy));
+    // herdr's stale records of the repo's spaces go at every start (#425), the
+    // status's tick after a restore of herdr: `herdr heal`, on its own.
+    if herdr::is_in_herdr() {
+        crate::herdr::plugin::start_heal(main);
+    }
 }
 
 /// herdr's answer to `args`, read once for every overview that asks within HERDR_FRESH; only reads are ever made.
