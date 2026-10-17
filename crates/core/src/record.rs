@@ -419,6 +419,8 @@ pub struct Record {
     pub peer: Option<String>,
     /// The branch its worktrees are based on (#349): an epic, None for develop.
     pub base: Option<String>,
+    /// The product of `[products.*]` it belongs to (#405): its space is the product's.
+    pub product: Option<String>,
 }
 
 static SESSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f-]{36}$").unwrap());
@@ -488,6 +490,9 @@ impl Record {
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
             base: str_of(&raw, "base").filter(|base| is_branch(base)).map(String::from),
+            product: str_of(&raw, "product")
+                .filter(|product| !product.is_empty())
+                .map(String::from),
             raw,
         })
     }
@@ -544,6 +549,25 @@ pub fn base_for(main: &Path, name: &str, dir: &Path) -> crate::git::Base {
     } else {
         planned_base(main, Some(name))
     }
+}
+
+/// The product the orchestration `name` belongs to (#405): its record's,
+/// while breadboard.toml still names it; None for one of its own space.
+pub fn product_of(main: &Path, name: &str) -> Option<String> {
+    let product = record_of(main, name)?.product?;
+    crate::config::of(main)
+        .config
+        .products
+        .contains_key(&product)
+        .then_some(product)
+}
+
+/// Every orchestration of `product` with a record, by name.
+pub fn orchestrations_of_product(main: &Path, product: &str) -> Vec<String> {
+    recorded(main)
+        .into_iter()
+        .filter(|name| product_of(main, name).as_deref() == Some(product))
+        .collect()
 }
 
 /// What an orchestration shows (#234): its record's title, else its name.

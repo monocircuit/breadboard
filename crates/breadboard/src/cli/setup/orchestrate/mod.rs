@@ -9,6 +9,7 @@ mod epic;
 mod fresh;
 mod heal;
 mod issue;
+mod product;
 pub mod setups;
 mod space;
 mod workers;
@@ -26,7 +27,7 @@ use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
@@ -100,7 +101,7 @@ fn stray_flag(args: &Args) -> Option<String> {
 pub fn command(args: &Args) -> ExitCode {
     let argv = &args.all;
     let after = after_args(argv);
-    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--epic"];
+    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--epic", "--product"];
     // The words, wherever the flags stand (`--dry-run breadboard 301`): the
     // orchestration, then its issues; the MRs after `--after` are none.
     let positional: Vec<&String> = argv
@@ -279,6 +280,12 @@ pub fn command(args: &Args) -> ExitCode {
         Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
         Ok(None) => {}
         Err(why) => fail(&format!("no epic branch: {why}")),
+    }
+    // Its product before its space opens: the product's space is its space (#405).
+    match product::ensure_product(&name, &plan, args.value("--product").as_deref(), is_dry) {
+        Ok(Some(product)) => outln!("  product {product}: its space is the product's, with its other orchestrations"),
+        Ok(None) => {}
+        Err(why) => fail(&why),
     }
     // Its checkout up to its base, its briefs naming the base each worktree has (#380).
     if !is_dry {
