@@ -181,11 +181,18 @@ urls = ["DATABASE_URL"]
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
 
-## `[orchestration]`
+## `[batch]`
+
+Each product (`[products.<name>]`) has one open batch branch,
+`batch/<product>-<n>` off the default branch (#411): the base of every task
+of the product, opened by itself when the product has none and the moment
+one shipped; the product's file `.claude/products/<product>.json` keeps it.
+The team's defaults: the overview's settings (#415) override them per product.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
-| `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
+| `batching` | `true` | a task of a product branches off its batch and its MR goes into it; `false`: into the default branch, as without products. A hotfix (`wt:new --fix` of an issue labelled `hotfix`) always goes into the default branch |
+| `auto_merge` | `true` | a task MR into a batch merges by itself (a merge commit, no squash) once its bar is full and its checks passed; `false`: it waits for the user's click |
 
 ## `[products.<name>]`
 

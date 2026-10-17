@@ -24,7 +24,8 @@ pub struct Config {
     /// The dev stack of a checkout; None: worktrees have none.
     pub stack: Option<Stack>,
     pub mr: Mr,
-    pub orchestration: Orchestration,
+    /// The rolling batch branch of each product (#411).
+    pub batch: Batch,
     pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
@@ -343,14 +344,25 @@ impl Default for Mr {
     }
 }
 
-/// How an orchestration works.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+/// The rolling batch branches (#411): each product has one open
+/// `batch/<product>-<n>` off the default branch, the base of its tasks.
+/// The team's defaults; #415's settings panel overrides them per product.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
-pub struct Orchestration {
-    /// A new orchestration makes an epic branch its tasks branch off and
-    /// merge into (#350), its number from the issues' milestone
-    /// (`… Epic N: …`) or `--epic`; else it works on the default branch.
-    pub epic_branches: bool,
+pub struct Batch {
+    /// Whether a product's tasks go through its batch; off, they go into the default branch.
+    pub batching: bool,
+    /// Whether a task MR into a batch merges by itself once its bar is full and its checks passed.
+    pub auto_merge: bool,
+}
+
+impl Default for Batch {
+    fn default() -> Self {
+        Batch {
+            batching: true,
+            auto_merge: true,
+        }
+    }
 }
 
 /// The orchestrator's chat (#382): when it gets a fresh start.

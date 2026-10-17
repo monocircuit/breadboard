@@ -45,10 +45,10 @@ const SKILL: [(&str, &str); 5] = [
         "cleanup.md",
         include_str!("../../../../../claude/skills/parallel-work/cleanup.md"),
     ),
-    // Only where an orchestration works on epic branches (`[orchestration] epic_branches`).
+    // Only where products work through batches (`[products.*]`, `[batch] batching`).
     (
-        "epics.md",
-        include_str!("../../../../../claude/skills/parallel-work/epics.md"),
+        "batches.md",
+        include_str!("../../../../../claude/skills/parallel-work/batches.md"),
     ),
 ];
 
@@ -331,16 +331,16 @@ pub fn render(template: &str, values: &[(&str, String)], blocks: &[(&str, bool)]
 /// The skill, rendered: `(path in the checkout, text)`.
 fn skill_of(loaded: &Loaded) -> Vec<(PathBuf, String)> {
     let values = values(loaded);
-    let has_epics = loaded.config.orchestration.epic_branches;
+    let has_batches = loaded.config.batch.batching && !loaded.config.products.is_empty();
     let has_epic_stack = loaded.config.stack.as_ref().is_some_and(|stack| stack.epic.is_some());
     let blocks = [
         ("stack", loaded.config.stack.is_some()),
-        ("epics", has_epics),
+        ("batches", has_batches),
         ("epic_stack", has_epic_stack),
     ];
     SKILL
         .iter()
-        .filter(|(name, _)| *name != "epics.md" || has_epics)
+        .filter(|(name, _)| *name != "batches.md" || has_batches)
         .map(|(name, template)| {
             let text = render(template, &values, &blocks).unwrap_or_else(|error| fail(&format!("{name}: {error}")));
             (Path::new(".claude/skills/parallel-work").join(name), text)
@@ -637,7 +637,7 @@ mod tests {
         let stack = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n\
                      [[stack.services]]\nname = \"db\"\nlabel = \"DB\"\nport = 5432\nenv = \"DB_PORT\"\n\
                      [[stack.services]]\nname = \"auth\"\nlabel = \"Auth\"\nport = 8080\nenv = \"AUTH_PORT\"\n\
-                     [stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n[orchestration]\nepic_branches = true\n";
+                     [stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n[products.app]\npaths = [\"app\"]\n";
         let epic = "[stack.epic]\nservice = \"db\"\ntemplate = \"app_tpl\"\nstamp = \"db\"\n\
                     [[stack.epic.databases]]\nname = \"app\"\nis_clone = true\nowner = \"app\"\n\
                     [[stack.epic.databases]]\nname = \"auth\"\nowner = \"auth\"\n";
@@ -662,12 +662,12 @@ mod tests {
         let epics_md = |skill: &[(PathBuf, String)]| {
             skill
                 .iter()
-                .find(|(path, _)| path.ends_with("epics.md"))
+                .find(|(path, _)| path.ends_with("batches.md"))
                 .map(|(_, text)| text.clone())
                 .unwrap()
         };
-        // Without [stack.epic] an orchestration's worktrees get own stacks: no epic stack to describe (#365).
-        assert!(!epics_md(&rendered(epics)).contains("The epic stack and task stacks"));
+        // Without [stack.epic] an orchestration's worktrees get own stacks: no batch stack to describe (#365).
+        assert!(!epics_md(&rendered(epics)).contains("The batch stack and task stacks"));
         let text = epics_md(&rendered(epic_stack));
         assert!(text.contains("template\n  database `app_tpl`"), "{text}");
         assert!(text.contains("A task gets `app_<feature>`"), "{text}");

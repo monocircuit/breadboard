@@ -417,7 +417,8 @@ pub struct Record {
     pub chat: Option<Chat>,
     pub brief: Option<String>,
     pub peer: Option<String>,
-    /// The branch its worktrees are based on (#349): an epic, None for develop.
+    /// The branch its worktrees are based on (#349): an epic still open, None
+    /// for develop or its product's batch (#411).
     pub base: Option<String>,
     /// The product of `[products.*]` it belongs to (#405): its space is the product's.
     pub product: Option<String>,
@@ -583,11 +584,19 @@ pub fn write_chat(main: &Path, name: &str, session_id: &str, cwd: &str) -> io::R
 }
 
 /// The base a new worktree of the orchestration `name` gets (`wt:new
-/// --origin`, #349): its record's epic, else the repo's default branch;
-/// both read from the main checkout `main`, never the process's cwd (#380).
+/// --origin`, #349): its record's epic still open, else its product's batch
+/// (#411), else the repo's default branch; read from the main checkout
+/// `main`, never the process's cwd (#380).
 pub fn planned_base(main: &Path, name: Option<&str>) -> crate::git::Base {
-    name.and_then(|name| record_of(main, name))
-        .and_then(|record| record.base)
+    let record = name.and_then(|name| record_of(main, name));
+    let batch = || {
+        let product = record.as_ref()?.product.as_deref()?;
+        crate::batch::planned_of(main, product).map(|batch| batch.branch)
+    };
+    record
+        .as_ref()
+        .and_then(|record| record.base.clone())
+        .or_else(batch)
         .map_or_else(
             || crate::git::Base::of(&crate::config::of(main).branch),
             |base| crate::git::Base::of(&base),

@@ -2,6 +2,7 @@
 //! today's, read and written in the same places (rewrite rule 5).
 
 pub mod actions;
+pub mod batch;
 pub mod check;
 pub mod ci;
 pub mod ci_watch;

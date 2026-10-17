@@ -6,6 +6,7 @@
 //! what other groups and core should share is in their own modules here
 //! until breadboard-core offers it (herdr, GitLab, local time).
 
+pub(in crate::cli) mod batch;
 mod browser;
 pub(in crate::cli) mod changelog;
 mod check;
