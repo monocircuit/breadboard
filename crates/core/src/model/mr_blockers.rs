@@ -12,6 +12,18 @@ use super::resolve::is_conflict_settled;
 use crate::gitlab::{IssueBox, Job, Mr};
 use std::collections::HashSet;
 
+/// The reason of a draft without boxes: the merge action marks it ready.
+pub const MARK_READY: &str = "draft: mark ready";
+/// The reason of a draft whose bar is full (#399): breadboard marks it ready.
+pub const READY_BAR_FULL: &str = "ready (bar full)";
+/// The reason of such a draft a person set back after breadboard marked it ready.
+pub const DRAFT_BY_HAND: &str = "draft by hand: ready after the next push";
+
+/// The reasons that are the draft alone: the merge's own step, no lack.
+pub fn is_draft_reason(text: &str) -> bool {
+    matches!(text, MARK_READY | READY_BAR_FULL | DRAFT_BY_HAND)
+}
+
 /// A reason an open MR can't be merged yet: what, who acts on it (`agent`,
 /// `you`, `GitLab`, or the `!N` it waits for), and whether it is about
 /// conflicts (the row's conflict cell says those).
@@ -92,17 +104,32 @@ pub fn row_blockers_of(
         );
     }
     if open.is_empty() && checks.is_empty() && mr.is_draft {
-        // All done: the merge action marks it ready, the agent's or the overview's own once the pipeline passed.
-        let is_posted = actions.iter().any(|action| action.kind == "merge");
-        add(
-            "draft: mark ready".into(),
-            if is_posted || status == Some("success") {
-                "you"
-            } else {
-                "agent"
-            },
-            false,
-        );
+        let bar = progress_of(boxes).unwrap_or_default();
+        let is_changed = tree.is_some_and(|tree| is_change_open(Some(tree), Some(mr)));
+        if bar.total > 0 && bar.ticked < bar.total {
+            // Boxes of neither Work nor acceptance (`## Scope`): the bar isn't full.
+            let left = bar.total - bar.ticked;
+            add(
+                format!("{left} box{} open", if left == 1 { "" } else { "es" }),
+                "agent",
+                false,
+            );
+        } else if bar.total > 0 && !is_changed {
+            // The bar is full: breadboard marks it ready by itself (#399).
+            add(READY_BAR_FULL.into(), "breadboard", false);
+        } else if bar.total == 0 {
+            // No boxes: the merge action marks it ready, the agent's or the overview's own once the pipeline passed.
+            let is_posted = actions.iter().any(|action| action.kind == "merge");
+            add(
+                MARK_READY.into(),
+                if is_posted || status == Some("success") {
+                    "you"
+                } else {
+                    "agent"
+                },
+                false,
+            );
+        }
     }
 
     if !is_conflict_settled(mr, tree) {
@@ -356,13 +383,46 @@ mod tests {
         );
         assert_eq!(
             reasons(&draft(), &[work("Tests", true)], Some(&Tree::default())),
-            ["draft: mark ready → you"]
+            ["ready (bar full) → breadboard"]
         );
     }
 
     #[test]
-    fn gives_a_ticked_green_draft_to_the_user() {
+    fn leaves_a_full_bar_to_breadboard_and_names_boxes_of_neither_kind() {
+        // #399: every box ticked, breadboard marks it ready, whatever the pipeline.
         let boxes = [work("Tests", true)];
+        assert_eq!(reasons(&draft(), &boxes, None), ["ready (bar full) → breadboard"]);
+        let scope = |is_ticked| IssueBox {
+            heading: Some("Scope".into()),
+            text: "Marked ready by the daemon".into(),
+            is_ticked,
+            line: 0,
+        };
+        assert_eq!(
+            reasons(&draft(), &[scope(false), scope(true), scope(false)], None),
+            ["2 boxes open → agent"]
+        );
+        assert_eq!(
+            reasons(&draft(), &[scope(true)], None),
+            ["ready (bar full) → breadboard"]
+        );
+        // A change requested holds the draft: the change says it, no ready.
+        let changed = Tree {
+            change: Some(crate::actions::Change {
+                text: "rename it".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            reasons(&draft(), &boxes, Some(&changed)),
+            ["change requested: rename it → agent"]
+        );
+    }
+
+    #[test]
+    fn gives_a_green_draft_without_boxes_to_the_user() {
+        let boxes = [];
         assert_eq!(reasons(&draft(), &boxes, None), ["draft: mark ready → you"]);
         let running = Mr {
             pipeline: Some(Pipeline {

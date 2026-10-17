@@ -28,8 +28,14 @@ pub fn brief_of(
     // One issue, one MR, into its base (#349).
     // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
     let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
+    let loaded = breadboard_core::config::of(main);
+    let (repo, run, branch_name) = (
+        loaded.name(),
+        loaded.config.repo.run.clone().unwrap_or_else(|| "breadboard".into()),
+        loaded.branch.clone(),
+    );
     let worktree = format!(
-        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline). That MR handles exactly this one issue (`Closes #{number}`, no other)."
+        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline), and only with `{run} wt:merge-base`, never a plain `git merge` (#396): on a conflict it aborts and names the files, `--resolve` keeps the merge open to finish in the same run. That MR handles exactly this one issue (`Closes #{number}`, no other)."
     );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
@@ -45,12 +51,6 @@ pub fn brief_of(
     if !extra.trim().is_empty() {
         tail.push_str(&format!("\n## From the orchestrator\n\n{}\n", extra.trim()));
     }
-    let loaded = breadboard_core::config::of(main);
-    let (repo, run, branch_name) = (
-        loaded.name(),
-        loaded.config.repo.run.clone().unwrap_or_else(|| "breadboard".into()),
-        loaded.branch.clone(),
-    );
     format!(
         r#"# #{number} {title}
 
@@ -74,7 +74,7 @@ Run long commands (`{run} wt:check`, the gauntlet, builds) in the foreground: a 
    No message for a stage end or the end: the overview has them.
    {peer_line}
 4. **Whenever you stop and the next step is the user's, leave an action for it** with `{run} wt:action`. The overview of the orchestration answers "what now?" from these (its NEXT line and ACTIONS): the user must never have to ask you what is next.
-   - `{run} wt:action merge "<what is in it>"` only once the work is done: the pipeline of the MR passed, every box of the issue is ticked (Work and acceptance criteria), every `try` you posted was answered `looks good`, and it is its turn in the merge order (`wt:plan`). Then mark it ready (`glab mr update --ready`) and post it yourself, the overview's automatic one is only a fallback; when your permissions block `--ready`, post it anyway with "mark ready + merge" in the text. While a try is open the overview offers no merge. Never merge yourself;
+   - `{run} wt:action merge "<what is in it>"` only once the work is done: the pipeline of the MR passed, every box of the issue is ticked (Work and acceptance criteria), every `try` you posted was answered `looks good`, and it is its turn in the merge order (`wt:plan`). Post it yourself, the overview's automatic one is only a fallback. Don't mark the MR ready: breadboard does it by itself once every box of the issue is ticked (and puts it back to draft when one is unticked), so tick each box as its work is done. While a try is open the overview offers no merge. Never merge yourself;
    - `{run} wt:action try "<what to check>" --run "<command>"` (a terminal, e.g. `{run} overview --orchestration <name>` of your branch) or `--url <page>` (`/atlas/…` on your worktree's app, its stack started first) for something only a person can judge: the click opens that spot. Every box you leave open for the user's live check gets one, and the box names it (`… (try #<id>)`); tick it once the answer is `looks good`. A check that needs the deployment (HTTPS, the test instance's data) is `--on test --url <path>`, posted with the merge, its box marked `(after deploy, try #<id>)`: the only check that stays open across the merge; the row shows `waits for merge`, `deploying`, then `ready` by itself. A `broken` puts the MR back to draft (the overview does it when the MR was ready, else `glab mr update --draft`) until the fix is pushed, green and tried again with a new try;
    - `{run} wt:action decide "<what is decided, one sentence>? <why the recommendation, one line>" --option "<label>" --why "<what happens>" --option "<label>" --why "<what happens>" --recommend <label>`: the user answers from the row, so the question says precisely what is decided, each option a short label (the answer you get) with what happens as its `--why` (or `--option "<label>: <what happens>"`), not `A`/`B`, and `--recommend` marks yours `(Recommended)`. Together with the SendMessage to the orchestrator that explains them. `AskUserQuestion` is off in headless runs (#360): a question for the user is always a `decide`;
    - `{run} wt:action plan "<the plan in one line>"` before larger work, for an `ok` or `different`;
@@ -154,6 +154,7 @@ mod tests {
         std::fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
         assert!(brief.contains("Its base is `develop`: its MR goes into it"), "{brief}");
+        assert!(brief.contains("wt:merge-base"), "{brief}");
         let record = breadboard_core::record::record_file(&main, "o");
         std::fs::create_dir_all(record.parent().unwrap()).unwrap();
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();

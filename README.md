@@ -171,10 +171,20 @@ of your own keeps its claude in a tab (#361).
   starts, the lines wait and the overview says why. Its `continue anyway`,
   or `breadboard runs continue`, lifts it until midnight
   (`.claude/runs/limit.json`).
+- **The Claude usage limit** (#393): a run whose result is the limit (an
+  error with a 429 or the limit's words, `resets 11:30pm`) leaves its
+  session `limit` and holds every run until a minute after the reset, or
+  15 min, 30 min, then 1 h when it names no time
+  (`.claude/runs/usage.json`, `breadboard_core::runs::Usage`). Lines
+  meanwhile wait; at the reset each stopped session gets one run with
+  `[breadboard] the usage limit reset: continue where you stopped` ahead of
+  them. The band says `usage limit until 23:30`, and the orchestrator's
+  chat is told once when it holds and once when the runs go on.
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
-  `asks` (the run was denied a tool, its `permission_denials`), and
-  `queued` from the queue. The overview reads it as herdr's agent states
-  (`working`, `idle`, `blocked`, `queued for a run`). `breadboard runs`
+  `asks` (the run was denied a tool, its `permission_denials`), `limit`
+  (the usage limit), and `queued` from the queue. The overview reads it as
+  herdr's agent states (`working`, `idle`, `blocked`, `queued for a run`,
+  `waits for the usage limit`). `breadboard runs`
   prints it; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
 ## The main checkout follows develop

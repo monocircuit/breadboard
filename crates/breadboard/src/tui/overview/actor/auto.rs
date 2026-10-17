@@ -21,10 +21,12 @@ use breadboard_core::model::display_names::names_of;
 use breadboard_core::model::handovers::agent_name_of;
 use breadboard_core::model::next::stamped;
 use breadboard_core::model::orchestration::{OrchestrationLocal, OrchestrationModel};
+use breadboard_core::model::order::Target;
 use breadboard_core::model::order::{Go, Item};
 use breadboard_core::model::workers::StartRun;
 use breadboard_core::model::{Entry, Paint, Tree, issues_of};
 use breadboard_core::record::{Worker, record_file, write_plan, write_worker};
+use breadboard_core::runs::{self, Usage};
 use breadboard_core::time::{now_ms, to_iso};
 use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
 use serde_json::json;
@@ -161,6 +163,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
         is_changed |= follow_merge_order(app, &name, &model);
         if is_in_herdr() {
             is_changed |= remove_merged(app, &name, &local, remote, &model);
+            tell_usage(app, &name, &model);
         }
     }
     if is_deliverer {
@@ -967,6 +970,45 @@ fn deliver_wait(
     clear_wait(dir);
     conflicts.lock().unwrap_or_else(|e| e.into_inner()).remove(dir);
     Some(herdr::overview_line(&line))
+}
+
+/// The orchestrator's chat told once that the Claude usage limit holds the
+/// runs and once that they go on (#393), not each agent's: who was told is
+/// in `usage.json`, so a restarted overview doesn't tell again.
+fn tell_usage(app: &mut Overview, name: &str, model: &OrchestrationModel) {
+    const KEY: &str = "usage-limit";
+    let main = app.actor.main.clone();
+    let usage: Usage = runs::read_or_default(&runs::usage_file(&main));
+    let is_told = usage.told.iter().any(|told| told == name);
+    let line = match (&model.usage, is_told) {
+        (Some(until), false) => {
+            format!("{until}: no run of your agents starts, the stopped ones go on by themselves after it")
+        }
+        (None, true) => "the usage limit reset: the runs it stopped go on".to_string(),
+        _ => return,
+    };
+    if !app.actor.auto.in_flight.insert(KEY.into()) {
+        return;
+    }
+    let (name, is_holding) = (name.to_string(), model.usage.is_some());
+    app.actor.queue(move || {
+        let pane = herdr::agent_pane_of(&main, &Target::Orchestration(name.clone()));
+        let is_in = herdr::type_into(pane.as_ref(), &line);
+        if is_in {
+            let _ = runs::change_usage(&main, |usage| {
+                usage.told.retain(|told| *told != name);
+                if is_holding {
+                    usage.told.push(name);
+                }
+            });
+        }
+        Some(Box::new(move |app: &mut Overview| {
+            app.actor.auto.in_flight.remove(KEY);
+            if is_in {
+                app.actor.log(Paint::Yellow, format!("told the orchestrator: {line}"));
+            }
+        }))
+    });
 }
 
 /// A herdr notification for each action new since the last read

@@ -425,6 +425,7 @@ fn agent_state(status: Option<&str>) -> Option<&'static str> {
     match status? {
         "working" => Some("◐ at work"),
         "blocked" => Some("● asks you something"),
+        "limit" => Some("⏸ waits for the usage limit"),
         "idle" => Some("waiting for you"),
         "done" => Some("✓ done, waiting for you"),
         _ => None,

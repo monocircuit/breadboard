@@ -64,11 +64,13 @@ pub struct Facts<'a> {
 pub const MERGE_TURN: &str = "done: waits for its merge turn";
 /// The key of a headless agent whose lines wait for a run (#358).
 pub const RUN_QUEUED: &str = "run-queued";
+/// The key of a headless agent whose run stopped at the usage limit (#393).
+pub const RUN_LIMIT: &str = "run-limit";
 /// A green MR whose turn says it lacks something no check names (work
 /// boxes, conflicts, a change): its MR row says what.
 pub const NOT_READY: &str = "not ready to merge: its MR row says why";
 
-/// What an agent waits for, the first that holds: at work; queued for a run; asks you; waits
+/// What an agent waits for, the first that holds: at work; queued for a run; the usage limit; asks you; waits
 /// on itself (#417); waits for the pipeline; pipeline failed; waits for you (its open actions, the
 /// merge while its turn offers it, #344); waits for the MRs its turn comes
 /// after; checks open; done without a known turn; waits for other MRs; the
@@ -89,6 +91,10 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
     // Its key is no issue's `queued` (#361): the tree folds those into the start queue.
     if *status == Some("queued") {
         return state(RUN_QUEUED, "queued for a run", Tone::Work);
+    }
+    // Its run stopped at the Claude usage limit, it goes on after the reset (#393; the band says when).
+    if *status == Some("limit") {
+        return state(RUN_LIMIT, "waits for the usage limit", Tone::Work);
     }
     let is_asking = tree
         .claude
@@ -265,6 +271,14 @@ mod tests {
         assert_eq!(queued, state(RUN_QUEUED, "queued for a run", Tone::Work));
         // The tree folds every node keyed `queued` into the queue of issues to start.
         assert_ne!(queued.key, "queued");
+    }
+
+    #[test]
+    fn a_run_stopped_at_the_usage_limit_waits_for_it() {
+        assert_eq!(
+            at(&tree(), Some(&mr("failed")), "limit"),
+            state(RUN_LIMIT, "waits for the usage limit", Tone::Work)
+        );
     }
 
     #[test]
