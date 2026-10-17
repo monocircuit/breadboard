@@ -81,7 +81,15 @@ pub fn open(main: &Path, dir: &Path) -> Result<String, String> {
             Step::Open => break,
         }
     }
-    let space = herdr::space_of(main, dir).ok_or("herdr has no space of its worktree")?;
+    // Its space may be closed (#386): the click opens it again.
+    let space = herdr::space_of(main, dir)
+        .or_else(|| {
+            let repo = crate::cli::lifecycle::repo::Repo {
+                main: main.to_path_buf(),
+            };
+            crate::cli::lifecycle::layout::open_space(&repo, dir)
+        })
+        .ok_or("herdr has no space of its worktree and made none")?;
     let tabs = breadboard_core::herdr::tabs_of(&space);
     let command = open_command(dir, &id, &feature);
     if !herdr::ensure_tab(&space, &feature, dir, Some(&command), &tabs) {

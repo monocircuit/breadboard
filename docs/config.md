@@ -242,6 +242,7 @@ opens its path there.
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
 | `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
+| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree |
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).

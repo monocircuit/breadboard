@@ -1,7 +1,7 @@
 //! The tabs of a herdr space (worktree/tabs.mjs): create, find idle ones,
 //! keep them in order, drop duplicates; and the spaces made from them.
 
-use super::super::herdr::{self, call, did, has_agent, id_at, s};
+use super::super::herdr::{self, call, did, id_at, s};
 use super::super::proc::{exe, quote, text};
 use super::super::repo::Repo;
 use serde_json::Value;
@@ -242,8 +242,23 @@ pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Value]) -> Option<Stri
     let pane = herdr::panes_of(workspace)
         .into_iter()
         .find(|pane| s(pane, "tab_id") == s(tab, "tab_id"))?;
+    if is_agents(&pane) {
+        return None;
+    }
     let id = s(&pane, "pane_id").to_string();
     herdr::is_idle(&id).then_some(id)
+}
+
+/// Whether herdr has an agent for the pane: one runs, or one it recorded
+/// it resumes there (#386). Its shell may be in front for a moment after a
+/// restart, while herdr types `claude --resume` into it: a command typed then
+/// lands in that claude's input, so such a pane is never taken for idle.
+pub fn is_agents(pane: &Value) -> bool {
+    let is_set = |key: &str| {
+        pane.get(key)
+            .is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+    };
+    is_set("agent") || is_set("agent_session")
 }
 
 /// A tab by its label, created unfocused with its command running if
@@ -419,7 +434,7 @@ pub fn drop_duplicates(workspace: &str, label: &str) {
                 .iter()
                 .filter(|pane| s(pane, "tab_id") == s(tab, "tab_id"))
                 .collect();
-            own.len() == 1 && !has_agent(own[0]) && herdr::is_idle(s(own[0], "pane_id"))
+            own.len() == 1 && !is_agents(own[0]) && herdr::is_idle(s(own[0], "pane_id"))
         })
         .collect();
     let skip = usize::from(spare.len() == tabs.len());
@@ -436,6 +451,17 @@ pub fn drop_duplicates(workspace: &str, label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_with_an_agent_or_its_record_is_never_idle() {
+        use serde_json::json;
+        assert!(!is_agents(&json!({ "pane_id": "w1:p1" })));
+        assert!(!is_agents(&json!({ "pane_id": "w1:p1", "agent": null })));
+        assert!(is_agents(&json!({ "pane_id": "w1:p1", "agent": "claude" })));
+        assert!(is_agents(
+            &json!({ "pane_id": "w1:p1", "agent_session": { "value": "abc" } })
+        ));
+    }
 
     #[test]
     fn nothing_moves_when_in_order() {

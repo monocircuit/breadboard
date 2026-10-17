@@ -15,6 +15,7 @@ use breadboard_core::model::Paint;
 use breadboard_core::model::boxes::BoxSection;
 use breadboard_core::model::merge::GITLAB_RECHECKS;
 use breadboard_core::model::mr_blockers::{Progress, Reason};
+use breadboard_core::model::orchestration::DEVELOP_FIX;
 use breadboard_core::model::orchestration::{MergeRequests, MrFacts};
 use breadboard_core::model::order::Go;
 use breadboard_core::model::resolve::Conflict;
@@ -356,6 +357,15 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, reasons: &[Reason], ct
         )]);
     }
     let button = "resolve\u{a0}merge\u{a0}conflicts";
+    // GitLab's answer itself, red and its agent's (#416): the button only resolves it.
+    let said = || {
+        mr.conflicts.as_ref().map(|text| {
+            vec![
+                look::span(text.replace(' ', "\u{a0}"), theme::tone(Tone::Red)),
+                look::dim("\u{a0}→\u{a0}agent"),
+            ]
+        })
+    };
     match &mr.conflict {
         None => {}
         Some(Conflict::Checking) => parts.push(vec![look::dim("checking for conflicts …")]),
@@ -367,6 +377,7 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, reasons: &[Reason], ct
         Some(Conflict::Resolved) => parts.push(vec![look::span("✓ conflicts resolved", theme::tone(Tone::Green))]),
         Some(Conflict::Button { behind, is_refused }) => {
             scene.button(button, Tone::Yellow, Act::Resolve(mr.iid));
+            parts.extend(said());
             let mut part = Vec::new();
             if *behind > 0 {
                 part.push(look::span(format!("{behind} behind"), theme::tone(Tone::Yellow)));
@@ -378,10 +389,12 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, reasons: &[Reason], ct
         }
         Some(Conflict::LeftAfterPush) => {
             scene.button(button, Tone::Yellow, Act::Resolve(mr.iid));
+            parts.extend(said());
             parts.push(vec![look::dim("conflicts left after its push")]);
         }
         Some(Conflict::Grey { why }) => {
             scene.inactive(button);
+            parts.extend(said());
             parts.push(vec![look::dim(why)]);
         }
         Some(Conflict::Sent { text, at }) => {
@@ -454,7 +467,13 @@ fn reasons_of(reasons: &[Reason], room: u16) -> Vec<Vec<Span<'static>>> {
         } else {
             look::dim(who)
         };
-        parts.push(glue(vec![look::span(&text, theme::tone(Tone::Yellow)), who]));
+        // A push only a fix of develop gets out is red, as a conflict is (#416).
+        let tone = if reason.who == DEVELOP_FIX {
+            Tone::Red
+        } else {
+            Tone::Yellow
+        };
+        parts.push(glue(vec![look::span(&text, theme::tone(tone)), who]));
     }
     parts
 }
@@ -723,6 +742,7 @@ mod tests {
             is_merged: false,
             status,
             conflict: None,
+            conflicts: None,
             reasons: vec![],
             progress: None,
             ci: None,

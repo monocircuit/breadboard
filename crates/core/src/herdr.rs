@@ -14,6 +14,13 @@ pub fn is_in_herdr() -> bool {
     std::env::var("HERDR_ENV").as_deref() == Ok("1")
 }
 
+/// The variables that tie a process to the pane it was started in. A child
+/// that is no pane's own (the daemon, a headless agent's `claude -p`) goes
+/// without them (#386): with `HERDR_PANE_ID` claude's herdr hook reports its
+/// session as that pane's agent, and herdr resumes it there, interactively,
+/// after a restart (`resume_agents_on_restore`).
+pub const PANE_ENV: [&str; 2] = ["HERDR_PANE_ID", "HERDR_TAB_ID"];
+
 /// What answers herdr's reads in place of a call of this process: the
 /// overviews' shared reader (`breadboard serve`); its None: ask herdr here.
 pub type SharedReads = fn(&[&str]) -> Option<Option<Value>>;

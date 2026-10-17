@@ -384,6 +384,8 @@ fn bare_overviews(
                 && ours.contains(&field(tab, "workspace_id").as_str())
         })
         .filter_map(|tab| panes.iter().find(|pane| field(pane, "tab_id") == field(tab, "tab_id")))
+        // One herdr resumes an agent in, or that runs one, is no bare shell (#386).
+        .filter(|pane| !crate::cli::lifecycle::layout::tabs::is_agents(pane))
         .map(|pane| field(pane, "pane_id"))
         .filter(|pane| !pane.is_empty() && is_bare(pane))
         .collect()
@@ -540,6 +542,12 @@ mod tests {
         assert!(bare_overviews(&ours, Some(&tabs), Some(&panes), |_| false).is_empty());
         assert!(bare_overviews(&ours, None, Some(&panes), |_| true).is_empty());
         assert!(bare_overviews(&[], Some(&tabs), Some(&panes), |_| true).is_empty());
+        // After a restart herdr resumes a recorded agent there: its shell is in
+        // front a moment, but a command typed now lands in that claude (#386).
+        let resuming = json!({ "panes": [
+            { "pane_id": "w2:p2", "tab_id": "w2:t2", "agent_session": { "value": "701ab84e" } },
+        ] });
+        assert!(bare_overviews(&ours, Some(&tabs), Some(&resuming), |_| true).is_empty());
     }
 
     mod panes {

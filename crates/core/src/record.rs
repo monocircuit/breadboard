@@ -421,6 +421,9 @@ pub struct Record {
     pub base: Option<String>,
     /// The product of `[products.*]` it belongs to (#405): its space is the product's.
     pub product: Option<String>,
+    /// Its auto mode (#384, `"auto": true`): a checker answers its tries; #308's
+    /// auto merge joins the same switch. Off by default.
+    pub is_auto: bool,
 }
 
 static SESSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9a-f-]{36}$").unwrap());
@@ -489,6 +492,7 @@ impl Record {
             chat,
             brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
+            is_auto: raw.get("auto").and_then(Value::as_bool).unwrap_or(false),
             base: str_of(&raw, "base").filter(|base| is_branch(base)).map(String::from),
             product: str_of(&raw, "product")
                 .filter(|product| !product.is_empty())

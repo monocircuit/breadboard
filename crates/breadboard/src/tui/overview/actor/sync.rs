@@ -518,6 +518,7 @@ fn report_states(
                 checks: &checks,
                 // The merge order isn't known here: the orchestration's overview left the turn (#344).
                 turn: turn.as_ref(),
+                blocker: None,
             };
             match line_of(&tree, &facts, lab) {
                 Some(line) => {
