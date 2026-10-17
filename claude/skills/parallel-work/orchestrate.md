@@ -219,7 +219,10 @@ GitLab every minute and queues the line to go on with (`!213 is merged:
 develop is 3 behind: merge it in only if your work needs it or it
 conflicts, then …`), which starts the agent's next run;
 early when one is closed, stays in conflict for 30 min, or after 8 h.
-Meanwhile the MR row says `waits for !213`.
+Meanwhile the MR row says `waits for !213`. An MR GitLab merged with
+another counts as merged too. Once the agent's own MR is merged or closed,
+its wait is dropped instead (#421): no run wakes it to find nothing to do. A
+wait that has stood for 24 h shows in ACTIONS as `old wait`: a click drops it.
 
 **The overview answers "what now?"**, so the user never has to ask. The
 orchestrator sets the order right after the start and again whenever it
