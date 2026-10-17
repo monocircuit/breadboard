@@ -38,9 +38,10 @@ const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--a
 const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]";
 /// The share of its context above which an agent gets no next issue: it would run out in the middle of it.
 /// The share of its context above which an agent gets no next issue but
-/// retires (#381): breadboard.toml's `[agents] fresh_above`.
-pub fn context_limit(main: &Path) -> f64 {
-    breadboard_core::config::of_main(main).config.agents.limit()
+/// retires (#381): the setting `agent fresh start` of the orchestration
+/// `name` (#415), by default breadboard.toml's `[agents] fresh_above`.
+pub fn context_limit(main: &Path, name: &str) -> f64 {
+    breadboard_core::settings::of(main, name).agent_limit
 }
 /// The flags whose next word is their value, not an issue.
 const VALUED: [&str; 4] = ["--peer", "--brief", "--to", "--limit"];
@@ -1044,7 +1045,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let name = request.name;
     let label = repo.space_label_of(name);
     let limit = match request.limit {
-        None => context_limit(&repo.main),
+        None => context_limit(&repo.main, name),
         Some(percent) => percent
             .trim()
             .parse::<f64>()
