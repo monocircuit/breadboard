@@ -240,6 +240,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The Claude usage limit holding the headless runs (#393): `usage limit until 23:30`.
+    pub usage: Option<String>,
     /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
     pub ci_watch: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
@@ -1043,6 +1045,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        usage: local.spent.usage.clone(),
         ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
         turn_records: Vec::new(),
