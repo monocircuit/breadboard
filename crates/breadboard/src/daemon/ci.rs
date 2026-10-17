@@ -105,6 +105,9 @@ pub async fn schedule(main: PathBuf) {
             ranks.cancelled = own_cancels;
             ranks.preempts = preempts;
             ranks.now = now;
+            // `[merge] needs_pipeline = false` (#443): MRs into the default branch merge on wt:check.
+            let loaded = breadboard_core::config::of_main(&main_now);
+            ranks.no_pipeline_into = (!loaded.config.merge.needs_pipeline).then(|| loaded.branch.clone());
             (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
         });
         let Ok((decision, slots, run_now, mrs, now)) = step.await else {
