@@ -26,9 +26,10 @@ pub fn brief_of(
         ),
     };
     // One issue, one MR, into its base (#349).
-    let base = breadboard_core::git::base_of(&issue.dir).local;
+    // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
+    let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
     let worktree = format!(
-        "{worktree}\nIts base is `{base}`: merge it in, its MR goes into it. That MR handles exactly this one issue (`Closes #{number}`, no other)."
+        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline). That MR handles exactly this one issue (`Closes #{number}`, no other)."
     );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
@@ -138,5 +139,26 @@ mod tests {
         assert!(brief.ends_with(
             ".\n\n## Before this issue\n\nYou are a reused agent: x.\n\n## From the orchestrator\n\nmore\n"
         ));
+    }
+
+    /// #380: the brief is written before its worktree exists, from whatever
+    /// directory wt:orchestrate runs in; its base is the main checkout's
+    /// default branch (or the record's epic), never a fallback of a path that isn't there.
+    #[test]
+    fn names_the_base_of_the_main_checkout_before_the_worktree_exists() {
+        let main = std::env::temp_dir().join(format!("brief-base-{}", std::process::id()));
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        std::fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
+        let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
+        assert!(brief.contains("Its base is `develop`: its MR goes into it"), "{brief}");
+        let record = breadboard_core::record::record_file(&main, "o");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();
+        let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
+        assert!(
+            brief.contains("Its base is `epic/15-o`: its MR goes into it"),
+            "{brief}"
+        );
+        let _ = std::fs::remove_dir_all(&main);
     }
 }

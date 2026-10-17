@@ -38,6 +38,8 @@ fn token_of(slot: u32) -> String {
 pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     let dir = repo.checkout_of(name);
     if orchestrator_checkouts(&repo.main).contains(&dir) {
+        // It follows its base, as far as origin was fetched (#380); `follow_base` says when it can't.
+        let _ = follow_base(&repo.main, &dir);
         return Some(dir);
     }
     fs::create_dir_all(dir.parent()?).ok()?;
@@ -69,6 +71,44 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
         }
     }
     Some(dir)
+}
+
+/// The checkout of an orchestration `dir` moved up to its base as origin
+/// has it (fetched before): detached on the default branch's, or its epic
+/// branch fast-forwarded (never reset: it may hold merges not pushed yet).
+/// It stood on the commit it was made from (#380: d21c737c, two weeks and
+/// a config behind). Ok(true) moved, Ok(false) up to date or ahead; Err
+/// why it stays: changes in it, or commits its base lacks.
+pub fn follow_base(main: &std::path::Path, dir: &std::path::Path) -> Result<bool, String> {
+    let git = |args: &[&str]| breadboard_core::git::git(dir, args);
+    let branch = git(&["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    let target = if branch.is_ok {
+        format!("origin/{}", branch.out())
+    } else {
+        breadboard_core::git::Base::of(&breadboard_core::config::of(main).branch).remote
+    };
+    if !git(&["rev-parse", "--verify", "--quiet", &target]).is_ok {
+        return Err(format!("origin has no {target}"));
+    }
+    if git(&["merge-base", "--is-ancestor", &target, "HEAD"]).is_ok {
+        return Ok(false);
+    }
+    if !git(&["merge-base", "--is-ancestor", "HEAD", &target]).is_ok {
+        return Err(format!("it has commits {target} lacks"));
+    }
+    if !git(&["status", "--porcelain", "--untracked-files=no"]).out().is_empty() {
+        return Err("it has changes".into());
+    }
+    let moved = if branch.is_ok {
+        git(&["merge", "--ff-only", "--quiet", &target])
+    } else {
+        git(&["checkout", "--quiet", "--detach", &target])
+    };
+    if moved.is_ok {
+        Ok(true)
+    } else {
+        Err(moved.stderr.trim().lines().next().unwrap_or("git refused").to_string())
+    }
 }
 
 /// `git worktree add` of a checkout at `path`: on the local `epic` branch
@@ -672,6 +712,79 @@ pub fn sort_spaces(repo: &Repo) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #380: a checkout made long ago moves up to origin's default branch, and says why it can't.
+    #[test]
+    fn a_checkout_follows_its_base() {
+        let root = std::env::temp_dir().join(format!("follow-base-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            let out = breadboard_core::git::git(dir, args);
+            assert!(out.is_ok, "git {args:?}: {}", out.stderr);
+            out.out().to_string()
+        };
+        let (origin, main, checkout) = (root.join("origin.git"), root.join("main"), root.join("checkout"));
+        run(
+            &root,
+            &["init", "--quiet", "--bare", "--initial-branch=develop", &text(&origin)],
+        );
+        run(&root, &["init", "--quiet", "--initial-branch=develop", &text(&main)]);
+        fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
+        let commit = |text: &str| {
+            fs::write(main.join("file"), text).unwrap();
+            run(&main, &["add", "file"]);
+            run(
+                &main,
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    text,
+                ],
+            );
+            run(&main, &["push", "--quiet", &text_of(&origin), "develop:develop"]);
+            run(
+                &main,
+                &[
+                    "fetch",
+                    "--quiet",
+                    &text_of(&origin),
+                    "develop:refs/remotes/origin/develop",
+                ],
+            );
+        };
+        fn text_of(path: &std::path::Path) -> String {
+            path.to_string_lossy().into_owned()
+        }
+        commit("one");
+        run(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                &text(&checkout),
+                "origin/develop",
+            ],
+        );
+        assert_eq!(follow_base(&main, &checkout), Ok(false));
+        commit("two");
+        assert_eq!(follow_base(&main, &checkout), Ok(true));
+        assert_eq!(
+            run(&checkout, &["rev-parse", "HEAD"]),
+            run(&main, &["rev-parse", "origin/develop"])
+        );
+        commit("three");
+        fs::write(checkout.join("file"), "changed").unwrap();
+        assert_eq!(follow_base(&main, &checkout), Err("it has changes".into()));
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_checkout_stands_on_its_epic_or_detached_on_develop() {

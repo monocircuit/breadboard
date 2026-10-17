@@ -253,6 +253,10 @@ pub struct Published {
     pub order: Vec<i64>,
     /// Each open MR's bar, by iid.
     pub bars: BTreeMap<i64, Bar>,
+    /// The MRs held by a hard wait (a prerequisite it needs, a `wt:wait`), by
+    /// iid: `after !339`. They get no pipeline until it is merged (#392);
+    /// MRs that only share files with another are not here, they only rank.
+    pub held: BTreeMap<i64, String>,
 }
 
 /// The MRs a click moved to the front: iid → when (ms).
@@ -274,6 +278,9 @@ pub enum Place {
     Next { at: usize },
     /// Its bar isn't full: no pipeline before it is (a click starts one anyway).
     Boxes(Bar),
+    /// A hard wait holds it (#392): `after !339`, `waits for !339`. No pipeline
+    /// by itself before that MR is merged; a click starts one anyway.
+    Held { why: String },
     /// No pipeline of its newest commit runs and none starts by itself (#383):
     /// why, in a few words (a person cancelled it, GitLab took none).
     Stopped { why: String },
@@ -282,7 +289,7 @@ pub enum Place {
 impl Place {
     /// Waiting for its pipeline: next or held.
     pub fn is_waiting(&self) -> bool {
-        matches!(self, Place::Next { .. } | Place::Boxes(_))
+        matches!(self, Place::Next { .. } | Place::Boxes(_) | Place::Held { .. })
     }
 
     /// `CI: running`, `CI: next (2nd)`, `CI: held, after !339`.
@@ -296,6 +303,7 @@ impl Place {
                 format!("CI: after the boxes ({}/{})", bar.ticked, bar.total)
             }
             Place::Boxes(_) => "CI: after wt:check".into(),
+            Place::Held { why } => format!("CI: held, {why}"),
             Place::Stopped { why } => format!("CI: {why}, a click runs it"),
         }
     }
@@ -531,6 +539,8 @@ pub struct Ranks {
     pub orders: Vec<Vec<i64>>,
     /// The bars of the orchestrations' MRs; an MR of none has no bar to wait for.
     pub bars: HashMap<i64, Bar>,
+    /// The MRs a hard wait holds, by iid, why (`Published::held`).
+    pub held: HashMap<i64, String>,
     pub run_now: BTreeMap<i64, i64>,
     /// The commits whose pipeline the queue cancelled for an MR ahead, by iid: queued again.
     pub preempted: HashMap<i64, String>,
@@ -547,6 +557,7 @@ impl Ranks {
         Ranks {
             orders: published.iter().map(|one| one.order.clone()).collect(),
             bars: published.iter().flat_map(|one| one.bars.clone()).collect(),
+            held: published.iter().flat_map(|one| one.held.clone()).collect(),
             run_now: run_now.at.clone(),
             preempted: HashMap::new(),
             ours: HashSet::new(),
@@ -569,11 +580,15 @@ impl Ranks {
     }
 }
 
-/// Its class; None while its bar isn't full at its newest commit, or it has
-/// no bar (no click asked for it).
+/// Its class; None while a hard wait holds it, its bar isn't full at its
+/// newest commit, or it has no bar (no click asked for it).
 pub fn class_of(mr: &OpenMr, ranks: &Ranks) -> Option<Class> {
     if ranks.run_now.contains_key(&mr.iid) {
         return Some(Class::RunNow);
+    }
+    // A hard wait holds its pipeline too: only a click starts one (#392).
+    if ranks.held.contains_key(&mr.iid) {
+        return None;
     }
     let bar = ranks.bars.get(&mr.iid);
     if bar.is_none_or(|bar| !bar.is_full_at(mr.sha.as_deref())) {
@@ -720,8 +735,11 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
         match class_of(mr, ranks) {
             Some(class) => waiting.push((class, key_of(class, mr, ranks), mr)),
             None => {
-                let bar = ranks.bars.get(&mr.iid).cloned().unwrap_or_default();
-                places.insert(mr.iid, Place::Boxes(bar));
+                let place = match ranks.held.get(&mr.iid) {
+                    Some(why) => Place::Held { why: why.clone() },
+                    None => Place::Boxes(ranks.bars.get(&mr.iid).cloned().unwrap_or_default()),
+                };
+                places.insert(mr.iid, place);
             }
         }
     }
@@ -922,6 +940,41 @@ mod tests {
         assert_eq!([at(6), at(5), at(4), at(2)], [1, 2, 3, 4]);
         assert_eq!(decision.places[&3].text(), "CI: after the boxes (2/5)");
         assert_eq!(decision.start.unwrap().iid, 6);
+    }
+
+    #[test]
+    fn starts_no_pipeline_for_an_mr_under_a_hard_wait_until_its_prerequisite_is_merged() {
+        // #392: !12 needs !11 (or waits for it): its bar is full, still no pipeline.
+        let mrs = [mr(11, "a", None), mr(12, "b", None)];
+        let mut ranks = order(&[11, 12]);
+        ranks.held.insert(12, "after !11".into());
+        let decision = decide_now(&mrs, &ranks, slots(2, 0));
+        assert_eq!(decision.start.as_ref().unwrap().iid, 11);
+        assert_eq!(decision.places[&12].text(), "CI: held, after !11");
+        assert!(decision.places[&12].is_waiting());
+        // Merged: nothing holds it any more.
+        ranks.held.clear();
+        let decision = decide_now(&[mr(12, "b", None)], &ranks, slots(2, 0));
+        assert_eq!(decision.start.unwrap().iid, 12);
+        // A click starts one anyway.
+        let mut ranks = order(&[11, 12]);
+        ranks.held.insert(12, "after !11".into());
+        ranks.run_now.insert(12, NOW - 1000);
+        let decision = decide_now(&[mr(12, "b", None)], &ranks, slots(2, 0));
+        assert_eq!(decision.start.unwrap().iid, 12);
+    }
+
+    #[test]
+    fn an_mr_that_only_shares_files_with_one_ahead_gets_its_pipeline_ranked_behind_it() {
+        // Shared files are no entry in `held`: both start, the one ahead first.
+        let mrs = [mr(12, "b", None), mr(11, "a", None)];
+        let decision = decide_now(&mrs, &order(&[11, 12]), slots(1, 0));
+        assert_eq!(decision.start.as_ref().unwrap().iid, 11);
+        assert!(
+            matches!(decision.places[&12], Place::Next { at: 2 }),
+            "{:?}",
+            decision.places[&12]
+        );
     }
 
     #[test]
@@ -1301,6 +1354,7 @@ mod tests {
                     sha: Some("abc".into()),
                 },
             )]),
+            held: BTreeMap::from([(1, "after !3".to_string())]),
         };
         write_whole(&order_file(&scratch, "breadboard"), &published).unwrap();
         write_whole(&order_file(&scratch, "vita"), &Published::default()).unwrap();

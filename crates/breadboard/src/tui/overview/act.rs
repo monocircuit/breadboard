@@ -98,6 +98,10 @@ pub enum Fold {
     MrBoxes(i64),
     /// The boxes under a worktree's node, by its issue (#346).
     TreeBoxes(i64),
+    /// Where a worktree's work collides, by its issue (#390).
+    Collides(i64),
+    /// The whole problem of a worktree's issue, past its first two lines (#390).
+    Problem(i64),
 }
 
 /// Opens what was folded, folds what was open.
@@ -139,9 +143,13 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
                 Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
+                Fold::Collides(number) => toggle(&mut folds.boxes.collides, number),
+                Fold::Problem(number) => toggle(&mut folds.boxes.problems, number),
             }
-            if matches!(fold, Fold::MrBoxes(_) | Fold::TreeBoxes(_))
-                && let Some(file) = &app.folds_file
+            if matches!(
+                fold,
+                Fold::MrBoxes(_) | Fold::TreeBoxes(_) | Fold::Collides(_) | Fold::Problem(_)
+            ) && let Some(file) = &app.folds_file
             {
                 app.folds.boxes.write(file);
             }
@@ -667,23 +675,6 @@ impl Overview {
 
     pub fn tree_dir_of(&self, branch: &str) -> Option<PathBuf> {
         self.tree_of_branch(branch).map(|tree| tree.dir)
-    }
-
-    /// The worktree of an issue of the orchestration.
-    pub fn tree_dir_of_number(&self, number: i64) -> Option<PathBuf> {
-        let local = self.orchestration_local()?;
-        let record = local.record.as_ref();
-        let branch = record
-            .and_then(|record| record.issues.iter().find(|issue| issue.number == Some(number)))
-            .and_then(|issue| issue.branch.clone());
-        local
-            .trees
-            .iter()
-            .find(|tree| {
-                Some(&tree.branch) == branch.as_ref()
-                    || breadboard_core::gitlab::number_of(&tree.branch) == Some(number)
-            })
-            .map(|tree| tree.dir.clone())
     }
 
     /// The MR of a worktree's branch, as GitLab last said.
