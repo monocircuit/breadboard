@@ -191,6 +191,8 @@ pub struct Tree {
     pub actions: Vec<Action>,
     /// The tries answered and delivered: a `broken` holds the merge (#280).
     pub answered: Vec<Action>,
+    /// Its tries' checker runs (#384).
+    pub checks: Vec<crate::try_check::Check>,
     /// What its work touches, for the merge order.
     pub files: BTreeSet<String>,
     /// Of `files`, the ones its base changed too since the merge base (#332).

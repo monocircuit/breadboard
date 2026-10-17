@@ -438,6 +438,7 @@ fn lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
         gitlab_line(scene, block, ctx);
         nodes::collides(scene, node, ctx);
         description(scene, block, node, ctx);
+        nodes::checked_lines(scene, node);
         return;
     }
     if block.is_done {
@@ -844,6 +845,7 @@ mod tests {
             docker_at: 0,
             title: format!("the title of #{}", place + 300),
             problem: None,
+            checked: Vec::new(),
             boxes: vec![],
             go: if has_tree {
                 Go::FocusSpace(PathBuf::from(format!("/w/{name}")))

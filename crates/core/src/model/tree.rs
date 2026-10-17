@@ -310,6 +310,8 @@ pub struct Node {
     /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
     /// only where its worktree is.
     pub problem: Option<String>,
+    /// Its tries a checker answered or holds (#384).
+    pub checked: Vec<crate::try_check::Checked>,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -969,6 +971,17 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     _ => Vec::new(),
                 },
                 problem: tree.and(found).and_then(|found| found.problem.clone()),
+                checked: tree
+                    .map(|tree| {
+                        crate::try_check::checked_of(
+                            &tree.dir,
+                            &tree.checks,
+                            &tree.actions,
+                            &tree.answered,
+                            mr.is_some_and(|mr| mr.is_open()),
+                        )
+                    })
+                    .unwrap_or_default(),
                 go,
             }
         })
@@ -1971,6 +1984,7 @@ mod tests {
             title: String::new(),
             boxes: Vec::new(),
             problem: None,
+            checked: Vec::new(),
             go: Go::Nothing,
         }
     }
