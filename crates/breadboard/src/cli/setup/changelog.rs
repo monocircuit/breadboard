@@ -6,7 +6,7 @@
 
 use super::fragments::{self, Entry};
 use super::gitlab;
-use super::proc::{Args, errln, fail, step};
+use super::proc::{Args, Shape, errln, fail, step};
 use super::repo;
 use super::view;
 use breadboard_core::config::Release as ReleaseTag;
@@ -20,6 +20,14 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+/// What `changelog` takes.
+pub const SHAPE: Shape = Shape::new(
+    &["--since", "--watch"],
+    &["--since"],
+    Some(0),
+    "usage: pnpm changelog [--since 30d|2w|<date>] [--watch]",
+);
 
 const GROUPS: [(&str, &str); 9] = [
     ("feat", "Features"),

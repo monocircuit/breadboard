@@ -5,13 +5,23 @@
 
 use super::epic::{self, Epic};
 use super::herdr;
-use super::proc::{self, Args, How, fail, outln, step};
+use super::proc::{self, Args, How, Shape, fail, outln, step};
 use super::repo;
 use breadboard_core::config::Stack;
 use breadboard_core::record;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+
+/// What `stack:up|down|reset|ps` take.
+pub const SHAPE: Shape = Shape::new(
+    &["--port"],
+    &["--port"],
+    Some(1),
+    "usage: pnpm stack:up|down|reset|ps [--port <port> | <feature>]",
+);
+/// What `wt:stack` takes: nothing.
+pub const WT_SHAPE: Shape = Shape::new(&[], &[], Some(0), "usage: pnpm wt:stack");
 
 /// What a new own stack's env file says: the main checkout's with every
 /// port moved by `offset` and a compose project of its own.

@@ -7,7 +7,7 @@
 //! that ran it (#366): the hook holds the packages against git's own list. The
 //! stamp's format stays (rule 5): Node's hook and overview read it.
 
-use super::proc::{Stream, fail, git, outln, step, write_bytes};
+use super::proc::{Shape, Stream, fail, git, outln, step, write_bytes};
 use super::repo;
 use breadboard_core::check::{self, failures_line, failures_of};
 pub use breadboard_core::check::{Failure, read_check};
@@ -20,6 +20,9 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+/// What `wt:check` takes: nothing.
+pub const SHAPE: Shape = Shape::new(&[], &[], Some(0), "usage: pnpm wt:check");
 
 /// What wt:check runs, through turbo.
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];

@@ -7,7 +7,7 @@
 use super::conversations::{self, session_file};
 use super::epic::{self, Epic};
 use super::herdr::{self, field};
-use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
+use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, step};
 use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
@@ -17,6 +17,14 @@ use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
+
+/// What `wt:new` takes.
+pub const SHAPE: Shape = Shape::new(
+    &["--shared", "--fix", "--origin", "--base"],
+    &["--origin", "--base"],
+    Some(1),
+    USAGE,
+);
 
 pub const USAGE: &str =
     "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
