@@ -480,6 +480,24 @@ pub fn interactive_resume_in(cmdline: &[u8]) -> Option<String> {
         .filter(|id| !id.starts_with('-'))
 }
 
+/// Whether a claude's command line (NUL-separated) names its conversation
+/// (`--name`, `-n`): the overview's click does (#361), herdr's restore of a
+/// pane's agent (`resume_agents_on_restore`) runs a bare `claude --resume <id>`.
+pub fn is_named_in(cmdline: &[u8]) -> bool {
+    cmdline
+        .split(|byte| *byte == 0)
+        .any(|arg| arg == b"--name" || arg == b"-n" || arg.starts_with(b"--name="))
+}
+
+/// `(pid, conversation)` of each interactive `claude --resume <id>` that
+/// names nothing (`is_named_in`): what herdr's restore started, no click (#386).
+pub fn unnamed_resumes() -> Vec<(i64, String)> {
+    resumes_in_proc()
+        .into_iter()
+        .filter(|(pid, _)| fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| !is_named_in(&cmdline)))
+        .collect()
+}
+
 /// The conversations an interactive claude resumes now, from `/proc`: one
 /// at its folder's trust question has no file in `~/.claude/sessions` yet
 /// (#361's probe), its command line says it already. Empty without `/proc`.
@@ -604,6 +622,12 @@ mod tests {
             None
         );
         assert_eq!(interactive_resume_in(&cmdline(&["claude", "--resume"])), None);
+        // herdr's restore resumes bare, the overview's click names it (#386).
+        assert!(!is_named_in(&cmdline(&["claude", "--resume", "e970"])));
+        assert!(is_named_in(&cmdline(&[
+            "claude", "--resume", "e970", "--name", "1-probe"
+        ])));
+        assert!(is_named_in(&cmdline(&["claude", "--resume", "e970", "--name=1-probe"])));
         assert_eq!(interactive_resume_in(&cmdline(&["vim", "--resume", "e970"])), None);
         assert_eq!(interactive_resume_in(b""), None);
         assert_eq!(

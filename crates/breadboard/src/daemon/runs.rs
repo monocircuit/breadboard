@@ -10,7 +10,7 @@
 //! limit holds every run until it resets; then the runs it stopped go on
 //! (#393, core's `Usage`).
 
-use breadboard_core::conversations::{interactive_resumes, running_claudes, transcript_of};
+use breadboard_core::conversations::{interactive_pids_of, interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::permissions;
 use breadboard_core::runs::{
@@ -190,6 +190,24 @@ fn change_table(main: &Path, table: &Mutex<()>, change: impl FnOnce(&mut Table))
     let _ = write_whole(&file, &read);
 }
 
+/// The command of a run: `claude <args>` in `dir`, no pane's (#386), so
+/// herdr never takes the headless session for a pane's agent and resumes it
+/// in a tab after a restart.
+fn run_command(dir: &Path, args: Vec<String>) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(CLAUDE);
+    command
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(false);
+    for name in breadboard_core::herdr::PANE_ENV {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// One run of `start`: `claude -p` in its worktree, its stream into its
 /// log, its row of the table `running` until it ends, then `idle`, `asks`
 /// when a tool was denied, `limit` when it stopped at the usage limit.
@@ -206,14 +224,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     if let Some(folder) = log.parent() {
         let _ = std::fs::create_dir_all(folder);
     }
-    let spawned = tokio::process::Command::new(CLAUDE)
-        .args(args_of(&session, &name, &prompt, is_known, &allowed_of(&events)))
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(false)
-        .spawn();
+    let spawned = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events))).spawn();
     let row = |state, pid, code, denials| Run {
         dir: dir.clone(),
         name: name.clone(),
@@ -346,8 +357,25 @@ pub fn cli(args: &[String]) -> ExitCode {
                     queued,
                     spent.text()
                 );
+                if let Some(line) = held_line(&queue, &session, &run.dir, now, interactive_pids_of(&session)) {
+                    println!("  {line}");
+                }
             }
             ExitCode::SUCCESS
+        }
+        Some("release") if args.len() == 2 => {
+            let dir = PathBuf::from(&args[1]);
+            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+            match crate::tui::overview::actor::end_held::end(&main, &dir) {
+                Ok(did) => {
+                    println!("{did}");
+                    ExitCode::SUCCESS
+                }
+                Err(why) => {
+                    eprintln!("breadboard runs: {why}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         Some("tell") if args.len() >= 3 => {
             let dir = PathBuf::from(&args[1]);
@@ -371,15 +399,76 @@ pub fn cli(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         _ => {
-            eprintln!("usage: breadboard runs [tell <dir> <line…> | continue]");
+            eprintln!("usage: breadboard runs [tell <dir> <line…> | release <dir> | continue]");
             ExitCode::from(2)
         }
     }
 }
 
+/// What `breadboard runs` says under an agent whose lines an open claude
+/// (`pids`) holds past ten minutes (#386), None for any other.
+fn held_line(queue: &Queue, session: &str, dir: &Path, now: i64, pids: Vec<i64>) -> Option<String> {
+    let oldest = queue
+        .events
+        .iter()
+        .filter(|event| event.session == session)
+        .map(|event| event.at)
+        .min()?;
+    if pids.is_empty() || now - oldest < runs::HELD_MS {
+        return None;
+    }
+    let pids: Vec<String> = pids.iter().map(i64::to_string).collect();
+    Some(format!(
+        "held by an open claude (pid {}) for {} min: breadboard runs release {} ends it once it is idle",
+        pids.join(", "),
+        (now - oldest) / 60_000,
+        dir.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queue_held_by_an_open_claude_says_so_after_ten_minutes() {
+        let event = |at| Event {
+            session: "s".into(),
+            dir: PathBuf::from("/w/1-x"),
+            name: "1-x".into(),
+            line: "go".into(),
+            at,
+            allowed: Vec::new(),
+        };
+        let queue = Queue {
+            events: vec![event(0), event(5 * 60_000)],
+        };
+        let at = |now| held_line(&queue, "s", Path::new("/w/1-x"), now, vec![42]);
+        assert_eq!(at(runs::HELD_MS - 1), None);
+        assert_eq!(
+            at(23 * 60_000).as_deref(),
+            Some("held by an open claude (pid 42) for 23 min: breadboard runs release /w/1-x ends it once it is idle")
+        );
+        // No open claude: the run starts as usual.
+        assert_eq!(held_line(&queue, "s", Path::new("/w/1-x"), 23 * 60_000, vec![]), None);
+        assert_eq!(
+            held_line(&queue, "other", Path::new("/w/1-x"), 23 * 60_000, vec![42]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_run_is_no_panes_agent() {
+        let command = run_command(Path::new("/w/1-x"), vec!["-p".into(), "go".into()]);
+        let removed: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(removed, ["HERDR_PANE_ID", "HERDR_TAB_ID"]);
+        assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/w/1-x")));
+    }
 
     #[test]
     fn picks_as_many_as_there_is_room_for_in_merge_order() {

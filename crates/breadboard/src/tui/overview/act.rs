@@ -265,6 +265,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
             tries::click(app, dir.clone(), id, state);
         }
         Go::FocusSpace(dir) => app.actor.queue(move || {
+            // A headless agent's space the layout left closed opens on the click (#386).
+            if herdr::space_of(&main, &dir).is_none() {
+                let repo = crate::cli::lifecycle::repo::Repo { main: main.clone() };
+                crate::cli::lifecycle::layout::open_space(&repo, &dir);
+            }
             herdr::focus_space(&main, &dir);
             None
         }),
@@ -274,6 +279,14 @@ pub fn go_to(app: &mut Overview, go: Go) {
             Some(Box::new(move |app: &mut Overview| match opened {
                 Ok(did) => app.actor.log(Paint::Green, did),
                 Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
+            }))
+        }),
+        // ACTIONS' `held` row (#386): the open claude ended once it idles.
+        Go::EndHeld(dir) => app.actor.queue(move || {
+            let ended = super::actor::end_held::end(&main, &dir);
+            Some(Box::new(move |app: &mut Overview| match ended {
+                Ok(did) => app.actor.log(Paint::Green, did),
+                Err(why) => app.actor.log(Paint::Red, why),
             }))
         }),
         Go::FocusAgent(dir) => {
