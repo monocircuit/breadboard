@@ -27,7 +27,7 @@ use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
-use crate::said::{Now, now_of};
+
 use crate::setups::Setup;
 use crate::time::{ago, clock, parse_iso};
 use crate::wait::waits_text;
@@ -263,8 +263,10 @@ pub struct Node {
     pub has_tree: bool,
     /// Who works in it (#292), on the line under its name.
     pub agent: Option<AgentLine>,
-    /// Its facts, parted by ` · `.
-    pub facts: Vec<Fact>,
+    /// Its facts by the line of its block they go on (#390).
+    pub lines: Lines,
+    /// What its agent does or waits for, in words, under its agent (#390).
+    pub doing: Option<Doing>,
     /// Its app and its stack (#332, render.mjs's columns): None without a worktree or its .env.local.
     pub app: Option<Span>,
     pub stack: Option<Span>,
@@ -304,10 +306,27 @@ pub struct Node {
     /// What is wrong or wanted (#341), from its issue's `## Goal` / `## Bug`;
     /// only where its worktree is.
     pub problem: Option<String>,
-    /// What its agent is on now (#341): its note or its last answer's first line.
-    pub now: Option<Now>,
     /// A click: its space, else its issue's page.
     pub go: Go,
+}
+
+impl Node {
+    /// Its facts in one row, as WORKTREES said them before #390 (`read`'s
+    /// example, the tests): its issue, MR, commits, check, agent's name and
+    /// context, what its agent does, what isn't pushed.
+    pub fn facts(&self) -> Vec<Fact> {
+        let lines = &self.lines;
+        let mut all: Vec<Fact> = vec![lines.issue.clone(), lines.mr.clone(), lines.commits.clone()];
+        all.extend(lines.tested.clone().map(|tested| vec![tested]));
+        all.push(lines.renamed.clone());
+        all.push(lines.context.clone());
+        if let Some(doing) = &self.doing {
+            all.extend(doing.parts.iter().map(|part| vec![part.clone()]));
+        }
+        all.extend(lines.unpushed.clone().map(|unpushed| vec![unpushed]));
+        all.retain(|fact| !fact.is_empty());
+        all
+    }
 }
 
 /// A worktree's stack as WORKTREES says it (#332): `stack running`, `stack
@@ -368,21 +387,28 @@ pub struct AgentLine {
     pub merged: usize,
     /// What it spent today (#372), None before it answered today.
     pub today: Option<crate::spend::Spend>,
+    /// What its agents spent on this issue (#372), None before any spend.
+    pub spent: Option<crate::spend::Spend>,
 }
 
 impl AgentLine {
-    /// `· 3 issues · 2 merged · today 1.2 M tokens · ≈ $3`: of its issues,
-    /// how many MRs are merged; what it spent today.
+    /// `(3 issues · 2 MRs done)`: the issues it worked on, how many of their MRs are merged.
     pub fn counts(&self) -> String {
+        format!(
+            "({} · {} done)",
+            super::counted(self.issues as u64, "issue"),
+            super::counted(self.merged as u64, "MR")
+        )
+    }
+
+    /// `[1.6 M tokens · ≈ $33, today 895 k · ≈ $11]` (#372): what this
+    /// issue cost, what the agent spent today; None before either.
+    pub fn spend(&self) -> Option<String> {
         let today = self
             .today
-            .map(|today| format!(" · today {}", today.text()))
-            .unwrap_or_default();
-        format!(
-            "· {} · {} merged{today}",
-            super::counted(self.issues as u64, "issue"),
-            self.merged
-        )
+            .map(|today| format!("today {}", today.text().replacen(" tokens", "", 1)));
+        let parts: Vec<String> = self.spent.map(|spent| spent.text()).into_iter().chain(today).collect();
+        (!parts.is_empty()).then(|| format!("[{}]", parts.join(", ")))
     }
 }
 
@@ -482,21 +508,44 @@ fn queued_text(issue: &Entry, facts: &TreeFacts, names: &Names) -> String {
     fresh.cloned().unwrap_or_else(|| "start: waits for an agent".into())
 }
 
-/// The facts of a node: issue, MR and pipeline, work, whether its HEAD is
-/// tested, its agent's name after a handover, which issue of its agent this
-/// is and its context, a wait its state doesn't name, a requested change,
-/// what isn't pushed, the next issue announced for its agent.
-fn facts_of(
-    issue: &Entry,
-    found: Option<&Issue>,
-    mr: Option<&Mr>,
-    state: &Lifecycle,
-    handover: Option<&NextIssue>,
-    facts: &TreeFacts,
-) -> Vec<Fact> {
+/// The facts of a node by the line of its block in WORK they go on (#390):
+/// its issue and MR, its commits and whether they are tested and pushed
+/// (the GitLab line), its agent's name after a handover and its context
+/// (the agent's line).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Lines {
+    /// `#381`, ` closed` once closed, ` ?` / ` …` while GitLab doesn't tell.
+    pub issue: Fact,
+    /// The MR as a fact: `!12 draft ◐ running`, `merged 12:00`, `no MR yet`.
+    pub mr: Fact,
+    /// How far it is from develop and what isn't committed: `↑15 ↓6 · 2 changed`.
+    pub commits: Fact,
+    /// `14 commits not pushed`, red once they sit there long.
+    pub unpushed: Option<Span>,
+    /// `✓ tested 1a2b3c4d`, `untested: 2 commits`, `✗ tests failed: …`; a
+    /// check that runs is what its agent does (`doing`).
+    pub tested: Option<Span>,
+    /// `agent Mira Albrecht was Kai`: its name when it isn't the worktree's (a handover, #251).
+    pub renamed: Fact,
+    /// How full its agent's context is: `48%`, past its limit `· fresh start at its next issue` (#381).
+    pub context: Fact,
+}
+
+/// What a node's agent does or waits for, in words (#390): its question,
+/// else its note (`wt:action note`), then a check that runs, a wait, a
+/// requested change, the next issue announced, where its state doesn't say it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Doing {
+    pub parts: Vec<Span>,
+    /// When its note was written (ms).
+    pub at: Option<i64>,
+}
+
+/// The lines of a node (`Lines`).
+fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeFacts) -> Lines {
     let tree = issue.tree.as_ref();
     let now = facts.now;
-    let mut all: Vec<Fact> = Vec::new();
+    let mut lines = Lines::default();
     if let Some(number) = issue.number {
         let link = Span::link(format!("#{number}"), found.map(|found| found.url.as_str()));
         // Open is what an issue of a worktree is: only the exception is said
@@ -506,14 +555,14 @@ fn facts_of(
             Some(_) => None,
             None => Some(Span::dim(if facts.has_remote { " ?" } else { " …" })),
         };
-        all.push([link].into_iter().chain(state).collect());
+        lines.issue = [link].into_iter().chain(state).collect();
     }
     let merged_at = issue
         .merged_at
         .clone()
         .or_else(|| mr.and_then(|mr| mr.merged_at.clone()))
         .and_then(|at| parse_iso(&at));
-    let mr_fact: Fact = match mr {
+    lines.mr = match mr {
         None => merged_at
             .map(|at| vec![Span::dim(format!("merged {}", clock(at, now)))])
             .unwrap_or_default(),
@@ -529,14 +578,12 @@ fn facts_of(
             fact
         }
     };
-    if !mr_fact.is_empty() {
-        all.push(mr_fact);
-    } else if tree.is_some() {
+    if lines.mr.is_empty() && tree.is_some() {
         // Before GitLab answered nothing is known: `MR …`, as its issue's `#303 …`.
-        all.push(vec![Span::dim(if facts.has_remote { "no MR yet" } else { "MR …" })]);
+        lines.mr = vec![Span::dim(if facts.has_remote { "no MR yet" } else { "MR …" })];
     }
     if let Some(tree) = tree {
-        let mut work = Vec::new();
+        let work = &mut lines.commits;
         // How far it is from develop (#332), as lazygit's branches: `↑1 ↓13`,
         // commits develop lacks and develop's it lacks; nothing to merge in once merged.
         if tree.ahead > 0 {
@@ -555,17 +602,13 @@ fn facts_of(
             }
             work.push(Span::new(format!("{} changed", tree.changed), Paint::Yellow));
         }
-        if !work.is_empty() {
-            all.push(work);
-        }
-        if let Some(fact) = check_fact(&tree.checked) {
-            all.push(vec![fact]);
-        }
+        lines.tested = check_fact(&tree.checked);
+        lines.unpushed = unpushed_fact(tree, now);
     }
     // The agent by its name when that isn't the worktree's (a handover, #251), its name before for a day.
     if let Some(claude) = tree.and_then(|tree| tree.claude.as_ref()) {
         let worker = worker_of(facts.known, &claude.id);
-        let mut agent = Vec::new();
+        let agent = &mut lines.renamed;
         if let Some(name) = worker
             .and_then(|worker| worker.name.as_deref())
             .filter(|name| Some(*name) != tree.map(|tree| tree.name.as_str()))
@@ -579,32 +622,82 @@ fn facts_of(
             }
             agent.push(Span::dim(format!("was {was}")));
         }
-        if !agent.is_empty() {
-            all.push(agent);
-        }
+        lines.context = context_of(claude, facts.limit.unwrap_or(CONTEXT_LIMIT));
     }
-    if let Some(tree) = tree {
-        if let Some(claude) = &tree.claude {
-            all.push(agent_fact(claude, now, facts.limit.unwrap_or(CONTEXT_LIMIT)));
-        }
-        if let Some(wait) = tree.wait.as_ref().filter(|_| state.key != "waitsForMr") {
-            let none = HashSet::new();
-            all.push(vec![Span::new(
-                waits_text(wait, facts.merged.unwrap_or(&none)),
-                Paint::Yellow,
-            )]);
-        }
-        if let Some(fact) = change_fact(tree, mr) {
-            all.push(vec![fact]);
-        }
-        if let Some(fact) = unpushed_fact(tree, now) {
-            all.push(vec![fact]);
-        }
+    lines
+}
+
+/// `48%` of its agent's context, green, yellow from half, red from 80 %;
+/// past `limit` (#381) `· fresh start at its next issue`; `no answer yet`
+/// before its first.
+fn context_of(claude: &Claude, limit: f64) -> Fact {
+    if claude.at.is_none() {
+        return vec![Span::dim("no answer yet")];
+    }
+    let share = claude.share();
+    let paint = if share >= 0.8 {
+        Paint::Red
+    } else if share >= 0.5 {
+        Paint::Yellow
+    } else {
+        Paint::Green
+    };
+    let mut fact = vec![Span::new(format!("{}%", (share * 100.0).round() as i64), paint)];
+    if share > limit {
+        fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
+    }
+    fact
+}
+
+/// What a node's agent does or waits for (`Doing`), None where nothing says it.
+fn doing_of(
+    issue: &Entry,
+    mr: Option<&Mr>,
+    state: &Lifecycle,
+    handover: Option<&NextIssue>,
+    facts: &TreeFacts,
+) -> Option<Doing> {
+    let tree = issue.tree.as_ref()?;
+    let mut doing = Doing::default();
+    let question = tree
+        .claude
+        .as_ref()
+        .and_then(|claude| claude.answer.as_deref())
+        .and_then(crate::conversations::question_of);
+    if let Some(question) = question.filter(|_| state.key == "asks") {
+        doing.parts.push(Span::new(
+            format!(
+                "asks you: {}",
+                crate::said::sentences(&question, crate::said::NOW_CHARS)
+            ),
+            Paint::Wait(Tone::You),
+        ));
+    } else if let Some(note) = crate::said::now_of(tree.note.as_ref(), None, None) {
+        doing.parts.push(Span::plain(note.text));
+        doing.at = note.at;
+    }
+    if matches!(tree.checked, CheckState::Checking { .. }) {
+        doing.parts.push(Span::new("wt:check running", Paint::Cyan));
+    }
+    if let Some(wait) = tree.wait.as_ref().filter(|_| state.key != "waitsForMr") {
+        let none = HashSet::new();
+        doing.parts.push(Span::new(
+            waits_text(wait, facts.merged.unwrap_or(&none)),
+            Paint::Yellow,
+        ));
+    }
+    // With an open MR its row's reasons say a requested change.
+    if mr.is_none_or(|mr| !mr.is_open())
+        && let Some(fact) = change_fact(tree, mr)
+    {
+        doing.parts.push(fact);
     }
     if let Some(handover) = handover.filter(|_| state.key != "next") {
-        all.push(vec![Span::new(next_text(handover.number, &handover.open), Paint::Cyan)]);
+        doing
+            .parts
+            .push(Span::new(next_text(handover.number, &handover.open), Paint::Cyan));
     }
-    all
+    (!doing.parts.is_empty()).then_some(doing)
 }
 
 /// The handover announced for the agent of a worktree.
@@ -654,12 +747,18 @@ fn agent_line(
         .and_then(|spent| spent.today.by_session.get(id))
         .filter(|today| !today.is_empty())
         .copied();
+    let spent = issue
+        .number
+        .and_then(|number| spent?.by_issue.get(&number))
+        .filter(|spent| !spent.is_empty())
+        .copied();
     Some(AgentLine {
         name,
         dot,
         issues,
         merged,
         today,
+        spent,
     })
 }
 
@@ -805,20 +904,14 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             };
             let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged, facts.spent);
             let collides = collides_of(index);
-            let mut node_facts = facts_of(issue, found, mr, &state, handover.as_ref(), facts);
-            // What its agents spent on the issue (#372).
-            if let Some(spent) = issue
-                .number
-                .and_then(|number| facts.spent?.by_issue.get(&number))
-                .filter(|spent| !spent.is_empty())
-            {
-                node_facts.push(vec![Span::dim(spent.text())]);
-            }
+            let lines = lines_of(issue, found, mr, facts);
+            let doing = doing_of(issue, mr, &state, handover.as_ref(), facts);
             Node {
                 index,
                 number: issue.number,
                 agent,
-                facts: node_facts,
+                lines,
+                doing,
                 app: tree.filter(|tree| tree.has_env).map(app_cell),
                 stack: tree.filter(|tree| tree.has_env).map(stack_of),
                 docker: tree.map(|tree| tree.docker).unwrap_or_default(),
@@ -856,14 +949,6 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     _ => Vec::new(),
                 },
                 problem: tree.and(found).and_then(|found| found.problem.clone()),
-                now: tree.and_then(|tree| {
-                    let claude = tree.claude.as_ref();
-                    now_of(
-                        tree.note.as_ref(),
-                        claude.and_then(|claude| claude.answer.as_deref()),
-                        claude.and_then(|claude| claude.answer_at.or(claude.at)),
-                    )
-                }),
                 go,
             }
         })
@@ -1302,9 +1387,27 @@ mod tests {
                 ..Default::default()
             },
         );
-        let facts = facts_text(&found.live[0].facts);
-        assert!(facts.contains("change requested: less padding"), "{facts}");
+        let facts = facts_text(&found.live[0].facts());
+        // Its open MR's reasons say the change (#390: once); without an MR its agent's line does.
+        assert!(!facts.contains("change requested"), "{facts}");
         assert!(facts.contains("2 commits not pushed (no remote branch)"), "{facts}");
+        let no_mr = tree_of(
+            &[Entry {
+                tree: Some(Tree {
+                    change: Some(Change {
+                        text: "less padding".into(),
+                        head: Some("a".into()),
+                        ..Default::default()
+                    }),
+                    ..tree()
+                }),
+                ..issue(1)
+            }],
+            None,
+            &TreeFacts::default(),
+        );
+        let facts = facts_text(&no_mr.live[0].facts());
+        assert!(facts.contains("change requested: less padding"), "{facts}");
     }
 
     #[test]
@@ -1349,8 +1452,8 @@ mod tests {
         // Named against its own files and those of whom it collides with; c.md is no one's it meets.
         assert_eq!(node(1).near, ["a.md", "b.md"]);
         assert_eq!(node(3).near, ["c.md"]);
-        assert!(facts_text(&node(1).facts).contains("↑1 ↓3"));
-        assert!(!facts_text(&node(4).facts).contains('↓'));
+        assert!(facts_text(&node(1).facts()).contains("↑1 ↓3"));
+        assert!(!facts_text(&node(4).facts()).contains('↓'));
         assert_eq!(node(3).app.as_ref().map(|app| app.text.as_str()), Some("○ :3003"));
         assert_eq!(
             node(3).stack.as_ref().map(|stack| stack.text.as_str()),
@@ -1426,7 +1529,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            facts_text(&found.live[0].facts)
+            facts_text(&found.live[0].facts())
         };
         assert!(!facts_at("idle").contains("waits for !271"));
         assert!(facts_at("blocked").contains("waits for !271"));
@@ -1452,7 +1555,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            facts_text(&found.live[0].facts)
+            facts_text(&found.live[0].facts())
         };
         let now = parse_iso(renamed).unwrap() + 60_000;
         let same = [Worker {
@@ -1486,8 +1589,8 @@ mod tests {
         let found = tree_of(&[fresh], None, &TreeFacts::default());
         let agent = found.live[0].agent.clone().unwrap();
         assert_eq!(agent.name, pick_name("c1", []));
-        assert_eq!(agent.counts(), "· 1 issue · 0 merged");
-        assert!(!facts_text(&found.live[0].facts).contains("agent: "));
+        assert_eq!(agent.counts(), "(1 issue · 0 MRs done)");
+        assert!(!facts_text(&found.live[0].facts()).contains("agent: "));
         let known = [Worker {
             id: "c1".into(),
             name: Some("3-third".into()),
@@ -1535,7 +1638,7 @@ mod tests {
         // Its agent moved on to #3: #1's worktree has none.
         assert_eq!(of(1).agent, None);
         let agent = of(3).agent.clone().unwrap();
-        assert_eq!(agent.counts(), "· 2 issues · 1 merged");
+        assert_eq!(agent.counts(), "(2 issues · 1 MR done)");
         assert_eq!(agent.dot, Paint::Wait(Tone::Free));
         // No conversation read for #3's worktree: the record's worker still names it.
         let third = Entry {
@@ -1830,7 +1933,8 @@ mod tests {
             name: String::new(),
             has_tree: true,
             agent: None,
-            facts: vec![],
+            lines: Lines::default(),
+            doing: None,
             app: None,
             stack: None,
             docker: Docker::Answered,
@@ -1847,7 +1951,6 @@ mod tests {
             title: String::new(),
             boxes: Vec::new(),
             problem: None,
-            now: None,
             go: Go::Nothing,
         }
     }
@@ -1955,13 +2058,13 @@ mod tests {
         assert_eq!(
             (
                 one.state.text.as_str(),
-                facts_text(&one.facts).as_str(),
+                facts_text(&one.facts()).as_str(),
                 one.title.as_str()
             ),
             ("no agent", "#1 · no MR yet · ↑2", "the title of 1")
         );
         assert_eq!(two.state.text, "free");
-        assert!(facts_text(&two.facts).starts_with("#2 · no MR yet · no answer yet"));
+        assert!(facts_text(&two.facts()).starts_with("#2 · no MR yet · no answer yet"));
         assert!(!found.is_removed_folded);
     }
 

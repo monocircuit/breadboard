@@ -150,12 +150,15 @@ mod tests {
         std::fs::create_dir_all(main.join(".git")).unwrap();
         std::fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
-        assert!(brief.contains("Its base is `develop`: merge it in"), "{brief}");
+        assert!(brief.contains("Its base is `develop`: its MR goes into it"), "{brief}");
         let record = breadboard_core::record::record_file(&main, "o");
         std::fs::create_dir_all(record.parent().unwrap()).unwrap();
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
-        assert!(brief.contains("Its base is `epic/15-o`: merge it in"), "{brief}");
+        assert!(
+            brief.contains("Its base is `epic/15-o`: its MR goes into it"),
+            "{brief}"
+        );
         let _ = std::fs::remove_dir_all(&main);
     }
 }
