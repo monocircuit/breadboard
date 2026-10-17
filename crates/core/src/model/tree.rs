@@ -14,6 +14,7 @@ use super::develop::Migrations;
 use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
+use super::half_merged::half_merged_fact;
 use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
@@ -601,6 +602,13 @@ fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeF
                 work.push(Span::plain(" · "));
             }
             work.push(Span::new(format!("{} changed", tree.changed), Paint::Yellow));
+        }
+        // A merge open in it (#396): red once it is old.
+        if let Some(fact) = half_merged_fact(tree, now) {
+            if !work.is_empty() {
+                work.push(Span::plain(" · "));
+            }
+            work.push(fact);
         }
         lines.tested = check_fact(&tree.checked);
         lines.unpushed = unpushed_fact(tree, now);

@@ -228,9 +228,18 @@ pub struct Bar {
     /// The commit `wt:check` passed at; None without a worktree here (its boxes say it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha: Option<String>,
+    /// What keeps it a draft though its boxes are ticked (#399): an open
+    /// try, a requested change. None: a full bar marks it ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holds: Option<String>,
 }
 
 impl Bar {
+    /// Every box ticked, at least one (#399): its MR is ready, whatever wt:check says.
+    pub fn is_boxes_full(&self) -> bool {
+        self.total > 0 && self.ticked >= self.total
+    }
+
     /// Every box ticked and checked: its pipeline may start.
     pub fn is_full(&self) -> bool {
         self.ticked >= self.total && self.is_checked
@@ -848,7 +857,7 @@ mod tests {
             ticked: 1,
             total: 1,
             is_checked: true,
-            sha: None,
+            ..Default::default()
         };
         Ranks {
             orders: vec![iids.to_vec()],
@@ -928,7 +937,7 @@ mod tests {
                 ticked: 2,
                 total: 5,
                 is_checked: true,
-                sha: None,
+                ..Default::default()
             },
         );
         ranks.run_now.insert(6, NOW - 1000);
@@ -1009,7 +1018,7 @@ mod tests {
             ticked,
             total,
             is_checked,
-            sha: None,
+            ..Default::default()
         };
         ranks.bars.insert(349, bar(0, 11, true));
         ranks.bars.insert(351, bar(8, 8, false));
@@ -1352,6 +1361,7 @@ mod tests {
                     total: 2,
                     is_checked: true,
                     sha: Some("abc".into()),
+                    ..Default::default()
                 },
             )]),
             held: BTreeMap::from([(1, "after !3".to_string())]),

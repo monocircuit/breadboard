@@ -36,9 +36,10 @@ pub fn has_settled_conflicts(mr: &Mr, tree: Option<&Tree>) -> bool {
 /// The line its agent gets: merge its target in, resolve, check, push.
 pub fn resolve_line(mr: &Mr) -> String {
     format!(
-        "[overview] !{} has merge conflicts with {target}: merge {target} in (git fetch origin, git merge origin/{target}), resolve the conflicts, run lint, typecheck and test of the packages they touch, commit the merge and push.",
+        "[overview] !{} has merge conflicts with {target}: in one run: merge {target} in ({run} wt:merge-base --resolve), resolve the conflicts, run lint, typecheck and test of the packages they touch, commit the merge and push.",
         mr.iid,
-        target = mr.target()
+        target = mr.target(),
+        run = crate::config::run_word()
     )
 }
 
@@ -450,9 +451,7 @@ mod tests {
         assert_eq!(no_agent_of(Some(&tree), &HashMap::new()), None);
         let line = resolve_line(&mr(true));
         assert!(
-            line.starts_with("[overview] !246 ")
-                && line.contains("git merge origin/develop")
-                && line.ends_with("push.")
+            line.starts_with("[overview] !246 ") && line.contains("wt:merge-base --resolve") && line.ends_with("push.")
         );
     }
 }
