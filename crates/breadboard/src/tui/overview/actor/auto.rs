@@ -276,6 +276,7 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
             Some(plan.work.clone()),
             Some(plan.merge.clone()),
             Some(why),
+            None,
         )
     });
     match written {

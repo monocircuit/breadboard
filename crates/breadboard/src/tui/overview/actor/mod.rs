@@ -89,6 +89,8 @@ pub struct Actor {
     pub auto: auto::Auto,
     /// The end of the orchestration: armed, running, failed.
     pub end: Option<Run>,
+    /// `wt:epic --mr` of the milestone row (#402): running, or how it ended.
+    pub epic_mr: Option<Run>,
     /// What the last click on the orchestrator's chat did, shown for a while.
     pub chat: Option<String>,
     /// The orchestrator's fresh start (#382): running, or how it ended.
@@ -126,6 +128,7 @@ impl Actor {
             merges: merge::Merges::default(),
             auto: auto::Auto::default(),
             end: None,
+            epic_mr: None,
             chat: None,
             fresh: None,
             fresh_for: None,

@@ -305,7 +305,81 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::Remove(dir) => auto::click_remove(app, &dir),
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
         Go::End => end(app),
+        Go::EpicMr => epic_mr(app),
     }
+}
+
+/// How long after the milestone MR opened its row takes no click: the row
+/// goes once a GitLab read shows the MR (every 30 s at the latest).
+const EPIC_MR_SHOWN: i64 = 60_000;
+
+/// A click on the milestone row of UP NEXT (#402): `wt:epic <name> --mr` in
+/// the background, once while it runs and once it opened the MR.
+fn epic_mr(app: &mut Overview) {
+    let Some(name) = app.orchestration_name() else { return };
+    if app.actor.epic_mr.as_ref().is_some_and(|run| {
+        run.is_running || (run.error.is_none() && run.done_at.is_some_and(|at| now_ms() - at < EPIC_MR_SHOWN))
+    }) {
+        return;
+    }
+    let log = actor::spawn::log_file(&format!("orchestration-epic-mr-{name}.log"));
+    let program = actor::spawn::breadboard();
+    let poster = app.actor.poster();
+    let log_done = log.clone();
+    let shown = format!("{run} wt:epic {name} --mr", run = breadboard_core::config::run_word());
+    let started = actor::spawn::start(
+        actor::spawn::Background {
+            program: &program,
+            args: vec!["wt:epic".into(), name.clone(), "--mr".into()],
+            cwd: &app.actor.main,
+            log: &log,
+            env: vec![],
+            is_paneless: true,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                let error = actor::spawn::error_of(code, &last, "");
+                match &error {
+                    None => {
+                        app.actor.log_as(
+                            "epic-mr",
+                            Paint::Green,
+                            format!("milestone MR: {}", actor::spawn::said(&last)),
+                            None,
+                        );
+                        // The epic's row names the MR, and the offer goes.
+                        app.refresh_gitlab();
+                    }
+                    Some(why) => app
+                        .actor
+                        .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), None),
+                }
+                app.actor.epic_mr = Some(Run {
+                    log: Some(log_done),
+                    done_at: error.is_none().then(now_ms),
+                    error,
+                    ..Run::default()
+                });
+                app.redraw();
+            });
+        },
+    );
+    match started {
+        Ok(()) => {
+            app.actor.epic_mr = Some(Run::running(&log));
+            app.actor
+                .log_as("epic-mr", Paint::Yellow, "opening the milestone MR …", Some(shown));
+        }
+        Err(why) => {
+            app.actor
+                .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), Some(shown));
+            app.actor.epic_mr = Some(Run {
+                error: Some(why),
+                ..Run::default()
+            });
+        }
+    }
+    app.redraw();
 }
 
 /// A click on ✕ end orchestration or its UP NEXT row (end.mjs `clickEnd`):
