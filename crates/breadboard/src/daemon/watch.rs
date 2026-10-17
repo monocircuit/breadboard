@@ -9,7 +9,8 @@
 //! again once the job no longer runs or writes its log again and nobody
 //! answered it. A job far past its median is hung only once its log stops
 //! growing (#398): on a busy runner it is slow, and a retry throws its work
-//! away. It reads GitLab only: what the user answers, the orchestrator does.
+//! away; one quiet while it packs or fetches its cache is caching, not hung
+//! (#424), and goes unasked. It reads GitLab only: what the user answers, the orchestrator does.
 
 use breadboard_core::actions::{NewAction, actions_of, add_action, done_action};
 use breadboard_core::ci_watch::{
@@ -164,16 +165,19 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
     let mut hung = overdue_of(&running, &history.runs, watch);
     hung.retain_mut(|job| {
         // GitLab didn't answer: the log as last read, nothing without one.
-        let len = super::ci::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id))
-            .map(|trace| trace.len())
-            .ok()
-            .or_else(|| history.traces.get(&job.id).map(|trace| trace.len));
-        let Some(len) = len else {
+        let trace = super::ci::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id)).ok();
+        let Some(len) = trace
+            .as_ref()
+            .map(String::len)
+            .or_else(|| history.traces.get(&job.id).map(|trace| trace.len))
+        else {
             return false;
         };
         job.quiet = history.progress(job.id, len, now);
         job.load = busy.filter(|_| usage.contains_key(&job.id));
-        job.is_hung(watch)
+        job.step = trace.as_deref().and_then(ci_watch::step_of);
+        // A quiet one packing its cache stays in the report, for its row's mark: no question (#424).
+        job.is_quiet(watch)
     });
     history.traces.retain(|job, _| running.iter().any(|run| run.id == *job));
     history.prune(watch.history_days, now);
@@ -261,7 +265,7 @@ fn post(main: &Path, history: &mut History, report: &Report) {
             )
         })
         .collect();
-    wanted.extend(report.hung.iter().map(|hung| {
+    wanted.extend(report.hung.iter().filter(|hung| !hung.is_caching()).map(|hung| {
         (
             hung.key(),
             NewAction {
@@ -350,6 +354,7 @@ mod tests {
             url: Some("https://g/jobs/5".into()),
             quiet: 70.0,
             load: None,
+            step: None,
         };
         assert_eq!(
             hung_text(&hung),
@@ -362,6 +367,14 @@ mod tests {
         assert_eq!(
             hung_text(&busy),
             "check:g of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10: slow: runner at load 24 (job 5, https://g/jobs/5)"
+        );
+        let scripting = Hung {
+            step: Some("step_script".into()),
+            ..busy
+        };
+        assert_eq!(
+            hung_text(&scripting),
+            "check:g of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10, in: Executing step script: slow: runner at load 24 (job 5, https://g/jobs/5)"
         );
     }
 }
