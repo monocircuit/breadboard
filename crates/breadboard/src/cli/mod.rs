@@ -5,7 +5,7 @@ pub mod lifecycle;
 mod read;
 mod setup;
 mod typo;
-mod write;
+pub(crate) mod write;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -23,7 +23,15 @@ const COMMANDS: [&[&str]; 7] = [
         "wt:check",
         "ci:watch",
     ],
-    &["wt:mr", "wt:note", "wt:tick", "wt:action", "wt:wait", "wt:journal"],
+    &[
+        "wt:mr",
+        "wt:note",
+        "wt:tick",
+        "wt:action",
+        "wt:wait",
+        "wt:journal",
+        "wt:epic",
+    ],
     &["wt:prune", "wt:remove", "wt:herdr", "wt:snapshot"],
     &["stack:up", "stack:down", "stack:reset", "stack:ps"],
     &[
@@ -114,6 +122,6 @@ mod tests {
         assert_eq!(meant("action"), Some("wt:action"));
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
-        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal\n"));
+        assert!(usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic\n"));
     }
 }
