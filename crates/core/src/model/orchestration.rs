@@ -12,7 +12,7 @@ use super::handovers::announced_of;
 use super::merge::{blockers_of, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
-use super::mr_blockers::{Progress, Reason, progress_of, row_blockers_of};
+use super::mr_blockers::{Progress, Reason, files_text, progress_of, row_blockers_of};
 use super::next::{IssueState, Next, NextMerge, next_of, nothing_text, stale_of, updated_plan, why_of};
 use super::orchestrator::{Orchestrator, hold_of};
 use super::order::{Go, Item, MergeOffer, Target, order_actions, place_in};
@@ -179,6 +179,9 @@ pub struct MrFacts {
     pub status: Option<Span>,
     /// Where its conflicts stand: leads its second line; None for a merged one.
     pub conflict: Option<Conflict>,
+    /// `conflicts with develop (README.md, view.rs)` while GitLab's settled
+    /// answer is a conflict: the row says it red, its agent's (#416).
+    pub conflicts: Option<String>,
     /// What it still lacks, who acts on it; its conflicts said by `conflict`.
     pub reasons: Vec<Reason>,
     /// Its issue's boxes, ticked of all (#294); None for a merged one or an issue without boxes.
@@ -213,6 +216,9 @@ pub struct OrchestrationModel {
     pub name: String,
     /// `⇶ <title>`.
     pub label: String,
+    /// Its auto mode (#384): a checker answers its tries; the model that does.
+    pub is_auto: bool,
+    pub checker: String,
     pub chat: Option<Chat>,
     /// No issues recorded: the view says how to start one, nothing else.
     pub is_empty: bool,
@@ -339,6 +345,51 @@ fn hold_while_develop_is_red(
     (reasons, MergeTurn::Lacks)
 }
 
+/// `push blocked: develop red (renders the row)`: its commits wait unpushed
+/// because wt:check fails at its HEAD while develop's last pipeline failed
+/// too (#416, #403): a test red on develop holds the push, and only a fix
+/// on develop gets it out, not its agent.
+fn push_blocked_text(tree: &super::Tree, develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
+    develop.filter(|pipeline| pipeline.status == "failed")?;
+    let crate::check::CheckState::Failed { failures, .. } = &tree.checked else {
+        return None;
+    };
+    if tree.unpushed == 0 {
+        return None;
+    }
+    let test = failures
+        .iter()
+        .find_map(|failure| failure.tests.first().cloned())
+        .or_else(|| {
+            failures
+                .first()
+                .map(|failure| format!("{} {}", failure.package, failure.task).trim().to_string())
+        })
+        .filter(|test| !test.is_empty());
+    Some(match test {
+        Some(test) => format!("push blocked: develop red ({test})"),
+        None => "push blocked: develop red".into(),
+    })
+}
+
+/// Who gets a push out that a red develop holds: a fix of develop of its own (#403).
+pub const DEVELOP_FIX: &str = "a hotfix on develop";
+
+/// Its unpushed commits as what holds them, where develop's red test does.
+fn hold_push_while_develop_is_red(
+    (mut reasons, turn): (Vec<Reason>, MergeTurn),
+    tree: Option<&super::Tree>,
+    develop: Option<&crate::gitlab::DevelopPipeline>,
+) -> (Vec<Reason>, MergeTurn) {
+    if let Some(text) = tree.and_then(|tree| push_blocked_text(tree, develop))
+        && let Some(reason) = reasons.iter_mut().find(|reason| reason.text.ends_with(" not pushed"))
+    {
+        reason.text = text;
+        reason.who = DEVELOP_FIX.into();
+    }
+    (reasons, turn)
+}
+
 /// The turns of the open MRs, from their row's reasons.
 fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
@@ -366,6 +417,7 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
             .develop
             .as_ref()
             .filter(|_| mr.target() == crate::git::default_branch());
+        let verdict = hold_push_while_develop_is_red(verdict, tree, remote.develop.as_ref());
         turns.insert(number, hold_while_develop_is_red(verdict, develop));
     }
     turns
@@ -763,6 +815,18 @@ fn merge_requests_of(
             is_merged,
             status,
             conflict: (!is_merged).then(|| resolves.state_of(mr, tree, agents, behind, now)),
+            conflicts: reasons
+                .iter()
+                .any(|reason| reason.is_conflict && reason.who == "agent")
+                .then(|| {
+                    match tree
+                        .and_then(|tree| tree.conflicts.as_deref())
+                        .filter(|files| !files.is_empty())
+                    {
+                        Some(files) => format!("conflicts with {} ({})", mr.target(), files_text(files)),
+                        None => format!("conflicts with {}", mr.target()),
+                    }
+                }),
             reasons: reasons.into_iter().filter(|reason| !reason.is_conflict).collect(),
             progress: if is_merged {
                 None
@@ -1057,6 +1121,8 @@ pub fn orchestration_of(
         name: local.name.clone(),
         label,
         chat: local.chat.clone(),
+        is_auto: record.is_some_and(|record| record.is_auto),
+        checker: crate::config::here().config.tries.checker.clone(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
         next: Err(String::new()),
@@ -1566,6 +1632,58 @@ mod tests {
         // Green again: offered as before.
         remote.develop.as_mut().unwrap().status = "success".into();
         assert_eq!(offered(&remote).0, 1);
+    }
+
+    #[test]
+    fn a_push_a_red_develop_holds_says_so_not_only_its_count() {
+        let unpushed = || {
+            (
+                vec![Reason {
+                    text: "2 commits not pushed".into(),
+                    who: "agent".into(),
+                    is_conflict: false,
+                }],
+                MergeTurn::Lacks,
+            )
+        };
+        let failed = Tree {
+            unpushed: 2,
+            checked: crate::check::CheckState::Failed {
+                sha: "a".into(),
+                failures: vec![crate::check::Failure {
+                    package: "@monocircuit/breadboard".into(),
+                    task: "test:rs".into(),
+                    tests: vec!["tui::overview::work::tests::renders_the_row".into()],
+                }],
+            },
+            ..Default::default()
+        };
+        let red = crate::gitlab::DevelopPipeline {
+            id: 9,
+            status: "failed".into(),
+            ..Default::default()
+        };
+        let (reasons, _) = hold_push_while_develop_is_red(unpushed(), Some(&failed), Some(&red));
+        assert_eq!(
+            (reasons[0].text.as_str(), reasons[0].who.as_str()),
+            (
+                "push blocked: develop red (tui::overview::work::tests::renders_the_row)",
+                DEVELOP_FIX
+            )
+        );
+        // develop green, or its own check passed: its agent pushes.
+        let green = crate::gitlab::DevelopPipeline {
+            status: "success".into(),
+            ..red.clone()
+        };
+        let (reasons, _) = hold_push_while_develop_is_red(unpushed(), Some(&failed), Some(&green));
+        assert_eq!(reasons[0].text, "2 commits not pushed");
+        let tested = Tree {
+            checked: crate::check::CheckState::None,
+            ..failed.clone()
+        };
+        let (reasons, _) = hold_push_while_develop_is_red(unpushed(), Some(&tested), Some(&red));
+        assert_eq!(reasons[0].who, "agent");
     }
 
     #[test]

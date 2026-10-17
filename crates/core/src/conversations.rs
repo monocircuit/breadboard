@@ -24,6 +24,29 @@ const PROMPT_BYTES: u64 = 1 << 23;
 const PENDING_BYTES: u64 = 1 << 16;
 
 /// Where the conversation bound to a worktree's space is written down.
+/// A random conversation id (UUID v4).
+pub fn new_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    let is_read = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !is_read {
+        let seed = crate::time::now_ms() as u128 ^ (u128::from(std::process::id()) << 64);
+        bytes = seed.to_le_bytes();
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
 pub fn session_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("herdr-session")
 }

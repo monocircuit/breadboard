@@ -312,20 +312,27 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   MR's pipeline passed and no try or acceptance box is open, else `checks
   open: …`), `waits for !N` (wt:wait), `→ next #N after !M` (an announced
   handover), `change requested`, `not pushed: N commits`, else `free` (or
-  `no agent`). Coloured by whom it waits for, in herdr's theme colours: at
-  work yellow, GitLab blue, you red, free teal;
+  `no agent`); a done MR that still lacks something names its first
+  blocker (`conflicts with develop`, `waits for !N`, #416). Coloured by
+  whom it waits for, in herdr's theme colours: at work yellow, GitLab
+  blue, you red, free teal;
 - **title**: the MR's, with `ready to merge` (`merging …`, `merged`) or a
   merged one's age at the right;
 - **bar** of its issue's boxes (#294): `9/12 boxes · work 9/9 · acceptance 0/3`;
-- **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`):
-  the button `resolve merge conflicts` while GitLab reports some (its click
+- **what it lacks**, each `→ who` acts on it (agent, you, GitLab, `!N`;
+  `you` only for your steps: merge clicks, tries, decides): the button
+  `resolve merge conflicts` with GitLab's `conflicts with develop (files…)
+  → agent` in red while GitLab reports some, its last answer kept while it
+  rechecks the same head (#416) (its click
   queues the order to merge its base in, resolve, check and push for the
   MR's agent; grey with the reason when it can't help; after a
   click the block says where it stands: `queued for its agent (at work)`,
   `its agent merges its base in`, `pushed, GitLab checks`, `conflicts
   resolved`, #290), `checking for conflicts …` (GitLab lacks the pushed
   head), `GitLab rechecks mergeability …` (GitLab hasn't computed it: the
-  overview asks it to, #391), the reasons; nothing when nothing lacks;
+  overview asks it to, #391), the reasons (`push blocked: develop red
+  (<test>) → a hotfix on develop` when wt:check fails on a test develop's
+  pipeline fails too, #416); nothing when nothing lacks;
 - **facts**: its issue, work, whether its HEAD passed `{{run}} wt:check`
   (`✓ tested <sha>`, `untested: N commits`, `checking…`, `✗ tests failed:
   <package> (<tests>)`, #298), its agent (`agent <name>` when it isn't the

@@ -431,6 +431,41 @@ pub fn done_action(file: &Path, id: i64) -> io::Result<bool> {
     })
 }
 
+/// The answered action `id` open again, unanswered (#384: the user
+/// overturns a checker's answer). False when it isn't answered.
+pub fn reopen(file: &Path, id: i64) -> io::Result<bool> {
+    change_actions(file, |actions| {
+        let read = json::read_object(file);
+        let mut answered: Vec<Value> = read
+            .get("answered")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let Some(at) = answered.iter().rposition(|action| int_of(action, "id") == Some(id)) else {
+            return Changed {
+                actions: None,
+                fields: None,
+                result: false,
+            };
+        };
+        let mut action = answered.remove(at);
+        if let Some(object) = action.as_object_mut() {
+            for field in ["answer", "answeredAt", "deliveringAt", "deliveredAt", "note", "waits"] {
+                object.shift_remove(field);
+            }
+        }
+        let mut actions = actions;
+        actions.push(action);
+        let mut fields = Map::new();
+        fields.insert("answered".into(), Value::Array(answered));
+        Changed {
+            actions: Some(actions),
+            fields: Some(fields),
+            result: true,
+        }
+    })
+}
+
 /// The action `id` answered, until it is delivered. False when there is none.
 pub fn answer_action(file: &Path, id: i64, answer: &str) -> io::Result<bool> {
     answer_noted(file, id, answer, None)
@@ -589,6 +624,34 @@ pub fn request_change(file: &Path, change: Value) -> io::Result<Vec<Action>> {
             result: merges.iter().filter_map(Action::from_value).collect(),
         }
     })
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::*;
+
+    #[test]
+    fn an_answered_try_opens_again_unanswered() {
+        let dir = std::env::temp_dir().join(format!("reopen-{}", std::process::id()));
+        let file = actions_file(&dir);
+        let new = NewAction {
+            kind: "try".into(),
+            text: "it shows".into(),
+            run: Some("x".into()),
+            ..NewAction::default()
+        };
+        let id = add_action(&file, new).unwrap().id;
+        answer_noted(&file, id, "broken", Some("no row")).unwrap();
+        take_answers(&file, None).unwrap();
+        assert!(actions_of(&file).is_empty());
+        assert!(reopen(&file, id).unwrap());
+        let open = actions_of(&file);
+        assert_eq!(open.len(), 1);
+        assert_eq!((open[0].answer.as_deref(), open[0].note.as_deref()), (None, None));
+        assert!(answered_of(&file).is_empty());
+        assert!(!reopen(&file, id).unwrap(), "open already");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 #[cfg(test)]

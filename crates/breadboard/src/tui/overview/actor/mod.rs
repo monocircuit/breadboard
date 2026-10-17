@@ -20,6 +20,7 @@
 pub mod auto;
 pub mod browser;
 pub mod chat;
+pub mod checker;
 pub mod end_held;
 pub mod fresh;
 pub mod glab;
