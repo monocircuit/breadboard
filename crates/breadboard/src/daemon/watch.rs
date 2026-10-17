@@ -86,7 +86,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
     let pages = if history.runs.is_empty() { BACKFILL } else { 1 };
     let mut pipelines: Vec<Value> = Vec::new();
     for page in 1..=pages {
-        let Ok(Value::Array(list)) = super::ci::glab_get(
+        let Ok(Value::Array(list)) = super::glab::glab_get(
             main,
             glab,
             &format!("projects/:fullpath/pipelines?per_page={PER_PAGE}&page={page}"),
@@ -126,7 +126,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
         if !is_live && !(is_ended && history.seen.get(&id) != Some(&updated)) {
             continue;
         }
-        let Ok(Value::Array(jobs)) = super::ci::glab_get(
+        let Ok(Value::Array(jobs)) = super::glab::glab_get(
             main,
             glab,
             &format!("projects/:fullpath/pipelines/{id}/jobs?per_page=100"),
@@ -164,7 +164,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
     let mut hung = overdue_of(&running, &history.runs, watch);
     hung.retain_mut(|job| {
         // GitLab didn't answer: the log as last read, nothing without one.
-        let len = super::ci::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id))
+        let len = super::glab::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id))
             .map(|trace| trace.len())
             .ok()
             .or_else(|| history.traces.get(&job.id).map(|trace| trace.len));

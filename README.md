@@ -332,7 +332,7 @@ breadboard decides which pipelines exist at all:
   checkout) turns the queue off within 10 s: it starts and cancels nothing,
   and pushes start their pipelines again. `git config --unset breadboard.ci`
   turns it on.
-- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci/`,
   the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
   repo is open, it reads the open MRs and the runner's free slots
   (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job
