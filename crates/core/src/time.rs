@@ -162,6 +162,43 @@ fn local(ms: i64) -> (i64, i64, i64, i64, i64) {
     )
 }
 
+/// How far the local clock is ahead of UTC at `ms`, in ms (`local_tm`); 0 when it can't tell.
+fn offset_at(ms: i64) -> i64 {
+    let seconds = ms.div_euclid(1000);
+    let Some(tm) = local_tm(seconds as libc::time_t) else {
+        return 0;
+    };
+    let wall = days_from_civil(
+        i64::from(tm.tm_year) + 1900,
+        i64::from(tm.tm_mon) + 1,
+        i64::from(tm.tm_mday),
+    ) * 86_400
+        + i64::from(tm.tm_hour) * 3600
+        + i64::from(tm.tm_min) * 60
+        + i64::from(tm.tm_sec);
+    (wall - seconds) * 1000
+}
+
+/// The first moment after `now` the local clock shows `hour:minute`, on
+/// the local day `(month, day)` when given (`resets Oct 16, 11am`).
+pub fn next_local(hour: i64, minute: i64, date: Option<(i64, i64)>, now: i64) -> Option<i64> {
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) {
+        return None;
+    }
+    let (year, month, day, _, _) = local(now);
+    let today = days_from_civil(year, month, day);
+    // A year ahead at most: a date in it once, a time of day tomorrow at the latest.
+    (0..=366).find_map(|ahead| {
+        let (_, on_month, on_day) = civil_from_days(today + ahead);
+        if date.is_some_and(|date| date != (on_month, on_day)) {
+            return None;
+        }
+        let wall = (today + ahead) * 86_400_000 + (hour * 60 + minute) * 60_000;
+        let at = wall - offset_at(wall - offset_at(wall));
+        (at > now).then_some(at)
+    })
+}
+
 /// `2026-09-30`, local: the day of a changelog's heading.
 pub fn day(ms: i64) -> String {
     let (year, month, day, _, _) = local(ms);
@@ -200,6 +237,21 @@ mod tests {
         assert!(clock(now - 3 * 86_400_000, now).contains(" Sep "));
         assert_eq!(day(now).len(), 10);
         assert_eq!(hm(now).len(), 5);
+    }
+
+    #[test]
+    fn finds_the_next_time_the_local_clock_shows() {
+        let now = parse_iso("2026-10-14T20:40:00Z").unwrap();
+        for (hour, minute) in [(23, 30), (0, 0), (11, 5)] {
+            let at = next_local(hour, minute, None, now).unwrap();
+            assert_eq!(hm(at), format!("{hour:02}:{minute:02}"));
+            assert!(at > now && at <= now + 86_400_000, "{hour}:{minute} not within a day");
+        }
+        let on = next_local(11, 0, Some((10, 16)), now).unwrap();
+        assert!(day(on).ends_with("-10-16"));
+        assert_eq!(hm(on), "11:00");
+        assert_eq!(next_local(24, 0, None, now), None);
+        assert_eq!(next_local(1, 0, Some((2, 30)), now), None);
     }
 
     #[test]

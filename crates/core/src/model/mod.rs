@@ -15,6 +15,7 @@ pub mod epic_row;
 pub mod everything;
 pub mod files;
 pub mod free_agents;
+pub mod half_merged;
 pub mod handovers;
 pub mod history;
 pub mod memory;
@@ -221,6 +222,8 @@ pub struct Tree {
     pub unpushed: u64,
     pub unpushed_at: Option<i64>,
     pub has_remote_branch: bool,
+    /// When the merge open in it began (MERGE_HEAD, ms), None without one (#396).
+    pub merge_head_at: Option<i64>,
     /// The automatic lines that got in to its agent (`.claude/overview-sent.json`).
     pub sent: BTreeSet<String>,
     /// The tool call its agent's last answer ends with, unanswered (auto-actions.mjs `pendingOf`).

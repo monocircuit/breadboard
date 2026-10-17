@@ -362,6 +362,15 @@ to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
 
+No agent marks an MR ready (#399): `breadboard serve` does it once its bar
+is full, every box of its issue ticked (after-deploy ones excepted) and no
+try or change holding it, once per head, and notes `!N marked ready
+automatically` in the orchestration's journal. Its row says `ready (bar
+full) → breadboard` until then. A box unticked again puts an MR it marked
+ready back to draft; a person who sets it back to draft is respected until
+the next push (`draft by hand: ready after the next push → you`). Into
+develop and into an epic alike, for a repo GitLab serves.
+
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
 the second merges the MR as the user who runs the overview, with the MR's

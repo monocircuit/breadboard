@@ -6,14 +6,16 @@
 //! interactive claude (`~/.claude/sessions`, a live pid that isn't a run's)
 //! holds its queue. Runs start while memory allows (`runs::room_for`), in
 //! merge order, then by age. One engine per repo across daemons of other
-//! builds: `.claude/runs/engine.pid`.
+//! builds: `.claude/runs/engine.pid`. A run that stopped at the Claude usage
+//! limit holds every run until it resets; then the runs it stopped go on
+//! (#393, core's `Usage`).
 
 use breadboard_core::conversations::{interactive_pids_of, interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::permissions;
 use breadboard_core::runs::{
-    self, Event, Queue, Run, STARTING_MS, State, Table, Waiting, allowed_of, args_of, change_queue, prompt_of,
-    read_or_default, room_for, status_file, write_whole,
+    self, Event, Queue, Run, STARTING_MS, State, Table, Usage, Waiting, allowed_of, args_of, change_queue,
+    change_usage, prompt_of, read_or_default, room_for, status_file, write_whole,
 };
 use breadboard_core::time::now_ms;
 use std::collections::{HashMap, HashSet};
@@ -52,8 +54,8 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
         }
         if held.is_some() {
             let starts = {
-                let (main, in_flight) = (main.clone(), in_flight.clone());
-                tokio::task::spawn_blocking(move || take_starts(&main, &in_flight))
+                let (main, in_flight, table) = (main.clone(), in_flight.clone(), table.clone());
+                tokio::task::spawn_blocking(move || take_starts(&main, &in_flight, &table))
                     .await
                     .unwrap_or_default()
             };
@@ -62,7 +64,12 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
             }
         }
         let is_queued = !read_or_default::<Queue>(&runs::queue_file(&main)).events.is_empty();
-        busy.store(is_queued || !locked(&in_flight).is_empty(), Ordering::SeqCst);
+        // Runs the usage limit stopped wait for its reset here (#393).
+        let is_stopped = !read_or_default::<Usage>(&runs::usage_file(&main)).sessions.is_empty();
+        busy.store(
+            is_queued || is_stopped || !locked(&in_flight).is_empty(),
+            Ordering::SeqCst,
+        );
         tokio::time::sleep(EVERY).await;
     }
 }
@@ -79,8 +86,12 @@ pub struct Start {
 /// The sessions that may run now, their lines taken from the queue: none in
 /// flight (here or by an engine before, its claude alive), none open
 /// interactively, as many as memory allows, in merge order, then by age. A
-/// session whose worktree is gone loses its lines.
-fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
+/// session whose worktree is gone loses its lines. Nothing while the usage
+/// limit holds; once it reset, the sessions it stopped first get their line.
+fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Start> {
+    if !release_usage(main, table, now_ms()) {
+        return Vec::new();
+    }
     let queue: Queue = read_or_default(&runs::queue_file(main));
     if queue.events.is_empty() {
         return Vec::new();
@@ -141,6 +152,26 @@ fn take_starts(main: &Path, in_flight: &InFlight) -> Vec<Start> {
     .unwrap_or_default()
 }
 
+/// Whether runs may start at `now` as far as the Claude usage limit goes
+/// (#393): false while it holds; once it reset, each session it stopped
+/// gets `runs::RESET_LINE` ahead of the lines queued for it meanwhile.
+fn release_usage(main: &Path, table: &Mutex<()>, now: i64) -> bool {
+    let usage: Usage = read_or_default(&runs::usage_file(main));
+    if usage.holds(now) {
+        return false;
+    }
+    if !usage.sessions.is_empty() {
+        let _ = change_usage(main, |usage| {
+            change_queue(main, |queue| {
+                change_table(main, table, |read| {
+                    runs::release(usage, read, queue, now);
+                });
+            })
+        });
+    }
+    true
+}
+
 /// The sessions to start: the first `room` in merge order, then by age.
 pub fn pick(waiting: Vec<Waiting>, room: usize) -> Vec<String> {
     runs::ordered(waiting)
@@ -178,8 +209,8 @@ fn run_command(dir: &Path, args: Vec<String>) -> tokio::process::Command {
 }
 
 /// One run of `start`: `claude -p` in its worktree, its stream into its
-/// log, its row of the table `running` until it ends, then `idle`, or
-/// `asks` when a tool was denied.
+/// log, its row of the table `running` until it ends, then `idle`, `asks`
+/// when a tool was denied, `limit` when it stopped at the usage limit.
 async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<()>>) {
     let Start {
         session,
@@ -252,10 +283,21 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
         }
     }
     let code = child.wait().await.ok().and_then(|status| status.code());
+    let now = now_ms();
+    let hit = runs::hit_of(&lines, now);
     let denials = asked_of(&dir, &name, &lines);
-    let state = if denials.is_empty() { State::Idle } else { State::Asks };
+    let state = match hit {
+        Some(_) => State::Limit,
+        None if denials.is_empty() => State::Idle,
+        None => State::Asks,
+    };
     change_table(&main, &table, |read| {
         read.runs.insert(session.clone(), row(state, None, code, denials));
+    });
+    // Held until the reset, its session in line for a run then (#393); a run that went through ends a backoff.
+    let _ = change_usage(&main, |usage| match hit {
+        Some(hit) => runs::on_hit(usage, &session, hit, now),
+        None => usage.tries = 0,
     });
     locked(&in_flight).remove(&session);
 }
@@ -301,6 +343,9 @@ pub fn cli(args: &[String]) -> ExitCode {
             println!("today {}", today.total.text());
             if let Some(why) = runs::held_now(&main, now) {
                 println!("{why}: no run starts (breadboard runs continue lifts it until midnight)");
+            }
+            if let Some(why) = runs::usage_now(&main, now) {
+                println!("{why}: no run starts, the stopped runs go on after it");
             }
             for (session, run) in states {
                 let queued = queue.events.iter().filter(|event| event.session == session).count();

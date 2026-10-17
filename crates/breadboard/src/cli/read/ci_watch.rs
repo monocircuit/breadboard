@@ -21,7 +21,12 @@ pub const TAKES: Takes = Takes {
 /// The report as lines.
 pub fn lines_of(report: &Report) -> Vec<String> {
     let mut lines: Vec<String> = report.flags.iter().map(|flag| format!("⚠ {}", flag.line())).collect();
-    lines.extend(report.hung.iter().map(|hung| format!("⧗ {}: hung?", hung.line())));
+    lines.extend(
+        report
+            .hung
+            .iter()
+            .map(|hung| format!("⧗ {}: {}", hung.line(), hung.verdict())),
+    );
     if lines.is_empty() {
         lines.push("✓ no job holds the pipelines up".into());
     }

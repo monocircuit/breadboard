@@ -279,7 +279,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             write.write_all(b"true\n").await
         }
         Ok(Request::Gitlab { main, view, ask }) => {
-            // The first overview of a repo starts its CI queue, for as long as the daemon runs.
+            // The first overview of a repo starts its CI queue and its marks, for as long as the daemon runs.
             if main.is_absolute()
                 && state
                     .queues
@@ -288,6 +288,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
                     .insert(main.clone())
             {
                 tokio::spawn(super::ci::schedule(main.clone()));
+                tokio::spawn(super::ready::mark(main.clone()));
                 tokio::spawn(super::watch::watch(main.clone()));
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.

@@ -11,7 +11,9 @@
 //! - `status.json` (`Table`): what each session's run does, by the daemon;
 //! - `log/<session>.jsonl`: the stream of its last run;
 //! - `limit.json` (`Lifted`): the day a `continue anyway` lifted the daily
-//!   limit for (#372).
+//!   limit for (#372);
+//! - `usage.json` (`Usage`): the Claude usage limit a run stopped at, until
+//!   when it holds every run and the sessions it stopped (#393).
 
 use crate::herdr::Agent;
 use crate::lock::{is_alive, with_dir_lock};
@@ -82,6 +84,198 @@ pub fn held_now(main: &Path, now: i64) -> Option<String> {
     held_by(Some(limit), &today, &read_or_default(&limit_file(main)))
 }
 
+pub fn usage_file(main: &Path) -> PathBuf {
+    dir_of(main).join("usage.json")
+}
+
+/// How long after the reset the stopped runs start: not a minute too early.
+pub const AFTER_RESET_MS: i64 = 60_000;
+/// AFTER_RESET_MS, or what `BREADBOARD_AFTER_RESET_MS` says (a test's reset that doesn't wait a minute).
+fn after_reset_ms() -> i64 {
+    std::env::var("BREADBOARD_AFTER_RESET_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(AFTER_RESET_MS)
+}
+/// Without a reset time in the result: the waits of the tries in a row, the last one repeated.
+pub const BACKOFF_MS: [i64; 3] = [15 * 60_000, 30 * 60_000, 60 * 60_000];
+/// The line a session stopped by the usage limit gets once it reset.
+pub const RESET_LINE: &str = "[breadboard] the usage limit reset: continue where you stopped";
+
+/// The Claude usage limit a run stopped at (#393): no run starts before
+/// `until`; then each of `sessions` gets one run with RESET_LINE.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    /// When the limit resets (ms), as the result said or a backoff guesses.
+    pub reset: i64,
+    /// When the runs start again (ms): the reset + AFTER_RESET_MS, or a backoff's end.
+    pub until: i64,
+    /// How many limits in a row came without a time: the backoff's step.
+    pub tries: usize,
+    /// The sessions it stopped, in the order they stopped.
+    pub sessions: Vec<String>,
+    /// The orchestrations whose chat was told it holds: told again once it reset.
+    pub told: Vec<String>,
+}
+
+impl Usage {
+    /// Whether it holds the runs at `now`.
+    pub fn holds(&self, now: i64) -> bool {
+        now < self.until
+    }
+
+    /// The band's words while it holds: `usage limit until 23:30`.
+    pub fn text(&self, now: i64) -> Option<String> {
+        self.holds(now)
+            .then(|| format!("usage limit until {}", crate::time::clock(self.reset, now)))
+    }
+}
+
+/// A run's stream ended at the usage limit: when it resets, None when the result names no time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    pub reset: Option<i64>,
+}
+
+/// Whether the run of the stream `lines` stopped at the Claude usage limit
+/// (#393): its result an error, a 429 or the limit's words (`You've hit
+/// your session limit · resets 11:30pm (Europe/Berlin)`, older claudes
+/// `Claude AI usage limit reached|1760572800`), with the reset read from
+/// it. A time of day is the local clock's: claude says it in the user's zone.
+pub fn hit_of(lines: &[String], now: i64) -> Option<Hit> {
+    use regex::Regex;
+    use std::sync::LazyLock;
+    static WORDS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)hit your .*limit|usage limit|limit reached|rate limit").unwrap());
+    static EPOCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\|(\d{10})\b").unwrap());
+    static RESETS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)\bresets\s+(?:(?P<month>[a-z]{3})[a-z]*\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<half>am|pm)?",
+        )
+        .unwrap()
+    });
+    let result = lines
+        .iter()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("type").and_then(Value::as_str) == Some("result"))?;
+    if result.get("is_error").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let text = result.get("result").and_then(Value::as_str).unwrap_or_default();
+    let is_429 = result.get("api_error_status").and_then(Value::as_i64) == Some(429);
+    if !is_429 && !WORDS.is_match(text) {
+        return None;
+    }
+    let from_epoch = EPOCH
+        .captures(text)
+        .and_then(|found| found[1].parse::<i64>().ok())
+        .map(|seconds| seconds * 1000);
+    let from_clock = || {
+        let found = RESETS.captures(text)?;
+        let number = |name: &str| found.name(name).and_then(|part| part.as_str().parse::<i64>().ok());
+        let mut hour = number("hour")?;
+        if let Some(half) = found.name("half") {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            hour = hour % 12
+                + if half.as_str().eq_ignore_ascii_case("pm") {
+                    12
+                } else {
+                    0
+                };
+        }
+        const MONTHS: [&str; 12] = [
+            "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+        ];
+        let date = match (found.name("month"), number("day")) {
+            (Some(month), Some(day)) => {
+                let month = month.as_str().to_ascii_lowercase();
+                Some((MONTHS.iter().position(|known| *known == month)? as i64 + 1, day))
+            }
+            _ => None,
+        };
+        crate::time::next_local(hour, number("minute").unwrap_or(0), date, now)
+    };
+    Some(Hit {
+        reset: from_epoch.or_else(from_clock),
+    })
+}
+
+/// `usage` after `session`'s run stopped at the limit `hit` at `now`: a
+/// reset time holds the runs until a minute after it; without one the
+/// runs wait the next step of BACKOFF_MS, unless a limit holds already
+/// (runs that stopped together count once).
+pub fn on_hit(usage: &mut Usage, session: &str, hit: Hit, now: i64) {
+    if !usage.sessions.iter().any(|known| known == session) {
+        usage.sessions.push(session.to_string());
+    }
+    match hit.reset {
+        Some(reset) => {
+            usage.reset = reset;
+            usage.until = reset + after_reset_ms();
+            usage.tries = 0;
+        }
+        None if usage.holds(now) => {}
+        None => {
+            let wait = BACKOFF_MS[usage.tries.min(BACKOFF_MS.len() - 1)];
+            usage.reset = now + wait;
+            usage.until = now + wait;
+            usage.tries += 1;
+        }
+    }
+}
+
+/// `change` of `usage.json` under its lock: the daemon's runs end in tasks of their own.
+pub fn change_usage<T>(main: &Path, change: impl FnOnce(&mut Usage) -> T) -> std::io::Result<T> {
+    let file = usage_file(main);
+    with_dir_lock(&file, STALE, || {
+        let mut usage: Usage = read_or_default(&file);
+        let before = usage.clone();
+        let result = change(&mut usage);
+        if usage != before {
+            write_whole(&file, &usage)?;
+        }
+        Ok(result)
+    })?
+}
+
+/// Once the limit reset at `now`: each session it stopped gets RESET_LINE
+/// ahead of the lines queued for it meanwhile, its row `Queued`; the
+/// sessions so released, none while it holds.
+pub fn release(usage: &mut Usage, table: &mut Table, queue: &mut Queue, now: i64) -> Vec<String> {
+    if usage.holds(now) || usage.sessions.is_empty() {
+        return Vec::new();
+    }
+    let sessions = std::mem::take(&mut usage.sessions);
+    let mut lines = Vec::new();
+    for session in &sessions {
+        let Some(run) = table.runs.get_mut(session) else {
+            continue;
+        };
+        lines.push(Event {
+            session: session.clone(),
+            dir: run.dir.clone(),
+            name: run.name.clone(),
+            line: RESET_LINE.into(),
+            at: now,
+            allowed: Vec::new(),
+        });
+        run.state = State::Queued;
+        run.since = now;
+    }
+    lines.append(&mut queue.events);
+    queue.events = lines;
+    sessions
+}
+
+/// The usage limit's words for the band at `now`, None while it doesn't hold.
+pub fn usage_now(main: &Path, now: i64) -> Option<String> {
+    read_or_default::<Usage>(&usage_file(main)).text(now)
+}
+
 pub fn log_file(main: &Path, session: &str) -> PathBuf {
     dir_of(main).join("log").join(format!("{session}.jsonl"))
 }
@@ -120,6 +314,8 @@ pub enum State {
     Asks,
     /// Lines wait, no run yet (no memory, an interactive claude holds it).
     Queued,
+    /// Its last run stopped at the Claude usage limit: it runs again once that resets (#393).
+    Limit,
 }
 
 impl State {
@@ -130,6 +326,7 @@ impl State {
             State::Idle => "idle",
             State::Asks => "blocked",
             State::Queued => "queued",
+            State::Limit => "limit",
         }
     }
 }
@@ -483,6 +680,140 @@ mod tests {
         lift_limit(scratch.path(), "2026-10-13").unwrap();
         let read: Lifted = read_or_default(&limit_file(scratch.path()));
         assert_eq!(read, lifted("2026-10-13"));
+    }
+
+    fn result(fields: Value) -> Vec<String> {
+        let mut result = serde_json::json!({ "type": "result", "subtype": "success" });
+        for (key, value) in fields.as_object().unwrap() {
+            result[key] = value.clone();
+        }
+        vec![r#"{"type":"system"}"#.into(), result.to_string()]
+    }
+
+    #[test]
+    fn reads_the_usage_limit_and_its_reset_from_the_result() {
+        let now = crate::time::parse_iso("2026-10-14T20:40:00Z").unwrap();
+        let session = result(serde_json::json!({
+            "is_error": true,
+            "api_error_status": 429,
+            "result": "You've hit your session limit · resets 11:30pm (Europe/Berlin)",
+        }));
+        let reset = hit_of(&session, now).unwrap().reset.unwrap();
+        assert_eq!(crate::time::hm(reset), "23:30");
+        assert!(reset > now && reset <= now + 86_400_000);
+        let at = |text: &str| {
+            hit_of(&result(serde_json::json!({ "is_error": true, "result": text })), now)
+                .map(|hit| hit.reset.map(crate::time::hm))
+        };
+        assert_eq!(at("5-hour limit reached ∙ resets 3am"), Some(Some("03:00".into())));
+        assert_eq!(
+            at("You've hit your weekly limit · resets Oct 16, 11am"),
+            Some(Some("11:00".into()))
+        );
+        assert_eq!(
+            at("You've hit your session limit · resets 13:05"),
+            Some(Some("13:05".into()))
+        );
+        assert_eq!(
+            hit_of(
+                &result(serde_json::json!({ "is_error": true, "result": "Claude AI usage limit reached|1760572800" })),
+                now
+            ),
+            Some(Hit {
+                reset: Some(1_760_572_800_000)
+            })
+        );
+        // No time in it: the backoff decides.
+        assert_eq!(at("You've hit your session limit"), Some(None));
+        assert_eq!(
+            hit_of(
+                &result(serde_json::json!({ "is_error": true, "api_error_status": 429, "result": "API Error" })),
+                now
+            ),
+            Some(Hit { reset: None })
+        );
+        // An answer that talks about the limit, another error: no limit.
+        assert_eq!(
+            hit_of(
+                &result(serde_json::json!({ "is_error": false, "result": "You've hit your session limit" })),
+                now
+            ),
+            None
+        );
+        assert_eq!(at("API Error: 500 overloaded"), None);
+        assert_eq!(hit_of(&[], now), None);
+    }
+
+    #[test]
+    fn holds_the_runs_until_a_minute_after_the_reset_or_backs_off() {
+        let mut usage = Usage::default();
+        assert!(!usage.holds(0));
+        on_hit(&mut usage, "a", Hit { reset: Some(10_000) }, 0);
+        on_hit(&mut usage, "b", Hit { reset: Some(10_000) }, 5);
+        on_hit(&mut usage, "a", Hit { reset: Some(10_000) }, 6);
+        assert_eq!(usage.sessions, ["a", "b"]);
+        assert!(usage.holds(10_000 + AFTER_RESET_MS - 1));
+        assert!(!usage.holds(10_000 + AFTER_RESET_MS));
+        // Without a time: 15 min, 30 min, then an hour each; together they count once.
+        let mut usage = Usage::default();
+        on_hit(&mut usage, "a", Hit { reset: None }, 0);
+        on_hit(&mut usage, "b", Hit { reset: None }, 1);
+        assert_eq!((usage.until, usage.tries), (BACKOFF_MS[0], 1));
+        let mut now = usage.until;
+        for wait in [BACKOFF_MS[1], BACKOFF_MS[2], BACKOFF_MS[2]] {
+            on_hit(&mut usage, "a", Hit { reset: None }, now);
+            assert_eq!(usage.until, now + wait);
+            now = usage.until;
+        }
+        on_hit(&mut usage, "a", Hit { reset: Some(now + 5) }, now);
+        assert_eq!(usage.tries, 0);
+    }
+
+    #[test]
+    fn runs_the_stopped_sessions_once_it_reset_with_the_lines_queued_meanwhile() {
+        let mut usage = Usage::default();
+        on_hit(&mut usage, "a", Hit { reset: Some(1_000) }, 0);
+        let mut table = Table::default();
+        table.runs.insert(
+            "a".into(),
+            Run {
+                dir: PathBuf::from("/r/p-1"),
+                name: "1-x".into(),
+                state: State::Limit,
+                since: 0,
+                pid: None,
+                lines: 1,
+                denials: Vec::new(),
+                code: Some(0),
+            },
+        );
+        let mut queue = Queue {
+            events: vec![event("b", "other", 2), event("a", "a merge", 3)],
+        };
+        let states = states_of(&table, &queue);
+        assert_eq!(states["a"].state, State::Limit, "a line meanwhile ran it");
+        assert_eq!(release(&mut usage, &mut table, &mut queue, 1_000), Vec::<String>::new());
+        let at = 1_000 + AFTER_RESET_MS;
+        assert_eq!(
+            usage.text(at - 1).as_deref(),
+            Some(&*format!("usage limit until {}", crate::time::clock(1_000, at)))
+        );
+        assert_eq!(release(&mut usage, &mut table, &mut queue, at), ["a"]);
+        assert_eq!(usage.text(at), None);
+        assert_eq!(table.runs["a"].state, State::Queued);
+        let mine: Vec<Event> = queue
+            .events
+            .iter()
+            .filter(|event| event.session == "a")
+            .cloned()
+            .collect();
+        assert_eq!(prompt_of(&mine), format!("{RESET_LINE}\n\na merge"));
+        // Once only.
+        assert_eq!(
+            release(&mut usage, &mut table, &mut queue, at + 1),
+            Vec::<String>::new()
+        );
+        assert_eq!(State::Limit.status(), "limit");
     }
 
     #[test]

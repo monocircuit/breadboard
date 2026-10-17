@@ -95,6 +95,8 @@ pub struct OrchestrationLocal {
     pub ci: Option<crate::ci::Queue>,
     /// What the CI job watcher found while a daemon keeps it (#379).
     pub ci_watch: Option<crate::ci_watch::Report>,
+    /// What the daemon's marks did to the repo's MRs (#399).
+    pub ready: crate::ready::Marks,
     /// Its epic branch (#350), None for one that works on develop.
     pub epic: Option<super::epic_row::EpicLocal>,
     /// The share of its context the orchestrator's chat used (#382), None without one recorded.
@@ -240,6 +242,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The Claude usage limit holding the headless runs (#393): `usage limit until 23:30`.
+    pub usage: Option<String>,
     /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
     pub ci_watch: Option<String>,
     /// What the live overviews publish for the CI queue (#357); None until GitLab answered.
@@ -720,6 +724,15 @@ fn merge_requests_of(
             .filter(|_| !is_merged)
             .and_then(|report| report.hung_of(mr.iid));
         let mut reasons = reasons;
+        // Marked ready by its bar, then set back by a person: theirs until the next push.
+        if local.ready.is_drafted_by_hand(mr.iid, mr.is_draft, mr.sha.as_deref())
+            && let Some(reason) = reasons
+                .iter_mut()
+                .find(|reason| reason.text == super::mr_blockers::READY_BAR_FULL)
+        {
+            reason.text = super::mr_blockers::DRAFT_BY_HAND.into();
+            reason.who = "you".into();
+        }
         if let Some(place) = &ci
             && let Some(reason) = reasons.iter_mut().find(|reason| reason.text == "no pipeline yet")
         {
@@ -879,6 +892,7 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
                     total: boxes.len(),
                     is_checked,
                     sha: tested.flatten(),
+                    holds: ready_holds_of(issue, of(remote, issue).mr.as_ref()),
                 },
             ))
         })
@@ -924,6 +938,22 @@ fn ci_published_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder
         bars,
         held,
     }
+}
+
+/// What keeps an MR a draft though its boxes are all ticked (#399): a try
+/// still open or broken (one after the deploy holds nothing), a requested
+/// change not yet pushed and green.
+fn ready_holds_of(issue: &Entry, mr: Option<&Mr>) -> Option<String> {
+    let tree = issue.tree.as_ref()?;
+    if let Some(open) = super::merge::open_tries_of(&tree.actions, &tree.answered).first() {
+        let word = if open.answer.as_deref() == Some("broken") {
+            "broken"
+        } else {
+            "open"
+        };
+        return Some(format!("try #{} {word}", open.id));
+    }
+    super::change::is_change_open(Some(tree), mr).then(|| "change requested".to_string())
 }
 
 /// The mark of an MR waiting in the CI queue: its place, a click runs it
@@ -1043,6 +1073,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        usage: local.spent.usage.clone(),
         ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
         turn_records: Vec::new(),

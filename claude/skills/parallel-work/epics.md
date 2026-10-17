@@ -32,7 +32,9 @@ Everything that compared with `{{branch}}` compares with the base:
   its DIFF reads `against epic/<N>-<name>`, "N behind" is about the base;
 - **merge your base in** only when your MR conflicts with it or the overview/orchestrator
   tells you to (the base moving is no reason: each merge costs a full
-  pipeline), never rebase: `git fetch && git merge origin/<base>`;
+  pipeline), never rebase, and only with `{{run}} wt:merge-base` (#396), never a
+  plain `git merge`: a conflict is aborted with its files named, `--resolve`
+  keeps it open to finish in the same run;
 - `wt:remove` / `wt:prune` count a branch merged into its base as done.
 
 **One issue, one branch, one MR.** `wt:mr` refuses a description that closes
@@ -72,7 +74,7 @@ After every change of `{{branch}}` (a merge, a hotfix) the daemon merges
 `origin/{{branch}}` into the epic's checkout, and pushes it when the merge is
 clean and `wt:check` passes. A conflict becomes an action for the user
 (`decide` / `look`), never a force push. Running tasks then get "merge the
-epic in": `git fetch && git merge origin/epic/<N>-<name>`.
+epic in": `{{run}} wt:merge-base`.
 
 ## The milestone MR (coming with #352)
 
