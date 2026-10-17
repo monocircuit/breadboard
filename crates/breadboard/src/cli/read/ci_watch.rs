@@ -25,7 +25,7 @@ pub fn lines_of(report: &Report) -> Vec<String> {
         report
             .hung
             .iter()
-            .map(|hung| format!("⏳ {}: {}", hung.line(), hung.verdict())),
+            .map(|hung| format!("⧗ {}: {}", hung.line(), hung.verdict())),
     );
     if lines.is_empty() {
         lines.push("✓ no job holds the pipelines up".into());

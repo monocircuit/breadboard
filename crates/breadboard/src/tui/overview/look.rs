@@ -9,7 +9,7 @@ use crate::tui::scene::width_of;
 use crate::tui::theme::{self, Tone};
 use breadboard_core::herdr;
 use breadboard_core::model::try_state::TryTone;
-use breadboard_core::model::{self, Fact, Paint};
+use breadboard_core::model::{self, Paint};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
@@ -191,16 +191,6 @@ pub fn say<A: Clone>(scene: &mut Scene<A>, text: &str, style: Style) {
     }
 }
 
-/// The facts that say something, each as its spans: the parts of `whole`,
-/// each whole on a line when it fits one (`untested: 1 commit` never splits).
-pub fn parts(facts: &[Fact]) -> Vec<Vec<Span<'static>>> {
-    facts
-        .iter()
-        .filter(|fact| !model::text_of(fact).trim().is_empty())
-        .map(|fact| spans(fact))
-        .collect()
-}
-
 /// Parts parted by a dim ` · `, each whole on a line when `room` holds it,
 /// else at its words; the separator ends the line before a break, never starts one.
 pub fn whole<A: Clone>(scene: &mut Scene<A>, parts: &[Vec<Span<'static>>], room: u16) {
@@ -328,11 +318,14 @@ mod tests {
     #[test]
     fn facts_stay_whole_with_the_separator_at_the_end() {
         let mut scene = Scene::<u8>::new(20);
-        let facts = parts(&[
+        let facts: Vec<Vec<Span<'static>>> = [
             vec![model::Span::plain("#305"), model::Span::plain(" open")],
             vec![model::Span::plain("untested: 1 commit")],
             vec![model::Span::plain("waits for !316, !314, !318")],
-        ]);
+        ]
+        .iter()
+        .map(|fact| spans(fact))
+        .collect();
         whole(&mut scene, &facts, 20);
         scene.finish();
         // A fact wider than a line wraps at its words.

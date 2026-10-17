@@ -732,8 +732,9 @@ fn merge_requests_of(
             pipeline: match (&ci, hung) {
                 (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
                 // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
+                // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
                 (None, Some(hung)) => Span {
-                    text: format!("⏳ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
+                    text: format!("⧗ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
                     paint: super::Paint::Red,
                     url: hung
                         .url

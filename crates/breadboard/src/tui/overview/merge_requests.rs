@@ -12,6 +12,7 @@ use crate::tui::Scene;
 use crate::tui::scene::{Region, Target, width_of};
 use crate::tui::theme::{self, Tone};
 use breadboard_core::model::Paint;
+use breadboard_core::model::boxes::BoxSection;
 use breadboard_core::model::merge::GITLAB_RECHECKS;
 use breadboard_core::model::mr_blockers::{Progress, Reason};
 use breadboard_core::model::orchestration::{MergeRequests, MrFacts};
@@ -73,43 +74,57 @@ pub(super) fn show(mr: &MrFacts) -> Go {
     }
 }
 
-/// The bar of an MR's boxes in its block, the fold of their list (#346):
-/// `▸ ━━──  #335: 2/6 boxes · …` in `width` columns. Before any click its
-/// open boxes show whole (#354); a click folds them, the next opens every
-/// box, one on the line or the list folds it again. `--once` has no fold:
-/// it lists the open boxes under the bar.
-pub(super) fn bar_line(scene: &mut Scene<Act>, mr: &MrFacts, progress: &Progress, width: u16, ctx: &Ctx) {
+/// The bar of an MR's boxes on its block's GitLab line (#390), the fold of
+/// their list (#346): `▸ ━━──  #335: 2/6 boxes · …` in `width` columns, a
+/// click on it folds or opens. Before any click its open boxes show whole
+/// (#354); a click folds them, the next opens every box, one more folds it
+/// again. `after` follows it in its atom (the ` ·` before what comes next).
+/// Returns the boxes it shows, listed under the line, and the line it is on
+/// where it folds (the fold's block starts there). `--once` has no fold:
+/// its open boxes are listed.
+pub(super) fn bar_atom<'a>(
+    scene: &mut Scene<Act>,
+    mr: &'a MrFacts,
+    progress: &Progress,
+    width: u16,
+    after: Option<Span<'static>>,
+    ctx: &Ctx,
+) -> (Option<&'a [BoxSection]>, Option<u16>) {
     if ctx.is_once || mr.boxes.is_empty() {
         if width >= MIN_BAR {
-            scene.atom_gap(bar(progress, mr.issue, width), 0);
-            scene.end_line();
+            scene.atom(bar(progress, mr.issue, width).into_iter().chain(after).collect());
         }
         // A print has nothing to click: its open boxes under the bar (#354).
-        if ctx.is_once && !mr.open_boxes.is_empty() {
-            boxes::list(scene, &mr.open_boxes, 2);
-        }
-        return;
+        let open = Some(&mr.open_boxes[..]).filter(|open| ctx.is_once && !open.is_empty());
+        return (open, None);
     }
     // Every box once opened; before any click the open ones, until a click folds them (#354).
     let shown = match ctx.folds.boxes.mr_list(mr.iid, !mr.open_boxes.is_empty()) {
-        super::MrList::All => Some(&mr.boxes),
-        super::MrList::Open => Some(&mr.open_boxes),
+        super::MrList::All => Some(&mr.boxes[..]),
+        super::MrList::Open => Some(&mr.open_boxes[..]),
         super::MrList::Folded => None,
     };
-    let is_open = shown.is_some();
-    scene.block(Act::Fold(Fold::MrBoxes(mr.iid)), |scene| {
-        let mut spans = vec![boxes::mark(is_open)];
-        if width >= MIN_BAR + 2 {
-            spans.extend(bar(progress, mr.issue, width - 2));
-        } else {
-            spans.push(look::dim(format!("{}/{}", progress.ticked, progress.total)));
-        }
-        scene.atom_gap(spans, 0);
-        scene.end_line();
-        if let Some(sections) = shown {
-            boxes::list(scene, sections, 2);
-        }
-    });
+    let mut spans = vec![boxes::mark(shown.is_some())];
+    if width >= MIN_BAR + 2 {
+        spans.extend(bar(progress, mr.issue, width - 2));
+    } else {
+        spans.push(look::dim(format!("{}/{}", progress.ticked, progress.total)));
+    }
+    let label: String = spans.iter().map(|span| span.content.as_ref()).collect();
+    spans.extend(after);
+    let rects = scene.atom(spans);
+    let y = rects.first().map(|rect| rect.y);
+    for area in rects {
+        scene.regions.push(Region {
+            area,
+            target: Target::Button {
+                label: label.trim().to_string(),
+                tone: Tone::Gray,
+                action: Act::Fold(Fold::MrBoxes(mr.iid)),
+            },
+        });
+    }
+    (shown, y)
 }
 
 /// The lanes of an MR's first line, its `●` green when it is ready, red
@@ -316,8 +331,8 @@ pub(super) fn bar(progress: &Progress, issue: Option<i64>, width: u16) -> Vec<Sp
 
 /// Whether `lacks` draws anything: a ready MR with no conflicts (unsaid),
 /// no reasons and no failed merge has no line, so its block ends at its bar.
-pub(super) fn has_lacks(mr: &MrFacts, ctx: &Ctx) -> bool {
-    !mr.reasons.is_empty()
+pub(super) fn has_lacks(mr: &MrFacts, reasons: &[Reason], ctx: &Ctx) -> bool {
+    !reasons.is_empty()
         || failed_of(ctx, mr).is_some()
         || mr
             .conflict
@@ -325,8 +340,9 @@ pub(super) fn has_lacks(mr: &MrFacts, ctx: &Ctx) -> bool {
             .is_some_and(|conflict| !matches!(conflict, Conflict::None))
 }
 
-/// Where its conflicts stand, then what it lacks, each `→ who` acts on it.
-pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
+/// Where its conflicts stand, then what it lacks (`reasons`: the MR's,
+/// without what its block says on other lines), each `→ who` acts on it.
+pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, reasons: &[Reason], ctx: &Ctx) {
     // A short reason stays on one line: `try #2 broken → you`, not `try #2`
     // and `broken → you` on two; one longer than half the line wraps at its
     // words, or it would leave the line before it half empty. The scene
@@ -379,8 +395,7 @@ pub(super) fn lacks(scene: &mut Scene<Act>, mr: &MrFacts, ctx: &Ctx) {
     }
     // The row says GitLab rechecks once: the blocker names it again.
     let is_said = matches!(mr.conflict, Some(Conflict::Rechecking));
-    let reasons: Vec<Reason> = mr
-        .reasons
+    let reasons: Vec<Reason> = reasons
         .iter()
         .filter(|reason| !(is_said && reason.text == GITLAB_RECHECKS))
         .cloned()
@@ -454,7 +469,7 @@ fn names_its_who(reason: &Reason) -> bool {
 }
 
 /// `waits for !N → !N`: a wait on another MR, named by its who alone.
-fn is_wait(reason: &Reason) -> bool {
+pub(super) fn is_wait(reason: &Reason) -> bool {
     reason.who.starts_with('!') && reason.text == format!("waits for {}", reason.who)
 }
 
