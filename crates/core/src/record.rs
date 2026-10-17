@@ -259,6 +259,35 @@ pub struct Plan {
     pub work: Vec<i64>,
     pub merge: Vec<i64>,
     pub why: Option<String>,
+    /// Where the epic goes to develop (#402, `--milestone after #n`).
+    pub milestones: Vec<Milestone>,
+}
+
+/// A milestone mark of the plan (#402): after the issue `after`, the epic
+/// goes to develop. `issues`: the merge order up to it when it was set, so
+/// the mark holds once the overview drops merged issues from the order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Milestone {
+    pub after: i64,
+    pub issues: Vec<i64>,
+}
+
+impl Milestone {
+    /// The mark after `after` in `merge`, the issues up to it; None when the order doesn't list it.
+    pub fn in_order(merge: &[i64], after: i64) -> Option<Milestone> {
+        let at = merge.iter().position(|number| *number == after)?;
+        Some(Milestone {
+            after,
+            issues: merge[..=at].to_vec(),
+        })
+    }
+
+    fn from_value(value: &Value) -> Option<Milestone> {
+        Some(Milestone {
+            after: int_of(value, "after")?,
+            issues: ints_of(value, "issues"),
+        })
+    }
 }
 
 /// An issue an agent started on (history.mjs): `how` it got it, `context`
@@ -444,6 +473,11 @@ impl Record {
             work: ints_of(plan, "work"),
             merge: ints_of(plan, "merge"),
             why: str_of(plan, "why").map(String::from),
+            milestones: plan
+                .get("milestones")
+                .and_then(Value::as_array)
+                .map(|marks| marks.iter().filter_map(Milestone::from_value).collect())
+                .unwrap_or_default(),
         });
         let workers = raw
             .get("workers")
@@ -698,36 +732,46 @@ pub fn mark_removed(
     write_raw(main, name, with_removed(raw, branch, feature, removed_at, merged_at))
 }
 
-/// The plan of `wt:plan`: a list left out keeps the one there.
+/// The plan of `wt:plan`: a list left out keeps the one there, and what
+/// else its object holds stays.
 pub fn write_plan(
     main: &Path,
     name: &str,
     work: Option<Vec<i64>>,
     merge: Option<Vec<i64>>,
     why: Option<String>,
+    milestones: Option<Vec<Milestone>>,
 ) -> io::Result<Plan> {
     let mut raw = raw_of(main, name);
     let old = Record::from_value(Value::Object(raw.clone()))
         .and_then(|record| record.plan)
         .unwrap_or_default();
-    let old_why = raw
-        .get("plan")
-        .and_then(|plan| plan.get("why"))
-        .cloned()
-        .unwrap_or(Value::Null);
+    let mut object = object_of(raw.get("plan").cloned());
     let plan = Plan {
         work: work.unwrap_or(old.work),
         merge: merge.unwrap_or(old.merge),
         why: why.or(old.why),
+        milestones: milestones.clone().unwrap_or(old.milestones),
     };
-    let why_value = match &plan.why {
-        Some(why) => json!(why),
-        None => old_why,
-    };
-    raw.insert(
-        "plan".into(),
-        json!({ "work": plan.work, "merge": plan.merge, "why": why_value }),
-    );
+    object.insert("work".into(), json!(plan.work));
+    object.insert("merge".into(), json!(plan.merge));
+    if let Some(why) = &plan.why {
+        object.insert("why".into(), json!(why));
+    } else if !object.contains_key("why") {
+        object.insert("why".into(), Value::Null);
+    }
+    if let Some(marks) = milestones {
+        if marks.is_empty() {
+            object.remove("milestones");
+        } else {
+            let marks: Vec<Value> = marks
+                .iter()
+                .map(|mark| json!({ "after": mark.after, "issues": mark.issues }))
+                .collect();
+            object.insert("milestones".into(), Value::Array(marks));
+        }
+    }
+    raw.insert("plan".into(), Value::Object(object));
     write_raw(main, name, raw)?;
     Ok(plan)
 }
@@ -910,11 +954,26 @@ mod tests {
     #[test]
     fn a_write_keeps_what_rust_does_not_know() {
         let (_scratch, main) = scratch_record();
-        write_plan(&main, "breadboard", Some(vec![296]), None, None).unwrap();
+        write_plan(&main, "breadboard", Some(vec![296]), None, None, None).unwrap();
         let text = fs::read_to_string(record_file(&main, "breadboard")).unwrap();
         let mut expected: Value = serde_json::from_str(RECORD).unwrap();
         expected["plan"]["work"] = json!([296]);
         assert_eq!(text, format!("{}\n", json::pretty(&expected)));
+    }
+
+    #[test]
+    fn milestone_marks_stay_through_a_plan_written_without_them() {
+        let (_scratch, main) = scratch_record();
+        let mark = Milestone::in_order(&[296, 303], 303).unwrap();
+        write_plan(&main, "breadboard", None, None, None, Some(vec![mark.clone()])).unwrap();
+        // The overview's rewrite of the order (#376) names no marks: they stay.
+        write_plan(&main, "breadboard", Some(vec![303]), Some(vec![303]), None, None).unwrap();
+        let plan = record_of(&main, "breadboard").unwrap().plan.unwrap();
+        assert_eq!(plan.milestones, [mark]);
+        assert_eq!(plan.work, [303]);
+        write_plan(&main, "breadboard", None, None, None, Some(vec![])).unwrap();
+        let text = fs::read_to_string(record_file(&main, "breadboard")).unwrap();
+        assert!(!text.contains("milestones"), "an empty list clears them");
     }
 
     #[test]

@@ -633,6 +633,7 @@ fn actions_of(
         items.push(item);
     }
     items.extend(workers.actions.iter().cloned());
+    items.extend(super::milestone::milestone_of(local, remote));
     // The end: once all is merged and no worktree is left.
     let has_next_merge = next_merge(issues, remote, order, turns).is_some();
     if remote.is_some() && local.trees.is_empty() && !issues.iter().any(|issue| issue.is_queued) && !has_next_merge {
@@ -1400,6 +1401,7 @@ mod tests {
                     work: vec![2, 1],
                     merge: vec![1, 2],
                     why: Some("#1 first".into()),
+                    ..Plan::default()
                 }),
                 ..Default::default()
             }),
@@ -1815,6 +1817,7 @@ mod tests {
                 work: vec![2, 1],
                 merge: vec![1, 2],
                 why: Some("#1 first".into()),
+                ..Plan::default()
             })
         );
         let actions = model.actions.unwrap();

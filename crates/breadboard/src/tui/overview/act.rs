@@ -305,7 +305,69 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::Remove(dir) => auto::click_remove(app, &dir),
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
         Go::End => end(app),
+        Go::EpicMr => epic_mr(app),
     }
+}
+
+/// A click on the milestone row of UP NEXT (#402): `wt:epic <name> --mr` in
+/// the background, once while it runs; the row goes once GitLab shows the MR.
+fn epic_mr(app: &mut Overview) {
+    let Some(name) = app.orchestration_name() else { return };
+    if app.actor.epic_mr.as_ref().is_some_and(|run| run.is_running) {
+        return;
+    }
+    let log = actor::spawn::log_file(&format!("orchestration-epic-mr-{name}.log"));
+    let program = actor::spawn::breadboard();
+    let poster = app.actor.poster();
+    let shown = format!("{run} wt:epic {name} --mr", run = breadboard_core::config::run_word());
+    let started = actor::spawn::start(
+        actor::spawn::Background {
+            program: &program,
+            args: vec!["wt:epic".into(), name.clone(), "--mr".into()],
+            cwd: &app.actor.main,
+            log: &log,
+            env: vec![],
+            is_paneless: true,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                let error = actor::spawn::error_of(code, &last, "");
+                match &error {
+                    None => app.actor.log_as(
+                        "epic-mr",
+                        Paint::Green,
+                        format!("milestone MR: {}", actor::spawn::said(&last)),
+                        None,
+                    ),
+                    Some(why) => app
+                        .actor
+                        .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), None),
+                }
+                app.actor.epic_mr = Some(Run {
+                    error,
+                    done_at: Some(now_ms()),
+                    ..Run::default()
+                });
+                app.redraw();
+            });
+        },
+    );
+    match started {
+        Ok(()) => {
+            app.actor.epic_mr = Some(Run::running(&log));
+            app.actor
+                .log_as("epic-mr", Paint::Yellow, "opening the milestone MR …", Some(shown));
+        }
+        Err(why) => {
+            app.actor
+                .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), Some(shown));
+            app.actor.epic_mr = Some(Run {
+                error: Some(why),
+                ..Run::default()
+            });
+        }
+    }
+    app.redraw();
 }
 
 /// A click on ✕ end orchestration or its UP NEXT row (end.mjs `clickEnd`):

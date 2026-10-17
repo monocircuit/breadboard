@@ -76,10 +76,13 @@ clean and `wt:check` passes. A conflict becomes an action for the user
 (`decide` / `look`), never a force push. Running tasks then get "merge the
 epic in": `{{run}} wt:merge-base`.
 
-## The milestone MR (coming with #352)
+## The milestone MR
 
-At a milestone (the plan marks one, or on demand) `{{run}} wt:epic <name> --mr`,
-or its row in UP NEXT, opens the MR epic → `{{branch}}` with the full pipeline.
+The plan marks a milestone: `{{run}} wt:plan <name> --milestone after #n…` (the
+merge order up to each is kept with it; bare `--milestone` clears them). Once
+every task up to a mark is merged into the epic, UP NEXT offers the milestone
+MR by itself; its click runs `{{run}} wt:epic <name> --mr` (#402). On demand the
+same command opens the MR epic → `{{branch}}` with the full pipeline.
 Its description lists `Closes #a, #b, …` of every task merged into the epic
 since the last milestone: an MR into an epic closes nothing (GitLab only
 closes from the default branch), this one closes them all when it lands, and

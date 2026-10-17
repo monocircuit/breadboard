@@ -80,6 +80,7 @@ fn word_of(
             auto::removal_said(removals.get(dir)?, &feature)
         }
         Go::End => end_said(actor.end.as_ref()?, name),
+        Go::EpicMr => epic_mr_said(actor.epic_mr.as_ref()?, &item.text),
         _ => None,
     }
 }
@@ -101,6 +102,19 @@ fn end_said(end: &Run, name: &str) -> Option<Vec<Span>> {
             Span::new(error.clone(), Paint::Red),
         ]
     })
+}
+
+/// The milestone row of UP NEXT while its `wt:epic --mr` runs or after it failed (#402).
+fn epic_mr_said(run: &Run, text: &str) -> Option<Vec<Span>> {
+    if run.is_running {
+        return Some(vec![
+            Span::plain("opening the milestone MR … "),
+            Span::dim(run.last_line()),
+        ]);
+    }
+    run.error
+        .as_ref()
+        .map(|error| vec![Span::plain(format!("{text}  ")), Span::new(error.clone(), Paint::Red)])
 }
 
 /// No words: for a section drawn on its own (tests).
