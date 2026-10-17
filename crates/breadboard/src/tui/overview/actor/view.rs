@@ -104,11 +104,18 @@ fn end_said(end: &Run, name: &str) -> Option<Vec<Span>> {
     })
 }
 
-/// The milestone row of UP NEXT while its `wt:epic --mr` runs or after it failed (#402).
+/// The milestone row of UP NEXT while its `wt:epic --mr` runs, once it
+/// opened the MR (until GitLab shows it), or after it failed (#402).
 fn epic_mr_said(run: &Run, text: &str) -> Option<Vec<Span>> {
     if run.is_running {
         return Some(vec![
             Span::plain("opening the milestone MR … "),
+            Span::dim(run.last_line()),
+        ]);
+    }
+    if run.error.is_none() && run.done_at.is_some() {
+        return Some(vec![
+            Span::new("milestone MR open ", Paint::Green),
             Span::dim(run.last_line()),
         ]);
     }
