@@ -200,6 +200,24 @@ space of its own (`⇶ <title>`).
 | --- | ------- | ------------ |
 | `paths` | none | the folders that are the product's; at least one. The name labels the herdr space: letters, digits, `-` and `_` |
 
+## `[settings]`
+
+The team's defaults of the overview's settings panel (#415; `,` or `⚙
+settings` in an orchestration's overview). A change in the panel is kept
+per product in `.claude/products/<name>.json` (for an orchestration of no
+product in its record), local and never committed; it wins over the
+default until `reset`, holds from the next tick, and the orchestration's
+journal says it (`auto-merge into batch: off (by you)`).
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `batching` | `[orchestration] epic_branches` | tasks branch off a batch branch and merge into it; today a new orchestration's epic branch (#350, #411 makes it the product's rolling batch). Off: their MRs go straight into the default branch |
+| `auto_merge_into_batch` | `true` | a task MR into the batch merges by itself once its bar is full and its checks are green; off: it waits for the user's click |
+| `ship_after_tasks` | `5` | the overview suggests shipping the batch once this many tasks are in it (#414), 1 to 99 |
+| `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
+| `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
+| `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.
