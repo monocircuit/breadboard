@@ -848,7 +848,7 @@ mod tests {
             checked: Vec::new(),
             boxes: vec![],
             go: if has_tree {
-                Go::FocusSpace(PathBuf::from(format!("/w/{name}")))
+                Go::Detail(PathBuf::from(format!("/w/{name}")))
             } else {
                 Go::Nothing
             },
@@ -1088,8 +1088,8 @@ mod tests {
         assert_eq!(
             blocks,
             [
-                (4, 4, 72, Act::Go(Go::FocusSpace("/w/303-every-button".into()))),
-                (8, 4, 72, Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
+                (4, 4, 72, Act::Go(Go::Detail("/w/303-every-button".into()))),
+                (8, 4, 72, Act::Go(Go::Detail("/w/305-refresh".into()))),
             ]
         );
     }
@@ -1194,7 +1194,7 @@ mod tests {
         let block = scene
             .regions
             .iter()
-            .find(|region| *region.action() == Act::Go(Go::FocusSpace("/w/303-every-button".into())))
+            .find(|region| *region.action() == Act::Go(Go::Detail("/w/303-every-button".into())))
             .unwrap();
         assert_eq!((block.area.y, block.area.height), (3, 6));
         let fold = Act::Fold(Fold::Collides(301));
@@ -1295,7 +1295,7 @@ mod tests {
         let block = scene
             .regions
             .iter()
-            .find(|region| *region.action() == Act::Go(Go::FocusSpace("/w/303-every-button".into())))
+            .find(|region| *region.action() == Act::Go(Go::Detail("/w/303-every-button".into())))
             .unwrap()
             .area;
         let tree = scene
@@ -1718,7 +1718,7 @@ mod tests {
             on(at),
             [
                 ("!320".into(), show("https://gitlab/mr/320")),
-                ("block".into(), Act::Go(Go::FocusSpace("/w/305-refresh".into()))),
+                ("block".into(), Act::Go(Go::Detail("/w/305-refresh".into()))),
             ]
         );
         // The pipeline and the button that resolves its conflicts on the GitLab line.

@@ -1,10 +1,10 @@
-//! A file of the worktree in its nvim (#257, files.mjs `openFile`,
-//! nvim.mjs, spaces.mjs `openInEditor`): through the socket of the tab
-//! `nvim` (`.claude/nvim.sock`, relative to the checkout: a socket's path
-//! holds at most 107 bytes), else the tab started on the file, then its space
-//! and tab in front. And the herdr tabs a click starts (tabs.mjs `ensureTab`):
-//! the editor's, a tool's. The herdr writes are exactly Node's (rule 6).
+//! A file of the worktree in nvim (#257): which file and line a click
+//! means, and the socket of the nvim the detail pane runs (#406,
+//! `.claude/nvim.sock`, relative to the checkout: a socket's path holds at
+//! most 107 bytes). And the herdr tabs a click starts (tabs.mjs
+//! `ensureTab`): a tool's.
 
+use super::super::actor::detail::At;
 use breadboard_core::git::git;
 use breadboard_core::herdr::{self, Tab};
 use breadboard_core::model::files::{first_change, match_file};
@@ -14,19 +14,14 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// The tab of a worktree's editor.
-const EDITOR: &str = "nvim";
-/// The socket of that tab, relative to the checkout.
+/// The socket of the worktree's nvim, relative to the checkout.
 const SOCKET: &str = ".claude/nvim.sock";
-/// claudecode.nvim's directory under the main checkout, cloned by the layout (ide.mjs `pluginDir`).
-const IDE_PLUGIN: &str = ".claude/nvim/claudecode.nvim-v0.3.0";
 /// How long nvim gets to answer on its socket.
 const ANSWER: Duration = Duration::from_secs(2);
 
-/// Where a checkout's file is opened: the checkout, the main one, its feature.
+/// Where a checkout's tool runs: the checkout, whether it is the main one, its feature.
 pub struct Checkout<'a> {
     pub dir: &'a Path,
-    pub main: &'a Path,
     pub is_main: bool,
     /// `292-x`: the label of its herdr space.
     pub feature: &'a str,
@@ -45,30 +40,15 @@ impl Checkout<'_> {
 }
 
 /// `file` (relative to the checkout, or as a log names it) at `line`, else
-/// at its first change; Err is why not, for the ` nvim: …` line.
-pub fn open_file(checkout: &Checkout, file: &str, line: Option<u64>) -> Result<(), String> {
-    let found = file_of(checkout.dir, file).ok_or_else(|| format!("{file} is no file of this checkout"))?;
-    let line = line.unwrap_or_else(|| first_change(checkout.dir, &found));
+/// at its first change: where the detail pane's nvim opens it (#406); Err is
+/// why not, for the ` nvim: …` line.
+pub fn at_of(dir: &Path, file: &str, line: Option<u64>) -> Result<At, String> {
+    let found = file_of(dir, file).ok_or_else(|| format!("{file} is no file of this checkout"))?;
+    let line = line.unwrap_or_else(|| first_change(dir, &found));
     if !can_edit() {
         return Err("no nvim on the PATH".into());
     }
-    if open_on_socket(checkout.dir, &found, line) {
-        if let Some(space) = checkout.space() {
-            focus(&space);
-        }
-        return Ok(());
-    }
-    let Some(space) = checkout.space() else {
-        return Err("no herdr space to open nvim in".into());
-    };
-    let command = editor_command(checkout, &found, line);
-    if !ensure_tab(&space, EDITOR, checkout.dir, &command) {
-        return Err(format!(
-            "the tab {EDITOR} runs an nvim without its socket: quit it, the next one listens"
-        ));
-    }
-    focus(&space);
-    Ok(())
+    Ok(At { file: found, line })
 }
 
 /// The file of the checkout `file` means: itself when it is there inside the
@@ -99,7 +79,7 @@ fn can_edit() -> bool {
 }
 
 /// `nvim --server <socket> <args>` in `dir`: whether it answered within ANSWER.
-fn remote(dir: &Path, args: &[&str]) -> bool {
+pub fn remote(dir: &Path, args: &[&str]) -> bool {
     let child = Command::new("nvim")
         .args(["--server", SOCKET])
         .args(args)
@@ -125,7 +105,7 @@ fn remote(dir: &Path, args: &[&str]) -> bool {
 
 /// The file at the line in the nvim listening in `dir`, out of insert or
 /// command-line mode first (nvim.mjs `openOnSocket`).
-fn open_on_socket(dir: &Path, file: &str, line: u64) -> bool {
+pub fn open_on_socket(dir: &Path, file: &str, line: u64) -> bool {
     remote(dir, &["--remote-send", "<C-\\><C-N>"]);
     let path = dir.join(file);
     remote(dir, &["--remote-expr", &open_expr(&path.to_string_lossy(), line)])
@@ -138,55 +118,6 @@ fn open_expr(file: &str, line: u64) -> String {
         "execute('drop +{} ' .. fnameescape('{file}') .. ' | normal! zz')",
         line.max(1)
     )
-}
-
-/// A word for sh, bash, zsh and fish alike.
-fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
-}
-
-/// The shell line of the tab `nvim` (nvim.mjs `editorCommand`): a socket
-/// nobody answers on goes first, then nvim listens on it with `:Changes`
-/// loaded, Claude Code's IDE plugin when the layout cloned it and the
-/// checkout didn't switch it off (#258), on the file at the line.
-fn editor_command(checkout: &Checkout, file: &str, line: u64) -> String {
-    let socket = quote(SOCKET);
-    let nvim = crate::cli::files_dir(checkout.main).join("nvim");
-    let changes = nvim.join("changes.lua");
-    let mut commands = vec![format!("luafile {}", changes.display())];
-    if let Some(plugin) = ide_plugin(checkout) {
-        let lua = nvim.join("ide.lua");
-        let json = |path: &Path| serde_json::to_string(&path.to_string_lossy()).unwrap_or_default();
-        commands.push(format!("lua dofile({})({})", json(&lua), json(&plugin)));
-    }
-    let start: String = commands
-        .iter()
-        .map(|command| format!(" -c {}", quote(command)))
-        .collect();
-    format!(
-        "cd {}; nvim --server {socket} --remote-expr 1 >/dev/null 2>&1 || rm -f {socket}; nvim --listen {socket}{start} +{} {}",
-        quote(&checkout.dir.to_string_lossy()),
-        line.max(1),
-        quote(file)
-    )
-}
-
-/// The IDE plugin for the checkout: None when `git config breadboard.ide` is off or the layout hasn't cloned it.
-fn ide_plugin(checkout: &Checkout) -> Option<std::path::PathBuf> {
-    let value = git(checkout.dir, &["config", "breadboard.ide"]).stdout;
-    if ["false", "off", "no", "0"].contains(&value.trim().to_lowercase().as_str()) {
-        return None;
-    }
-    let plugin = checkout.main.join(IDE_PLUGIN);
-    plugin.join("lua/claudecode").is_dir().then_some(plugin)
-}
-
-/// The space in front, and its tab `nvim`.
-fn focus(space: &str) {
-    herdr::herdr(&["workspace", "focus", space]);
-    if let Some(tab) = herdr::tabs_of(space).into_iter().find(|tab| tab.label == EDITOR) {
-        herdr::herdr(&["tab", "focus", &tab.id]);
-    }
 }
 
 /// The pane of the tab `label` when it is its only one and its shell idles (tabs.mjs `idlePaneOf`).
@@ -255,22 +186,6 @@ mod tests {
         assert_eq!(
             open_expr("/w/a.ts", 0),
             "execute('drop +1 ' .. fnameescape('/w/a.ts') .. ' | normal! zz')"
-        );
-    }
-
-    #[test]
-    fn the_tab_starts_nvim_listening_on_the_file() {
-        let checkout = Checkout {
-            dir: Path::new("/nowhere/platform-1-x"),
-            main: Path::new("/nowhere/platform"),
-            is_main: false,
-            feature: "1-x",
-        };
-        assert_eq!(
-            editor_command(&checkout, "src/a b.ts", 7),
-            "cd '/nowhere/platform-1-x'; nvim --server '.claude/nvim.sock' --remote-expr 1 >/dev/null 2>&1 \
-             || rm -f '.claude/nvim.sock'; nvim --listen '.claude/nvim.sock' \
-             -c 'luafile /nowhere/platform/.breadboard/nvim/changes.lua' +7 'src/a b.ts'"
         );
     }
 

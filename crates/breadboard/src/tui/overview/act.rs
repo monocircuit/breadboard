@@ -6,6 +6,7 @@
 //! resolving conflicts — through the actor (`actor/`), which also does what
 //! the overview does by itself after each read (`after_read`).
 
+use super::actor::detail::Shows;
 use super::actor::{self, auto, browser, chat, fresh, herdr, merge, spawn::Run, tries};
 use super::{Msg, Overview};
 use crate::tui::{Flow, KeyEvent};
@@ -16,6 +17,7 @@ use breadboard_core::model::resolve::resolve_line;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, Model, RemoteOf, View};
 use breadboard_core::time::now_ms;
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -238,19 +240,63 @@ fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
     app.actor.log(Paint::Dim, hint);
 }
 
-/// A file of a worktree in its nvim, from a view of more than it; why not in the band.
+/// A file of a worktree in the detail pane's nvim, from a view of more than it; why not in the band.
 fn open_file(app: &mut Overview, dir: &Path, file: &str, line: Option<u64>) {
-    let main = app.actor.main.clone();
-    let feature = breadboard_core::git::feature_of(&main, dir);
-    let checkout = super::worktree_view::editor::Checkout {
-        dir,
-        main: &main,
-        is_main: false,
-        feature: &feature,
+    let at = match super::worktree_view::editor::at_of(dir, file, line) {
+        Ok(at) => at,
+        Err(why) => return app.actor.log(Paint::Red, format!("nvim: {why}")),
     };
-    if let Err(why) = super::worktree_view::editor::open_file(&checkout, file, line) {
-        app.actor.log(Paint::Red, format!("nvim: {why}"));
+    let (main, dir, detail) = (app.actor.main.clone(), dir.to_path_buf(), app.actor.detail.clone());
+    in_detail(app, move || detail.show(&main, &dir, Shows::Editor, Some(at)));
+}
+
+/// `job` on the actor's thread (it waits for herdr, nvim, a run), what it did in the band's `detail` entry.
+pub fn in_detail(app: &Overview, job: impl FnOnce() -> Result<String, String> + Send + 'static) {
+    app.actor.queue(move || {
+        let done = job();
+        Some(Box::new(move |app: &mut Overview| {
+            match done {
+                Ok(did) => app.actor.log_as("detail", Paint::Green, did, None),
+                Err(why) => app.actor.log_as("detail", Paint::Red, why, None),
+            }
+            app.redraw();
+        }) as actor::Effect)
+    });
+}
+
+/// The detail pane's keys (#406): `e` `t` `l` `a` switch it, Esc closes it
+/// unless it dropped a pick; the worktree it shows, else the view's worktree.
+fn detail_key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
+    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        return Flow::Same;
     }
+    let main = app.actor.main.clone();
+    let detail = app.actor.detail.clone();
+    let shown = detail.shown();
+    match key.code {
+        KeyCode::Esc if picked.is_none() && shown.is_some() => in_detail(app, move || detail.close(&main)),
+        KeyCode::Char(key) => {
+            let Some(shows) = Shows::of_key(key) else {
+                return Flow::Same;
+            };
+            let dir = match (&shown, &app.actor.view) {
+                (Some(shown), _) => shown.dir.clone(),
+                (None, View::Worktree(dir)) => dir.clone(),
+                (None, _) => {
+                    app.actor.log_as(
+                        "detail",
+                        Paint::Dim,
+                        "click a worktree or an MR first: its nvim opens beside",
+                        None,
+                    );
+                    return Flow::Redraw;
+                }
+            };
+            in_detail(app, move || detail.show(&main, &dir, shows, None));
+        }
+        _ => return Flow::Same,
+    }
+    Flow::Same
 }
 
 /// What a `Go` of the model does.
@@ -267,15 +313,10 @@ pub fn go_to(app: &mut Overview, go: Go) {
             let state = app.try_state_of(&go);
             tries::click(app, dir.clone(), id, state);
         }
-        Go::FocusSpace(dir) => app.actor.queue(move || {
-            // A headless agent's space the layout left closed opens on the click (#386).
-            if herdr::space_of(&main, &dir).is_none() {
-                let repo = crate::cli::lifecycle::repo::Repo { main: main.clone() };
-                crate::cli::lifecycle::layout::open_space(&repo, &dir);
-            }
-            herdr::focus_space(&main, &dir);
-            None
-        }),
+        Go::Detail(dir) => {
+            let detail = app.actor.detail.clone();
+            in_detail(app, move || detail.click(&main, &dir));
+        }
         // A headless agent has no tab: the click opens it in one (#361).
         Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
             let opened = super::actor::open_agent::open(&main, &dir);
@@ -725,11 +766,15 @@ fn resolve(app: &mut Overview, iid: i64) {
 
 /// A key the frame has no use for: a digit answers the action picked with
 /// Tab, nothing while none is (actions.rs); `u` starts the stack whose
-/// button shows, the default one's in the view of everything.
+/// button shows, the default one's in the view of everything; the detail
+/// pane's keys (#406).
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
     super::actions::key(app, key, picked)
         .or_else(|| super::everything::key(app, key))
-        .unwrap_or_else(|| super::worktree_view::key(app, key))
+        .unwrap_or_else(|| match super::worktree_view::key(app, key) {
+            Flow::Same => detail_key(app, key, picked),
+            flow => flow,
+        })
 }
 
 /// What a read sets off, by the view: the orchestration's own acts, the main space's `--herdr` sync.

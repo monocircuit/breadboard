@@ -220,6 +220,26 @@ the same arguments and its folds (the scroll starts at the top); the daemon,
 once no headless run is queued or in flight, gives up its socket and starts
 the new binary in its place.
 
+## The detail pane
+
+A click on a worktree or an MR in the overview splits the overview's pane
+to the right (herdr, half its width) and runs that worktree's nvim there, the
+one of "The nvim tab" below. There is one per overview: a click on another
+worktree ends what runs in it (nvim quits; with unsaved changes it refuses
+and the band says so) and runs that one's nvim in the same pane; a click on
+the worktree it shows, or Esc, closes it. A click on a file opens it there,
+at its line. Keys of the overview switch it:
+
+| Key | What the pane shows |
+| --- | ------------------- |
+| `e` | the worktree's nvim |
+| `t` | the terminal of its newest open try (`wt:action try … --run`) |
+| `l` | its stack's logs, or its dev server while its app is down |
+| `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
+
+The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
+so a reload of the overview finds it again; one herdr closed is forgotten.
+
 ## The nvim tab
 
 A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)

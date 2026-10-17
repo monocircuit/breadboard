@@ -917,7 +917,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 _ => lifecycle,
             };
             let go = match (tree, found) {
-                (Some(tree), _) => Go::FocusSpace(tree.dir.clone()),
+                (Some(tree), _) => Go::Detail(tree.dir.clone()),
                 (None, Some(found)) => Go::Show {
                     url: found.url.clone(),
                     dir: None,

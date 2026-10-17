@@ -144,10 +144,12 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                             continue;
                         }
                         Command::Refresh => Input::Refresh,
-                        // Esc drops the pick, as lazygit's Esc steps back, and is the app's too.
+                        // Esc drops the pick, as lazygit's Esc steps back, and is the app's
+                        // too, with the pick it dropped: one Esc steps back once (#406).
                         Command::Key(key) if key.code == KeyCode::Esc => {
+                            let dropped = view.selected();
                             is_dirty |= view.unpick();
-                            Input::Key(key, None)
+                            Input::Key(key, dropped)
                         }
                         // Enter runs the block picked with Tab, as its click; else it is the app's.
                         Command::Key(key) => match view.selected() {
@@ -233,8 +235,9 @@ async fn drive<P: App>(tty: &mut Tty, app: &mut P, mut models: mpsc::UnboundedRe
                 // A lone Escape nothing followed: the Escape key. It drops
                 // the pick, and is the app's too.
                 if let Some(Event::Key(key)) = rejoin.take_escape() {
+                    let dropped = view.selected();
                     is_dirty |= view.unpick();
-                    match app.act(Input::Key(key, None)) {
+                    match app.act(Input::Key(key, dropped)) {
                         Flow::Quit => return Ok(()),
                         Flow::Redraw | Flow::Show => {
                             view.acted(None);
