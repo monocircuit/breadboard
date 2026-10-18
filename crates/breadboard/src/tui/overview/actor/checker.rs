@@ -93,7 +93,8 @@ fn start(app: &mut Overview, due: Due) {
     let _ = std::fs::create_dir_all(&evidence);
     let prompt = prompt_of(&due.action, &evidence, due.app.as_deref());
     let session = new_session_id();
-    let spawned = Command::new(CLAUDE)
+    // The overview's pane isn't the checker's: herdr would resume it there (#425).
+    let spawned = breadboard_core::herdr::off_pane(&mut Command::new(CLAUDE))
         .args(args_of(&model, &session, &prompt))
         .current_dir(&due.dir)
         .stdin(Stdio::null())

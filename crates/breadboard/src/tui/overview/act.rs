@@ -46,6 +46,10 @@ pub enum Act {
     Chat,
     /// The orchestration's auto mode switched (#384).
     Auto,
+    /// The settings panel opened or closed (#415).
+    Settings,
+    /// A setting changed in the panel (#415), by its key.
+    Setting(String, super::settings::Change),
     /// A try a checker answered opened again for the user (#384).
     Overturn {
         dir: PathBuf,
@@ -194,6 +198,8 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
         Act::Auto => toggle_auto(app),
+        Act::Settings => return super::settings::toggle(app),
+        Act::Setting(key, change) => return super::settings::change(app, &key, &change),
         Act::Overturn { dir, id } => overturn(app, &dir, id),
         Act::Fresh => fresh::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
@@ -317,14 +323,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
             let detail = app.actor.detail.clone();
             in_detail(app, move || detail.click(&main, &dir));
         }
-        // A headless agent has no tab: the click opens it in one (#361).
-        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
-            let opened = super::actor::open_agent::open(&main, &dir);
-            Some(Box::new(move |app: &mut Overview| match opened {
-                Ok(did) => app.actor.log(Paint::Green, did),
-                Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
-            }))
-        }),
+        // A headless agent has no tab: the click opens it in the detail pane (#361, #409).
+        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => {
+            let detail = app.actor.detail.clone();
+            in_detail(app, move || detail.show(&main, &dir, Shows::Agent, None));
+        }
         // ACTIONS' `held` row (#386): the open claude ended once it idles.
         Go::EndHeld(dir) => app.actor.queue(move || {
             let ended = super::actor::end_held::end(&main, &dir);
@@ -644,9 +647,15 @@ fn toggle_auto(app: &mut Overview) {
     };
     let is_on = !model.is_auto;
     let checker = model.checker.clone();
-    let mut fields = serde_json::Map::new();
-    fields.insert("auto".into(), serde_json::json!(is_on));
-    match breadboard_core::record::update_record(&app.actor.main, &name, fields) {
+    // The try checker of the settings panel (#415): kept with the product's settings.
+    let set = breadboard_core::settings::set(
+        &app.actor.main,
+        &name,
+        breadboard_core::settings::TRY_CHECKER,
+        Some(serde_json::json!(is_on)),
+        now_ms(),
+    );
+    match set.map(|_| ()) {
         Ok(()) if is_on => app.actor.log(
             Paint::Green,
             format!("auto mode on: {checker} checks and answers the tries"),
@@ -769,6 +778,14 @@ fn resolve(app: &mut Overview, iid: i64) {
 /// button shows, the default one's in the view of everything; the detail
 /// pane's keys (#406).
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
+    // `,` opens and closes the settings panel of an orchestration (#415), as in an editor's.
+    if key.code == crossterm::event::KeyCode::Char(',')
+        && key.modifiers.is_empty()
+        && app.actor.prompt.is_none()
+        && app.orchestration().is_some()
+    {
+        return super::settings::toggle(app);
+    }
     super::actions::key(app, key, picked)
         .or_else(|| super::everything::key(app, key))
         .unwrap_or_else(|| match super::worktree_view::key(app, key) {

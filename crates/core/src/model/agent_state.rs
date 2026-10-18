@@ -6,7 +6,7 @@ use super::change::is_change_open;
 use super::handovers::next_text;
 use super::merge_turn::{MergeTurn, waits_for_text};
 use super::mr_blockers::{Reason, short_of};
-use super::{Tone, Tree, counted};
+use super::{Tone, Tree};
 use crate::conversations::question_of;
 use crate::gitlab::Mr;
 use crate::wait::waits_text;
@@ -201,8 +201,20 @@ pub fn agent_state_of(tree: &Tree, facts: &Facts) -> AgentState {
     if tree.unpushed > 0 {
         return state(
             "unpushed",
-            format!("not pushed: {}", counted(tree.unpushed, "commit")),
-            Tone::You,
+            format!(
+                "not pushed: {}",
+                crate::push::commits_text(tree.unpushed, tree.unpushed_own, tree.merged_base.as_deref())
+            ),
+            // breadboard pushes them (#450): you only once it asked.
+            if tree
+                .pushing
+                .as_ref()
+                .is_some_and(|pushing| pushing.stage == crate::push::Stage::Asked)
+            {
+                Tone::You
+            } else {
+                Tone::Work
+            },
         );
     }
     state("free", "free", Tone::Free)

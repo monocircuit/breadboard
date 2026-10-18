@@ -1,18 +1,17 @@
 //! herdr for the setup commands: what only they do (the space a new
 //! worktree opens with, whether the tab running it moves along, the
 //! orchestration it runs in). The layout itself (spaces, tabs, their order,
-//! the stack tabs, the orchestrations' marks) is the lifecycle group's, one
+//! the orchestrations' marks) is the lifecycle group's, one
 //! implementation for `wt:new`, `stack:*`, `wt:herdr` and the overview,
 //! called here with the repo of the working directory. Outside herdr, or
 //! with herdr unhappy, every call answers nothing and nothing fails: the
 //! worktree is the point, the space is comfort.
 
-use super::proc;
 use super::repo;
 use crate::cli::lifecycle::herdr as lifecycle_herdr;
-use crate::cli::lifecycle::layout::{self, orchestrations, spaces, tabs};
+use crate::cli::lifecycle::layout::orchestrations;
 use breadboard_core::json::str_of;
-use breadboard_core::record::{self, ORCHESTRATOR, Origin, SPACE};
+use breadboard_core::record::Origin;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -52,26 +51,6 @@ pub fn session_of(pane: &Value) -> Option<&str> {
 /// The label of a checkout's space: the main space for the main checkout.
 pub fn space_label(dir: &Path) -> String {
     repo::lifecycle().space_label(dir)
-}
-
-/// The space of a worktree with its tabs (`root`, `overview` unless an
-/// orchestration's, the conversation's tab, `nvim`), under the layout's lock.
-pub fn worktree_space(dir: &Path, has_work_tab: bool) -> Option<String> {
-    exclusive(|| spaces::worktree_space(&repo::lifecycle(), dir, has_work_tab))
-}
-
-/// While the stack of `dir` runs its space shows it (a tab per container,
-/// `dev`, `studio`); when it is down those tabs close unless busy. What
-/// changed, `+postgres` / `-dev`; a tab herdr gave no pane is said as such.
-pub fn sync_stack_tabs(dir: &Path, workspace: Option<String>) -> Vec<String> {
-    if !repo::env_file_of(dir).exists() {
-        return Vec::new();
-    }
-    exclusive(|| {
-        let repo = repo::lifecycle();
-        let workspace = workspace.or_else(|| spaces::space_of(&repo, dir));
-        layout::sync_stack_tabs(&repo, dir, workspace.as_deref())
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -117,97 +96,9 @@ pub fn orchestration_here() -> Option<String> {
     orchestration_of(&label)
 }
 
-/// Whether wt:new takes the tab running it into the new space: an agent's, not an orchestrator's.
-pub fn moves_tab(is_agent: bool, origin: Option<&Origin>, stays: Option<&str>) -> bool {
-    is_agent && origin.is_none() && stays.is_none()
-}
-
-/// After wt:new: the worktree's space. A human gets it with a tab in front,
-/// an agent takes its own tab in; an orchestration's is marked, unfocused.
-pub fn open_space(feature: &str, dir: &Path, origin: Option<&Origin>, stays: Option<&str>) -> Option<String> {
-    exclusive(|| {
-        if !is_in_herdr() {
-            return None;
-        }
-        let repo = repo::lifecycle();
-        spaces::main_space(&repo)?;
-        if !moves_tab(proc::is_agent(), origin, stays) {
-            let workspace = spaces::worktree_space(&repo, dir, true)?;
-            layout::sync_stack_tabs(&repo, dir, Some(&workspace));
-            if let Some(origin) = origin {
-                if let Some(found) = spaces()
-                    .into_iter()
-                    .find(|space| field(space, "workspace_id") == workspace)
-                {
-                    mark_space(&found, Some(origin));
-                }
-                return Some(format!(
-                    "opened the space {feature}, marked {ORCHESTRATOR} {}",
-                    record::title_of(&repo.main, &origin.name)
-                ));
-            }
-            if let Some(stays) = stays {
-                let label = repo.orchestrator_label(stays);
-                return Some(format!("opened the space {feature}, this tab stays in {label}"));
-            }
-            if let Some(tab) = tabs_of(&workspace)
-                .into_iter()
-                .find(|tab| field(tab, "label") == feature)
-            {
-                herdr(&["tab", "focus", field(&tab, "tab_id")]);
-            }
-            return Some(format!("opened the space {feature}"));
-        }
-        let workspace = spaces::worktree_space(&repo, dir, false)?;
-        let pane = pane_here()?;
-        let moved = herdr(&[
-            "pane",
-            "move",
-            field(&pane, "pane_id"),
-            "--workspace",
-            &workspace,
-            "--new-tab",
-        ]);
-        let created =
-            moved.and_then(|moved| lifecycle_herdr::id_at(&moved, &["move_result", "created_tab", "tab_id"]))?;
-        herdr(&["tab", "rename", &created, feature]);
-        tabs::drop_duplicates(&workspace, feature);
-        spaces::ensure_editor(&repo, &workspace, dir, &tabs_of(&workspace));
-        tabs::keep_order(
-            &workspace,
-            &spaces::tab_order(record::is_orchestrated(&repo.main, dir), feature),
-        );
-        layout::sync_stack_tabs(&repo, dir, Some(&workspace));
-        let had_root = spaces::space_of(&repo, &repo.main)
-            .map(|main| tabs_of(&main).iter().any(|tab| field(tab, "label") == tabs::ROOT))
-            .unwrap_or(false);
-        spaces::main_space(&repo);
-        Some(format!(
-            "this tab moved into the space {feature}{}",
-            if had_root {
-                String::new()
-            } else {
-                format!(", a new tab {} waits in {SPACE}", tabs::ROOT)
-            }
-        ))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn moves_only_an_agents_free_tab() {
-        let origin = Origin {
-            name: "x".into(),
-            slot: 0,
-        };
-        assert!(moves_tab(true, None, None));
-        assert!(!moves_tab(false, None, None));
-        assert!(!moves_tab(true, Some(&origin), None));
-        assert!(!moves_tab(true, None, Some("x")));
-    }
 
     #[test]
     fn names_the_slot_tokens() {

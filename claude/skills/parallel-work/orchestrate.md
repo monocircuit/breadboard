@@ -312,11 +312,10 @@ overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
 `look` (go to the agent's space) — and the automatic `permission` (what auto
-mode would have asked in a run, see Permissions), `push` (commits a worktree
-holds unpushed for over 10 minutes; the click queues the order for its
-agent) and `merge` (a ready, green MR without its agent's, none while a
-change is requested).
-Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
+mode would have asked in a run, see Permissions) and `merge` (a ready, green MR without its agent's, none while a
+change is requested). Commits an agent left unpushed get no row:
+breadboard checks and pushes them itself (README, "Headless agents").
+Sorted by what blocks most: `permission`, `decide`, `plan`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
 the worktree, have its agent tick the done boxes), `pipeline` (a failed
@@ -399,6 +398,14 @@ count as `· N to check after merge`. Until then there is no automatic
 to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
+
+**Temporary** (#443, until the batch branches carry the testing): with
+`[merge] needs_pipeline = false` in breadboard.toml an MR into develop needs
+no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
+for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
+starts none for it (a click on its row still runs one). develop's pipeline
+after each merge is the safety net: while it is red, no merge into develop
+is offered. Into an epic nothing changes.
 
 No agent marks an MR ready (#399): `breadboard serve` does it once its bar
 is full, every box of its issue ticked (after-deploy ones excepted) and no
@@ -633,8 +640,8 @@ origin next to the worktree and in its view. They stay together (#255): the
 worktrees of no orchestration first, then per orchestration its space with
 its worktrees right below in the work order of `wt:plan`; the overview of
 the main space sorts them on every read (`core/src/model/order.rs`). A
-worktree's space shows its agent's state from the status table (How agents
-run) as its third row (`$wt_state`), not from a claude pane: there is none.
+worktree has no space of its own (#409): its agent's state is its row in
+the overview, from the status table (How agents run).
 The tab bar's "N need you" counts the agents that ask (`asks`: a denied
 tool waiting for the user).
 

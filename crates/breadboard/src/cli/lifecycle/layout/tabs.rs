@@ -3,7 +3,6 @@
 
 use super::super::herdr::{self, call, did, id_at, s};
 use super::super::proc::{exe, quote, text};
-use super::super::repo::Repo;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,14 +15,10 @@ pub const OVERVIEW: &str = "overview";
 pub const CHANGELOG: &str = "changelog";
 /// nvim on what an orchestration's MRs changed.
 pub const CHANGES: &str = "changes";
-/// nvim in a worktree, after the conversation's tab.
-pub const EDITOR: &str = "nvim";
 /// The orchestrating session's tab in its space.
 pub const ORCHESTRATOR_TAB: &str = "orchestrator";
 /// Whose sidebar tokens they are, for herdr: the plugin's id (`[herdr] plugin`).
 pub use breadboard_core::record::PLUGIN as TOKEN_SOURCE;
-/// The branch of a worktree as a sidebar token (herdrdev/herdr#2952).
-pub const BRANCH_TOKEN: &str = "wt_branch";
 
 /// A tab as `ensure_tab` wants it: its label, where it starts and what it runs.
 pub struct Want<'a> {
@@ -190,63 +185,55 @@ pub fn move_into(from: &str, to: &str) {
     }
 }
 
-/// The branch of a worktree as the sidebar token `$wt_branch`, only on a change.
-pub fn mark_branch(repo: &Repo, workspace: &str, dir: &Path) {
-    let Some(branch) = repo
-        .worktrees()
-        .into_iter()
-        .find(|tree| tree.dir == dir)
-        .and_then(|tree| tree.branch)
-    else {
-        return;
-    };
-    let Some(found) = herdr::spaces()
-        .into_iter()
-        .find(|space| s(space, "workspace_id") == workspace)
-    else {
-        return;
-    };
-    let shown = found
-        .get("tokens")
-        .and_then(|tokens| tokens.get(BRANCH_TOKEN))
-        .and_then(Value::as_str);
-    if shown == Some(branch.as_str()) {
-        return;
-    }
-    let token = format!("{BRANCH_TOKEN}={branch}");
-    let source = TOKEN_SOURCE.get();
-    call(&[
-        "workspace",
-        "report-metadata",
-        workspace,
-        "--source",
-        &source,
-        "--token",
-        &token,
-    ]);
-}
-
-/// Whether a space hangs in the main space's group.
-pub fn is_grouped(workspace: &str) -> bool {
-    herdr::spaces()
-        .iter()
-        .any(|space| s(space, "workspace_id") == workspace && is_linked(space))
-}
-
 /// The single pane of the tab `label` when nothing runs in it, else None.
 pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Value]) -> Option<String> {
-    let tab = tabs.iter().find(|tab| s(tab, "label") == label)?;
-    if tab.get("pane_count").and_then(Value::as_i64) != Some(1) {
-        return None;
+    idle_pane_or_why(workspace, label, tabs).ok()
+}
+
+/// Why a tab has no idle pane (#401: the heal log says it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotIdle {
+    NoTab,
+    Split(i64),
+    NoPane,
+    /// herdr has an agent there, or resumes one (#386).
+    Agents(String),
+    /// Something runs in front of its shell.
+    Runs(String),
+}
+
+impl std::fmt::Display for NotIdle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotIdle::NoTab => write!(f, "no such tab"),
+            NotIdle::Split(count) => write!(f, "its tab holds {count} panes"),
+            NotIdle::NoPane => write!(f, "herdr lists no pane in its tab"),
+            NotIdle::Agents(pane) => write!(f, "herdr has an agent in {pane}"),
+            NotIdle::Runs(pane) => write!(f, "something runs in {pane}"),
+        }
+    }
+}
+
+/// [`idle_pane_of`], or why there is none.
+pub fn idle_pane_or_why(workspace: &str, label: &str, tabs: &[Value]) -> Result<String, NotIdle> {
+    let tab = tabs.iter().find(|tab| s(tab, "label") == label).ok_or(NotIdle::NoTab)?;
+    let count = tab.get("pane_count").and_then(Value::as_i64).unwrap_or(0);
+    if count != 1 {
+        return Err(NotIdle::Split(count));
     }
     let pane = herdr::panes_of(workspace)
         .into_iter()
-        .find(|pane| s(pane, "tab_id") == s(tab, "tab_id"))?;
-    if is_agents(&pane) {
-        return None;
-    }
+        .find(|pane| s(pane, "tab_id") == s(tab, "tab_id"))
+        .ok_or(NotIdle::NoPane)?;
     let id = s(&pane, "pane_id").to_string();
-    herdr::is_idle(&id).then_some(id)
+    if is_agents(&pane) {
+        return Err(NotIdle::Agents(id));
+    }
+    if herdr::is_idle(&id) {
+        Ok(id)
+    } else {
+        Err(NotIdle::Runs(id))
+    }
 }
 
 /// Whether herdr has an agent for the pane: one runs, or one it recorded
