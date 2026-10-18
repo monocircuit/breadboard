@@ -235,6 +235,9 @@ fn check_lack_of(mr: &Mr, tree: Option<&Tree>) -> Option<String> {
         CheckState::Tested { sha, .. } if mr.sha.as_deref().is_some_and(|head| is_same_commit(sha, head)) => None,
         CheckState::Tested { .. } => Some("wt:check not at the pushed head".into()),
         CheckState::Checking { .. } => Some("wt:check running".into()),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => Some(format!("wt:check: {refused}")),
         CheckState::Failed { .. } => Some("wt:check failed".into()),
         CheckState::Untested { .. } | CheckState::None => Some("wt:check not passed".into()),
     }
@@ -439,6 +442,7 @@ mod tests {
             checked(CheckState::Tested {
                 sha: sha.into(),
                 packages: Vec::new(),
+                no_test: None,
             })
         };
         let off = |mr: &Mr, tree: Option<&Tree>| -> Vec<String> {

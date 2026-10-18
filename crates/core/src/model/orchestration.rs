@@ -362,7 +362,13 @@ fn hold_while_develop_is_red(
 /// on develop gets it out, not its agent.
 fn push_blocked_text(tree: &super::Tree, develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
     develop.filter(|pipeline| pipeline.status == "failed")?;
-    let crate::check::CheckState::Failed { failures, .. } = &tree.checked else {
+    // A fix refused for its missing test (#316) is its agent's to fix, not develop's.
+    let crate::check::CheckState::Failed {
+        failures,
+        refused: None,
+        ..
+    } = &tree.checked
+    else {
         return None;
     };
     if tree.unpushed == 0 {
@@ -1748,6 +1754,7 @@ mod tests {
                     task: "test:rs".into(),
                     tests: vec!["tui::overview::work::tests::renders_the_row".into()],
                 }],
+                refused: None,
             },
             ..Default::default()
         };
