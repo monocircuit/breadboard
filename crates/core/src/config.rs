@@ -84,11 +84,23 @@ pub struct Product {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ci {
     /// The CI job watcher's thresholds (#379, `[ci.watch]`).
     pub watch: CiWatch,
+    /// How many runs of its agent may fix an MR's failed pipeline, one per
+    /// head (#371): past them the user looks. 0: no fix run, the user looks at once.
+    pub max_fix_attempts: u32,
+}
+
+impl Default for Ci {
+    fn default() -> Self {
+        Ci {
+            watch: CiWatch::default(),
+            max_fix_attempts: 3,
+        }
+    }
 }
 
 /// When the CI job watcher (#379) flags a job: the critical path of most
