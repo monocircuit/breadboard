@@ -62,53 +62,76 @@ impl Usage {
     }
 }
 
-/// What a model costs per million tokens, in dollars.
+/// What a model costs per million tokens, in dollars: its input, its
+/// output, a write into the 5-minute and into the 1-hour cache, a cache read.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Price {
     pub input: f64,
     pub output: f64,
+    pub write_5m: f64,
+    pub write_1h: f64,
     pub read: f64,
 }
 
 impl Price {
-    /// `usage` at this price: a 5-minute cache write is 1.25 times the input,
-    /// a 1-hour one twice.
+    /// `usage` at this price.
     pub fn of(&self, usage: &Usage) -> f64 {
         (usage.input as f64 * self.input
-            + usage.write_5m as f64 * self.input * 1.25
-            + usage.write_1h as f64 * self.input * 2.0
+            + usage.write_5m as f64 * self.write_5m
+            + usage.write_1h as f64 * self.write_1h
             + usage.read as f64 * self.read
             + usage.output as f64 * self.output)
             / 1_000_000.0
     }
 }
 
-/// The price of a model, by its id (`claude-opus-5-5`, `claude-sonnet-4-6-20260101`):
-/// Anthropic's list prices of 2026-09; an unknown model at Opus 5.5's.
-pub fn price_of(model: &str) -> Price {
-    let price = |input: f64, output: f64, read: f64| Price { input, output, read };
-    let model = model.trim_start_matches("claude-");
-    let is = |prefix: &str| model.starts_with(prefix);
-    if is("fable") || is("mythos") {
-        price(10.0, 50.0, if is("fable-5-1") || is("mythos-5-1") { 0.25 } else { 1.0 })
-    } else if is("opus-5-5") {
-        price(4.0, 20.0, 0.2)
-    // Opus 4 and 4.1 (`opus-4-20250514`, `opus-4-1-…`), Opus 3.
-    } else if is("opus-4-1") || is("opus-4-0") || model == "opus-4" || is("opus-4-2025") || is("3-opus") {
-        price(15.0, 75.0, 1.5)
-    } else if is("opus") {
-        price(5.0, 25.0, 0.5)
-    } else if is("sonnet-5") {
-        price(2.0, 10.0, 0.2)
-    } else if is("sonnet") || is("3-7-sonnet") || is("3-5-sonnet") {
-        price(3.0, 15.0, 0.3)
-    } else if is("haiku-4") {
-        price(1.0, 5.0, 0.1)
-    } else if is("haiku") || is("3-5-haiku") {
-        price(0.8, 4.0, 0.08)
-    } else {
-        price(4.0, 20.0, 0.2)
+/// What the dollars are: what the API bills, not what a subscription pays.
+pub const BASIS: &str = "list prices";
+
+/// A row of `PRICES`: a cache write is 1.25 times the input (5 minutes) or
+/// twice it (1 hour).
+const fn list(input: f64, output: f64, read: f64) -> Price {
+    Price {
+        input,
+        output,
+        write_5m: input * 1.25,
+        write_1h: input * 2.0,
+        read,
     }
+}
+
+const OPUS_5_5: Price = list(4.0, 20.0, 0.2);
+
+/// Anthropic's list prices of 2026-09, by the start of a model's id without
+/// `claude-` (`$` at the end: the whole id), the first that fits.
+const PRICES: &[(&[&str], Price)] = &[
+    (&["fable-5-1", "mythos-5-1"], list(10.0, 50.0, 0.25)),
+    (&["fable", "mythos"], list(10.0, 50.0, 1.0)),
+    (&["opus-5-5"], OPUS_5_5),
+    // Opus 4 and 4.1 (`opus-4-20250514`, `opus-4-1-…`), Opus 3.
+    (
+        &["opus-4-1", "opus-4-0", "opus-4$", "opus-4-2025", "3-opus"],
+        list(15.0, 75.0, 1.5),
+    ),
+    (&["opus"], list(5.0, 25.0, 0.5)),
+    (&["sonnet-5"], list(2.0, 10.0, 0.2)),
+    (&["sonnet", "3-7-sonnet", "3-5-sonnet"], list(3.0, 15.0, 0.3)),
+    (&["haiku-4"], list(1.0, 5.0, 0.1)),
+    (&["haiku", "3-5-haiku"], list(0.8, 4.0, 0.08)),
+];
+
+/// The price of a model, by its id (`claude-opus-5-5`, `claude-sonnet-4-6-20260101`)
+/// from `PRICES`; an unknown model at Opus 5.5's.
+pub fn price_of(model: &str) -> Price {
+    let model = model.trim_start_matches("claude-");
+    let fits = |key: &&str| match key.strip_suffix('$') {
+        Some(whole) => model == whole,
+        None => model.starts_with(key),
+    };
+    PRICES
+        .iter()
+        .find(|(keys, _)| keys.iter().any(fits))
+        .map_or(OPUS_5_5, |(_, price)| *price)
 }
 
 /// One answer: when, what it used, what that cost.
@@ -283,9 +306,17 @@ fn subagents_of(folder: &Path) -> Vec<PathBuf> {
 
 /// What the session `id` spent from `from` (ms) to before `to`.
 pub fn of_session(id: &str, from: i64, to: i64) -> Spend {
+    of_files(&files_of_session(id), from, to)
+}
+
+/// What the answers in the transcripts `files` spent from `from` to before
+/// `to`: each answer's own usage. A resumed session's run is its answers
+/// since it started, never the run result's `total_cost_usd` (#444): that
+/// adds up the whole session again.
+fn of_files(files: &[PathBuf], from: i64, to: i64) -> Spend {
     let mut spend = Spend::default();
-    for file in files_of_session(id) {
-        for answer in answers_of_file(&file) {
+    for file in files {
+        for answer in answers_of_file(file) {
             if answer.at >= from && answer.at < to {
                 spend.add(Spend::of(&answer));
             }
@@ -529,8 +560,9 @@ pub fn spent_of(main: &Path, name: &str, record: Option<&crate::record::Record>,
 }
 
 /// The band's line of `spent` (#372): `today 4.2 M tokens · ≈ $12`, with
-/// the daily limit (`of $40 a day`) and the orchestration's budget
-/// (`budget $80 of $200`); None while nothing was spent and no limit is set.
+/// the daily limit (`of $40 a day`), the orchestration's budget
+/// (`budget $80 of $200`) and the dollars' basis (`list prices`, #444);
+/// None while nothing was spent and no limit is set.
 pub fn band_text(spent: &Spent) -> Option<String> {
     let mut text = format!("today {}", spent.today.total.text());
     if let Some(limit) = spent.daily_limit {
@@ -539,6 +571,7 @@ pub fn band_text(spent: &Spent) -> Option<String> {
     if let Some(budget) = spent.budget {
         text.push_str(&format!(" · budget {}", budget.against(&spent.total)));
     }
+    text.push_str(&format!(" · {BASIS}"));
     (!spent.today.total.is_empty() || spent.daily_limit.is_some() || spent.budget.is_some()).then_some(text)
 }
 
@@ -664,6 +697,10 @@ mod tests {
         assert_eq!(price_of("claude-fable-5-1").read, 0.25);
         assert_eq!(price_of("claude-opus-4-8").input, 5.0);
         assert_eq!(price_of("something-new").input, 4.0);
+        assert_eq!(price_of("claude-opus-4").input, 15.0);
+        assert_eq!(price_of("claude-opus-4-20250514").input, 15.0);
+        assert_eq!(price_of("claude-3-5-haiku-20241022").input, 0.8);
+        assert_eq!(price_of("claude-sonnet-4-6").write_1h, 6.0);
         let older = Usage::of(&serde_json::json!({ "input_tokens": 1, "cache_creation_input_tokens": 10 }));
         assert_eq!((older.write_5m, older.write_1h), (10, 0));
     }
@@ -702,6 +739,32 @@ mod tests {
         assert_eq!(answers_of_file(&file).len(), 1);
         std::io::Write::write_all(&mut opened, format!("{}\n", &other[20..]).as_bytes()).unwrap();
         assert_eq!(answers_of_file(&file).len(), 2);
+    }
+
+    #[test]
+    fn a_resumed_sessions_run_costs_only_its_own_answers() {
+        let scratch = crate::lock::scratch::Scratch::new();
+        let file = scratch.path().join("session.jsonl");
+        // The first run's answer; the second, resumed an hour later, sees it
+        // in its history and reports both in its `total_cost_usd`.
+        let second = ANSWER
+            .replace("msg_1", "msg_2")
+            .replace("req_1", "req_2")
+            .replace("10:00:00", "11:00:00")
+            .replace("\"output_tokens\":500", "\"output_tokens\":2000");
+        let result = r#"{"type":"result","total_cost_usd":57.0,"modelUsage":{"claude-opus-5-5":{"cacheReadInputTokens":124000000,"costUSD":57.0}}}"#;
+        fs::write(&file, format!("{ANSWER}\n{second}\n{result}\n")).unwrap();
+        let files = [file];
+        let started = parse_iso("2026-10-13T10:30:00Z").unwrap();
+        let own = of_files(&files, started, i64::MAX);
+        // 1000 1-hour writes at $8, 100 k reads at $0.20, 2 inputs at $4, 2000 outputs at $20.
+        let dollars = (1000.0 * 8.0 + 100_000.0 * 0.2 + 2.0 * 4.0 + 2000.0 * 20.0) / 1_000_000.0;
+        assert_eq!(own.tokens, 3002);
+        assert!((own.dollars - dollars).abs() < 1e-9, "{own:?}");
+        // Both runs: each answer once, the result's total nowhere.
+        let both = of_files(&files, i64::MIN, i64::MAX);
+        assert_eq!(both.tokens, 1502 + 3002);
+        assert!(both.dollars < 1.0, "{both:?}");
     }
 
     #[test]
@@ -784,13 +847,16 @@ mod tests {
             tokens: 4_200_000,
             dollars: 12.4,
         };
-        assert_eq!(band_text(&spent).as_deref(), Some("today 4.2 M tokens · ≈ $12"));
+        assert_eq!(
+            band_text(&spent).as_deref(),
+            Some("today 4.2 M tokens · ≈ $12 · list prices")
+        );
         spent.daily_limit = Some(Limit::Dollars(40.0));
         spent.budget = Some(Limit::Tokens(200_000_000));
         spent.total.tokens = 80_000_000;
         assert_eq!(
             band_text(&spent).as_deref(),
-            Some("today 4.2 M tokens · ≈ $12 of $40 a day · budget 80 M of 200 M tokens")
+            Some("today 4.2 M tokens · ≈ $12 of $40 a day · budget 80 M of 200 M tokens · list prices")
         );
     }
 
