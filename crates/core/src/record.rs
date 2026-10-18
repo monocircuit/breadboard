@@ -444,7 +444,6 @@ pub struct Record {
     /// The orchestrator's own actions (`wt:action --orchestration`).
     pub actions: Vec<Action>,
     pub chat: Option<Chat>,
-    pub brief: Option<String>,
     pub peer: Option<String>,
     /// The branch its worktrees are based on (#349): an epic, None for develop.
     pub base: Option<String>,
@@ -524,7 +523,6 @@ impl Record {
             handovers,
             actions: actions_in(&raw),
             chat,
-            brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
             is_auto: raw.get("auto").and_then(Value::as_bool).unwrap_or(false),
             base: str_of(&raw, "base").filter(|base| is_branch(base)).map(String::from),
