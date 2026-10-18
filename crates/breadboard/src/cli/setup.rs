@@ -89,7 +89,7 @@ fn shape_of(command: &str) -> Option<Shape> {
             orchestrate::USAGE,
         ),
         "wt:stack" => shape(&[], &[], Some(0), "usage: pnpm wt:stack"),
-        "wt:check" => shape(&[], &[], Some(0), "usage: pnpm wt:check"),
+        "wt:check" => shape(&["--no-test", "--mr"], &["--no-test"], Some(0), check::USAGE),
         "stack:up" | "stack:down" | "stack:reset" | "stack:ps" => shape(
             &["--port"],
             &["--port"],
@@ -164,7 +164,8 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
         "wt:orchestrate" => orchestrate::command(&args),
         "wt:stack" => stack::wt_stack(),
         _ if command.starts_with("stack:") => stack::control(&command["stack:".len()..], &args),
-        "wt:check" => check::command(),
+        "wt:check" if args.has("--mr") => check::mr_command(&args),
+        "wt:check" => check::command(&args),
         "changelog" => changelog::overall_command(&args),
         _ if command.starts_with("changelog:") => fragments::command(&command["changelog:".len()..], &args),
         "commands" => commands::command(args.has("--all")),
