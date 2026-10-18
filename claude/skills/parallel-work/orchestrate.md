@@ -400,6 +400,14 @@ to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
 
+**Temporary** (#443, until the batch branches carry the testing): with
+`[merge] needs_pipeline = false` in breadboard.toml an MR into develop needs
+no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
+for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
+starts none for it (a click on its row still runs one). develop's pipeline
+after each merge is the safety net: while it is red, no merge into develop
+is offered. Into an epic nothing changes.
+
 `breadboard serve` marks an MR ready once its bar is full and no try or
 change holds it, and back to draft when a box is unticked (#399); a draft set
 by hand holds until the next push.

@@ -10,41 +10,20 @@ pub(crate) mod write;
 use std::io::Write;
 use std::process::ExitCode;
 
-/// The commands, as the root package.json names them, by what they work on.
-const COMMANDS: [&[&str]; 7] = [
-    &["overview"],
-    &[
-        "wt:new",
-        "wt:orchestrate",
-        "wt:plan",
-        "wt:list",
-        "wt:issues",
-        "wt:stack",
-        "wt:check",
-        "ci:watch",
-    ],
-    &[
-        "wt:mr",
-        "wt:note",
-        "wt:tick",
-        "wt:action",
-        "wt:wait",
-        "wt:journal",
-        "wt:epic",
-        "wt:merge-base",
-    ],
-    &["wt:prune", "wt:remove", "wt:herdr", "wt:snapshot"],
-    &["stack:up", "stack:down", "stack:reset", "stack:ps"],
-    &[
-        "changelog",
-        "changelog:add",
-        "changelog:unreleased",
-        "changelog:release",
-        "changelog:notes",
-        "changelog:check",
-    ],
-    &["commands", "browser", "herdr", "herdr:install", "init"],
-];
+/// The commands main.rs runs itself, as the root package.json names them.
+const OWN: &[&str] = &["herdr", "herdr:install", "overview"];
+
+/// Every command, a list per group: each group keeps its own sorted table,
+/// so a new command touches its group's file, not this one (#420).
+fn groups() -> [Vec<&'static str>; 5] {
+    [
+        OWN.to_vec(),
+        read::names(),
+        write::names(),
+        lifecycle::names(),
+        setup::names(),
+    ]
+}
 
 /// The folder of breadboard's files (herdr plugin, nvim Lua, Chromium
 /// extension) for the repo of the main checkout `main` (init.rs).
@@ -52,9 +31,19 @@ pub fn files_dir(main: &std::path::Path) -> std::path::PathBuf {
     setup::init::files_dir(main)
 }
 
-/// The usage and every command, a group per line.
+/// The usage and every command, a group per line (wrapped at 100 columns).
 pub fn usage() -> String {
-    let lines: Vec<String> = COMMANDS.iter().map(|group| format!("  {}", group.join("  "))).collect();
+    let mut lines = Vec::new();
+    for group in groups() {
+        let mut line = String::new();
+        for name in group {
+            if !line.is_empty() && line.len() + 2 + name.len() > 100 {
+                lines.push(std::mem::take(&mut line));
+            }
+            line = format!("{line}  {name}");
+        }
+        lines.push(line);
+    }
     format!(
         "usage: breadboard <command> [args…]   (in the repo: pnpm <command> [args…])\n\n{}\n\n  what each does: {run} commands",
         lines.join("\n"),
@@ -65,7 +54,7 @@ pub fn usage() -> String {
 /// The command a mistyped one likely is: a typo of it, its start
 /// (`wt:act`), or its name without the prefix (`action`, `up`).
 fn meant(command: &str) -> Option<&'static str> {
-    let all: Vec<&'static str> = COMMANDS.iter().flat_map(|group| group.iter().copied()).collect();
+    let all: Vec<&'static str> = groups().into_iter().flatten().collect();
     typo::nearest(command, &all).or_else(|| {
         let mut short = all
             .iter()
@@ -124,7 +113,61 @@ mod tests {
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
         assert!(
-            usage().contains("  wt:mr  wt:note  wt:tick  wt:action  wt:wait  wt:journal  wt:epic  wt:merge-base\n")
+            usage().contains("\n  wt:action  wt:epic  wt:journal  wt:merge-base  wt:mr  wt:note  wt:tick  wt:wait\n")
         );
+    }
+
+    #[test]
+    fn every_group_keeps_its_commands_sorted() {
+        for group in groups() {
+            assert!(group.windows(2).all(|pair| pair[0] < pair[1]), "{group:?}");
+        }
+        let all: Vec<&str> = groups().into_iter().flatten().collect();
+        let mut unique = all.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), all.len(), "a command in two groups");
+    }
+
+    /// #420: two branches that each add a command to the same group, in
+    /// neighbouring places of its sorted lists, merge without a conflict.
+    #[test]
+    fn two_new_commands_merge_cleanly() {
+        let base = include_str!("write.rs");
+        let add = |lines: &[(&str, &str)]| {
+            lines.iter().fold(base.to_string(), |text, (after, line)| {
+                assert!(text.contains(after), "{after}");
+                text.replacen(after, &format!("{after}\n{line}"), 1)
+            })
+        };
+        let ours = add(&[
+            ("mod action;", "mod bisect;"),
+            ("    (\"wt:action\", action::run),", "    (\"wt:bisect\", bisect::run),"),
+        ]);
+        let theirs = add(&[
+            ("mod epic;", "mod fold;"),
+            ("    (\"wt:epic\", epic::run),", "    (\"wt:fold\", fold::run),"),
+        ]);
+        let scratch = std::env::temp_dir().join(format!("cli-merge-test-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        for (name, text) in [("ours", &ours), ("base", &base.to_string()), ("theirs", &theirs)] {
+            std::fs::write(scratch.join(name), text).unwrap();
+        }
+        let merged = std::process::Command::new("git")
+            .args(["merge-file", "-p", "ours", "base", "theirs"])
+            .current_dir(&scratch)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&scratch).unwrap();
+        let text = String::from_utf8_lossy(&merged.stdout);
+        assert!(merged.status.success(), "{text}");
+        for line in [
+            "mod bisect;\nmod boxes;",
+            "mod fold;\nmod glab;",
+            "bisect::run),\n",
+            "fold::run),\n",
+        ] {
+            assert!(text.contains(line), "{line}");
+        }
     }
 }

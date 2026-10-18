@@ -39,6 +39,40 @@ pub struct Config {
     /// The products of a monorepo (#405): each one herdr space holding its
     /// orchestrations; by name.
     pub products: std::collections::BTreeMap<String, Product>,
+    /// The team's defaults of the overview's settings panel (#415).
+    pub settings: Settings,
+    /// What a merge into the default branch needs (#443).
+    pub merge: Merge,
+}
+
+/// What a merge into the default branch needs (`[merge]`, #443).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Merge {
+    /// Its MR's own pipeline must pass. Off (temporary, until the batch
+    /// branches carry the testing): `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the default branch's pipeline
+    /// after the merge is the safety net.
+    pub needs_pipeline: bool,
+}
+
+impl Default for Merge {
+    fn default() -> Self {
+        Merge { needs_pipeline: true }
+    }
+}
+
+/// The team's defaults of the settings panel (#415, `settings.rs`): what
+/// isn't given holds as built in. The panel's changes are local and win.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Settings {
+    pub batching: Option<bool>,
+    pub auto_merge_into_batch: Option<bool>,
+    pub ship_after_tasks: Option<i64>,
+    pub ship_after_days: Option<i64>,
+    pub try_checker: Option<bool>,
+    pub auto_fresh: Option<bool>,
 }
 
 /// A product of the repo (`[products.vita]`, #405): its folders. An
@@ -704,6 +738,14 @@ impl Config {
         }
         if !self.main_checkout.install_when.is_empty() && self.main_checkout.install.is_none() {
             return bad("main_checkout.install_when", "needs an `install` to run");
+        }
+        for (key, value, max) in [
+            ("ship_after_tasks", self.settings.ship_after_tasks, 99),
+            ("ship_after_days", self.settings.ship_after_days, 30),
+        ] {
+            if value.is_some_and(|value| !(1..=max).contains(&value)) {
+                return bad(&format!("settings.{key}"), &format!("must be 1 to {max}"));
+            }
         }
         for (name, product) in &self.products {
             if !is_product_name(name) {

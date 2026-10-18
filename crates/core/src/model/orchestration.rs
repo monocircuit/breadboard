@@ -9,7 +9,7 @@ use super::boxes::{BoxSection, all_sections_of, open_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
-use super::merge::{blockers_of, to_check_of};
+use super::merge::{blockers_of, needs_pipeline, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, files_text, progress_of, row_blockers_of};
@@ -103,6 +103,11 @@ pub struct OrchestrationLocal {
     pub orchestrator_share: Option<f64>,
     /// The last lines of its journal (#382), oldest first.
     pub journal: Vec<String>,
+    /// Its settings as they hold now (#415), the panel's rows.
+    pub settings: Vec<crate::settings::Row>,
+    /// `[merge] needs_pipeline = false` (#443, temporary): an MR into the
+    /// default branch merges on wt:check at its pushed head, no pipeline of its own.
+    pub merges_on_check: bool,
     /// When the orchestrator gets a fresh start (`[orchestrator]`).
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
@@ -221,6 +226,8 @@ pub struct OrchestrationModel {
     /// Its auto mode (#384): a checker answers its tries; the model that does.
     pub is_auto: bool,
     pub checker: String,
+    /// Its settings (#415): what the settings panel shows.
+    pub settings: Vec<crate::settings::Row>,
     pub chat: Option<Chat>,
     /// No issues recorded: the view says how to start one, nothing else.
     pub is_empty: bool,
@@ -395,7 +402,13 @@ fn hold_push_while_develop_is_red(
 }
 
 /// The turns of the open MRs, from their row's reasons.
-fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
+fn turns_of(
+    issues: &[Entry],
+    remote: Option<&Remote>,
+    order: &MergeOrder,
+    done: &HashSet<i64>,
+    merges_on_check: bool,
+) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
     let after_of: HashMap<i64, &[super::merge_order::After]> =
         order.open.iter().map(|item| (item.number, &item.after[..])).collect();
@@ -415,6 +428,7 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
             &part.jobs,
             tree,
             done,
+            needs_pipeline(mr, merges_on_check),
         );
         // Only a merge onto develop waits for it: a task into its epic does not.
         let develop = remote
@@ -428,7 +442,7 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
 }
 
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool) -> MergeOffer {
+fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, merges_on_check: bool) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
@@ -440,7 +454,14 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         url: mr.url.clone(),
         is_draft: mr.is_draft,
         can_mark_ready,
-        blockers: blockers_of(Some(mr), boxes, can_mark_ready, actions, answered),
+        blockers: blockers_of(
+            Some(mr),
+            boxes,
+            can_mark_ready,
+            actions,
+            answered,
+            needs_pipeline(mr, merges_on_check),
+        ),
         to_check: to_check_of(boxes, actions),
     }
 }
@@ -532,7 +553,7 @@ fn actions_of(
         if let Some(issue) = issue
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true, local.merges_on_check));
         }
         if is_try(action) {
             item.text = format!("{}  {}", action.text, try_spot(action, None));
@@ -592,7 +613,7 @@ fn actions_of(
             if action.kind == "merge"
                 && let Some(mr) = mr
             {
-                item.merge = Some(merge_offer(mr, part, issue, true));
+                item.merge = Some(merge_offer(mr, part, issue, true, local.merges_on_check));
             }
             items.push(item);
         }
@@ -632,7 +653,13 @@ fn actions_of(
         if let (Some(issue), Some(offer)) = (issue, item.merge.take())
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(mr, of(remote, issue), issue, offer.can_mark_ready));
+            item.merge = Some(merge_offer(
+                mr,
+                of(remote, issue),
+                issue,
+                offer.can_mark_ready,
+                local.merges_on_check,
+            ));
         }
         items.push(item);
     }
@@ -746,7 +773,16 @@ fn merge_requests_of(
                 .number
                 .and_then(|number| after_of.get(&number).copied())
                 .unwrap_or(&[]);
-            row_blockers_of(mr, boxes, behind, after, &part.jobs, tree, done)
+            row_blockers_of(
+                mr,
+                boxes,
+                behind,
+                after,
+                &part.jobs,
+                tree,
+                done,
+                needs_pipeline(mr, local.merges_on_check),
+            )
         };
         let status = if is_merged && mr.state == "closed" {
             // Closed without a merge: never `merged` (Node said so for both).
@@ -803,14 +839,34 @@ fn merge_requests_of(
                 (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
                 // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
                 // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
+                // Quiet while it packs its cache (#424): working, dim and no alarm.
                 (None, Some(hung)) => Span {
-                    text: format!("⧗ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
-                    paint: super::Paint::Red,
+                    text: format!(
+                        "⧗ {} {}{}",
+                        hung.job,
+                        crate::ci_watch::minutes(hung.elapsed),
+                        if hung.is_caching() { " caching" } else { "" }
+                    ),
+                    paint: if hung.is_caching() {
+                        super::Paint::Dim
+                    } else {
+                        super::Paint::Red
+                    },
                     url: hung
                         .url
                         .clone()
                         .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
                 },
+                // No pipeline of its own needed (#443): none, or a push's skipped one, says so.
+                (None, None)
+                    if !needs_pipeline(mr, local.merges_on_check)
+                        && mr.pipeline_status().is_none_or(|status| status == "skipped") =>
+                {
+                    Span {
+                        url: mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone()),
+                        ..Span::dim(super::merge::ON_WT_CHECK)
+                    }
+                }
                 (None, None) => pipeline_mark(mr.pipeline.as_ref()),
             },
             ci,
@@ -1127,6 +1183,7 @@ pub fn orchestration_of(
         label,
         chat: local.chat.clone(),
         is_auto: record.is_some_and(|record| record.is_auto),
+        settings: local.settings.clone(),
         checker: crate::config::here().config.tries.checker.clone(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
@@ -1187,6 +1244,7 @@ pub fn orchestration_of(
                     behind: tree.map(|tree| tree.behind).unwrap_or(0),
                     actions: tree.map(|tree| &tree.actions[..]).unwrap_or(&[]),
                     answered: tree.map(|tree| &tree.answered[..]).unwrap_or(&[]),
+                    needs_pipeline: needs_pipeline(part.mr.as_ref().expect("an MR"), local.merges_on_check),
                 }
             })
             .collect();
@@ -1254,7 +1312,7 @@ pub fn orchestration_of(
             }
         }
     }
-    let turns = turns_of(&issues, remote, &order, &done);
+    let turns = turns_of(&issues, remote, &order, &done, local.merges_on_check);
     model.turn_records = turn_records_of(&issues, remote, &turns);
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &turns, &workers, state, now)

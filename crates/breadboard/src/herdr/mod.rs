@@ -23,7 +23,7 @@
 pub mod hook;
 mod launcher;
 mod own;
-mod plugin;
+pub(crate) mod plugin;
 mod reload;
 mod session;
 mod setup;
