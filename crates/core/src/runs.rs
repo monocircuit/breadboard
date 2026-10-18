@@ -606,11 +606,62 @@ pub fn allowed_of(events: &[Event]) -> Vec<String> {
     allowed
 }
 
+/// What of the user's own settings (`~/.claude/settings.json`) a lean run
+/// keeps (#445): the model and effort it would have in a tab, and what
+/// auto mode and the permissions go by. Its hooks, plugins and skills not.
+const KEPT_SETTINGS: [&str; 5] = ["model", "effortLevel", "autoMode", "permissions", "env"];
+
+/// The flags that keep a run's first call lean (#445): only the MCP servers
+/// of `mcp` (`[agents] mcp_configs`, none by default) with
+/// `--strict-mcp-config`, only the repo's settings and skills
+/// (`--setting-sources project,local`: no user-level skill like a deck of
+/// flash cards), and of the user's settings what a tab's run would go by
+/// (`KEPT_SETTINGS`) given back with `--settings`. `user`: the user's
+/// settings as read, None without them.
+pub fn lean_flags(mcp: &[PathBuf], user: Option<&Value>) -> Vec<String> {
+    let mut flags: Vec<String> = vec!["--strict-mcp-config".into()];
+    if !mcp.is_empty() {
+        flags.push("--mcp-config".into());
+        flags.extend(mcp.iter().map(|file| file.display().to_string()));
+    }
+    flags.extend(["--setting-sources".into(), "project,local".into()]);
+    let kept: serde_json::Map<String, Value> = KEPT_SETTINGS
+        .iter()
+        .filter_map(|key| Some((key.to_string(), user?.get(*key)?.clone())))
+        .collect();
+    if !kept.is_empty() {
+        flags.extend(["--settings".into(), Value::Object(kept).to_string()]);
+    }
+    flags
+}
+
+/// `lean_flags` of the repo of `main`: its `[agents] mcp_configs` (relative
+/// to the main checkout), the user's settings from claude's config directory.
+pub fn lean_flags_of(main: &Path) -> Vec<String> {
+    let mcp: Vec<PathBuf> = crate::config::of_main(main)
+        .config
+        .agents
+        .mcp_configs
+        .iter()
+        .map(|file| main.join(file))
+        .collect();
+    let user = crate::json::read(&crate::conversations::claude_dir().join("settings.json"));
+    lean_flags(&mcp, user.as_ref())
+}
+
 /// The command line of a run of `session` (claude's arguments): `--resume`
 /// a conversation that has a transcript, else `--session-id` starts it. The
 /// prompt comes right after `-p`: the tool lists take every word up to the
-/// next flag, a prompt after them would be one more tool.
-pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed: &[String]) -> Vec<String> {
+/// next flag, a prompt after them would be one more tool. `lean`: the
+/// flags of a lean start (`lean_flags_of`, #445).
+pub fn args_of(
+    session: &str,
+    name: &str,
+    prompt: &str,
+    is_known: bool,
+    allowed: &[String],
+    lean: &[String],
+) -> Vec<String> {
     // A prompt starting with `-` would read as a flag.
     let prompt = if prompt.starts_with('-') {
         format!(" {prompt}")
@@ -623,6 +674,7 @@ pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed:
         session.into(),
     ]);
     args.extend(["--name".into(), name.into()]);
+    args.extend(lean.iter().cloned());
     // Auto mode as in a tab, what would ask denied, the user's allows of this run (#360).
     args.extend(crate::permissions::run_flags(allowed));
     // `-p` with stream-json needs `--verbose`.
@@ -986,7 +1038,7 @@ mod tests {
 
     #[test]
     fn resumes_a_known_conversation_and_starts_a_new_one() {
-        let args = args_of("abc", "1-x", "go", true, &[]);
+        let args = args_of("abc", "1-x", "go", true, &[], &[]);
         assert_eq!(&args[..4], ["-p", "go", "--resume", "abc"]);
         assert!(args.windows(2).any(|pair| pair == ["--permission-mode", "auto"]));
         assert!(
@@ -994,12 +1046,53 @@ mod tests {
                 .any(|pair| pair == ["--disallowedTools", "AskUserQuestion"])
         );
         assert!(!args.contains(&"--allowedTools".to_string()));
-        assert_eq!(&args_of("abc", "1-x", "go", false, &[])[2..4], ["--session-id", "abc"]);
-        assert_eq!(args_of("abc", "1-x", "-x", true, &[])[1], " -x");
+        assert_eq!(
+            &args_of("abc", "1-x", "go", false, &[], &[])[2..4],
+            ["--session-id", "abc"]
+        );
+        assert_eq!(args_of("abc", "1-x", "-x", true, &[], &[])[1], " -x");
         let rules = ["Bash(git push:*)".to_string(), "WebFetch".to_string()];
-        let allowing = args_of("abc", "1-x", "go", true, &rules);
+        let allowing = args_of("abc", "1-x", "go", true, &rules, &[]);
         let at = allowing.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(&allowing[at + 1..at + 3], rules);
+    }
+
+    #[test]
+    fn a_run_starts_lean_with_the_users_model_and_auto_mode_kept() {
+        let user = serde_json::json!({
+            "model": "opus[1m]",
+            "effortLevel": "medium",
+            "autoMode": { "environment": ["a"] },
+            "hooks": { "SessionStart": [] },
+            "voice": { "enabled": true },
+        });
+        let flags = lean_flags(&[], Some(&user));
+        assert_eq!(
+            &flags[..3],
+            ["--strict-mcp-config", "--setting-sources", "project,local"]
+        );
+        assert_eq!(flags[3], "--settings");
+        let kept: Value = serde_json::from_str(&flags[4]).unwrap();
+        assert_eq!(
+            kept,
+            serde_json::json!({ "model": "opus[1m]", "effortLevel": "medium", "autoMode": { "environment": ["a"] } })
+        );
+        // None by default; the ones the config names.
+        assert!(!flags.contains(&"--mcp-config".to_string()));
+        let named = lean_flags(&[PathBuf::from("/r/p/.mcp.agents.json")], None);
+        assert_eq!(
+            named,
+            [
+                "--strict-mcp-config",
+                "--mcp-config",
+                "/r/p/.mcp.agents.json",
+                "--setting-sources",
+                "project,local"
+            ]
+        );
+        let args = args_of("abc", "1-x", "go", true, &[], &named);
+        let at = args.iter().position(|arg| arg == "--strict-mcp-config").unwrap();
+        assert_eq!(args[at - 2..at], ["--name", "1-x"]);
     }
 
     #[test]

@@ -243,6 +243,7 @@ the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
 | `fresh_above` | `150_000` | the context, in tokens, above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381, #445). Every resume reads the whole history again, so a large one costs on every event |
 | `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
 | `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
+| `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
 
 ```toml
 [agents]

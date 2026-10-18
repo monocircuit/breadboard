@@ -282,7 +282,17 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     }
     // A wake of a run before is overtaken by this one (#417).
     wake::clear_wake(&dir);
-    let mut command = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events)));
+    let mut command = run_command(
+        &dir,
+        args_of(
+            &session,
+            &name,
+            &prompt,
+            is_known,
+            &allowed_of(&events),
+            &runs::lean_flags_of(&main),
+        ),
+    );
     // What it leaves running is found by this (`wake::leftover_of`).
     command.env(wake::RUN_ENV, &session);
     let spawned = command.spawn();

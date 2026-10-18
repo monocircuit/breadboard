@@ -114,7 +114,7 @@ pub fn command(args: &Args) -> Done {
     let written = dir.join(HANDOFF);
     let _ = fs::remove_file(&written);
     step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
-    let ran = last_run(&dir, &id, feature, &handoff_prompt(iid, &why, &changed));
+    let ran = last_run(&repo.main, &dir, &id, feature, &handoff_prompt(iid, &why, &changed));
     let kept = handoff_file(&repo.main, name, &id);
     let written = fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty());
     let kept_work = snapshot::newest(&repo.main, feature).map(|newest| snapshot_line(feature, &newest.time));
@@ -175,10 +175,17 @@ pub fn command(args: &Args) -> Done {
 
 /// One run of the conversation `id` in `dir` with `prompt`, waited for up to
 /// `LAST_RUN`: what became of it, for the line when no handoff came.
-fn last_run(dir: &Path, id: &str, name: &str, prompt: &str) -> String {
+fn last_run(main: &Path, dir: &Path, id: &str, name: &str, prompt: &str) -> String {
     // Run from the overview's pane: herdr would resume it there after a restart (#425).
     let spawned = breadboard_core::herdr::off_pane(&mut Command::new("claude"))
-        .args(args_of(id, name, prompt, true, &[]))
+        .args(args_of(
+            id,
+            name,
+            prompt,
+            true,
+            &[],
+            &breadboard_core::runs::lean_flags_of(main),
+        ))
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

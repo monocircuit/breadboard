@@ -407,6 +407,10 @@ pub struct Agents {
     pub idle_fresh_above: u64,
     /// How long idle that is: a little under the cache's hour.
     pub idle_minutes: u32,
+    /// The MCP configs (files, relative to the main checkout) a headless
+    /// run loads (#445); none by default: every server's tools are in
+    /// each call's context.
+    pub mcp_configs: Vec<String>,
 }
 
 impl Default for Agents {
@@ -417,6 +421,7 @@ impl Default for Agents {
             fresh_above: 150_000,
             idle_fresh_above: 100_000,
             idle_minutes: 55,
+            mcp_configs: Vec::new(),
         }
     }
 }
