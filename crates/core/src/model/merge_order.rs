@@ -44,6 +44,8 @@ pub struct MergeEntry<'a> {
     /// Its worktree's actions, open and delivered: its open tries hold it up.
     pub actions: &'a [Action],
     pub answered: &'a [Action],
+    /// Its own pipeline must pass (#443: not into the default branch while `[merge] needs_pipeline = false`).
+    pub needs_pipeline: bool,
 }
 
 /// An MR it comes directly after: `why` the edge's phrase.
@@ -61,23 +63,30 @@ pub struct After {
 /// merge: the merge's blockers named with the draft, how far behind its target a
 /// conflicting branch is, and the MRs it comes after with why.
 pub fn hold_up_of(entry: &MergeEntry, after: &[After]) -> Vec<String> {
-    let blockers = blockers_of(Some(entry.mr), entry.boxes, true, entry.actions, entry.answered)
-        .into_iter()
-        .map(|blocker| {
-            if blocker == format!("conflicts with {}", entry.mr.target()) && entry.behind > 0 {
-                return format!("{blocker} ({} behind)", entry.behind);
-            }
-            // Of the open boxes the first by name, the rest counted: one line.
-            let is_boxes = blocker.split_once(' ').is_some_and(|(count, rest)| {
-                count.parse::<u64>().is_ok() && (rest.starts_with("work box") || rest.starts_with("acceptance box"))
-            });
-            let parts: Vec<&str> = blocker.split(", ").collect();
-            if is_boxes && parts.len() > 1 {
-                format!("{} +{}", parts[0], parts.len() - 1)
-            } else {
-                blocker
-            }
+    let blockers = blockers_of(
+        Some(entry.mr),
+        entry.boxes,
+        true,
+        entry.actions,
+        entry.answered,
+        entry.needs_pipeline,
+    )
+    .into_iter()
+    .map(|blocker| {
+        if blocker == format!("conflicts with {}", entry.mr.target()) && entry.behind > 0 {
+            return format!("{blocker} ({} behind)", entry.behind);
+        }
+        // Of the open boxes the first by name, the rest counted: one line.
+        let is_boxes = blocker.split_once(' ').is_some_and(|(count, rest)| {
+            count.parse::<u64>().is_ok() && (rest.starts_with("work box") || rest.starts_with("acceptance box"))
         });
+        let parts: Vec<&str> = blocker.split(", ").collect();
+        if is_boxes && parts.len() > 1 {
+            format!("{} +{}", parts[0], parts.len() - 1)
+        } else {
+            blocker
+        }
+    });
     let mut hold_up: Vec<String> = Vec::new();
     if entry.mr.is_draft {
         hold_up.push("draft".into());
@@ -540,6 +549,7 @@ mod tests {
                 behind: f.behind,
                 actions: &f.actions,
                 answered: &[],
+                needs_pipeline: true,
             })
             .collect()
     }
