@@ -9,7 +9,8 @@
 //! orchestration's journal. Only for a repo GitLab serves: a gauntlet world
 //! opts in with its push URL, as for the CI queue.
 
-use super::ci::{every, glab_api, glab_get};
+use super::ci::every;
+use super::glab::{glab_api, glab_get};
 use crate::tui::overview::actor::glab::ready_title;
 use breadboard_core::ci::{self, is_network_url};
 use breadboard_core::gitlab::client::Gitlab;
