@@ -49,10 +49,13 @@ description you write). `bb status` says where you are and the next step.
   HEAD. Don't start one yourself, and don't mark the MR ready: breadboard
   does that once every box is ticked, and puts it back to draft when one is
   unticked.
-- A failed pipeline comes as the line `[overview] the pipeline of !N failed:
-  job …`: read the job's log (`glab ci trace <job id>`) and fix what is your
-  MR's doing. When the line says `{{branch}}` fails the same job, say so in
-  the MR (`glab mr note`) and go on.
+- A failed pipeline: breadboard first retries a job the runner failed and
+  one that failed only once (#371). A job that failed twice comes as the line
+  `[overview] the pipeline of !N failed: job …, <url>: fix it, … (CI fix 1/3)`:
+  read the job's log (`glab ci trace <job id>`), fix what is your MR's doing,
+  `wt:check` and push in that run. Each push is one of a few fix runs; past
+  them the user looks. When the line says `{{branch}}` fails the same job,
+  say so in the MR (`glab mr note`) and go on.
 - **A change requested for your MR**: `{{run}} wt:action change "<what>"`
   first (the MR goes to draft, your merge action is withdrawn), then build
   it, and post the merge again once it is pushed and green. Merged

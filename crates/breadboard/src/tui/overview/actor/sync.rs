@@ -5,14 +5,14 @@
 //! the sidebar, a notification when a worktree needs you; the spaces of
 //! removed worktrees pruned and the group's order kept on every read, the
 //! whole layout (wt:herdr's, `cli::lifecycle::layout`, in this process) when the set of worktrees
-//! changed, a stack's tabs when it came up or went down.
+//! changed, a stack's background processes when it came up or went down.
 
 use super::layout_log::{Logged, said};
 use super::{Effect, glab, herdr};
 use crate::cli::lifecycle::herdr::journaled;
 use crate::cli::lifecycle::layout;
-use crate::cli::lifecycle::layout::spaces::space_of;
 use crate::cli::lifecycle::repo::Repo;
+use crate::cli::lifecycle::stack_procs;
 use crate::tui::overview::Overview;
 use breadboard_core::git::feature_of;
 use breadboard_core::gitlab::{Mr, Pipeline};
@@ -141,7 +141,7 @@ pub fn after_read(app: &mut Overview) {
                         lines.extend(report);
                     }
                     for dir in &stacks {
-                        let changed = layout::sync_stack_tabs(&repo, dir, space_of(&repo, dir).as_deref());
+                        let changed = stack_procs::sync(&repo, dir);
                         if !changed.is_empty() {
                             lines.push(format!("{}: {}", feature_of(&main, dir), changed.join(" ")));
                         }

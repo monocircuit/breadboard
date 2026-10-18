@@ -150,16 +150,24 @@ pub fn orchestrations_dir(main: &Path) -> PathBuf {
     main.join(".claude").join("orchestrations")
 }
 
-/// The worktrees without the orchestrations' checkouts (worktrees.mjs `worktrees`).
+/// The worktrees breadboard made, `<main>-<feature>` next to the main
+/// checkout, the main checkout first (worktrees.mjs `worktrees`): no
+/// orchestration's checkout, and no scratch worktree added elsewhere (an
+/// agent's `/tmp/…/head` got a space in the live herdr, #423).
 pub fn worktrees(from: &Path) -> Vec<Worktree> {
     let all = all_worktrees(from);
     let Some(main) = all.first().map(|tree| tree.dir.clone()) else {
         return all;
     };
-    let skip = orchestrations_dir(&main);
     all.into_iter()
-        .filter(|tree| tree.dir == main || !tree.dir.starts_with(&skip))
+        .filter(|tree| tree.dir == main || is_own(&main, &tree.dir))
         .collect()
+}
+
+/// Whether `dir` is a worktree breadboard makes: `<main>-<feature>`.
+fn is_own(main: &Path, dir: &Path) -> bool {
+    let feature = feature_of(main, dir);
+    !feature.is_empty() && dir_of(main, &feature) == dir
 }
 
 /// The checkouts of the orchestrations (orchestrator.mjs `orchestratorCheckouts`).
@@ -660,10 +668,18 @@ mod tests {
             ],
         );
 
+        // A scratch worktree elsewhere is none of breadboard's (#423).
+        let scratch_tree = scratch.join("head");
+        run(
+            &main,
+            &["worktree", "add", "--quiet", "--detach", scratch_tree.to_str().unwrap()],
+        );
+
         let trees = worktrees(&local);
         assert_eq!(trees.len(), 3);
         assert_eq!(trees[0].dir, main);
-        assert_eq!(all_worktrees(&main).len(), 4);
+        assert!(trees.iter().all(|tree| tree.dir != scratch_tree));
+        assert_eq!(all_worktrees(&main).len(), 5);
         assert_eq!(
             orchestrator_checkouts(&main),
             vec![main.join(".claude/orchestrations/o")]
