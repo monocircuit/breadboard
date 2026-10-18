@@ -351,7 +351,7 @@ fn start_engine(state: &State, main: &Path) {
     // herdr's stale records of the repo's spaces go at every start (#425), the
     // status's tick after a restore of herdr: `herdr heal`, on its own.
     if herdr::is_in_herdr() {
-        crate::herdr::plugin::start_heal(main);
+        let _ = crate::herdr::plugin::start_heal(main);
     }
 }
 

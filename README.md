@@ -178,6 +178,13 @@ of your own keeps its claude in a tab (#361).
   (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
   band says `agents paused since 13:05 · N lines waiting`. The state is
   `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.
+- **The review run** (#374), `[review]` in breadboard.toml
+  ([`docs/config.md`](docs/config.md)): an MR whose bar is full and whose
+  head is green (its pipeline, or `wt:check` where it merges without one) gets one `claude -p` on a small model over its diff and
+  issue before its merge is offered (`breadboard_core::review`, the
+  overview's `actor/review.rs`). Not a task run: it starts beside the queue,
+  within the same memory and never while the daily limit or a pause holds.
+  Serious findings go to the MR's agent, all of them into an MR comment.
 - **The Claude usage limit** (#393): a run whose result is the limit (an
   error with a 429 or the limit's words, `resets 11:30pm`) leaves its
   session `limit` and holds every run until a minute after the reset, or

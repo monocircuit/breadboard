@@ -235,18 +235,53 @@ pub fn is_grouped(workspace: &str) -> bool {
 
 /// The single pane of the tab `label` when nothing runs in it, else None.
 pub fn idle_pane_of(workspace: &str, label: &str, tabs: &[Value]) -> Option<String> {
-    let tab = tabs.iter().find(|tab| s(tab, "label") == label)?;
-    if tab.get("pane_count").and_then(Value::as_i64) != Some(1) {
-        return None;
+    idle_pane_or_why(workspace, label, tabs).ok()
+}
+
+/// Why a tab has no idle pane (#401: the heal log says it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotIdle {
+    NoTab,
+    Split(i64),
+    NoPane,
+    /// herdr has an agent there, or resumes one (#386).
+    Agents(String),
+    /// Something runs in front of its shell.
+    Runs(String),
+}
+
+impl std::fmt::Display for NotIdle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotIdle::NoTab => write!(f, "no such tab"),
+            NotIdle::Split(count) => write!(f, "its tab holds {count} panes"),
+            NotIdle::NoPane => write!(f, "herdr lists no pane in its tab"),
+            NotIdle::Agents(pane) => write!(f, "herdr has an agent in {pane}"),
+            NotIdle::Runs(pane) => write!(f, "something runs in {pane}"),
+        }
+    }
+}
+
+/// [`idle_pane_of`], or why there is none.
+pub fn idle_pane_or_why(workspace: &str, label: &str, tabs: &[Value]) -> Result<String, NotIdle> {
+    let tab = tabs.iter().find(|tab| s(tab, "label") == label).ok_or(NotIdle::NoTab)?;
+    let count = tab.get("pane_count").and_then(Value::as_i64).unwrap_or(0);
+    if count != 1 {
+        return Err(NotIdle::Split(count));
     }
     let pane = herdr::panes_of(workspace)
         .into_iter()
-        .find(|pane| s(pane, "tab_id") == s(tab, "tab_id"))?;
-    if is_agents(&pane) {
-        return None;
-    }
+        .find(|pane| s(pane, "tab_id") == s(tab, "tab_id"))
+        .ok_or(NotIdle::NoPane)?;
     let id = s(&pane, "pane_id").to_string();
-    herdr::is_idle(&id).then_some(id)
+    if is_agents(&pane) {
+        return Err(NotIdle::Agents(id));
+    }
+    if herdr::is_idle(&id) {
+        Ok(id)
+    } else {
+        Err(NotIdle::Runs(id))
+    }
 }
 
 /// Whether herdr has an agent for the pane: one runs, or one it recorded

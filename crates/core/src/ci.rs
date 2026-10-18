@@ -174,6 +174,8 @@ pub struct Asked {
     pub cancelled: Vec<i64>,
     /// iid → the last preemption of its pipeline (#419), kept PREEMPT_AGAIN_MS.
     pub preempts: BTreeMap<i64, Preemption>,
+    /// iid → its failed pipelines (#371): what was retried, the fix runs, until one passes.
+    pub fixes: BTreeMap<i64, crate::ci_fix::Fixes>,
 }
 
 /// A pipeline cancelled to make room (#419): for which MR, and when (ms).
@@ -443,6 +445,8 @@ pub struct Queue {
     pub last: Option<String>,
     /// A try's queue: it starts and cancels nothing, so no push may skip CI for it.
     pub is_dry: bool,
+    /// iid → where its failed pipeline stands (#371): retried, its agent fixes it, the user looks.
+    pub fixes: BTreeMap<i64, crate::ci_fix::Fix>,
 }
 
 impl Queue {
@@ -524,6 +528,8 @@ pub struct OpenMr {
     /// creation, while an older one of that commit passed: GitLab blocks the
     /// merge on it (#369).
     pub blocked_by: Option<i64>,
+    /// Its head pipeline failed at its creation (a `failureReason`: GitLab's activity limit).
+    pub is_refused: bool,
 }
 
 impl OpenMr {

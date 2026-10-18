@@ -273,6 +273,35 @@ opens its path there.
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).
 
+## `[review]`
+
+A cheap review of an MR before its merge is offered (#374): once its bar is
+full and its head green (its pipeline passed, or `wt:check` at its pushed
+head where `[merge] needs_pipeline = false` merges without one), the live overview of its orchestration starts
+one `claude -p --model <model>` in its worktree. It is given only the diff
+against the MR's target (not the repo), the issue and the AGENTS.md of the
+folders it changes, with read-only tools (`Read,Grep,Glob`), no MCP servers
+and `--max-budget-usd`. Its findings go into an MR comment; `serious` ones
+go back to the MR's agent and hold the merge (the MR back to draft) until a
+new head is reviewed, `small` ones are the user's. One review per head; the
+MR row says `reviewed ✓` or `review: 2 findings`, with its tokens. None
+starts while the daily limit (`[agents] daily_limit`) or a pause holds the
+runs, and its transcript counts toward the daily cost. Every review done or
+skipped is a line of `.claude/reviews.jsonl` in the main checkout (model,
+lines, tokens, dollars, findings): the cost per review is measured there.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `enabled` | `false` | reviews before the merge; off until its cost per review is measured |
+| `model` | `haiku` | the model of the review run |
+| `min_lines` | `20` | a diff of fewer changed lines is skipped |
+| `max_lines` | `3000` | a diff of more is skipped: no cheap review, the user reads it |
+| `max_dollars` | `0.5` | what one review may cost at most (`--max-budget-usd`) |
+| `exclude` | `pnpm-lock.yaml`, `**/Cargo.lock`, `**/migrations/meta/**` | pathspecs left out of the diff and its count |
+
+A docs-only diff (`.md`, `.mdx`, `.txt`, `.rst`, `.changelog/`, `.changeset/`)
+is skipped too.
+
 ## `[check]`
 
 What `wt:check` runs and the pre-push gate waits for.
@@ -299,6 +328,18 @@ says when it last did or why it didn't.
 
 New migrations (`[stack.migrations]`'s journal changed) are only named in
 the band with their command: each stack runs them itself.
+
+## `[ci]`
+
+A failed MR pipeline (#371): `breadboard serve` retries a job the runner
+failed (its system, a timeout) and a job that failed its first try (a flake
+passes the second); one that failed twice its agent fixes, a headless run
+told the job and its log's end. Each head gets one such run; past
+`max_fix_attempts` of them the MR gets a `look` for the user.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `max_fix_attempts` | `3` | the runs of its agent that may fix an MR's failed pipeline (the row shows `CI fix 2/3`); `0`: the user looks at once |
 
 ## `[ci.watch]`
 
