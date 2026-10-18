@@ -652,6 +652,16 @@ pub fn product_of(main: &Path, name: &str) -> Option<String> {
         .then_some(product)
 }
 
+/// Whether the orchestration `name` surely left `product` (#447): its record
+/// is gone or names another; a record caught mid-write says nothing.
+pub fn has_left_product(main: &Path, name: &str, product: &str) -> bool {
+    let file = record_file(main, name);
+    if !file.exists() {
+        return true;
+    }
+    json::read(&file).is_some_and(|record| str_of(&record, "product") != Some(product))
+}
+
 /// Whether a space's label is a product's (#405).
 pub fn is_product(main: &Path, label: &str) -> bool {
     crate::config::of(main).config.products.contains_key(label)
@@ -1018,6 +1028,21 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, format!("{RECORD}\n")).unwrap();
         (scratch, main)
+    }
+
+    #[test]
+    fn only_a_record_gone_or_of_another_product_has_left_it() {
+        let (_scratch, main) = scratch_record();
+        let file = record_file(&main, "breadboard");
+        // breadboard.toml missing, a record mid-write: nothing says it left (#447).
+        fs::write(&file, r#"{ "issues": [], "prod"#).unwrap();
+        assert!(!has_left_product(&main, "breadboard", "breadboard"));
+        fs::write(&file, r#"{ "issues": [], "product": "breadboard" }"#).unwrap();
+        assert!(!has_left_product(&main, "breadboard", "breadboard"));
+        fs::write(&file, r#"{ "issues": [], "product": "vita" }"#).unwrap();
+        assert!(has_left_product(&main, "breadboard", "breadboard"));
+        fs::remove_file(&file).unwrap();
+        assert!(has_left_product(&main, "breadboard", "breadboard"));
     }
 
     #[test]

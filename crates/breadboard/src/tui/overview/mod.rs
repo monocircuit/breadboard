@@ -309,6 +309,8 @@ pub enum Msg {
     Acted(actor::Effect),
     /// A build was installed over this binary: the overview goes on in it (#348).
     Replaced,
+    /// A product view's clock: time to look at its records (#447).
+    Look,
 }
 
 /// Where GitLab stands for the view.
@@ -594,6 +596,7 @@ impl App for Overview {
                 self.is_replaced = true;
                 return;
             }
+            Msg::Look => return,
             Msg::Acted(effect) => {
                 effect(self);
                 // A full channel: a look is already due.
