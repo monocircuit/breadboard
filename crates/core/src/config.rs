@@ -28,6 +28,8 @@ pub struct Config {
     pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
+    /// The cheap review of an MR before its merge is offered (#374).
+    pub review: Review,
     pub check: Check,
     pub main_checkout: MainCheckout,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
@@ -39,6 +41,40 @@ pub struct Config {
     /// The products of a monorepo (#405): each one herdr space holding its
     /// orchestrations; by name.
     pub products: std::collections::BTreeMap<String, Product>,
+    /// The team's defaults of the overview's settings panel (#415).
+    pub settings: Settings,
+    /// What a merge into the default branch needs (#443).
+    pub merge: Merge,
+}
+
+/// What a merge into the default branch needs (`[merge]`, #443).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Merge {
+    /// Its MR's own pipeline must pass. Off (temporary, until the batch
+    /// branches carry the testing): `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the default branch's pipeline
+    /// after the merge is the safety net.
+    pub needs_pipeline: bool,
+}
+
+impl Default for Merge {
+    fn default() -> Self {
+        Merge { needs_pipeline: true }
+    }
+}
+
+/// The team's defaults of the settings panel (#415, `settings.rs`): what
+/// isn't given holds as built in. The panel's changes are local and win.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Settings {
+    pub batching: Option<bool>,
+    pub auto_merge_into_batch: Option<bool>,
+    pub ship_after_tasks: Option<i64>,
+    pub ship_after_days: Option<i64>,
+    pub try_checker: Option<bool>,
+    pub auto_fresh: Option<bool>,
 }
 
 /// A product of the repo (`[products.vita]`, #405): its folders. An
@@ -50,11 +86,23 @@ pub struct Product {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ci {
     /// The CI job watcher's thresholds (#379, `[ci.watch]`).
     pub watch: CiWatch,
+    /// How many runs of its agent may fix an MR's failed pipeline, one per
+    /// head (#371): past them the user looks. 0: no fix run, the user looks at once.
+    pub max_fix_attempts: u32,
+}
+
+impl Default for Ci {
+    fn default() -> Self {
+        Ci {
+            watch: CiWatch::default(),
+            max_fix_attempts: 3,
+        }
+    }
 }
 
 /// When the CI job watcher (#379) flags a job: the critical path of most
@@ -429,6 +477,40 @@ pub struct Tries {
     pub checker: String,
 }
 
+/// The review run of an MR (#374): once its bar is full and its pipeline
+/// green, one `claude -p` on a small model reads its diff against its issue
+/// and AGENTS.md, once per head. Off until its cost per review is measured.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Review {
+    pub enabled: bool,
+    /// The model it runs on: `claude -p --model <it>`.
+    pub model: String,
+    /// A diff of fewer changed lines isn't worth a review.
+    pub min_lines: u64,
+    /// One of more isn't cheap to review: the user reads it.
+    pub max_lines: u64,
+    /// What one review may cost at most (`--max-budget-usd`).
+    pub max_dollars: f64,
+    /// Pathspecs left out of the diff and its count (lockfiles, generated files).
+    pub exclude: Vec<String>,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Review {
+            enabled: false,
+            model: "haiku".into(),
+            min_lines: 20,
+            max_lines: 3000,
+            max_dollars: 0.5,
+            exclude: ["pnpm-lock.yaml", "**/Cargo.lock", "**/migrations/meta/**"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
+}
+
 /// The main checkout keeps itself on the default branch (#348): the daemon
 /// of the overviews fetches and fast-forwards it when that is safe.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -705,6 +787,14 @@ impl Config {
         if !self.main_checkout.install_when.is_empty() && self.main_checkout.install.is_none() {
             return bad("main_checkout.install_when", "needs an `install` to run");
         }
+        for (key, value, max) in [
+            ("ship_after_tasks", self.settings.ship_after_tasks, 99),
+            ("ship_after_days", self.settings.ship_after_days, 30),
+        ] {
+            if value.is_some_and(|value| !(1..=max).contains(&value)) {
+                return bad(&format!("settings.{key}"), &format!("must be 1 to {max}"));
+            }
+        }
         for (name, product) in &self.products {
             if !is_product_name(name) {
                 return bad(
@@ -980,16 +1070,22 @@ const LOOK_AGAIN: Duration = if cfg!(test) {
     Duration::from_secs(1)
 };
 
-/// The configs read, by the checkout they are in: the file's time then, when it was looked at.
-type Cache = HashMap<PathBuf, (Option<SystemTime>, Instant, Arc<Loaded>)>;
+/// The configs read, by the checkout they are in: the file's stamp then, when it was looked at.
+type Cache = HashMap<PathBuf, (Option<Stamp>, Instant, Arc<Loaded>)>;
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// A directory asked before: its checkout, the main checkout, whether the
 /// checkout has a file of its own and when that was looked at.
 type Mains = HashMap<PathBuf, (PathBuf, PathBuf, bool, Instant)>;
 static MAINS: LazyLock<Mutex<Mains>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn mtime(main: &Path) -> Option<SystemTime> {
-    std::fs::metadata(main.join(FILE)).and_then(|meta| meta.modified()).ok()
+/// A file's time and size: a write that truncates and fills it within one
+/// tick of the file system's clock keeps its time, and a read in between
+/// (git rewriting it on a pull or merge) would hold an empty config (#447).
+type Stamp = (SystemTime, u64);
+
+fn stamp(main: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(main.join(FILE)).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// The config of the main checkout `main`, read again once its file changed.
@@ -1005,7 +1101,7 @@ fn of_root(root: &Path, main: &Path) -> Arc<Loaded> {
     {
         return Arc::clone(loaded);
     }
-    let time = mtime(root);
+    let time = stamp(root);
     if let Some((was, at, loaded)) = cache.get_mut(root)
         && *was == time
     {
@@ -1266,5 +1362,23 @@ mod tests {
         assert_eq!(of(&tree).main, main);
         assert_eq!(of(&main).space(), "repo");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_filled_within_its_time_is_read_again() {
+        let main = std::env::temp_dir().join(format!("config-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&main).unwrap();
+        let at = SystemTime::now();
+        let touch = |text: &str| {
+            std::fs::write(main.join(FILE), text).unwrap();
+            let file = std::fs::File::options().write(true).open(main.join(FILE)).unwrap();
+            file.set_modified(at).unwrap();
+        };
+        // Caught truncated by git's rewrite, filled within the same tick (#447).
+        touch("");
+        assert!(of_main(&main).config.products.is_empty());
+        touch("[products.breadboard]\npaths = [\"packages/breadboard\"]\n");
+        assert!(of_main(&main).config.products.contains_key("breadboard"));
+        let _ = std::fs::remove_dir_all(&main);
     }
 }

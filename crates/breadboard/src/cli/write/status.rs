@@ -434,6 +434,7 @@ mod tests {
             check: CheckState::Tested {
                 sha: "a".into(),
                 packages: vec![],
+                no_test: None,
             },
             mr: Some(MrFacts {
                 iid: 9,

@@ -16,7 +16,7 @@
 //! nothing else. `--check` writes nothing and fails when a file it renders
 //! differs (CI, so the repo's copies stay those of its breadboard.toml).
 
-use super::proc::{Args, fail, outln};
+use super::proc::{Args, Shape, fail, outln};
 use super::repo;
 use breadboard_core::config::{self, Loaded};
 use regex::Regex;
@@ -25,6 +25,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+/// What `init` takes.
+pub const SHAPE: Shape = Shape::new(&["--check"], &[], Some(0), USAGE);
 
 pub const USAGE: &str = "usage: breadboard init [--check]   breadboard's skill, hooks and herdr plugin into this repo";
 

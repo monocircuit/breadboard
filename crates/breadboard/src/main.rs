@@ -37,6 +37,8 @@ fn main() -> ExitCode {
         "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),
         // The overviews' one reader, started by the first of them (daemon/).
         "serve" => daemon::main(rest),
+        // A stack's dev server or tool in the background (#407), started by `stack:*`.
+        "supervise" => cli::lifecycle::stack_procs::supervise(rest),
         // The headless agents' status table, a line queued for one (#358).
         "runs" => daemon::runs::cli(rest),
         // pnpm herdr, herdr:install and the herdr plugin's actions (herdr/herdr-plugin.toml).

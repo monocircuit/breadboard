@@ -110,12 +110,12 @@ pub fn click(app: &mut Overview, dir: Option<PathBuf>, id: i64, state: Option<Tr
             open(&app.actor, &page, None);
             app.actor.log(Paint::Green, format!("try #{id}: opened {page}"));
         }
+        // Nothing to open: its worktree beside (#409: it has no space of its own).
         _ => {
             if let Some(dir) = dir {
-                let main = app.actor.main.clone();
-                app.actor.queue(move || {
-                    herdr::focus_space(&main, &dir);
-                    None
+                let (main, detail) = (app.actor.main.clone(), app.actor.detail.clone());
+                super::super::act::in_detail(app, move || {
+                    detail.show(&main, &dir, super::detail::Shows::Editor, None)
                 });
             }
         }

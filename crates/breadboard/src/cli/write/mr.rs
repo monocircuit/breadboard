@@ -7,7 +7,8 @@
 //! same body, so a later one can't drop the `Closes #<n>` of the work item.
 //! One MR handles exactly one issue (#349): a description that closes
 //! another is refused. It merges into the worktree's base: develop, or the
-//! epic of its orchestration.
+//! epic of its orchestration. A fix that passed wt:check without a test
+//! (`--no-test "<reason>"`, #316) gets its reason as a line of the description.
 
 mod template;
 
@@ -159,6 +160,12 @@ fn has_fragment(top: &Path, number: &str) -> bool {
                 && name[digits.len()..].starts_with('-')
                 && digits.parse::<u64>().ok() == number
         })
+}
+
+/// The reason the last passed wt:check of the worktree gave for a fix without a test (#316).
+fn no_test_of_stamp(top: &Path) -> Option<String> {
+    let stamp = breadboard_core::check::read_check(top);
+    breadboard_core::json::str_of(stamp.get("passed")?, "no_test").map(String::from)
 }
 
 fn strings_of(value: Option<&Value>) -> Vec<String> {
@@ -347,6 +354,11 @@ pub fn run(argv: &Argv) -> Outcome {
             run = breadboard_core::config::run_word()
         ));
     }
+    // A fix that passed wt:check without a test says why, for the reviewer and the MR's CI job (#316).
+    let written = match no_test_of_stamp(top) {
+        Some(reason) => breadboard_core::check::with_no_test(&written, &reason),
+        None => written,
+    };
     let body = body_of(&written, &number);
     if let Some(why) = second_issue(&body, &number) {
         return Err(format!("{}: {why}", here.shown(&given)));

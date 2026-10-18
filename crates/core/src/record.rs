@@ -444,7 +444,6 @@ pub struct Record {
     /// The orchestrator's own actions (`wt:action --orchestration`).
     pub actions: Vec<Action>,
     pub chat: Option<Chat>,
-    pub brief: Option<String>,
     pub peer: Option<String>,
     /// The branch its worktrees are based on (#349): an epic, None for develop.
     pub base: Option<String>,
@@ -524,7 +523,6 @@ impl Record {
             handovers,
             actions: actions_in(&raw),
             chat,
-            brief: str_of(&raw, "brief").map(String::from),
             peer: str_of(&raw, "peer").map(String::from),
             is_auto: raw.get("auto").and_then(Value::as_bool).unwrap_or(false),
             base: str_of(&raw, "base").filter(|base| is_branch(base)).map(String::from),
@@ -575,6 +573,8 @@ pub fn record_of(main: &Path, name: &str) -> Option<Record> {
     {
         record.chat = Some(chat);
     }
+    // The try checker is a setting (#415): the panel's, else the `auto` of before, else the team's default.
+    record.is_auto = crate::settings::of(main, name).try_checker;
     Some(record)
 }
 
@@ -648,6 +648,16 @@ pub fn product_of(main: &Path, name: &str) -> Option<String> {
         .products
         .contains_key(&product)
         .then_some(product)
+}
+
+/// Whether the orchestration `name` surely left `product` (#447): its record
+/// is gone or names another; a record caught mid-write says nothing.
+pub fn has_left_product(main: &Path, name: &str, product: &str) -> bool {
+    let file = record_file(main, name);
+    if !file.exists() {
+        return true;
+    }
+    json::read(&file).is_some_and(|record| str_of(&record, "product") != Some(product))
 }
 
 /// Whether a space's label is a product's (#405).
@@ -1016,6 +1026,21 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, format!("{RECORD}\n")).unwrap();
         (scratch, main)
+    }
+
+    #[test]
+    fn only_a_record_gone_or_of_another_product_has_left_it() {
+        let (_scratch, main) = scratch_record();
+        let file = record_file(&main, "breadboard");
+        // breadboard.toml missing, a record mid-write: nothing says it left (#447).
+        fs::write(&file, r#"{ "issues": [], "prod"#).unwrap();
+        assert!(!has_left_product(&main, "breadboard", "breadboard"));
+        fs::write(&file, r#"{ "issues": [], "product": "breadboard" }"#).unwrap();
+        assert!(!has_left_product(&main, "breadboard", "breadboard"));
+        fs::write(&file, r#"{ "issues": [], "product": "vita" }"#).unwrap();
+        assert!(has_left_product(&main, "breadboard", "breadboard"));
+        fs::remove_file(&file).unwrap();
+        assert!(has_left_product(&main, "breadboard", "breadboard"));
     }
 
     #[test]
