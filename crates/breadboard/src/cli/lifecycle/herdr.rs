@@ -353,6 +353,23 @@ pub fn is_idle(pane: &str) -> bool {
     })
 }
 
+/// The command lines of what runs in the foreground of `pane` (herdr's
+/// `process-info`), empty when herdr says none.
+pub fn foreground_commands(pane: &str) -> Vec<String> {
+    call(&["pane", "process-info", "--pane", pane])
+        .and_then(|result| {
+            result
+                .get("process_info")?
+                .get("foreground_processes")?
+                .as_array()
+                .cloned()
+        })
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|process| process.get("cmdline")?.as_str().map(String::from))
+        .collect()
+}
+
 /// The pids from `pid` up to init, from Linux's /proc; only `pid` without it.
 pub fn ancestors_of(pid: i64) -> Vec<i64> {
     let mut chain = Vec::new();

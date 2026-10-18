@@ -3,7 +3,6 @@
 
 use super::super::herdr::{self, call, did, id_at, s};
 use super::super::proc::{exe, quote, text};
-use super::super::repo::Repo;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,14 +15,10 @@ pub const OVERVIEW: &str = "overview";
 pub const CHANGELOG: &str = "changelog";
 /// nvim on what an orchestration's MRs changed.
 pub const CHANGES: &str = "changes";
-/// nvim in a worktree, after the conversation's tab.
-pub const EDITOR: &str = "nvim";
 /// The orchestrating session's tab in its space.
 pub const ORCHESTRATOR_TAB: &str = "orchestrator";
 /// Whose sidebar tokens they are, for herdr: the plugin's id (`[herdr] plugin`).
 pub use breadboard_core::record::PLUGIN as TOKEN_SOURCE;
-/// The branch of a worktree as a sidebar token (herdrdev/herdr#2952).
-pub const BRANCH_TOKEN: &str = "wt_branch";
 
 /// A tab as `ensure_tab` wants it: its label, where it starts and what it runs.
 pub struct Want<'a> {
@@ -188,49 +183,6 @@ pub fn move_into(from: &str, to: &str) {
     if herdr::spaces().iter().any(|space| s(space, "workspace_id") == from) && herdr::tabs_of(from).is_empty() {
         call(&["workspace", "close", from]);
     }
-}
-
-/// The branch of a worktree as the sidebar token `$wt_branch`, only on a change.
-pub fn mark_branch(repo: &Repo, workspace: &str, dir: &Path) {
-    let Some(branch) = repo
-        .worktrees()
-        .into_iter()
-        .find(|tree| tree.dir == dir)
-        .and_then(|tree| tree.branch)
-    else {
-        return;
-    };
-    let Some(found) = herdr::spaces()
-        .into_iter()
-        .find(|space| s(space, "workspace_id") == workspace)
-    else {
-        return;
-    };
-    let shown = found
-        .get("tokens")
-        .and_then(|tokens| tokens.get(BRANCH_TOKEN))
-        .and_then(Value::as_str);
-    if shown == Some(branch.as_str()) {
-        return;
-    }
-    let token = format!("{BRANCH_TOKEN}={branch}");
-    let source = TOKEN_SOURCE.get();
-    call(&[
-        "workspace",
-        "report-metadata",
-        workspace,
-        "--source",
-        &source,
-        "--token",
-        &token,
-    ]);
-}
-
-/// Whether a space hangs in the main space's group.
-pub fn is_grouped(workspace: &str) -> bool {
-    herdr::spaces()
-        .iter()
-        .any(|space| s(space, "workspace_id") == workspace && is_linked(space))
 }
 
 /// The single pane of the tab `label` when nothing runs in it, else None.

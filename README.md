@@ -143,9 +143,9 @@ of your own keeps its claude in a tab (#361).
   worktree view's `resume` row): `claude --resume <id> --name <feature>` in
   the tab `<feature>` of its worktree's space, once no run of it is in
   flight; its queue waits until that claude ends.
-- **The sidebar and the tab bar read the status table**: the space of a
-  worktree shows what its agent waits for (`$wt_state`, the space's third
-  row), and "N need you" counts its `asks`.
+- **The tab bar reads the status table**: "N need you" counts its `asks`;
+  what an agent waits for is its row in the overview (a worktree has no
+  space of its own, #409).
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
