@@ -475,13 +475,8 @@ impl Queue {
 
 /// `value` into `file` whole: written beside it, then renamed, so a reader never sees half.
 pub fn write_whole<T: Serialize>(file: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    let beside = file.with_extension(format!("json.{}", std::process::id()));
-    std::fs::write(&beside, format!("{text}\n"))?;
-    std::fs::rename(&beside, file)
+    crate::json::write_whole(file, &format!("{text}\n"))
 }
 
 /// `file` as `T`, the default when missing or broken.
