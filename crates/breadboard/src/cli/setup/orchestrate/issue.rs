@@ -74,8 +74,7 @@ pub fn handoff_text(worker: &record::Worker, shared: &[String]) -> String {
     let context = worker
         .retired
         .as_ref()
-        .and_then(|retired| retired.context)
-        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
+        .map(|retired| retired.context_text())
         .unwrap_or_default();
     format!(
         "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and retired{context}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
@@ -202,13 +201,14 @@ mod tests {
             issues: vec![340, 352],
             retired: Some(Retired {
                 context: Some(0.468),
+                tokens: Some(162_000),
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert_eq!(
             handoff_text(&worker, &["a.rs".into(), "b.rs".into()]),
-            "`.claude/handoff.md` is the handoff of Mira Albrecht, who worked on a.rs, b.rs before (#340, #352) and retired at 47 % of its context. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win."
+            "`.claude/handoff.md` is the handoff of Mira Albrecht, who worked on a.rs, b.rs before (#340, #352) and retired at 162 k tokens of context. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win."
         );
     }
 

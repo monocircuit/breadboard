@@ -151,7 +151,7 @@ pub struct Merged {
 }
 
 /// The line under a merge whose agent retired then (#381), from the record:
-/// who, at what share of its context, and that its handoff is kept.
+/// who, at how much context, and that its handoff is kept.
 pub fn retired_note(found: &record::Record, iid: i64) -> Option<String> {
     let worker = found
         .workers
@@ -163,10 +163,7 @@ pub fn retired_note(found: &record::Record, iid: i64) -> Option<String> {
         .clone()
         .or_else(|| worker.name.clone())
         .unwrap_or_else(|| "its agent".into());
-    let context = retired
-        .context
-        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
-        .unwrap_or_default();
+    let context = retired.context_text();
     let handoff = if retired.handoff.is_some() {
         "its handoff kept for a fresh agent"
     } else {

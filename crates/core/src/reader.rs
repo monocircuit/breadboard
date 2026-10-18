@@ -632,7 +632,7 @@ impl LocalReader {
             record_file: record::record_file(&self.main, name),
             free: free_agents(record.as_ref()),
             free_memory: free_memory(),
-            context_limit: Some(crate::settings::of(&self.main, name).agent_limit),
+            fresh_rule: Some(crate::settings::of(&self.main, name).agent_fresh),
             agents: agents_of(&self.main, &panes),
             chat,
             setups: live_setups_of(&self.main, name),

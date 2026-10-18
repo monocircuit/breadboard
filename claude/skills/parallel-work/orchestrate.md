@@ -522,8 +522,7 @@ moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
 <old>` for a day). The old worktree keeps its space until its clean-up.
 `--to` takes the old name too. Refused while a run of the agent is in
-flight or it waits for an answer, or above `--limit` (`[agents]
-fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
+flight or it waits for an answer, or when it starts fresh (below). An issue no free
 agent shares a file with goes to a fresh agent: another issue's context
 buys it nothing.
 
@@ -536,8 +535,11 @@ the worktree's, and the worktree goes. An agent that never ran is freed
 too. Its next issue is its next run, in the new worktree, the path of every
 handover. While the record keeps a free agent, the space `⇶ <name>` stays.
 
-**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
-context window) it isn't freed but retires at its merge, never mid-issue:
+**A full agent retires** (#381, #445): every resume reads its whole history
+again, and once it idled past the prompt cache's hour a resume writes all of
+it to the cache anew. So above `[agents] fresh_above` (150 k tokens of
+context), or above `idle_fresh_above` (100 k) and idle longer than
+`idle_minutes` (55), it isn't freed but retires at its merge, never mid-issue:
 `{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
 conversation one last run that writes `.claude/handoff.md` (a page at most:
 what it learned about the files it changed), keeps it next to the record

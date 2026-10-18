@@ -317,7 +317,7 @@ pub struct Freed {
     pub mr: Option<i64>,
 }
 
-/// An agent that retired at its merge (#381): above `[agents] fresh_above`,
+/// An agent that retired at its merge (#381): one that starts fresh (#445),
 /// it wrote a handoff and takes no next issue; a fresh agent reads it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Retired {
@@ -327,8 +327,21 @@ pub struct Retired {
     pub mr: Option<i64>,
     /// The share of its context then.
     pub context: Option<f64>,
+    /// Its context then, in tokens (#445); None for one retired before.
+    pub tokens: Option<u64>,
     /// Its handoff, next to the record (`handoff_file`); None when it wrote none.
     pub handoff: Option<String>,
+}
+
+impl Retired {
+    /// ` at 162 k tokens of context`, for one retired before #445 ` at 47 % of its context`; empty when unknown.
+    pub fn context_text(&self) -> String {
+        match (self.tokens, self.context) {
+            (Some(tokens), _) => format!(" at {} tokens of context", crate::fresh::k(tokens)),
+            (None, Some(share)) => format!(" at {} % of its context", (share * 100.0).round() as i64),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// An agent of the orchestration (#217), by its conversation's id.
@@ -396,6 +409,7 @@ impl Worker {
                 from: str_of(retired, "from").map(String::from),
                 mr: int_of(retired, "mr"),
                 context: retired.get("context").and_then(Value::as_f64),
+                tokens: retired.get("tokens").and_then(Value::as_u64),
                 handoff: str_of(retired, "handoff").map(String::from),
             });
         Worker {

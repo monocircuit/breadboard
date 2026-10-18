@@ -29,9 +29,13 @@ pub struct FreeRow {
 
 /// `names`: the orchestration's (display_names.rs `names_of`), so a free
 /// agent goes by the name its worktree's node showed.
-pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>, names: &Names) -> Vec<FreeRow> {
+pub fn free_rows_of(
+    free: &[(Worker, crate::fresh::Context)],
+    agents: &HashMap<String, Agent>,
+    names: &Names,
+) -> Vec<FreeRow> {
     free.iter()
-        .map(|(worker, share)| {
+        .map(|(worker, context)| {
             let agent = agents.get(&worker.id);
             let state = agent_state_of(
                 &Tree::default(),
@@ -40,7 +44,7 @@ pub fn free_rows_of(free: &[(Worker, f64)], agents: &HashMap<String, Agent>, nam
                     ..Default::default()
                 },
             );
-            let mut parts = vec![format!("{} %", (share * 100.0).round() as i64)];
+            let mut parts = vec![crate::fresh::k(context.used)];
             if let Some(from) = worker.free.as_ref().and_then(|free| free.from.as_deref()) {
                 let mr = worker.free.as_ref().and_then(|free| free.mr);
                 // The worktree it is named after says itself on the row's first line: its MR alone.
@@ -129,19 +133,19 @@ mod tests {
                 }),
                 ..Default::default()
             },
-            0.18,
+            crate::fresh::Context { used: 36_000, at: None },
         )];
         let names = super::super::display_names::names_of(&[], &[free[0].0.clone()]);
         let rows = free_rows_of(&free, &idle("f1", "idle"), &names);
         assert_eq!(rows[0].state.text, "free");
         assert_eq!(rows[0].display, "Priya Virtanen");
         // Its name is the worktree it came from: not twice on the row.
-        assert_eq!(rows[0].text, "18 % · from !289 · 1 issue");
+        assert_eq!(rows[0].text, "36 k · from !289 · 1 issue");
         let mut moved = free.clone();
         moved[0].0.name = Some("270-before".into());
         assert_eq!(
             free_rows_of(&moved, &idle("f1", "idle"), &names)[0].text,
-            "18 % · from 272-orchestration (!289) · 1 issue"
+            "36 k · from 272-orchestration (!289) · 1 issue"
         );
         assert_eq!(
             free_rows_of(&free, &idle("f1", "working"), &names)[0].state.text,

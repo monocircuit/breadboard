@@ -217,7 +217,7 @@ journal says it (`auto-merge into batch: off (by you)`).
 | `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
 | `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
 | `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
-| (panel only) `agent fresh start` | `[agents] fresh_above` | the share of its context past which an agent retires at its merge (#381); its team default stays `[agents] fresh_above` |
+| (panel only) `agent fresh start`, `agent fresh start when idle`, `agent idle time` | `[agents] fresh_above`, `idle_fresh_above`, `idle_minutes` | when an agent retires at its merge (#381, #445), in thousands of tokens and minutes; their team defaults stay `[agents]`'s |
 
 ## `[orchestrator]`
 
@@ -240,13 +240,17 @@ the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
 | --- | ------- | ------------ |
 | `daily_limit` | none | what the repo's claudes may spend from local midnight: once it is reached the run engine of headless agents starts no new run, their lines wait in the queue and the overview says why; its `continue anyway` lifts it until midnight (`breadboard runs continue`) |
 | `orchestration_budget` | none | what an orchestration's agents may spend in all: shown against what they spent in its band |
-| `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+| `fresh_above` | `150_000` | the context, in tokens, above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381, #445). Every resume reads the whole history again, so a large one costs on every event |
+| `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
+| `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
 
 ```toml
 [agents]
 daily_limit = "$40"
 orchestration_budget = "200 M"
-fresh_above = 40
+fresh_above = 150_000
+idle_fresh_above = 100_000
+idle_minutes = 55
 ```
 
 ## `[tries]`

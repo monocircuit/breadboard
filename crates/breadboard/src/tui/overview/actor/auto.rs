@@ -609,8 +609,9 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
-    // The setting `agent fresh start` (#415), by default `[agents] fresh_above`.
-    let limit = breadboard_core::settings::of(&app.actor.main, &model.name).agent_limit;
+    // The settings `agent fresh start` … (#415, #445), by default `[agents]`'s.
+    let rule = breadboard_core::settings::of(&app.actor.main, &model.name).agent_fresh;
+    let now = now_ms();
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
@@ -625,10 +626,10 @@ fn remove_merged(
         }
         // Its conversation is its agent (#361): a headless one that never ran has no row yet, and is freed too.
         if let (Some(claude), Some(mr)) = (&tree.claude, mr) {
-            if claude.share() <= limit {
+            if rule.why(&claude.context(), now).is_none() {
                 free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
             } else {
-                // Full (#381): it retires with a handoff, its next issue goes to a fresh agent.
+                // Full, or idle past its cache (#381, #445): it retires with a handoff, its next issue goes to a fresh agent.
                 retire_then_remove(app, name, tree, mr.iid);
             }
             continue;

@@ -8,10 +8,6 @@ use crate::record::{Handover, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The share of its context above which an agent gets no next issue but
-/// retires (#381), when breadboard.toml's `[agents] fresh_above` says nothing.
-pub const CONTEXT_LIMIT: f64 = crate::config::FRESH_ABOVE as f64 / 100.0;
-
 /// The record's workers, in its order; by their conversation's id with `worker_of`.
 pub type Known = [Worker];
 
@@ -28,9 +24,10 @@ pub fn agent_name_of(id: Option<&str>, feature: &str, known: &Known) -> String {
 }
 
 /// Why an agent can't take a next issue, or None (worktree/workers.mjs
-/// `refusalOf`): no pane runs it, it works or waits for an answer, or its
-/// context `share` is above `limit`. `pane`: herdr's state of its pane, None without one.
-pub fn refusal_of(pane: Option<Option<&str>>, share: Option<f64>, limit: f64) -> Option<String> {
+/// `refusalOf`): no pane runs it, it works or waits for an answer, or it
+/// starts fresh (`fresh`, why: `Fresh::why`, #445). `pane`: herdr's state
+/// of its pane, None without one.
+pub fn refusal_of(pane: Option<Option<&str>>, fresh: Option<String>) -> Option<String> {
     let Some(status) = pane else {
         return Some("no claude runs it (herdr knows no pane with its conversation)".into());
     };
@@ -42,14 +39,7 @@ pub fn refusal_of(pane: Option<Option<&str>>, share: Option<f64>, limit: f64) ->
         "idle" | "done" => {}
         other => return Some(format!("herdr can't tell what it does ({other})")),
     }
-    match share {
-        Some(share) if share > limit => Some(format!(
-            "its context is at {} %, above the limit of {} %",
-            (share * 100.0).round() as i64,
-            (limit * 100.0).round() as i64
-        )),
-        _ => None,
-    }
+    fresh
 }
 
 /// Where an announced handover's agent is: a worktree's (`dir`) or a free one (#289, no `dir`).
@@ -128,7 +118,7 @@ pub fn announced_of(
             let why = match &agent {
                 Some(agent) => {
                     let found = agents.get(&agent.id);
-                    refusal_of(found.map(|agent| agent.status.as_deref()), None, CONTEXT_LIMIT)
+                    refusal_of(found.map(|agent| agent.status.as_deref()), None)
                 }
                 None => Some(format!("no worktree of the orchestration has an agent {}", handover.to)),
             };
@@ -373,13 +363,15 @@ pub(crate) mod tests {
 
     #[test]
     fn refuses_a_busy_agent_or_one_out_of_context() {
+        let full = Some("its context holds 162 k tokens, above 150 k".to_string());
+        assert_eq!(refusal_of(Some(Some("idle")), full.clone()), full);
+        assert_eq!(refusal_of(Some(Some("idle")), None), None);
         assert_eq!(
-            refusal_of(Some(Some("idle")), Some(0.6), CONTEXT_LIMIT).as_deref(),
-            Some("its context is at 60 %, above the limit of 40 %")
+            refusal_of(Some(Some("working")), full).as_deref(),
+            Some("it is working")
         );
-        assert_eq!(refusal_of(Some(Some("idle")), Some(0.4), CONTEXT_LIMIT), None);
         assert_eq!(
-            refusal_of(Some(None), None, CONTEXT_LIMIT).as_deref(),
+            refusal_of(Some(None), None).as_deref(),
             Some("herdr can't tell what it does (unknown)")
         );
     }

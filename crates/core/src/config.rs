@@ -398,29 +398,26 @@ pub struct Agents {
     /// What an orchestration's agents may spend in all, shown against its
     /// spend in its band; None: none shown.
     pub orchestration_budget: Option<crate::spend::Limit>,
-    /// The share of its context window, in percent, above which an agent
-    /// retires at its merge instead of taking a next issue: its next one
-    /// goes to a fresh agent with its written handoff (#381).
-    pub fresh_above: u8,
+    /// The context, in tokens, above which an agent retires at its merge
+    /// instead of taking a next issue: its next one goes to a fresh agent
+    /// with its written handoff (#381, #445).
+    pub fresh_above: u64,
+    /// The context above which it retires once idle longer than
+    /// `idle_minutes`: its prompt cache is gone, a resume writes it all again.
+    pub idle_fresh_above: u64,
+    /// How long idle that is: a little under the cache's hour.
+    pub idle_minutes: u32,
 }
-
-/// `[agents] fresh_above` when the file says nothing.
-pub const FRESH_ABOVE: u8 = 40;
 
 impl Default for Agents {
     fn default() -> Self {
         Agents {
             daily_limit: None,
             orchestration_budget: None,
-            fresh_above: FRESH_ABOVE,
+            fresh_above: 150_000,
+            idle_fresh_above: 100_000,
+            idle_minutes: 55,
         }
-    }
-}
-
-impl Agents {
-    /// `fresh_above` as a share of the window, 0.4.
-    pub fn limit(&self) -> f64 {
-        f64::from(self.fresh_above) / 100.0
     }
 }
 
@@ -666,11 +663,15 @@ impl Config {
     /// What serde can't say: names and ports that must be there and apart.
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
-        if !(1..=100).contains(&self.agents.fresh_above) {
+        let agents = &self.agents;
+        if agents.fresh_above < 10_000 || agents.idle_fresh_above < 10_000 {
             return bad(
                 "agents.fresh_above",
-                "must be a percent of the context window, 1 to 100",
+                "fresh_above and idle_fresh_above are tokens of context now (#445), at least 10_000, e.g. 150_000",
             );
+        }
+        if agents.idle_minutes == 0 {
+            return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");
         }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))

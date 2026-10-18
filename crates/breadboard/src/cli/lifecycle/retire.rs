@@ -1,5 +1,5 @@
 //! `wt:orchestrate <name> --retire <feature> --mr <iid>` (#381): an agent
-//! above `[agents] fresh_above` retires at its merge instead of taking a
+//! that starts fresh (#445, `[agents]`) retires at its merge instead of taking a
 //! next issue. Its claude ends, one last run of its conversation writes its
 //! handoff into `.claude/handoff.md` of its worktree (what it learned about
 //! the files it changed, a page at most), the handoff is kept next to the
@@ -8,10 +8,12 @@
 
 use super::args::Args;
 use super::claude::{bound_session, context_share_of, is_conversation_running};
-use super::handover::{agent_of, context_limit, end_claude, refusal_of};
+use super::handover::{agent_of, end_claude, fresh_rule, refusal_of};
 use super::proc::{Done, fail, step};
 use super::repo::Repo;
+use breadboard_core::conversations::context_of;
 use breadboard_core::conversations::interactive_pids_of;
+use breadboard_core::fresh::k;
 use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
 use breadboard_core::runs::args_of;
@@ -39,7 +41,8 @@ pub fn is_retire(words: &[String]) -> bool {
 }
 
 /// The prompt of the last run: the handoff, a page at most, facts only.
-pub fn handoff_prompt(iid: i64, share: f64, limit: f64, files: &[String]) -> String {
+/// `why`: why it starts fresh (`Fresh::why`), `its context holds 162 k tokens, above 150 k`.
+pub fn handoff_prompt(iid: i64, why: &str, files: &[String]) -> String {
     let named: Vec<&str> = files.iter().take(NAMED).map(String::as_str).collect();
     let more = if files.len() > NAMED {
         format!(" and {} more", files.len() - NAMED)
@@ -52,14 +55,8 @@ pub fn handoff_prompt(iid: i64, share: f64, limit: f64, files: &[String]) -> Str
         format!("the files you changed ({}{more})", named.join(", "))
     };
     format!(
-        "[overview] !{iid} is merged. Your context is at {} %, above {} %: you retire, and a fresh agent takes the next issue on these files. Write your handoff now into {HANDOFF} of this worktree, at most one page: what you learned about {files}: where things live, the rules and pitfalls you found, what is unfinished or fragile. Facts a newcomer needs, not the story of your issue. Write only that file, then stop: nothing else to do or answer.",
-        percent(share),
-        percent(limit)
+        "[overview] !{iid} is merged. You retire ({why}), and a fresh agent takes the next issue on these files. Write your handoff now into {HANDOFF} of this worktree, at most one page: what you learned about {files}: where things live, the rules and pitfalls you found, what is unfinished or fragile. Facts a newcomer needs, not the story of your issue. Write only that file, then stop: nothing else to do or answer."
     )
-}
-
-fn percent(share: f64) -> i64 {
-    (share * 100.0).round() as i64
 }
 
 pub fn command(args: &Args) -> Done {
@@ -77,20 +74,19 @@ pub fn command(args: &Args) -> Done {
         return fail(format!("{feature} has no agent bound to it ({})", dir.display()));
     };
     let share = context_share_of(&id).unwrap_or(0.0);
-    let limit = context_limit(&repo.main, name);
+    let context = context_of(&id).unwrap_or_default();
+    let why = fresh_rule(&repo.main, name)
+        .why(&context, now_ms())
+        .unwrap_or_else(|| format!("its context holds {} tokens", k(context.used)));
     let agent = record::record_of(&repo.main, name)
         .and_then(|record| record.worker(&id).cloned())
         .unwrap_or_default();
     let shown = agent.name.clone().unwrap_or_else(|| feature.to_string());
-    step(&format!(
-        "{shown} retires: its context is at {} %, above {} %",
-        percent(share),
-        percent(limit)
-    ));
+    step(&format!("{shown} retires: {why}"));
     // Never mid-issue: only an agent that is idle (its MR merged, nothing asked) retires.
     let found = agent_of(&repo.main, &id)
         .map_err(|why| super::proc::Fail(format!("{why}: can't tell whether {shown} is idle; nothing changed")))?;
-    if let Some(why) = refusal_of(found.as_ref(), true, None, 1.0) {
+    if let Some(why) = refusal_of(found.as_ref(), true, None) {
         return fail(format!(
             "{shown} not retired: {why}; only an idle agent retires, never mid-issue"
         ));
@@ -118,7 +114,7 @@ pub fn command(args: &Args) -> Done {
     let written = dir.join(HANDOFF);
     let _ = fs::remove_file(&written);
     step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
-    let ran = last_run(&dir, &id, feature, &handoff_prompt(iid, share, limit, &changed));
+    let ran = last_run(&dir, &id, feature, &handoff_prompt(iid, &why, &changed));
     let kept = handoff_file(&repo.main, name, &id);
     let written = fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty());
     let kept_work = snapshot::newest(&repo.main, feature).map(|newest| snapshot_line(feature, &newest.time));
@@ -156,6 +152,7 @@ pub fn command(args: &Args) -> Done {
             "from": feature,
             "mr": iid,
             "context": share,
+            "tokens": context.used,
             "handoff": handoff,
         },
     });
@@ -165,8 +162,8 @@ pub fn command(args: &Args) -> Done {
     // Unbound: nothing resumes it in the worktree, and wt:remove can take it.
     let _ = fs::remove_file(breadboard_core::conversations::session_file(&dir));
     super::proc::done(&format!(
-        "{shown} retired at {} %{}",
-        percent(share),
+        "{shown} retired at {} tokens{}",
+        k(context.used),
         if handoff.is_some() {
             format!(", its handoff kept: {}", relative(&repo.main, &kept))
         } else {
@@ -235,13 +232,16 @@ mod tests {
 
     #[test]
     fn asks_for_a_page_on_the_files_it_changed() {
-        let prompt = handoff_prompt(313, 0.47, 0.4, &["a.rs".into(), "b.rs".into()]);
-        assert!(prompt.starts_with("[overview] !313 is merged. Your context is at 47 %, above 40 %: you retire"));
+        let why = "its context holds 162 k tokens, above 150 k";
+        let prompt = handoff_prompt(313, why, &["a.rs".into(), "b.rs".into()]);
+        assert!(prompt.starts_with(
+            "[overview] !313 is merged. You retire (its context holds 162 k tokens, above 150 k), and a fresh agent"
+        ));
         assert!(prompt.contains("into .claude/handoff.md of this worktree, at most one page"));
         assert!(prompt.contains("the files you changed (a.rs, b.rs)"));
         let many: Vec<String> = (0..25).map(|n| format!("f{n}")).collect();
-        assert!(handoff_prompt(1, 0.5, 0.4, &many).contains(", f19 and 5 more)"));
-        assert!(handoff_prompt(1, 0.5, 0.4, &[]).contains("about the files you worked on:"));
+        assert!(handoff_prompt(1, why, &many).contains(", f19 and 5 more)"));
+        assert!(handoff_prompt(1, why, &[]).contains("about the files you worked on:"));
     }
 
     #[test]
