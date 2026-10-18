@@ -312,11 +312,10 @@ overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
 `look` (go to the agent's space) — and the automatic `permission` (what auto
-mode would have asked in a run, see Permissions), `push` (commits a worktree
-holds unpushed for over 10 minutes; the click queues the order for its
-agent) and `merge` (a ready, green MR without its agent's, none while a
-change is requested).
-Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
+mode would have asked in a run, see Permissions) and `merge` (a ready, green MR without its agent's, none while a
+change is requested). Commits an agent left unpushed get no row:
+breadboard checks and pushes them itself (README, "Headless agents").
+Sorted by what blocks most: `permission`, `decide`, `plan`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
 the worktree, have its agent tick the done boxes), `pipeline` (a failed
