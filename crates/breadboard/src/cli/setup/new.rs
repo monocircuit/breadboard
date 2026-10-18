@@ -9,7 +9,7 @@
 use super::conversations::{self, session_file};
 use super::epic::{self, Epic};
 use super::herdr::{self, field};
-use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
+use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, step};
 use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
@@ -19,6 +19,14 @@ use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
+
+/// What `wt:new` takes.
+pub const SHAPE: Shape = Shape::new(
+    &["--shared", "--fix", "--origin", "--base", "--also"],
+    &["--origin", "--base", "--also"],
+    Some(1),
+    USAGE,
+);
 
 pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--also <issue>]… [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
 
@@ -319,6 +327,11 @@ pub fn command(args: &Args) -> ExitCode {
         sweep::stale_issue_count().unwrap_or(0)
     };
     let space = herdr::open_space(&feature, &dir, origin.as_ref(), stays.as_deref());
+    // Its stack set up and running: its dev server in the background (#407).
+    let procs = stack::procs_of(&dir);
+    if !procs.is_empty() {
+        step(&format!("in the background: {}", procs.join(" ")));
+    }
     // An orchestration's worktree opens no app tab (#337): nobody looks at it
     // yet, and a tab that comes to the front then passes for another's page.
     if origin.is_none() {

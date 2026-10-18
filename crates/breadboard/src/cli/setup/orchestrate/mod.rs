@@ -15,7 +15,7 @@ mod space;
 mod workers;
 
 use crate::cli::setup::herdr;
-use crate::cli::setup::proc::{self, Args, fail, name_refusal, outln, quote, step};
+use crate::cli::setup::proc::{self, Args, Shape, fail, name_refusal, outln, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
@@ -38,6 +38,49 @@ pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature|n+m>
 /// reading, one for `--queue --after` and `--to … --after`.
 use crate::cli::lifecycle::handover::{after_args, parse_after};
 
+/// What `wt:orchestrate` takes.
+pub const SHAPE: Shape = Shape::new(
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--shared",
+        "--peer",
+        "--brief",
+        "--queue",
+        "--after",
+        "--dry-run",
+        "--to",
+        "--limit",
+        "--end",
+        "--changelog",
+        "--watch",
+        "--changes",
+        "--fresh",
+        // What the overview's own start passes; `--cap` says it is gone (#229).
+        "--now",
+        "--cap",
+        // The overview's retirement of a full agent at its merge (#381).
+        "--retire",
+        "--mr",
+    ],
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--peer",
+        "--brief",
+        "--to",
+        "--limit",
+        "--retire",
+        "--mr",
+    ],
+    None,
+    USAGE,
+);
+
 use crate::cli::lifecycle::handover::{is_issue_arg, with_bundle};
 
 fn read_or_fail(arg: &str) -> Item {
@@ -56,8 +99,8 @@ fn extra_for(name: &str, number: i64, given: Option<&str>) -> String {
 }
 
 /// The brief of `--brief` kept per issue (#247): a queued issue started later
-/// gets it, no other. `brief` is written as today too: the Node overview's
-/// queue starts read it while both run side by side (rule 5).
+/// gets it, no other. The record keeps no brief for the whole orchestration:
+/// the next run's issues would get it.
 fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     let main = repo::main_dir();
     let raw = breadboard_core::json::read(&record::record_file(&main, name)).unwrap_or(json!({}));
@@ -69,7 +112,7 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     for number in numbers {
         briefs.insert(number.to_string(), json!(text));
     }
-    let _ = record::update_record(&main, name, object(json!({ "brief": text, "briefs": briefs })));
+    let _ = record::update_record(&main, name, object(json!({ "briefs": briefs })));
 }
 
 /// The flags a form that only ends, reads or watches takes besides its own:
