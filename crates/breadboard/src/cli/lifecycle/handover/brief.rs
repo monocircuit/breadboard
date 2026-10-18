@@ -34,8 +34,34 @@ pub fn brief_of(
         loaded.config.repo.run.clone().unwrap_or_else(|| "breadboard".into()),
         loaded.branch.clone(),
     );
+    // A bundle (#321): one task, one MR, every issue of it closed.
+    let numbers = issue.numbers();
+    let (work, handles, read) = if issue.also.is_empty() {
+        (
+            format!("issue #{number}"),
+            format!("exactly this one issue (`Closes #{number}`, no other)"),
+            format!("`glab issue view {number} --comments`"),
+        )
+    } else {
+        let closes: Vec<String> = numbers.iter().map(|each| format!("`Closes #{each}`")).collect();
+        let views: Vec<String> = numbers
+            .iter()
+            .map(|each| format!("`glab issue view {each} --comments`"))
+            .collect();
+        (
+            format!(
+                "the issues {} as one task (its branch carries #{number})",
+                breadboard_core::gitlab::issues_text(&numbers)
+            ),
+            format!(
+                "exactly the issues of this task ({}, no other); the boxes of each count for its merge, tick them per issue with `{run} wt:tick <issue> <box>…`",
+                closes.join(", ")
+            ),
+            views.join(", "),
+        )
+    };
     let worktree = format!(
-        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline), and only with `{run} wt:merge-base`, never a plain `git merge` (#396): on a conflict it aborts and names the files, `--resolve` keeps the merge open to finish in the same run. That MR handles exactly this one issue (`Closes #{number}`, no other)."
+        "{worktree}\nIts base is `{base}`: its MR goes into it. Merge it in only when your MR has a conflict with it or the overview/orchestrator tells you to (it moving is no reason: each merge costs a full pipeline), and only with `{run} wt:merge-base`, never a plain `git merge` (#396): on a conflict it aborts and names the files, `--resolve` keeps the merge open to finish in the same run. That MR handles {handles}."
     );
     let peer_line = match peer {
         Some(peer) => format!("The orchestrator is the session `{peer}` (`ListAgents`)."),
@@ -54,12 +80,12 @@ pub fn brief_of(
     format!(
         r#"# #{number} {title}
 
-You work on issue #{number} of {repo}, started by the orchestration `{name}` (herdr space `{label}`).
+You work on {work} of {repo}, started by the orchestration `{name}` (herdr space `{label}`).
 {worktree}
 You run headless: breadboard resumes your conversation (`claude -p`) whenever something comes for you, and nothing runs while you wait. Every line for you (an answer, a merge, a failed pipeline, the end of a wait) starts your next run; when you stop, you are done until then.
 Run long commands (`{run} wt:check`, the gauntlet, builds) in the foreground: a background command or Monitor is stopped when your run ends, and its notification never reaches you. To wait for something external use `{run} wt:wait`; never end a run with "I'll wait for …".
 
-1. Read the issue: `glab issue view {number} --comments`, then the AGENTS.md files and skills it touches.
+1. Read the issue: {read}, then the AGENTS.md files and skills it touches.
 2. Work as AGENTS.md says: commit, `{run} wt:check`, push per step (green means wt:check passed on that commit: the pre-push hook refuses any other, never `--no-verify`; a failing test is fixed; one that fails on {branch_name} too is fixed once, in its own fix MR, and the others wait for it with `{run} wt:wait`), the draft MR with the first commit (`{run} wt:mr`), boxes ticked with `{run} wt:tick`. Push every commit at once, never hold one back: the overview shows unpushed commits, and past 10 minutes they go to its NEXT.
    A change requested for your MR (by the user or the orchestrator): `{run} wt:action change "<what>"` first, it makes the MR a draft and withdraws your merge action, then build it; once it is pushed and green, post the merge again. Merged meanwhile: the command says so, and the change gets its own issue, branch and draft MR at once.
    Your pushes skip CI (#357): breadboard starts your MR's pipeline once every box of the issue is ticked (after-deploy ones excepted) and `{run} wt:check` passed at HEAD, in the runner's order; until then `wt:check` is the gate. Don't start one yourself.
@@ -103,6 +129,7 @@ mod tests {
             why: None,
             branch: "feature/12-a-title".into(),
             milestone: None,
+            also: vec![],
         }
     }
 
@@ -118,6 +145,24 @@ mod tests {
             "`AskUserQuestion` is off in headless runs (#360): a question for the user is always a `decide`;"
         ));
         assert!(brief.ends_with("Then read .claude/brief.md`: do just that, the brief there is your task from then on. The orchestrator and the other agents reach you under that name, a message to your old name is about your old issue.\n"));
+    }
+
+    #[test]
+    fn a_bundle_closes_every_issue_of_its_task() {
+        let bundle = Issue {
+            also: vec![13],
+            ..issue()
+        };
+        let brief = brief_of(&bundle, "o", "⇶ O", None, "", None, Path::new("/r/p"));
+        assert!(brief.contains("You work on the issues #12 and #13 as one task (its branch carries #12) of p,"));
+        assert!(
+            brief.contains("That MR handles exactly the issues of this task (`Closes #12`, `Closes #13`, no other)")
+        );
+        assert!(
+            brief.contains("1. Read the issue: `glab issue view 12 --comments`, `glab issue view 13 --comments`, then")
+        );
+        let one = brief_of(&issue(), "o", "⇶ O", None, "", None, Path::new("/r/p"));
+        assert!(one.contains("That MR handles exactly this one issue (`Closes #12`, no other)."));
     }
 
     #[test]

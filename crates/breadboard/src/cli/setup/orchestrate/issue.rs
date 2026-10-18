@@ -19,11 +19,6 @@ pub const BRIEF_PROMPT: &str = "Read .claude/brief.md and work on the issue it d
 /// one for a fresh start and a handover (its feature, branch, why not).
 pub type Item = handover::Issue;
 
-/// The leading number of an argument (`12` of `12-x`).
-pub fn number_of(arg: &str) -> String {
-    arg.chars().take_while(char::is_ascii_digit).collect()
-}
-
 /// An issue (its number, or `<n>-<feature>`) as GitLab has it, or why it can't be read.
 pub fn read_issue(arg: &str) -> Result<Item, String> {
     handover::read_issue(&repo::lifecycle(), arg).map_err(|failed| failed.0)
