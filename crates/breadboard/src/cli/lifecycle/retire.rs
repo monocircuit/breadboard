@@ -16,6 +16,7 @@ use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
 use breadboard_core::runs::args_of;
 use breadboard_core::snapshot;
+use breadboard_core::stage;
 use breadboard_core::time::{now_ms, to_iso};
 use serde_json::json;
 use std::fs;
@@ -182,6 +183,11 @@ fn last_run(dir: &Path, id: &str, name: &str, prompt: &str) -> String {
     // Run from the overview's pane: herdr would resume it there after a restart (#425).
     let spawned = breadboard_core::herdr::off_pane(&mut Command::new("claude"))
         .args(args_of(id, name, prompt, true, &[]))
+        // On the model of its kind of work (#373), as its runs were.
+        .args(stage::model_args(
+            &breadboard_core::config::of(dir).config,
+            stage::of_worktree(dir),
+        ))
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

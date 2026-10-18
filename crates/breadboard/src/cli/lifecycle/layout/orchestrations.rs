@@ -19,6 +19,7 @@ use breadboard_core::epic::epic_of;
 use breadboard_core::git::orchestrator_checkouts;
 use breadboard_core::json;
 use breadboard_core::record::{self, ORCHESTRATOR, Origin, Record, SLOTS, SPACE, is_session_id};
+use breadboard_core::stage::orchestrator_model;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -604,7 +605,12 @@ pub fn restore_chat(repo: &Repo, name: &str) -> Option<String> {
                 return Some(format!("the conversation {id} runs elsewhere, outside herdr's panes"));
             }
             let ChatState::Idle { pane } = state else { return None };
-            let command = format!("cd {} && claude --resume {id}{}", quote(&text(&cwd)), ide_flag(&cwd));
+            let command = format!(
+                "cd {} && claude --resume {id}{}{}",
+                quote(&text(&cwd)),
+                ide_flag(&cwd),
+                orchestrator_model(&repo.main)
+            );
             resume(s(&pane, "pane_id"), &id, &command).then(|| format!("resumed {id} in its tab"))
         }
     }

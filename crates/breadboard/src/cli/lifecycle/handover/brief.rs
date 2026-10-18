@@ -103,6 +103,7 @@ mod tests {
             why: None,
             branch: "feature/12-a-title".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         }
     }
 

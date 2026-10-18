@@ -88,7 +88,9 @@ pub fn after_read(app: &mut Overview, local: &OrchestrationLocal) {
 
 /// One checker started on a thread of its own; its end answers the try.
 fn start(app: &mut Overview, due: Due) {
-    let model = config::of(&due.dir).config.tries.checker.clone();
+    // `[agents.models] review`, else `[tries] checker` (#373).
+    let model = breadboard_core::stage::model_of(&config::of(&due.dir).config, breadboard_core::stage::Stage::Review)
+        .unwrap_or_default();
     let evidence = evidence_dir(&due.dir, due.action.id, &due.head);
     let _ = std::fs::create_dir_all(&evidence);
     let prompt = prompt_of(&due.action, &evidence, due.app.as_deref());

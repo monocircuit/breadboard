@@ -23,6 +23,7 @@ use breadboard_core::json::{self, int_of, str_of};
 use breadboard_core::record::{self, is_name, origin_of};
 use breadboard_core::runs;
 use breadboard_core::setups::{Claim, claim_setup, setup_text};
+use breadboard_core::stage::{self, Stage};
 use breadboard_core::time::{now_ms, to_iso};
 pub use brief::brief_of;
 use regex::Regex;
@@ -116,6 +117,8 @@ pub struct Issue {
     pub branch: String,
     /// Its milestone's title: which epic it belongs to (#350).
     pub milestone: Option<String>,
+    /// Its kind of work by its labels, its agent's model (#373).
+    pub stage: Stage,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -274,10 +277,12 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     } else {
         arg.to_string()
     };
-    let is_fix = found
+    let labels: Vec<String> = found
         .get("labels")
         .and_then(Value::as_array)
-        .is_some_and(|labels| labels.iter().any(|l| l == "bug"));
+        .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+    let is_fix = labels.iter().any(|label| label == "bug");
     let dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
     let why = if state != "opened" {
@@ -307,6 +312,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
             .get("milestone")
             .and_then(|milestone| str_of(milestone, "title"))
             .map(String::from),
+        stage: stage::of_labels(&breadboard_core::config::of(&repo.main).config, &labels),
     })
 }
 
@@ -1202,6 +1208,8 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
+    // Its runs there are on the model of the issue's kind of work (#373).
+    let _ = stage::write(&issue.dir, issue.stage);
     let feature = issue.feature.as_str();
     let line = next_issue_line(number, feature, &issue.dir);
     // A headless agent (#359, #361): its next run, in the worktree under its new name; nothing is typed.
@@ -1455,6 +1463,7 @@ mod tests {
             why: None,
             branch: "feature/5-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1477,6 +1486,7 @@ mod tests {
             why: None,
             branch: "fix/247-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);

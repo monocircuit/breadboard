@@ -6,6 +6,7 @@ use crate::cli::lifecycle::handover;
 use crate::cli::setup::conversations::session_file;
 use crate::cli::setup::proc::{self, quote};
 use crate::cli::setup::repo;
+use breadboard_core::stage::Stage;
 use breadboard_core::time::now_ms;
 use breadboard_core::{record, runs};
 use serde_json::{Map, Value};
@@ -127,10 +128,12 @@ pub struct Agent {
 }
 
 /// The agent of an orchestrated worktree: its brief written, then started
-/// headless (#361), else the command that queues it by hand.
-pub fn start_agent(dir: &Path, brief: &str) -> Agent {
+/// headless (#361), else the command that queues it by hand; `stage` kept for its runs.
+pub fn start_agent(dir: &Path, brief: &str, stage: Stage) -> Agent {
     let feature = repo::feature_of(dir);
     let _ = record::write_brief(dir, brief);
+    // Its runs are on the model of its issue's kind of work (#373).
+    let _ = breadboard_core::stage::write(dir, stage);
     start_headless(&repo::main_dir(), dir, &feature, new_session_id())
 }
 

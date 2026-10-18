@@ -166,7 +166,7 @@ fn app_of(node: &Node) -> model::Span {
 /// pulses while its headless run is in flight.
 const PULSE: std::time::Duration = std::time::Duration::from_millis(800);
 
-/// Who works in it (#292, #390): `● Lina Zhou  (2 issues · 1 MR done)
+/// Who works in it (#292, #390): `● Lina Zhou  sonnet-5-5  (2 issues · 1 MR done)
 /// [1.6 M tokens · ≈ $33, today 895 k · ≈ $11]  48%`, the dot in the colour
 /// of whom it waits for, pulsing while its run is in flight; its name before
 /// a handover. Under it, indented, what it does or waits for in words.
@@ -185,6 +185,10 @@ pub(super) fn agent_lines(scene: &mut Scene<Act>, node: &Node, ctx: &Ctx) {
         scene.atom_gap(vec![look::span("●", dot), Span::raw(" "), look::bold(&agent.name)], 0);
         if !node.lines.renamed.is_empty() {
             scene.atom(look::spans(&node.lines.renamed));
+        }
+        // The model of its kind of work (#373).
+        if let Some(model) = &node.lines.model {
+            scene.atom_gap(look::spans(std::slice::from_ref(model)), 2);
         }
         scene.atom_gap(vec![look::dim(agent.counts())], 2);
         if let Some(spend) = agent.spend() {

@@ -402,6 +402,24 @@ pub struct Agents {
     /// retires at its merge instead of taking a next issue: its next one
     /// goes to a fresh agent with its written handoff (#381).
     pub fresh_above: u8,
+    /// The model of each kind of work (#373, `stage.rs`).
+    pub models: Models,
+    /// The labels that make an issue's agent a `docs` one (#373).
+    pub docs_labels: Vec<String>,
+}
+
+/// `[agents.models]` (#373): a model per stage, `default` for the ones
+/// without; none at all leaves claude's own default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Models {
+    pub default: Option<String>,
+    pub build: Option<String>,
+    pub docs: Option<String>,
+    /// The try checker's; None: `[tries] checker`.
+    pub review: Option<String>,
+    pub ci_fix: Option<String>,
+    pub orchestrator: Option<String>,
 }
 
 /// `[agents] fresh_above` when the file says nothing.
@@ -413,6 +431,8 @@ impl Default for Agents {
             daily_limit: None,
             orchestration_budget: None,
             fresh_above: FRESH_ABOVE,
+            models: Models::default(),
+            docs_labels: vec!["documentation".into()],
         }
     }
 }

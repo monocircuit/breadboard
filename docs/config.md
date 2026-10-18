@@ -241,12 +241,39 @@ the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
 | `daily_limit` | none | what the repo's claudes may spend from local midnight: once it is reached the run engine of headless agents starts no new run, their lines wait in the queue and the overview says why; its `continue anyway` lifts it until midnight (`breadboard runs continue`) |
 | `orchestration_budget` | none | what an orchestration's agents may spend in all: shown against what they spent in its band |
 | `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+| `docs_labels` | `["documentation"]` | the issue labels that make its agent a `docs` one (`[agents.models]`) |
 
 ```toml
 [agents]
 daily_limit = "$40"
 orchestration_budget = "200 M"
 fresh_above = 40
+```
+
+### `[agents.models]`
+
+A model per kind of work (#373): every claude breadboard starts gets
+`--model` of its stage. A task agent's stage comes from its issue's labels
+when it starts (`docs` with a `docs_labels` one, else `build`) and is kept in
+its worktree (`.claude/stage`); a run whose every line is its MR's failed
+pipeline is `ci_fix`. The try checker is `review`, the orchestrator's chat
+`orchestrator` (its tab's `claude`, a resume, a fresh start). The overview
+shows the model each agent last answered with next to its name.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `default` | none | the model of every stage without its own; none at all: claude's own default, no `--model` |
+| `build` | `default` | a feature or fix agent |
+| `docs` | `default` | an agent of an issue with a `docs_labels` label |
+| `ci_fix` | `default` | a run that only gets a failed pipeline of its MR |
+| `review` | `[tries] checker` | the try checker (not `default`: a small model unless set) |
+| `orchestrator` | `default` | the orchestrator's chat |
+
+```toml
+[agents.models]
+default = "opus"
+docs = "sonnet"
+ci_fix = "sonnet"
 ```
 
 ## `[tries]`
@@ -261,7 +288,7 @@ opens its path there.
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
 | `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
-| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree |
+| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree; `[agents.models] review` wins over it |
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).

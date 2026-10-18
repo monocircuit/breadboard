@@ -530,7 +530,7 @@ pub fn command(args: &Args) -> ExitCode {
                         before: None,
                         handoff,
                     });
-                    let agent = issue::start_agent(&item.dir, &brief);
+                    let agent = issue::start_agent(&item.dir, &brief, item.stage);
                     if !agent.is_started && is_now {
                         issue::undo_start(
                             &name,
