@@ -864,10 +864,24 @@ impl LocalReader {
                     })
                     .map(|tree| tree.branch.clone())
                     .collect();
+                let mut bundles = std::collections::BTreeMap::new();
+                if let Some(record) = &local.record {
+                    for issue in record.issues.iter().filter(|issue| issue.numbers.len() > 1) {
+                        if let Some(branch) = &issue.branch {
+                            bundles.insert(branch.clone(), issue.numbers.clone());
+                        }
+                    }
+                }
+                for tree in local.trees.iter().filter(|tree| tree.issues.len() > 1) {
+                    let known = bundles.get(&tree.branch).cloned().unwrap_or_default();
+                    let numbers = record::bundle_of(tree.issues.first().copied(), &[&tree.issues[..], &known].concat());
+                    bundles.insert(tree.branch.clone(), numbers);
+                }
                 RemoteAsk::Orchestration(Ask {
                     branches,
                     awaited,
                     deploys,
+                    bundles,
                     epic: local
                         .record
                         .as_ref()

@@ -178,7 +178,45 @@ impl Issue {
 pub struct BranchRemote {
     pub mr: Option<Mr>,
     pub jobs: Vec<Job>,
+    /// The issue its branch carries: the first of its task.
     pub issue: Option<Issue>,
+    /// The other issues its task closes (#321), in the task's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<Issue>,
+}
+
+impl BranchRemote {
+    /// Its issues from what GitLab answered, `numbers` the task's, its branch's first.
+    pub fn set_issues(&mut self, numbers: &[i64], issues: &HashMap<i64, Issue>) {
+        self.issue = numbers.first().and_then(|number| issues.get(number).cloned());
+        self.also = numbers
+            .iter()
+            .skip(1)
+            .filter_map(|number| issues.get(number).cloned())
+            .collect();
+    }
+
+    /// Its issues in words: `#7`, `#7 and #9`, `#7, #8 and #9`.
+    pub fn issues_text(&self) -> String {
+        let numbers: Vec<i64> = self.issues().map(|issue| issue.iid).collect();
+        issues_text(&numbers)
+    }
+
+    /// Every issue of its task GitLab knows, the branch's first.
+    pub fn issues(&self) -> impl Iterator<Item = &Issue> {
+        self.issue.iter().chain(&self.also)
+    }
+
+    /// The boxes of its task's issues by issue, the branch's first (`model::boxes::TaskBoxes`).
+    pub fn task_boxes(&self) -> Vec<(i64, &[IssueBox])> {
+        self.issues().map(|issue| (issue.iid, &issue.boxes[..])).collect()
+    }
+
+    /// The boxes of every issue of its task (#321): the bar, the merge's
+    /// blockers and the tries count over all of them.
+    pub fn boxes(&self) -> Vec<IssueBox> {
+        self.issues().flat_map(|issue| issue.boxes.iter().cloned()).collect()
+    }
 }
 
 /// develop's last finished pipeline; its jobs only when it failed (a job
@@ -337,6 +375,16 @@ pub fn paths_of(text: &str) -> Vec<String> {
         .map(|found| found.as_str().to_string())
         .filter(|path| seen.insert(path.clone()))
         .collect()
+}
+
+/// Issues in words: `#7`, `#7 and #9`, `#7, #8 and #9`.
+pub fn issues_text(numbers: &[i64]) -> String {
+    let all: Vec<String> = numbers.iter().map(|number| format!("#{number}")).collect();
+    match all.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// The issue a branch claims: `feature/34-x` → 34.

@@ -93,7 +93,7 @@ pub(super) fn bar_atom<'a>(
 ) -> (Option<&'a [BoxSection]>, Option<u16>) {
     if ctx.is_once || mr.boxes.is_empty() {
         if width >= MIN_BAR {
-            scene.atom(bar(progress, mr.issue, width).into_iter().chain(after).collect());
+            scene.atom(bar(progress, &mr.issues, width).into_iter().chain(after).collect());
         }
         // A print has nothing to click: its open boxes under the bar (#354).
         let open = Some(&mr.open_boxes[..]).filter(|open| ctx.is_once && !open.is_empty());
@@ -107,7 +107,7 @@ pub(super) fn bar_atom<'a>(
     };
     let mut spans = vec![boxes::mark(shown.is_some())];
     if width >= MIN_BAR + 2 {
-        spans.extend(bar(progress, mr.issue, width - 2));
+        spans.extend(bar(progress, &mr.issues, width - 2));
     } else {
         spans.push(look::dim(format!("{}/{}", progress.ticked, progress.total)));
     }
@@ -278,7 +278,7 @@ pub(super) fn title_spans(title: &str, is_merged: bool) -> Vec<Span<'static>> {
 /// open), the rest a thin dim one; behind it the counts, dropped section by
 /// section on a narrow width, never `…`. The counts are `issue`'s boxes and
 /// say so (`#335: 8/10 boxes`, #346): the MR's own description has its own.
-pub(super) fn bar(progress: &Progress, issue: Option<i64>, width: u16) -> Vec<Span<'static>> {
+pub(super) fn bar(progress: &Progress, issues: &[i64], width: u16) -> Vec<Span<'static>> {
     let &Progress {
         ticked,
         total,
@@ -299,7 +299,13 @@ pub(super) fn bar(progress: &Progress, issue: Option<i64>, width: u16) -> Vec<Sp
             full.push(format!("{name} {done}/{all}"));
         }
     }
-    let source = issue.map(|issue| format!("#{issue}: ")).unwrap_or_default();
+    // Every issue it counts (#321): `#7+#9: `.
+    let source = if issues.is_empty() {
+        String::new()
+    } else {
+        let numbers: Vec<String> = issues.iter().map(|number| format!("#{number}")).collect();
+        format!("{}: ", numbers.join("+"))
+    };
     let candidates = [
         format!("{source}{}", full.join(" · ")),
         format!("{source}{ticked}/{total} boxes"),
@@ -518,16 +524,16 @@ mod tests {
             acceptance: (0, 3),
             ..Default::default()
         };
-        let wide = text(&bar(&progress, None, 50));
+        let wide = text(&bar(&progress, &[], 50));
         assert!(wide.ends_with("  9/12 boxes · work 9/9 · acceptance 0/3"), "{wide}");
         assert_eq!(Span::raw(wide.as_str()).width(), 50);
         // Wider: the bar takes the room it is given, the counts at its end (#294).
-        let wide = text(&bar(&progress, None, 80));
+        let wide = text(&bar(&progress, &[], 80));
         assert_eq!(Span::raw(wide.as_str()).width(), 80);
         assert!(wide.starts_with(&"━".repeat(30)), "{wide}");
-        assert!(text(&bar(&progress, None, 20)).ends_with("  9/12 boxes"));
-        assert!(text(&bar(&progress, None, 15)).ends_with("  9/12"));
-        assert_eq!(text(&bar(&progress, None, 8)), "━━━━━━──");
+        assert!(text(&bar(&progress, &[], 20)).ends_with("  9/12 boxes"));
+        assert!(text(&bar(&progress, &[], 15)).ends_with("  9/12"));
+        assert_eq!(text(&bar(&progress, &[], 8)), "━━━━━━──");
     }
 
     #[test]
@@ -541,7 +547,7 @@ mod tests {
             other: (0, 7),
             other_name: "scope".into(),
         };
-        let label = text(&bar(&progress, None, 80));
+        let label = text(&bar(&progress, &[], 80));
         assert!(label.ends_with("  0/9 boxes · acceptance 0/2 · scope 0/7"), "{label}");
         // Once they are ticked they go unnamed: the label accounts for the open boxes.
         let done = Progress {
@@ -549,7 +555,7 @@ mod tests {
             other: (7, 7),
             ..progress
         };
-        assert!(text(&bar(&done, None, 80)).ends_with("  7/9 boxes · acceptance 0/2"));
+        assert!(text(&bar(&done, &[], 80)).ends_with("  7/9 boxes · acceptance 0/2"));
     }
 
     #[test]
@@ -561,13 +567,13 @@ mod tests {
             acceptance: (0, 2),
             ..Default::default()
         };
-        assert_eq!(bar(&only_acceptance, None, 8)[0].style.fg, Some(Tone::Yellow.fg()));
+        assert_eq!(bar(&only_acceptance, &[], 8)[0].style.fg, Some(Tone::Yellow.fg()));
         let work_open = Progress {
             work: (1, 2),
             acceptance: (1, 2),
             ..only_acceptance
         };
-        assert_eq!(bar(&work_open, None, 8)[0].style.fg, Some(Tone::Green.fg()));
+        assert_eq!(bar(&work_open, &[], 8)[0].style.fg, Some(Tone::Green.fg()));
     }
 
     #[test]
@@ -749,6 +755,7 @@ mod tests {
             boxes: vec![],
             open_boxes: vec![],
             issue: None,
+            issues: vec![],
             spent: None,
         }
     }

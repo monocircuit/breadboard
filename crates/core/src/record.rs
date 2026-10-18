@@ -118,7 +118,48 @@ pub fn write_origin(dir: &Path, origin: &Origin) -> io::Result<()> {
     if let Some(base) = base_in(dir) {
         value["base"] = Value::from(base);
     }
+    let issues = issues_in(dir);
+    if !issues.is_empty() {
+        value["issues"] = json!(issues);
+    }
     json::write_compact(&origin_file(dir), &value)
+}
+
+/// The issues a worktree's task closes besides its branch's (#321), `issues`
+/// of its `.claude/origin`: the branch's first, as written; empty for a task
+/// of one issue (a file from before #321 has none).
+pub fn issues_in(dir: &Path) -> Vec<i64> {
+    json::read(&origin_file(dir))
+        .map(|value| ints_of(&value, "issues"))
+        .unwrap_or_default()
+}
+
+/// Records the issues of a bundle (#321) in its `.claude/origin`, the
+/// branch's first; one issue leaves the file as it was.
+pub fn write_issues(dir: &Path, numbers: &[i64]) -> io::Result<()> {
+    if numbers.len() < 2 {
+        return Ok(());
+    }
+    let mut value = json::read_object(&origin_file(dir));
+    value.insert("issues".into(), json!(numbers));
+    json::write_compact(&origin_file(dir), &Value::Object(value))
+}
+
+/// Every issue of the task of `branch` in `dir` (#321): the branch's first,
+/// then the others its `.claude/origin` names, each once.
+pub fn task_issues(dir: &Path, branch: &str) -> Vec<i64> {
+    bundle_of(crate::gitlab::number_of(branch), &issues_in(dir))
+}
+
+/// `first` and then `others`, each once, none ≤ 0.
+pub fn bundle_of(first: Option<i64>, others: &[i64]) -> Vec<i64> {
+    let mut numbers: Vec<i64> = Vec::new();
+    for number in first.into_iter().chain(others.iter().copied()) {
+        if number > 0 && !numbers.contains(&number) {
+            numbers.push(number);
+        }
+    }
+    numbers
 }
 
 /// The branch a worktree is based on, `base` of its `.claude/origin` (#349):
@@ -218,7 +259,11 @@ pub fn recorded(main: &Path) -> Vec<String> {
 /// An issue as the record keeps it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct IssueEntry {
+    /// The first issue of its task, the one its branch carries.
     pub number: Option<i64>,
+    /// Every issue of its task (#321), `number` first: `numbers` of the
+    /// entry, `[number]` for one without (rule 5).
+    pub numbers: Vec<i64>,
     pub title: Option<String>,
     pub feature: Option<String>,
     pub branch: Option<String>,
@@ -237,8 +282,10 @@ pub struct IssueEntry {
 
 impl IssueEntry {
     pub fn from_value(value: &Value) -> IssueEntry {
+        let number = int_of(value, "number");
         IssueEntry {
-            number: int_of(value, "number"),
+            number,
+            numbers: bundle_of(number, &ints_of(value, "numbers")),
             title: str_of(value, "title").map(String::from),
             feature: str_of(value, "feature").map(String::from),
             branch: str_of(value, "branch").map(String::from),
@@ -953,6 +1000,45 @@ pub fn drop_handover(main: &Path, name: &str, number: i64) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::lock::scratch::Scratch;
+
+    #[test]
+    fn an_entry_without_numbers_is_a_task_of_one_issue() {
+        let old = IssueEntry::from_value(&json!({ "number": 7, "branch": "feature/7-a" }));
+        assert_eq!(old.numbers, [7]);
+        let bundle = IssueEntry::from_value(&json!({ "number": 7, "numbers": [7, 9, 9, "x"] }));
+        assert_eq!(bundle.numbers, [7, 9]);
+        // `number` stays the first, whatever order `numbers` has.
+        assert_eq!(
+            IssueEntry::from_value(&json!({ "number": 9, "numbers": [7, 9] })).numbers,
+            [9, 7]
+        );
+        assert_eq!(
+            IssueEntry::from_value(&json!({ "title": "queued" })).numbers,
+            Vec::<i64>::new()
+        );
+    }
+
+    #[test]
+    fn a_worktree_keeps_the_issues_of_its_bundle_in_its_origin() {
+        let scratch = Scratch::new();
+        let dir = scratch.path();
+        assert_eq!(task_issues(dir, "feature/7-a"), [7]);
+        write_issues(dir, &[7]).unwrap();
+        assert!(!origin_file(dir).exists(), "one issue writes nothing");
+        write_issues(dir, &[7, 9]).unwrap();
+        assert_eq!(task_issues(dir, "feature/7-a"), [7, 9]);
+        // The orchestration written later keeps them.
+        write_origin(
+            dir,
+            &Origin {
+                name: "x".into(),
+                slot: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(issues_in(dir), [7, 9]);
+        assert_eq!(origin_of(dir).map(|origin| origin.name).as_deref(), Some("x"));
+    }
 
     /// A record as wt:orchestrate, wt:plan and the overview write it.
     const RECORD: &str = r#"{

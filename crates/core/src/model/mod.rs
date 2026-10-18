@@ -153,6 +153,8 @@ pub struct Tree {
     pub branch: String,
     /// The orchestration that started it.
     pub origin: Option<Origin>,
+    /// Every issue of its task (#321), its branch's first; empty for the main checkout.
+    pub issues: Vec<i64>,
     /// The branch it is based on (#349): develop, or its orchestration's epic.
     pub base: crate::git::Base,
     /// The cwd of the overview is in it.
@@ -241,6 +243,9 @@ pub struct Tree {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Entry {
     pub number: Option<i64>,
+    /// Every issue of its task (#321), `number` first: the record's and
+    /// those its worktree's `.claude/origin` names.
+    pub numbers: Vec<i64>,
     pub title: Option<String>,
     pub feature: String,
     pub branch: String,
@@ -272,8 +277,10 @@ pub fn issues_of(record: &[IssueEntry], trees: &[Tree]) -> Vec<Entry> {
             if let Some(at) = at {
                 used[at] = true;
             }
+            let own = at.map(|at| &trees[at].issues[..]).unwrap_or_default();
             Entry {
                 number: issue.number,
+                numbers: crate::record::bundle_of(issue.number, &[&issue.numbers[..], own].concat()),
                 title: issue.title.clone(),
                 feature: issue.feature.clone().unwrap_or_default(),
                 branch,
@@ -289,8 +296,10 @@ pub fn issues_of(record: &[IssueEntry], trees: &[Tree]) -> Vec<Entry> {
         })
         .collect();
     for (tree, _) in trees.iter().zip(&used).filter(|(_, is_used)| !**is_used) {
+        let number = crate::gitlab::number_of(&tree.branch);
         issues.push(Entry {
-            number: crate::gitlab::number_of(&tree.branch),
+            number,
+            numbers: crate::record::bundle_of(number, &tree.issues),
             feature: tree.name.clone(),
             branch: tree.branch.clone(),
             tree: Some(tree.clone()),

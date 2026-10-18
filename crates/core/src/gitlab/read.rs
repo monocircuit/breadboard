@@ -14,7 +14,7 @@ use crate::time::now_ms;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 /// iids per batched call: GitLab's page.
@@ -563,6 +563,19 @@ pub struct Ask {
     /// Its epic branch (#350): its pipeline and its MR into develop are read.
     #[serde(default)]
     pub epic: Option<String>,
+    /// The branches whose task closes several issues (#321): every issue, the branch's first.
+    #[serde(default)]
+    pub bundles: BTreeMap<String, Vec<i64>>,
+}
+
+impl Ask {
+    /// Every issue of the task of `branch`, the one it carries first.
+    pub fn issues_of(&self, branch: &str) -> Vec<i64> {
+        match self.bundles.get(branch) {
+            Some(numbers) => numbers.clone(),
+            None => number_of(branch).into_iter().collect(),
+        }
+    }
 }
 
 /// The links GitLab has of the open issues `numbers`, in the shape real GitLab
@@ -642,7 +655,7 @@ pub async fn read_orchestration(
         let mut seen = BTreeSet::new();
         branches
             .iter()
-            .filter_map(|branch| number_of(branch))
+            .flat_map(|branch| ask.issues_of(branch))
             .filter(|number| seen.insert(*number))
             .collect()
     };
@@ -768,7 +781,14 @@ pub async fn read_orchestration(
         } else {
             (None, Vec::new())
         };
-        of.insert(branch.clone(), BranchRemote { mr, jobs, issue: None });
+        of.insert(
+            branch.clone(),
+            BranchRemote {
+                mr,
+                jobs,
+                ..BranchRemote::default()
+            },
+        );
     }
 
     // Merged, with a try on the test instance waiting: where its deployment stands.
@@ -816,7 +836,7 @@ pub async fn read_orchestration(
         }
     }
     for (branch, remote) in of.iter_mut() {
-        remote.issue = number_of(branch).and_then(|number| issues.get(&number).cloned());
+        remote.set_issues(&ask.issues_of(branch), &issues);
     }
 
     // develop's last finished pipeline, its jobs only when it failed; the epic's the same way.

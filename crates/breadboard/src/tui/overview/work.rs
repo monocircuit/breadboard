@@ -1577,6 +1577,7 @@ mod tests {
                 boxes: vec![],
                 open_boxes: vec![],
                 issue: None,
+                issues: vec![],
                 spent: None,
             }),
         }
