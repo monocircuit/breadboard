@@ -13,7 +13,7 @@
 //! `passed.no_test`, which wt:mr puts into the MR description. `--mr` is the
 //! same rule for the MR's CI job, the reason read from its description.
 
-use super::proc::{Args, Stream, fail, git, outln, step, write_bytes};
+use super::proc::{Args, Shape, Stream, fail, git, outln, step, write_bytes};
 use super::repo;
 use breadboard_core::check::{self, failures_line, failures_of};
 pub use breadboard_core::check::{Failure, read_check};
@@ -27,7 +27,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub const USAGE: &str = "usage: pnpm wt:check [--no-test \"<reason>\"] [--mr]";
+/// What `wt:check` takes: a fix's reason to come without a test, or `--mr` (#316).
+pub const SHAPE: Shape = Shape::new(
+    &["--no-test", "--mr"],
+    &["--no-test"],
+    Some(0),
+    "usage: pnpm wt:check [--no-test \"<reason>\"] [--mr]",
+);
 
 /// What wt:check runs, through turbo.
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
@@ -755,6 +761,9 @@ fn migrations_refusal(dir: &Path, remote: &str, epic: Option<String>) -> Option<
 }
 
 pub fn command(args: &Args) -> ExitCode {
+    if args.has("--mr") {
+        return mr_command(args);
+    }
     let given = args.value("--no-test");
     if args.has("--no-test") && given.as_deref().is_none_or(|reason| reason.trim().is_empty()) {
         fail(&format!(

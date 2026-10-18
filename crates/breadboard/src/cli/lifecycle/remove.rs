@@ -519,6 +519,11 @@ pub fn remove(repo: &Repo, feature: &str, options: &Options) -> Result<Option<Pe
         }
     }
 
+    // Its dev server and tools (#407) end before the folder they run in goes.
+    let ended = super::stack_procs::stop_all(&dir);
+    if !ended.is_empty() {
+        step(&format!("stopped {}", ended.join(" ").replace('-', "")));
+    }
     if offset_of(&dir) != 0 {
         step(&format!("stop the own stack of {feature} and delete its data"));
         let args = compose_args(&dir, &["down", "-v"]).unwrap_or_default();

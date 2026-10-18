@@ -104,7 +104,7 @@ Inside herdr (`HERDR_ENV=1`) the scripts arrange spaces and tabs themselves:
 an agent never calls `herdr` by hand and never runs `{{run}} herdr`. When an
 agent runs `wt:new`, its own tab moves into the space of the worktree; it
 follows with `EnterWorktree`. `wt:remove` closes the space, idle agents too,
-but never an agent at work or a running server. The spaces, the stack tabs, the
+but never an agent at work or a running server. The spaces, the stack's processes, the
 restore after a restart and the plugin: [herdr.md](herdr.md).
 
 {{#stack}}
