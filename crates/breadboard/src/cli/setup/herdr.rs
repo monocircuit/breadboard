@@ -7,12 +7,11 @@
 //! with herdr unhappy, every call answers nothing and nothing fails: the
 //! worktree is the point, the space is comfort.
 
-use super::proc;
 use super::repo;
 use crate::cli::lifecycle::herdr as lifecycle_herdr;
-use crate::cli::lifecycle::layout::{orchestrations, spaces, tabs};
+use crate::cli::lifecycle::layout::orchestrations;
 use breadboard_core::json::str_of;
-use breadboard_core::record::{self, ORCHESTRATOR, Origin, SPACE};
+use breadboard_core::record::Origin;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -97,95 +96,9 @@ pub fn orchestration_here() -> Option<String> {
     orchestration_of(&label)
 }
 
-/// Whether wt:new takes the tab running it into the new space: an agent's, not an orchestrator's.
-pub fn moves_tab(is_agent: bool, origin: Option<&Origin>, stays: Option<&str>) -> bool {
-    is_agent && origin.is_none() && stays.is_none()
-}
-
-/// After wt:new: the worktree's space. A human gets it with a tab in front,
-/// an agent takes its own tab in; an orchestration's is marked, unfocused.
-pub fn open_space(feature: &str, dir: &Path, origin: Option<&Origin>, stays: Option<&str>) -> Option<String> {
-    exclusive(|| {
-        if !is_in_herdr() {
-            return None;
-        }
-        let repo = repo::lifecycle();
-        spaces::main_space(&repo)?;
-        if !moves_tab(proc::is_agent(), origin, stays) {
-            let workspace = spaces::worktree_space(&repo, dir, true)?;
-            if let Some(origin) = origin {
-                if let Some(found) = spaces()
-                    .into_iter()
-                    .find(|space| field(space, "workspace_id") == workspace)
-                {
-                    mark_space(&found, Some(origin));
-                }
-                return Some(format!(
-                    "opened the space {feature}, marked {ORCHESTRATOR} {}",
-                    record::title_of(&repo.main, &origin.name)
-                ));
-            }
-            if let Some(stays) = stays {
-                let label = repo.orchestrator_label(stays);
-                return Some(format!("opened the space {feature}, this tab stays in {label}"));
-            }
-            if let Some(tab) = tabs_of(&workspace)
-                .into_iter()
-                .find(|tab| field(tab, "label") == feature)
-            {
-                herdr(&["tab", "focus", field(&tab, "tab_id")]);
-            }
-            return Some(format!("opened the space {feature}"));
-        }
-        let workspace = spaces::worktree_space(&repo, dir, false)?;
-        let pane = pane_here()?;
-        let moved = herdr(&[
-            "pane",
-            "move",
-            field(&pane, "pane_id"),
-            "--workspace",
-            &workspace,
-            "--new-tab",
-        ]);
-        let created =
-            moved.and_then(|moved| lifecycle_herdr::id_at(&moved, &["move_result", "created_tab", "tab_id"]))?;
-        herdr(&["tab", "rename", &created, feature]);
-        tabs::drop_duplicates(&workspace, feature);
-        spaces::ensure_editor(&repo, &workspace, dir, &tabs_of(&workspace));
-        tabs::keep_order(
-            &workspace,
-            &spaces::tab_order(record::is_orchestrated(&repo.main, dir), feature),
-        );
-        let had_root = spaces::space_of(&repo, &repo.main)
-            .map(|main| tabs_of(&main).iter().any(|tab| field(tab, "label") == tabs::ROOT))
-            .unwrap_or(false);
-        spaces::main_space(&repo);
-        Some(format!(
-            "this tab moved into the space {feature}{}",
-            if had_root {
-                String::new()
-            } else {
-                format!(", a new tab {} waits in {SPACE}", tabs::ROOT)
-            }
-        ))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn moves_only_an_agents_free_tab() {
-        let origin = Origin {
-            name: "x".into(),
-            slot: 0,
-        };
-        assert!(moves_tab(true, None, None));
-        assert!(!moves_tab(false, None, None));
-        assert!(!moves_tab(true, Some(&origin), None));
-        assert!(!moves_tab(true, None, Some("x")));
-    }
 
     #[test]
     fn names_the_slot_tokens() {

@@ -227,8 +227,13 @@ pub struct Tree {
     /// The commit of `origin/<branch>`.
     pub pushed: Option<String>,
     pub unpushed: u64,
+    /// Of them the branch's own, and the base a merge brought in (#450).
+    pub unpushed_own: u64,
+    pub merged_base: Option<String>,
     pub unpushed_at: Option<i64>,
     pub has_remote_branch: bool,
+    /// What breadboard's push of its commits is at (#450, `.claude/pushing.json`).
+    pub pushing: Option<crate::push::Pushing>,
     /// When the merge open in it began (MERGE_HEAD, ms), None without one (#396).
     pub merge_head_at: Option<i64>,
     /// The automatic lines that got in to its agent (`.claude/overview-sent.json`).

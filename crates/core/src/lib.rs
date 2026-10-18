@@ -21,6 +21,7 @@ pub mod lock;
 pub mod main_update;
 pub mod model;
 pub mod permissions;
+pub mod push;
 pub mod reader;
 pub mod ready;
 pub mod record;

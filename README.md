@@ -143,9 +143,9 @@ of your own keeps its claude in a tab (#361).
   worktree view's `resume` row): `claude --resume <id> --name <feature>` in
   the tab `<feature>` of its worktree's space, once no run of it is in
   flight; its queue waits until that claude ends.
-- **The sidebar and the tab bar read the status table**: the space of a
-  worktree shows what its agent waits for (`$wt_state`, the space's third
-  row), and "N need you" counts its `asks`.
+- **The tab bar reads the status table**: "N need you" counts its `asks`;
+  what an agent waits for is its row in the overview (a worktree has no
+  space of its own, #409).
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
@@ -194,6 +194,22 @@ of your own keeps its claude in a tab (#361).
   `[breadboard] the usage limit reset: continue where you stopped` ahead of
   them. The band says `usage limit until 23:30`, and the orchestrator's
   chat is told once when it holds and once when the runs go on.
+- **Unpushed commits** (#450, `crates/breadboard/src/daemon/push.rs`, the
+  rules in `crates/core/src/push.rs`): a run cut off (herdr killed, OOM)
+  leaves its commits unpushed while the agent idles, and a push needs no
+  LLM. Every 15 s the daemon looks at each orchestrated worktree; one with
+  commits its upstream lacks, its agent's last run ended a minute ago and
+  none queued, no claude open in it, no `wt:check` or background command
+  running and nothing uncommitted gets `wt:check` run by breadboard, then
+  `git push` and a draft MR (`wt:mr`, `Closes #<n>`) when it has none. One
+  at a time across the clone's daemons (`.claude/runs/push.pid`), only while
+  memory allows a run. A red check is one line to the agent (the failing
+  task, the log's end); red again after its fix, or a push git refused, a
+  `look` action of the worktree. Uncommitted changes are one line to the
+  agent, never checked. ACTIONS has no row for them: the node says
+  `2 commits + a merge of develop not pushed · wt:check running, then push`
+  (`.claude/pushing.json`). Off with `git config breadboard.push off`
+  (every gauntlet world but `push.check.mjs`'s).
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
   `asks` (the run was denied a tool, its `permission_denials`), `limit`
   (the usage limit), and `queued` from the queue. The overview reads it as

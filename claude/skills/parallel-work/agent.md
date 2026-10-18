@@ -38,8 +38,8 @@ the next line.
 
 Per step: commit by path, then `bb submit [<box>…]` (`wt:check` unless HEAD
 passed it, push, `wt:tick` of the boxes given, and what the MR still lacks).
-At once: the overview shows unpushed commits, and past 10 minutes they go to
-its NEXT. The draft MR comes with the first commit (`{{run}} wt:mr`, a
+At once: what a run leaves unpushed, breadboard checks and pushes once it
+ended, and a red check comes back to you (#450). The draft MR comes with the first commit (`{{run}} wt:mr`, a
 description you write). `bb status` says where you are and the next step.
 
 - A test that fails on `{{branch}}` too is fixed once, in its own fix MR;
