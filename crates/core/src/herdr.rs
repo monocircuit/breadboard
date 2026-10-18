@@ -207,6 +207,14 @@ pub fn all_panes() -> Vec<Pane> {
     panes_in(herdr(&["pane", "list"]))
 }
 
+/// `all_panes` asked of herdr by this process, never a shared answer: the read a write into a pane follows.
+pub fn all_panes_now() -> Vec<Pane> {
+    if !is_in_herdr() {
+        return Vec::new();
+    }
+    panes_in(herdr_here(&["pane", "list"]))
+}
+
 /// What herdr says an agent does, by its conversation's id (auto-actions.mjs `agentsOf`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Agent {

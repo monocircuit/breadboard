@@ -641,8 +641,8 @@ origin next to the worktree and in its view. They stay together (#255): the
 worktrees of no orchestration first, then per orchestration its space with
 its worktrees right below in the work order of `wt:plan`; the overview of
 the main space sorts them on every read (`core/src/model/order.rs`). A
-worktree's space shows its agent's state from the status table (How agents
-run) as its third row (`$wt_state`), not from a claude pane: there is none.
+worktree has no space of its own (#409): its agent's state is its row in
+the overview, from the status table (How agents run).
 The tab bar's "N need you" counts the agents that ask (`asks`: a denied
 tool waiting for the user).
 

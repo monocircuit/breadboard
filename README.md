@@ -143,9 +143,9 @@ of your own keeps its claude in a tab (#361).
   worktree view's `resume` row): `claude --resume <id> --name <feature>` in
   the tab `<feature>` of its worktree's space, once no run of it is in
   flight; its queue waits until that claude ends.
-- **The sidebar and the tab bar read the status table**: the space of a
-  worktree shows what its agent waits for (`$wt_state`, the space's third
-  row), and "N need you" counts its `asks`.
+- **The tab bar reads the status table**: "N need you" counts its `asks`;
+  what an agent waits for is its row in the overview (a worktree has no
+  space of its own, #409).
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
@@ -178,6 +178,13 @@ of your own keeps its claude in a tab (#361).
   (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
   band says `agents paused since 13:05 · N lines waiting`. The state is
   `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.
+- **The review run** (#374), `[review]` in breadboard.toml
+  ([`docs/config.md`](docs/config.md)): an MR whose bar is full and whose
+  head is green (its pipeline, or `wt:check` where it merges without one) gets one `claude -p` on a small model over its diff and
+  issue before its merge is offered (`breadboard_core::review`, the
+  overview's `actor/review.rs`). Not a task run: it starts beside the queue,
+  within the same memory and never while the daily limit or a pause holds.
+  Serious findings go to the MR's agent, all of them into an MR comment.
 - **The Claude usage limit** (#393): a run whose result is the limit (an
   error with a 429 or the limit's words, `resets 11:30pm`) leaves its
   session `limit` and holds every run until a minute after the reset, or

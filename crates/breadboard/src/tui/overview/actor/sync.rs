@@ -15,12 +15,9 @@ use crate::cli::lifecycle::repo::Repo;
 use crate::cli::lifecycle::stack_procs;
 use crate::tui::overview::Overview;
 use breadboard_core::git::feature_of;
-use breadboard_core::gitlab::{Mr, Pipeline};
+use breadboard_core::gitlab::Pipeline;
 use breadboard_core::herdr::{Pane, all_panes, spaces, tabs_of};
 use breadboard_core::local::ORCHESTRATOR_TAB;
-use breadboard_core::model::agent_state::{Facts, NextIssue, agent_state_of, sidebar_line_of};
-use breadboard_core::model::change::is_change_open;
-use breadboard_core::model::merge::checks_of;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, RemoteOf};
 use breadboard_core::record::{SPACE, orchestration_of_label, orchestrator_label, record_of, recorded, titles};
@@ -31,10 +28,9 @@ use std::sync::{Arc, Mutex};
 
 /// The source breadboard reports its tokens under (the plugin's id), and the tokens.
 use breadboard_core::record::PLUGIN as SOURCE;
-const STATE_TOKEN: &str = "wt_state";
 const REPO_TOKEN: &str = "wt_repo";
 /// Tokens of an older breadboard, always cleared.
-const GONE: [&str; 2] = ["wt_head", "wt_tree"];
+const GONE: [&str; 3] = ["wt_head", "wt_tree", "wt_state"];
 
 /// A pane's tokens with their values, None to clear, in the order they are reported.
 type Tokens = Vec<(String, Option<String>)>;
@@ -119,7 +115,6 @@ pub fn after_read(app: &mut Overview) {
             .collect(),
         _ => Vec::new(),
     };
-    let lab = Lab::of(mrs.as_deref(), app.gitlab.error.is_some());
     let trees = local.trees.clone();
     let main = app.actor.main.clone();
     let memory = app.actor.sync.memory.clone();
@@ -128,7 +123,7 @@ pub fn after_read(app: &mut Overview) {
     app.actor.queue(move || {
         // Free again however the job ends: a panic costs this tick, not every next one.
         let _free = Free(is_busy);
-        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), lab, is_layout, &memory);
+        let (mut logged, mut known) = tick(&main, &trees, mrs.as_deref(), is_layout, &memory);
         if is_layout || !stacks.is_empty() {
             // One change of the layout at a time, with wt:herdr and the other overviews.
             let repo = Repo { main: main.clone() };
@@ -186,73 +181,6 @@ fn log_acts(actor: &mut super::Actor, logged: Vec<Logged>) {
     }
 }
 
-/// Where GitLab stands for the sidebar's lines. In: they say what it said.
-/// Waiting (its first read under way): none written, the lines herdr holds
-/// stay, so the first write is the right one, never a guess followed by a
-/// second write (#262: `waits for !309` of a merged !309; even `at work`
-/// gets its ` · !316` from GitLab). Out (its read failed, nothing came yet):
-/// every line, of the facts that need no GitLab, an awaited MR named by none
-/// of its iids (it may be merged), and `GitLab out, its MR unknown` where the
-/// state hangs on an MR only GitLab knows (`free` of a branch ahead of
-/// develop, a change whose fix is pushed), so a line herdr holds from before
-/// never outlives its fact and none says a guess.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lab {
-    Waiting,
-    Out,
-    In,
-}
-
-impl Lab {
-    fn of(mrs: Option<&[OpenMr]>, has_failed: bool) -> Lab {
-        match (mrs, has_failed) {
-            (Some(_), _) => Lab::In,
-            (None, true) => Lab::Out,
-            (None, false) => Lab::Waiting,
-        }
-    }
-}
-
-/// An agent's sidebar line as GitLab stands (`Lab`), None to leave it as herdr holds it.
-fn line_of(tree: &Tree, facts: &Facts, lab: Lab) -> Option<String> {
-    let state = agent_state_of(tree, facts);
-    match (lab, state.key) {
-        (Lab::In, _) => Some(sidebar_line_of(tree, facts)),
-        (Lab::Waiting, _) => None,
-        (Lab::Out, "waitsForMr") => Some("waits for other MRs".into()),
-        (Lab::Out, "next") => Some(match facts.handover {
-            Some(handover) if !handover.open.is_empty() => format!("→ next #{} after other MRs", handover.number),
-            _ => state.text,
-        }),
-        (Lab::Out, key) if hangs_on_its_mr(tree, key) => Some(UNKNOWN_MR.into()),
-        (Lab::Out, _) => Some(state.text),
-    }
-}
-
-/// The sidebar's line of an agent whose state only its MR can tell while GitLab is out.
-const UNKNOWN_MR: &str = "GitLab out, its MR unknown";
-
-/// Whether an agent's `free` or `change requested` hangs on an MR GitLab
-/// didn't tell: a branch ahead of develop may have one (its pipeline may run
-/// or have failed), and a requested change whose fix is pushed is done once
-/// its MR's pipeline passed on it.
-fn hangs_on_its_mr(tree: &Tree, key: &str) -> bool {
-    let passed = Mr {
-        state: "opened".into(),
-        pipeline: Some(Pipeline {
-            status: "success".into(),
-            sha: tree.pushed.clone(),
-            ..Pipeline::default()
-        }),
-        ..Mr::default()
-    };
-    match key {
-        "free" => tree.ahead > 0,
-        "change" => !is_change_open(Some(tree), Some(&passed)),
-        _ => false,
-    }
-}
-
 /// Marks the sync free when dropped, at the end of its job.
 struct Free(Arc<AtomicBool>);
 
@@ -272,7 +200,6 @@ fn tick(
     main: &Path,
     trees: &[Tree],
     mrs: Option<&[OpenMr]>,
-    lab: Lab,
     is_layout: bool,
     memory: &Mutex<Memory>,
 ) -> (Vec<Logged>, HashMap<String, String>) {
@@ -302,7 +229,7 @@ fn tick(
         logged.extend(before.gone(&Leftovers::of(main), main, &names));
     }
     let mut memory = memory.lock().unwrap_or_else(|e| e.into_inner());
-    report_states(main, trees, mrs, lab, &panes, &all_spaces, &mut memory);
+    report_states(&panes, &all_spaces, &mut memory);
     notify_changes(main, trees, mrs, &panes, &all_spaces, &names, &mut memory, &mut logged);
     (logged, known)
 }
@@ -436,149 +363,22 @@ fn remember_chats(
     }
 }
 
-/// Each agent's tokens in herdr (`reportStates`): its line in a worktree's
-/// space, its repo in a linked worktree's; only what changed, all to a pane
-/// first seen; legacy tokens cleared.
-fn report_states(
-    main: &Path,
-    trees: &[Tree],
-    mrs: Option<&[OpenMr]>,
-    lab: Lab,
-    panes: &[Pane],
-    all_spaces: &[breadboard_core::herdr::Space],
-    memory: &mut Memory,
-) {
+/// Each agent's tokens in herdr (`reportStates`): its repo in a linked
+/// worktree's; only what changed, all to a pane first seen; legacy tokens
+/// cleared, the state line too: a worktree has no space of its own any more
+/// (#409), its state is its rows in the overview.
+fn report_states(panes: &[Pane], all_spaces: &[breadboard_core::herdr::Space], memory: &mut Memory) {
     let agents: Vec<&Pane> = panes.iter().filter(|pane| pane.agent.is_some()).collect();
-    let open: HashSet<i64> = mrs.unwrap_or_default().iter().map(|(_, iid, _)| *iid).collect();
-    let mut lines: HashMap<String, String> = HashMap::new();
-    // Panes whose line waits for GitLab's first answer: left as herdr holds them.
-    let mut held: HashSet<String> = HashSet::new();
-    let claudes = breadboard_core::local::claudes();
-    // A headless agent has no pane (#361): its line goes onto its worktree's
-    // space, its state the status table's.
-    let headless = breadboard_core::runs::agents_of(main);
-    let mut hosts: Vec<String> = Vec::new();
-    for listed in trees.iter().filter(|tree| tree.dir != main) {
-        let label = herdr::space_label(main, &listed.dir);
-        let Some(space) = all_spaces.iter().find(|space| space.label == label) else {
-            continue;
-        };
-        let mut own: Vec<(String, Option<String>)> = agents
-            .iter()
-            .filter(|pane| pane.workspace == space.id)
-            .map(|pane| (pane.id.clone(), pane.status.clone()))
-            .collect();
-        if own.is_empty()
-            && let Some(agent) =
-                breadboard_core::conversations::bound_session(&listed.dir).and_then(|id| headless.get(&id))
-        {
-            // The sidebar shows agent rows for agent panes only: the space's row says it.
-            let host = format!("{SPACE_KEY}{}", space.id);
-            own.push((host.clone(), agent.status.clone()));
-            hosts.push(host);
-        }
-        if own.is_empty() {
-            continue;
-        }
-        // git answered from the reader's memo of the worktree while its key holds (daemon round 4).
-        let tree = breadboard_core::reader::with_orchestration_facts_remembered(listed.clone(), &claudes);
-        let mr = mrs
-            .and_then(|mrs| mrs.iter().find(|(branch, _, _)| *branch == tree.branch))
-            .map(|(_, iid, pipeline)| Mr {
-                iid: *iid,
-                state: "opened".into(),
-                pipeline: pipeline.clone(),
-                ..Mr::default()
-            });
-        // Before GitLab's first answer an awaited MR counts as open.
-        let merged: HashSet<i64> = match mrs {
-            Some(_) => tree
-                .wait
-                .as_ref()
-                .map(|wait| wait.mrs.iter().copied().filter(|iid| !open.contains(iid)).collect())
-                .unwrap_or_default(),
-            None => HashSet::new(),
-        };
-        let handover = handover_of(main, &tree, mrs.map(|_| &open));
-        let checks = checks_of(&[], &tree.actions, &tree.answered);
-        // For the commit GitLab's pipeline ran on, while what it waits for is open; else no merge is claimed.
-        let turn = tree.merge_turn.as_ref().and_then(|record| {
-            let sha = mr
-                .as_ref()
-                .and_then(|mr| mr.pipeline.as_ref())
-                .and_then(|pipeline| pipeline.sha.as_deref());
-            record.turn_now(sha, &open)
-        });
-        for (pane, status) in own {
-            let facts = Facts {
-                mr: mr.as_ref(),
-                status: status.as_deref(),
-                merged: Some(&merged),
-                handover: handover.as_ref(),
-                checks: &checks,
-                // The merge order isn't known here: the orchestration's overview left the turn (#344).
-                turn: turn.as_ref(),
-                blocker: None,
-            };
-            match line_of(&tree, &facts, lab) {
-                Some(line) => {
-                    lines.insert(pane, line);
-                }
-                None => {
-                    held.insert(pane);
-                }
-            }
-        }
-    }
     let repos = repos_of(all_spaces, &agents);
     let mut ids: HashSet<String> = agents.iter().map(|pane| pane.id.clone()).collect();
-    ids.extend(hosts);
     ids.extend(memory.reported.keys().cloned());
-    // A held pane gets all its tokens in one write once GitLab answers, as Node's one write.
-    for pane in ids.iter().filter(|pane| !held.contains(*pane)) {
-        // In Node's order: the state, the repo, the gone ones.
-        let mut tokens: Tokens = vec![
-            (STATE_TOKEN.into(), lines.get(pane).cloned()),
-            (REPO_TOKEN.into(), repos.get(pane).cloned()),
-        ];
+    for pane in &ids {
+        let mut tokens: Tokens = vec![(REPO_TOKEN.into(), repos.get(pane).cloned())];
         tokens.extend(GONE.iter().map(|gone| (gone.to_string(), None)));
         report(pane, tokens, memory);
     }
     // A pane that is gone is forgotten: herdr may give its id to a new one.
     memory.known.retain(|pane| ids.contains(pane));
-}
-
-/// The handover announced for the agent of a worktree (agent-state.mjs
-/// `handoverOf`): from the record of the orchestration that started it, by
-/// the names its agent goes by; `open`: the iids GitLab has open, None
-/// before it answered (every awaited one counts as open then).
-fn handover_of(main: &Path, tree: &Tree, open: Option<&HashSet<i64>>) -> Option<NextIssue> {
-    let record = record_of(main, &tree.origin.as_ref()?.name)?;
-    let worker = tree
-        .claude
-        .as_ref()
-        .and_then(|claude| record.workers.iter().find(|worker| worker.id == claude.id));
-    let names: Vec<&str> = [
-        Some(tree.name.as_str()),
-        worker.and_then(|worker| worker.name.as_deref()),
-        worker.and_then(|worker| worker.was.as_deref()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let handover = record
-        .handovers
-        .iter()
-        .find(|handover| names.contains(&handover.to.as_str()))?;
-    Some(NextIssue {
-        number: handover.number,
-        open: handover
-            .after
-            .iter()
-            .copied()
-            .filter(|iid| open.is_none_or(|open| open.contains(iid)))
-            .collect(),
-    })
 }
 
 /// pane → the repo of its agent, for one in a linked worktree's space (`repoOfAgents`).
@@ -805,94 +605,9 @@ mod tests {
     }
 
     #[test]
-    fn writes_no_guess_before_gitlab_answers_and_no_awaited_iid_while_it_is_out() {
-        assert_eq!(Lab::of(None, false), Lab::Waiting);
-        assert_eq!(Lab::of(None, true), Lab::Out);
-        assert_eq!(Lab::of(Some(&[]), true), Lab::In);
-        let waiting = Tree {
-            wait: Some(breadboard_core::wait::Wait {
-                mrs: vec![309, 310, 311],
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let none = HashSet::new();
-        let facts = |status| Facts {
-            status,
-            merged: Some(&none),
-            ..Default::default()
-        };
-        // The first read under way: nothing, not even `at work` (GitLab adds its MR).
-        assert_eq!(line_of(&waiting, &facts(None), Lab::Waiting), None);
-        assert_eq!(line_of(&Tree::default(), &facts(Some("working")), Lab::Waiting), None);
-        assert_eq!(
-            line_of(&Tree::default(), &facts(Some("working")), Lab::Out).as_deref(),
-            Some("at work")
-        );
-        // GitLab out: every line, no awaited MR counted open (#262).
-        assert_eq!(
-            line_of(&waiting, &facts(None), Lab::Out).as_deref(),
-            Some("waits for other MRs")
-        );
-        // `free` only where no MR can be (nothing ahead of develop); else GitLab is said out.
-        assert_eq!(
-            line_of(&Tree::default(), &facts(None), Lab::Out).as_deref(),
-            Some("free")
-        );
-        let ahead = Tree {
-            ahead: 1,
-            pushed: Some("b".into()),
-            ..Default::default()
-        };
-        assert_eq!(line_of(&ahead, &facts(None), Lab::Out).as_deref(), Some(UNKNOWN_MR));
-        assert_eq!(line_of(&ahead, &facts(None), Lab::In).as_deref(), Some("free"));
-        // A requested change: open while its fix isn't pushed, unknown once it is.
-        let change = |head: &str| breadboard_core::actions::Change {
-            text: "rename it".into(),
-            head: Some(head.into()),
-            ..Default::default()
-        };
-        let unfixed = Tree {
-            change: Some(change("b")),
-            ..ahead.clone()
-        };
-        assert_eq!(
-            line_of(&unfixed, &facts(None), Lab::Out).as_deref(),
-            Some("change requested")
-        );
-        let fixed = Tree {
-            change: Some(change("a")),
-            ..ahead.clone()
-        };
-        assert_eq!(line_of(&fixed, &facts(None), Lab::Out).as_deref(), Some(UNKNOWN_MR));
-        let handover = NextIssue {
-            number: 226,
-            open: vec![232],
-        };
-        let next = Facts {
-            handover: Some(&handover),
-            ..facts(None)
-        };
-        assert_eq!(
-            line_of(&Tree::default(), &next, Lab::Out).as_deref(),
-            Some("→ next #226 after other MRs")
-        );
-        // GitLab in: its words, the merged ones left out.
-        let merged: HashSet<i64> = [309, 310].into();
-        let known = Facts {
-            merged: Some(&merged),
-            ..facts(None)
-        };
-        assert_eq!(
-            line_of(&waiting, &known, Lab::In).as_deref(),
-            Some("waits for !311 · 2 merged")
-        );
-    }
-
-    #[test]
     fn reports_only_what_changed_all_to_a_new_pane() {
         let mut memory = Memory::default();
-        let tokens = |state: Option<&str>| vec![(STATE_TOKEN.to_string(), state.map(String::from))];
+        let tokens = |state: Option<&str>| vec![(REPO_TOKEN.to_string(), state.map(String::from))];
         // Outside herdr nothing is called; the memory still follows.
         report("p1", tokens(Some("at work")), &mut memory);
         assert!(memory.known.contains("p1"));

@@ -3,13 +3,13 @@
 //! of that step, what was asked for and where each MR stands written.
 
 use super::preempt::{self, Preempter};
-use super::{clicks, every, is_queued, start};
+use super::{clicks, every, fix, is_queued, start};
 use breadboard_core::ci::{self, Asked, Decision, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
 use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
 use breadboard_core::time::now_ms;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// The queue of `main`, as long as the daemon runs.
@@ -18,6 +18,8 @@ pub async fn schedule(main: PathBuf) {
     let mut preempter = Preempter::default();
     let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
+    // The failed pipelines looked at, each with its `updatedAt` then: once per failure (#371).
+    let mut looked: HashMap<i64, String> = HashMap::new();
     let mut tick = tokio::time::interval(every());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -75,9 +77,17 @@ pub async fn schedule(main: PathBuf) {
             // `[merge] needs_pipeline = false` (#443): MRs into the default branch merge on wt:check.
             let loaded = breadboard_core::config::of_main(&main_now);
             ranks.no_pipeline_into = (!loaded.config.merge.needs_pipeline).then(|| loaded.branch.clone());
-            (ci::decide(&mrs, &ranks, slots, &started), slots, run_now, mrs, now)
+            let members: HashSet<i64> = mrs.iter().filter(|mr| ranks.is_member(mr)).map(|mr| mr.iid).collect();
+            (
+                ci::decide(&mrs, &ranks, slots, &started),
+                slots,
+                run_now,
+                mrs,
+                now,
+                members,
+            )
         });
-        let Ok((decision, slots, run_now, mrs, now)) = step.await else {
+        let Ok((decision, slots, run_now, mrs, now, members)) = step.await else {
             continue;
         };
         let Decision { places, start, preempt } = decision;
@@ -114,6 +124,22 @@ pub async fn schedule(main: PathBuf) {
             };
             (asked, last) = (again, Some(said));
         }
+        if !is_dry {
+            let main = main.clone();
+            let mrs = mrs.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                let max = breadboard_core::config::of(&main).config.ci.max_fix_attempts;
+                let said = fix::step(&main, "glab", &mrs, &members, &mut asked, &mut looked, max, now);
+                (asked, looked, said)
+            })
+            .await;
+            let Ok((again, again_looked, said)) = done else {
+                looked = HashMap::new();
+                continue;
+            };
+            (asked, looked) = (again, again_looked);
+            last = said.or(last);
+        }
         // What was asked for of MRs no longer open goes, a click whose pipeline ended too.
         let open: HashMap<i64, bool> = mrs
             .iter()
@@ -128,12 +154,18 @@ pub async fn schedule(main: PathBuf) {
         asked.started.retain(|iid, _| open.contains_key(iid));
         asked.preempted.retain(|iid, _| open.contains_key(iid));
         asked.rescued.retain(|iid, _| open.contains_key(iid));
+        asked.fixes.retain(|iid, _| open.contains_key(iid));
         asked
             .preempts
             .retain(|iid, preemption| open.contains_key(iid) && now - preemption.at < ci::PREEMPT_AGAIN_MS);
         if !is_dry {
             let _ = ci::write_whole(&ci::asked_file(&main), &asked);
         }
+        let fixes = asked
+            .fixes
+            .iter()
+            .filter_map(|(iid, fixes)| Some((*iid, fixes.now.clone()?)))
+            .collect();
         let started: HashMap<i64, (String, i64)> = asked.started.into_iter().collect();
         clicks::forget(&main, &run_now, &started, &open, now);
         let queue = Queue {
@@ -142,6 +174,7 @@ pub async fn schedule(main: PathBuf) {
             places,
             last: last.clone(),
             is_dry,
+            fixes,
         };
         let _ = ci::write_whole(&ci::queue_file(&main), &queue);
     }

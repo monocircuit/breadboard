@@ -14,18 +14,16 @@ to call `herdr` by hand. There is a space per purpose:
 | `{{space}}` | `root` (a shell in the main checkout), `overview` (`{{run}} overview --herdr`, live) |
 | `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview`. A click on a worktree or an MR in `overview` splits it to the right with a **detail pane**: the worktree's nvim, its try's terminal, its stack's logs or its agent's conversation, switched by `e` `t` `l` `a` ("The detail pane" in `packages/breadboard/README.md`) |
 | `⇶ <name>`, one per orchestration of no product | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
-| `<feature>`, one per worktree | `root` (a shell in the worktree), `overview` (`{{run}} overview --worktree <dir>`: branch, work, issue, MR and pipeline, the URLs and ports, the containers), `<feature>` (a claude a human runs there, or an orchestration's agent opened on demand: its agents run headless without one, [orchestrate.md](orchestrate.md) "How agents run"), `nvim` (nvim in the worktree when it is on the PATH: neo-tree with the files changed against {{branch}} marked, the file with gitsigns' marks against {{branch}}, `:Changes` below, see "The nvim tab" in `packages/breadboard/README.md`; it listens on `.claude/nvim.sock`, so a click on a file in the overview opens it there at the change) |
 
-The space of a worktree hangs under `{{space}}` in the sidebar,
-a group that folds (`▾`): the scripts open it with `herdr worktree open` on
-the main space, and `wt:herdr` takes a space that stands alone (from before
-the groups) into the group as it is, nothing in it stops. Its branch comes
-from the token `$wt_branch` the scripts report: herdr's own `branch` stays
-empty for a linked worktree (herdrdev/herdr#2952). Branches are pink. Under
-each agent of a worktree the sidebar says what it waits for (`at work`,
-`asks you`, `waits for the pipeline`, `waits for you: merge`, `free`, …),
-reported by the main space's overview (an orchestration's agent from its
-run status, not from a pane), which also notifies when one starts asking, fails or is merged;
+A worktree has **no space of its own** (#409): a click on its row splits
+the overview and shows its nvim, its try, its stack's logs or its agent
+beside (the detail pane). The spaces worktrees had before close on the next
+layout (`wt:herdr`, a reload, the main space's overview) once every pane in
+them idles in its shell or runs nvim or a log viewer; one where anything
+else runs (a claude, a dev server, this command) is kept, said in the
+overview's band, until it ends. What an agent waits for (`at work`,
+`asks you`, `waits for the pipeline`, `waits for you: merge`, `free`, …) is
+its row in the overview, which also notifies when one starts asking, fails or is merged;
 the tab bar counts who needs you (herdr README, "What an agent waits for").
 An agent card names its repo instead of repeating its space ("An agent
 card").
@@ -62,22 +60,16 @@ those files together. A worktree on the shared stack has none: that stack is
 the main checkout's.
 {{/stack}}
 
-The `overview` of the main space keeps it all in step: a new worktree gets its
-space, a stack that comes up or goes down gets or loses its background processes, within a
+The `overview` of the main space keeps it all in step: a stack that comes
+up or goes down gets or loses its background processes, within a
 couple of seconds. `stack:*`, `wt:new`, `wt:stack` and `wt:remove` do their
 part right away.
 
-| Who runs `wt:new` | What happens |
-| ----------------- | ------------ |
-| a human | the space `<feature>` opens with `overview` and a tab `<feature>` in the worktree, focused. Start `claude` in it. |
-| an agent (`CLAUDECODE`) | its **own tab** moves into the space `<feature>` and is named after it; it follows with `EnterWorktree`. |
-| `wt:orchestrate` (`--origin <name>`) | the space `<feature>` opens unfocused, marked `⇶ <name>`, without a `<feature>` tab: its agent's first run, briefed on the issue, is queued and runs headless; the orchestrator's tab stays in `⇶ <name>`. |
+`wt:new` opens no space and moves no tab (#409): a human or an agent goes on
+where they are (an agent with `EnterWorktree`), an orchestration's agent
+runs headless, its worktree a row in the overview.
 
-An agent normally sits in `root`, because that is where the next piece of
-work is asked for. When it takes `root` along, the main space gets a new one,
-**unfocused**: the agent keeps the screen, the next request its entry point.
-
-`wt:remove` (and so `wt:prune`) **closes** the worktree's space. Not blindly:
+`wt:remove` (and so `wt:prune`) **closes** what is left of a worktree's space or tabs. Not blindly:
 a tab with an agent at work, more than one pane, or the tab `wt:remove`
 itself runs in stays. Closing it would cut off a turn or kill a running
 server. An idle agent's tab closes: its conversation lives in the main
@@ -101,8 +93,7 @@ resumed in a tab, not even one you ran yourself: resume that by hand
 orchestration's agent is the conversation bound to its worktree
 (`.claude/herdr-session`) and runs headless whatever herdr does
 ([orchestrate.md](orchestrate.md) "How agents run"). It moves the layout before this one over too:
-`{{branch}}` becomes `root`, a worktree's tab in the main space moves (panes and
-all) into the worktree's space, and a tab whose directory is gone closes.
+`{{branch}}` becomes `root`, and a tab whose directory is gone closes.
 
 **`{{run}} herdr`** sets all of it up for a human in one command: the pinned
 herdr in `.herdr/`, its own session `{{main}}` with the repo's config, and

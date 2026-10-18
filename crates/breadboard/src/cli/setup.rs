@@ -59,7 +59,7 @@ const COMMANDS: &[Command] = &[
     ("stack:ps", &stack::SHAPE, |args| stack::control("ps", args)),
     ("stack:reset", &stack::SHAPE, |args| stack::control("reset", args)),
     ("stack:up", &stack::SHAPE, |args| stack::control("up", args)),
-    ("wt:check", &check::SHAPE, |_| check::command()),
+    ("wt:check", &check::SHAPE, check::command),
     ("wt:new", &new::SHAPE, new::command),
     ("wt:orchestrate", &orchestrate::SHAPE, orchestrate::command),
     ("wt:stack", &stack::WT_SHAPE, |_| stack::wt_stack()),
