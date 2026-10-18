@@ -25,7 +25,7 @@ use std::thread;
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
 /// breadboard's cargo checks (#336): only when the branch changes its Rust
 /// sources, never because develop was merged in or a package it depends on
-/// changed. They run through herdr/cargo.sh, in the clone's shared target/.
+/// changed. They run through herdr/cargo.sh, in the checkout's own target/.
 const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
 /// The Rust sources of breadboard, as the launcher keys its builds on them
 /// (herdr/breadboard.sh `sources`: the crates and what they embed).

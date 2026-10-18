@@ -1,11 +1,10 @@
 #!/bin/sh
 # Every cargo run of breadboard (#336): the launcher's build, pnpm lint:rs,
-# test:rs and build:rs. One target/ for the whole clone, the store's
-# (<git common dir>/breadboard/target, the one breadboard.sh builds in), so
-# no worktree compiles the dependencies again in a target/ of its own
-# (1.9 GB each, load 54 with three at once). cargo locks it: a second run
-# waits for the first instead of compiling beside it. At low priority and on
-# half the cores, so a check never freezes the machine the agents work on.
+# test:rs and build:rs. In the checkout's own target/ (#446): no worktree
+# waits for another's build. The dependencies are compiled once for all of
+# them by sccache, rustc's wrapper where it is installed (without it, every
+# target/ compiles them, ~2 GB each). At low priority and on half the cores,
+# so a check never freezes the machine the agents work on.
 #
 #   sh cargo.sh <cargo args>   CARGO_TARGET_DIR and CARGO_BUILD_JOBS set
 #                              beforehand win
@@ -18,12 +17,7 @@ esac
 package=$(CDPATH='' cd -- "$here/.." && pwd -P) || exit 1
 
 if [ -z "${CARGO_TARGET_DIR-}" ]; then
-  common=$(git -C "$package" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-  if [ -n "$common" ]; then
-    CARGO_TARGET_DIR="$common/breadboard/target"
-  else
-    CARGO_TARGET_DIR="$package/target"
-  fi
+  CARGO_TARGET_DIR="$package/target"
   export CARGO_TARGET_DIR
 fi
 
@@ -60,7 +54,7 @@ if [ -z "${RUSTC_WRAPPER+set}" ] && [ "${1-}" != fmt ]; then
   export RUSTC_WRAPPER
 fi
 
-# One run at a time in the shared target/ (#339), held for the whole run:
+# One run at a time in a target/ (#339), held for the whole run:
 # the check below and the build it guards stay one step. Not by what the run
 # starts and leaves running (-o, where flock has it): a server of sccache.
 if [ -z "${BREADBOARD_CARGO_HELD-}" ] && command -v flock >/dev/null 2>&1; then
@@ -80,7 +74,8 @@ on_cores="build.jobs=$CARGO_BUILD_JOBS"
 unset CARGO_TARGET_DIR CARGO_BUILD_JOBS
 
 # cargo's hash of a workspace crate leaves out where the workspace is, and it
-# judges freshness by mtimes: after another worktree's build, this one's
+# judges freshness by mtimes: in a target/ two checkouts share (one set
+# with CARGO_TARGET_DIR), after the other's build this one's
 # older files count as built, and the binary, clippy's verdict and the tests
 # are the other worktree's (#339). So a checkout that takes over the target/
 # from another cleans the workspace's own crates first, the dependencies stay.
