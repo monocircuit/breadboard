@@ -471,8 +471,6 @@ fn about_of(key: &str) -> String {
         breadboard_core::config::in_repo(&format!("to merge develop in ({} conflicts with it)", iid(rest)))
     } else if let Some(rest) = key.strip_prefix("pipeline:") {
         format!("that the pipeline of {} failed", iid(rest))
-    } else if key.starts_with("unpushed:") {
-        "to push its commits".into()
     } else if let Some(rest) = key.strip_prefix("boxes:") {
         format!("to tick the done boxes of {}'s issue", iid(rest))
     } else {
@@ -1153,7 +1151,6 @@ mod tests {
             "to merge develop in (!316 conflicts with it)"
         );
         assert_eq!(about_of("pipeline:!318:2901"), "that the pipeline of !318 failed");
-        assert_eq!(about_of("unpushed:feature/x:2:none"), "to push its commits");
         assert_eq!(about_of("boxes:!303"), "to tick the done boxes of !303's issue");
     }
 
