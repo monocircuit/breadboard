@@ -64,7 +64,7 @@ A checkout's dev stack: containers in docker compose, the app on the host. A
 worktree shares the main checkout's stack, or gets its own (`wt:stack`, or
 `wt:new` without `--shared`) with every port moved by an offset and a compose
 project `<project>-<feature>`, written into its env file. Without `[stack]`
-there is no env file, no offset, no stack tabs, no `stack:*`.
+there is no env file, no offset, no stack processes, no `stack:*`.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -84,7 +84,7 @@ of its own (`COMPOSE_PROJECT_NAME`). So at least one port needs an `env`.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `port` | (required) | the app's port; an own stack's is moved by its offset |
-| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); the `dev` tab runs it while the stack is up |
+| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); it runs in the background while the stack is up, its output in `.claude/stack/dev.log` |
 | `env` | none | the variable it is moved with |
 
 ### `[[stack.services]]`
@@ -180,6 +180,12 @@ urls = ["DATABASE_URL"]
 | --- | ------- | ------------ |
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
+
+## `[merge]`
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
 
 ## `[orchestration]`
 

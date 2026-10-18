@@ -65,7 +65,9 @@ pub fn waits_for_text(iids: &[i64]) -> String {
 
 /// The reasons of an open MR's row and its turn, the draft's owner set by
 /// the turn: `you` only while its merge is offered (the two clicks mark it
-/// ready), else the agent's, once it is its turn (#280).
+/// ready), else the agent's, once it is its turn (#280). Without
+/// `needs_pipeline` (#443) wt:check at its pushed head stands for its pipeline.
+#[allow(clippy::too_many_arguments)]
 pub fn merge_verdict_of(
     mr: &Mr,
     boxes: &[IssueBox],
@@ -74,8 +76,9 @@ pub fn merge_verdict_of(
     jobs: &[Job],
     tree: Option<&Tree>,
     done: &HashSet<i64>,
+    needs_pipeline: bool,
 ) -> (Vec<Reason>, MergeTurn) {
-    let mut reasons = row_blockers_of(mr, boxes, behind, after, jobs, tree, done);
+    let mut reasons = row_blockers_of(mr, boxes, behind, after, jobs, tree, done, needs_pipeline);
     let turn = turn_of(&reasons);
     for reason in reasons.iter_mut().filter(|reason| reason.text == MARK_READY) {
         reason.who = if turn == MergeTurn::Offered { "you" } else { "agent" }.into();
@@ -208,6 +211,49 @@ mod tests {
         );
         assert_eq!(turn_record_of(&dir), Some(record));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn without_its_own_pipeline_wt_check_offers_the_merge() {
+        // #443: a draft into develop, its bar full, every push's pipeline skipped.
+        use crate::check::CheckState;
+        use crate::gitlab::Pipeline;
+        let mr = Mr {
+            iid: 443,
+            state: "opened".into(),
+            is_draft: true,
+            sha: Some("abc".into()),
+            merge_status: Some("draft_status".into()),
+            pipeline: Some(Pipeline {
+                status: "skipped".into(),
+                sha: Some("abc".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let boxes = [IssueBox {
+            heading: Some("Work".into()),
+            text: "Tests".into(),
+            is_ticked: true,
+            line: 0,
+        }];
+        let tree = |sha: &str| Tree {
+            checked: CheckState::Tested {
+                sha: sha.into(),
+                packages: Vec::new(),
+            },
+            ..Default::default()
+        };
+        let verdict = |tree: &Tree, needs_pipeline: bool| {
+            merge_verdict_of(&mr, &boxes, 0, &[], &[], Some(tree), &HashSet::new(), needs_pipeline).1
+        };
+        assert_eq!(verdict(&tree("abc"), false), MergeTurn::Offered);
+        assert_eq!(verdict(&tree("old"), false), MergeTurn::Lacks, "checked another commit");
+        assert_eq!(
+            verdict(&tree("abc"), true),
+            MergeTurn::Lacks,
+            "the switch on: its pipeline"
+        );
     }
 
     #[test]

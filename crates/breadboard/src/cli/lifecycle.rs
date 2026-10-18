@@ -23,6 +23,7 @@ pub mod remove;
 pub mod repo;
 pub mod retire;
 mod snapshot;
+pub mod stack_procs;
 
 use std::process::ExitCode;
 
