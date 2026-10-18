@@ -239,7 +239,8 @@ The orchestrator's chat (#382): its context shows in the overview's title band.
 What the agents may spend (#372). The overview reads it from claude's
 transcripts: every answer's tokens, priced per model. Tokens are what an
 answer read and wrote anew (input, cache writes, output); cache reads are in
-the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
+the dollars, not in the tokens. An issue's cost is its agents' answers
+while they worked on it and its worktree's try checkers' (#387). A limit is tokens (`"20 M"`, `"500k"`,
 `20000000`) or dollars (`"$40"`).
 
 | Key | Default | What it does |

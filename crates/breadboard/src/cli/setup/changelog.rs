@@ -356,7 +356,7 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
     };
     let mut merged = Vec::new();
     let mut closed = Vec::new();
-    let spent = breadboard_core::spend::by_issue_of(&found);
+    let spent = breadboard_core::spend::by_issue_of(&main, &found);
     for (number, mr, issue) in read {
         match mr {
             Some(mr) => {
