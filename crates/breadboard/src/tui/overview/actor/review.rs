@@ -67,7 +67,9 @@ pub fn after_read(app: &mut Overview, local: &OrchestrationLocal, model: &Orches
         }
     }
     let main = app.actor.main.clone();
-    if runs::held_now(&main, now).is_some() || runs::paused_of(&main).is_some() {
+    // The daily limit, a pause or the usage limit holds every run: this one too.
+    if runs::held_now(&main, now).is_some() || runs::paused_of(&main).is_some() || runs::usage_now(&main, now).is_some()
+    {
         return;
     }
     let Ok(mrs) = model.merge_requests.as_ref() else {
