@@ -156,6 +156,8 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             }
         }
         if is_remote {
+            // An MR whose bar is full and pipeline green gets its review (#374).
+            super::review::after_read(app, &local, &model, remote);
             deliver_waits(app, &local, remote);
             is_changed |= merge_into_epic(app, &model, remote);
         }

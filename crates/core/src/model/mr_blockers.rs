@@ -96,6 +96,11 @@ pub fn row_blockers_of(
         .map(|tree| (&tree.actions[..], &tree.answered[..]))
         .unwrap_or((&[], &[]));
     let checks = counted_checks_of(boxes, actions, answered);
+    // Its review (#374) once the pipeline passed: serious findings are its agent's.
+    let review = tree
+        .filter(|_| status == Some("success"))
+        .and_then(|tree| review_hold_of(tree, mr));
+    let is_reviewed_back = review.as_ref().is_some_and(|hold| hold.who == "agent");
     for check in &checks {
         add(
             check.clone(),
@@ -114,7 +119,7 @@ pub fn row_blockers_of(
                 "agent",
                 false,
             );
-        } else if bar.total > 0 && !is_changed {
+        } else if bar.total > 0 && !is_changed && !is_reviewed_back {
             // The bar is full: breadboard marks it ready by itself (#399).
             add(READY_BAR_FULL.into(), "breadboard", false);
         } else if bar.total == 0 {
@@ -205,7 +210,21 @@ pub fn row_blockers_of(
             );
         }
     }
+    // Due or running, it holds only an MR nothing else holds: the actor starts it on `review due`.
+    if let Some(hold) = review.filter(|_| is_reviewed_back || reasons.is_empty()) {
+        reasons.push(Reason {
+            text: hold.text,
+            who: hold.who.into(),
+            is_conflict: false,
+        });
+    }
     reasons
+}
+
+/// What the review of `mr`'s head holds (#374), by the `[review]` of its worktree.
+pub fn review_hold_of(tree: &Tree, mr: &Mr) -> Option<crate::review::Hold> {
+    let is_enabled = crate::config::of(&tree.dir).config.review.enabled;
+    crate::review::hold_of(&tree.reviews, mr.sha.as_deref(), is_enabled)
 }
 
 /// How many conflicting files a reason names before `+n`.
@@ -468,6 +487,53 @@ mod tests {
             reasons(&draft(), &boxes, Some(&changed)),
             ["change requested: rename it → agent"]
         );
+    }
+
+    #[test]
+    fn serious_review_findings_send_it_back_to_its_agent() {
+        use crate::review::{Finding, Review, State, Weight};
+        let review = |weight| Review {
+            iid: 242,
+            head: "abc123".into(),
+            model: "haiku".into(),
+            state: State::Done,
+            findings: vec![Finding {
+                weight,
+                text: "a.rs:1 x".into(),
+            }],
+            skipped: None,
+            lines: 40,
+            tokens: 0,
+            dollars: 0.0,
+            at: String::new(),
+            pid: None,
+            session: None,
+            failed: None,
+        };
+        let reviewed = |weight| Tree {
+            reviews: vec![review(weight)],
+            ..Default::default()
+        };
+        let at = |mr: Mr, sha: &str| Mr {
+            sha: Some(sha.into()),
+            ..mr
+        };
+        let boxes = [work("Tests", true)];
+        let serious = reviewed(Weight::Serious);
+        assert_eq!(
+            reasons(&at(mr(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        // Back to draft by its hold: the review says why, not `ready (bar full)`.
+        assert_eq!(
+            reasons(&at(draft(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        assert!(
+            reasons(&at(mr(), "def456"), &boxes, Some(&serious)).is_empty(),
+            "a new head, [review] off: nothing waits"
+        );
+        assert!(reasons(&at(mr(), "abc123"), &boxes, Some(&reviewed(Weight::Small))).is_empty());
     }
 
     #[test]
