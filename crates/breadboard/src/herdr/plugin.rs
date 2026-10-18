@@ -136,17 +136,27 @@ fn restore(is_startup: bool) -> ExitCode {
 
 /// `heal`: the overview again in every `overview` tab of the repo that
 /// holds only a shell (#388), in the checkout of the cwd. Started by the
-/// status when it saw one; says in which spaces.
+/// status when it saw one; says in which spaces, and in the heal log
+/// (#401) how long it waited for the layout's lock and why a tab stays.
 fn heal() -> ExitCode {
+    use crate::cli::lifecycle::layout;
     let Ok(repo) = crate::cli::lifecycle::repo::Repo::here() else {
         return no_repo();
     };
-    // A stale record first (#425): its pane replaced, a claude herdr resumed from it ended.
-    for line in crate::cli::lifecycle::layout::stale::sweep(&repo) {
+    let asked = std::time::Instant::now();
+    let said = layout::exclusive(|| {
+        let mut said = vec![format!(
+            "the layout's lock taken after {:.1} s",
+            asked.elapsed().as_secs_f64()
+        )];
+        // A stale record first (#425): its pane replaced, a claude herdr resumed from it ended.
+        said.extend(layout::stale::sweep(&repo));
+        said.extend(layout::heal_overviews(&repo));
+        said
+    });
+    for line in &said {
         println!("{line}");
-    }
-    for label in crate::cli::lifecycle::layout::heal_overviews(&repo) {
-        println!("the overview runs again in {label}");
+        breadboard_core::heal_log::note(&repo.main, "heal", line);
     }
     ExitCode::SUCCESS
 }
@@ -254,8 +264,11 @@ fn wait_for_key() {
 /// runs after a herdr restart until the user looks. One more read, the tabs,
 /// and a process read per `overview` tab of the repo; one that holds only a
 /// shell starts `heal` on its own, the line doesn't wait for it.
+///
+/// herdr ends the status after 3 s: the overviews come before docker, whose
+/// read may wait up to 10 s under load (#401: a tab stayed bare while every
+/// tick ended in it). What it saw goes to the heal log.
 fn status() -> ExitCode {
-    let containers = local::containers();
     let main = status_main();
     let spaces = ask(&["workspace", "list"]);
     let mut panes = None;
@@ -266,12 +279,21 @@ fn status() -> ExitCode {
     if let Some(main) = main.as_deref() {
         let ours = ours(Some(main), spaces.as_ref());
         let tabs = (!ours.is_empty()).then(|| ask(&["tab", "list"])).flatten();
-        if !bare_overviews(&ours, tabs.as_ref(), panes.as_ref(), is_bare).is_empty()
-            || has_stale(main, &ours, tabs.as_ref(), panes.as_ref())
-        {
-            start_heal(main);
+        let bare = bare_overviews(&ours, tabs.as_ref(), panes.as_ref(), is_bare);
+        let seen = if !bare.is_empty() {
+            Some(format!("bare overview panes: {}", bare.join(", ")))
+        } else {
+            has_stale(main, &ours, tabs.as_ref(), panes.as_ref()).then(|| "a stale herdr record".to_string())
+        };
+        if let Some(seen) = seen {
+            let started = match start_heal(main) {
+                Ok(pid) => format!("heal started (pid {pid})"),
+                Err(error) => format!("heal didn't start: {error}"),
+            };
+            breadboard_core::heal_log::note(main, "status", &format!("{seen}: {started}"));
         }
     }
+    let containers = local::containers();
     let project = main
         .as_deref()
         .and_then(breadboard_core::stack::of)
@@ -412,15 +434,16 @@ fn is_bare(pane: &str) -> bool {
 
 /// `heal` in the main checkout `main`, on its own: in a process group of
 /// its own (herdr's timeout of the status doesn't end it), not waited for.
-/// It runs inside herdr, so the layout's lock holds for it too.
-pub fn start_heal(main: &Path) {
-    let _ = this(&["herdr", "heal"], main)
+/// It runs inside herdr, so the layout's lock holds for it too. Its pid.
+pub fn start_heal(main: &Path) -> std::io::Result<u32> {
+    this(&["herdr", "heal"], main)
         .env("HERDR_ENV", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
-        .spawn();
+        .spawn()
+        .map(|child| child.id())
 }
 
 /// The headless agents of `main` that ask (#361): no pane of theirs is
