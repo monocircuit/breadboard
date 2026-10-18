@@ -100,33 +100,44 @@ from: a few ms), else makes it first:
 - from the repo's store, `<git common dir>/breadboard/bin/<key>/`, when any
   checkout of the clone built these sources before (a copy, ~15 MB): a new
   worktree of `wt:new`, a pull another checkout made first;
-- else `cargo build --release` into the store's `target/`, one for every
-  worktree (the dependencies are built once; one build at a time), its
-  progress on stderr, kept in the store for the others (the newest 8).
+- else `cargo build --release` in the checkout's own `target/`, its progress
+  on stderr, kept in the store for the others (the newest 8).
 
-Uncommitted changes to the crates build in the store's `target/` too, but
-stay out of the store's `bin/`. So a `git pull` never leaves the code from
-before running, `wt:new` needs no `pnpm install`, and a worktree costs no
-cargo target of its own. Without cargo (https://rustup.rs) and without a build
-of those sources, the binary from before runs and says so.
+Uncommitted changes to the crates build there too, but stay out of the
+store's `bin/`. So a `git pull` never leaves the code from before running and
+`wt:new` needs no `pnpm install`. Without cargo (https://rustup.rs) and
+without a build of those sources, the binary from before runs and says so.
 
-**Every cargo run goes through `herdr/cargo.sh`** (#336): the launcher's
-build and `lint:rs`, `test:rs`. It sets `CARGO_TARGET_DIR` to the store's
-`target/` (cargo locks it: a second run waits instead of compiling beside
-it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
-`cargo` in the package would compile everything again into a `target/` of
-its own (~2 GB): use the scripts. The launcher removes such a `target/` once
-(keeping the binary), unless a cargo holds it.
+**Every cargo run goes through `herdr/cargo.sh`** (#336, #446): the
+launcher's build and `lint:rs`, `test:rs`. Each checkout compiles in its own
+`target/`, so no worktree waits for another's build or check; a
+`CARGO_TARGET_DIR` you set wins (one of your own for an uncommitted binary).
+It runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`).
+
+**Install [sccache](https://github.com/mozilla/sccache)** once per machine:
+`pacman -S sccache`, `brew install sccache`, `apt install sccache` or
+`cargo install --locked sccache`. `cargo.sh` makes it rustc's wrapper (cc-rs
+uses it for the C code too, `aws-lc-sys`), so a dependency is compiled once
+per version and feature set for every `target/`: a new worktree's first
+build and check compile only the workspace's crates. `sccache --show-stats`
+shows the hits. `cargo.sh` hands cargo the target and the jobs as `--config`,
+not as `CARGO_*` variables: sccache counts those into every crate's key, so
+another target would miss them all. Without sccache every `target/` compiles
+all dependencies (minutes, ~2 GB), after one line that says so; a
+`RUSTC_WRAPPER` you set (empty: none) wins. CI's cargo jobs don't use it.
+The store's `target/` from before (`<git common dir>/breadboard/target`) is
+unused once every worktree has this `cargo.sh`: remove it then.
 
 **A stored copy is what its key says** (#339). cargo's hash of a workspace
 crate leaves out where the workspace is, and it judges freshness by mtimes:
-in a shared `target/`, a worktree's older files count as built after another
-worktree's build, and the binary (or clippy's verdict, the test binaries) is
-the other one's. So `cargo.sh` holds a `flock` on the target for the whole
+in a `target/` two checkouts share (a `CARGO_TARGET_DIR` set by hand), a
+worktree's older files count as built after the other's build, and the
+binary (or clippy's verdict, the test binaries) is the other one's. So
+`cargo.sh` holds a `flock` on the target for the whole
 run and, when another checkout used it last (`.breadboard-from`), cleans the
 workspace's own crates first: switching worktrees recompiles breadboard and
-core, never the dependencies. The launcher reads the sources' key under the
-store's lock, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
+core, never the dependencies. The launcher reads the sources' key right
+before the build, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
 binary carries it (`breadboard --source-key`). It stores a build only when
 the sources were committed and unchanged across it and the file carries the
 key, and it uses a stored copy only when that copy carries its key (found with
