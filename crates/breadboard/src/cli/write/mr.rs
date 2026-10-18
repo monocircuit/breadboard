@@ -5,9 +5,10 @@
 //! one the template is put down (its Tests section filled from the branch,
 //! #302) and nothing is sent. `--update` sends the description again, the
 //! same body, so a later one can't drop the `Closes #<n>` of the work item.
-//! One MR handles exactly one issue (#349): a description that closes
-//! another is refused. It merges into the worktree's base: develop, or the
-//! epic of its orchestration.
+//! One MR handles exactly its task (#349): the issue of its branch, and the
+//! others of a bundle (#321, `issues` of `.claude/origin`), each with its
+//! `Closes`; a description that closes another is refused. It merges into
+//! the worktree's base: develop, or the epic of its orchestration.
 
 mod template;
 
@@ -15,6 +16,8 @@ use super::boxes::box_report;
 use super::common::{Argv, Here, Outcome, Takes, help, number_of, plural, say, temp_dir};
 use super::glab;
 use breadboard_core::git::{base_of, git, issue_of_branch};
+use breadboard_core::gitlab::issues_text;
+use breadboard_core::record::{bundle_of, issues_in};
 use regex::Regex;
 use serde_json::Value;
 use std::fs;
@@ -25,8 +28,9 @@ use std::sync::LazyLock;
 const USAGE: &str = "usage: pnpm wt:mr [<issue>] [--update] [--dry-run] [--description-file <f>]";
 const ABOUT: &str = "pnpm wt:mr opens the draft merge request of this worktree: the title from the last commit,
 the description from .claude/mr-description.md (put down from the template when there is none),
-Closes #<issue>, the issue's labels and milestone, into the worktree's base (develop or its epic).
-One merge request handles exactly one issue. It installs the push guard (#184) too.
+Closes #<issue> for every issue of the task, their labels and milestone, into the worktree's base
+(develop or its epic). One merge request handles exactly its task: the issue of its branch, and
+those wt:new --also bundled with it. It installs the push guard (#184) too.
 
   <issue>                   the work item, when the branch name carries none (34-…)
   --update                  send the description of the open MR again
@@ -44,7 +48,6 @@ const TAKES: Takes = Takes {
 const NO_CHANGELOG: &str = "no-changelog";
 
 static CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #(\d+)").unwrap());
-static HAS_CLOSES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Closes #\d").unwrap());
 static REFS_AT_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Refs #\d*$").unwrap());
 /// GitLab's closing pattern: a keyword, then the issues it closes (`#1, #2 and #3`).
 static CLOSING: LazyLock<Regex> = LazyLock::new(|| {
@@ -68,17 +71,17 @@ pub(crate) fn closed_by(body: &str) -> Vec<u64> {
     numbers
 }
 
-/// Why `body` is no MR of the one issue `number` (#349), None when it is.
-fn second_issue(body: &str, number: &str) -> Option<String> {
-    let others: Vec<String> = closed_by(body)
+/// Why `body` is no MR of the task of `numbers` (#349, #321), None when it is.
+fn second_issue(body: &str, numbers: &[i64]) -> Option<String> {
+    let others: Vec<i64> = closed_by(body)
         .into_iter()
-        .filter(|closed| closed.to_string() != number)
-        .map(|closed| format!("#{closed}"))
+        .map(|closed| closed as i64)
+        .filter(|closed| !numbers.contains(closed))
         .collect();
     (!others.is_empty()).then(|| {
         format!(
-            "the description closes {} besides #{number}: one merge request handles exactly one issue. Another issue gets its own branch and MR ({run} wt:new <n>-<feature>); to mention one, write Refs #<n>",
-            others.join(", "), run = breadboard_core::config::run_word())
+            "the description closes {} besides {}: one merge request handles exactly its task. Another issue gets its own branch and MR ({run} wt:new <n>-<feature>, --also <m> for one that belongs with it); to mention one, write Refs #<n>",
+            issues_text(&others), issues_text(numbers), run = breadboard_core::config::run_word())
     })
 }
 
@@ -128,13 +131,20 @@ fn install_into(hooks: &Path) -> String {
     }
 }
 
-/// The body sent: the text as written, with `Closes #<n>` unless it has one.
-fn body_of(written: &str, number: &str) -> String {
-    if HAS_CLOSES.is_match(written) {
+/// The body sent: the text as written, with `Closes #<n>` for every issue
+/// of the task it doesn't close yet.
+fn body_of(written: &str, numbers: &[i64]) -> String {
+    let closed = closed_by(written);
+    let missing: Vec<String> = numbers
+        .iter()
+        .filter(|number| !closed.contains(&(**number as u64)))
+        .map(|number| format!("Closes #{number}"))
+        .collect();
+    if missing.is_empty() {
         return written.trim_end().to_string();
     }
     let text = REFS_AT_END.replace(written.trim_end(), "");
-    format!("{}\n\nCloses #{number}", text.trim_end())
+    format!("{}\n\n{}", text.trim_end(), missing.join("\n"))
 }
 
 /// Whether the MR GitLab reads back holds the body sent (`⚠` otherwise: a
@@ -143,12 +153,11 @@ fn is_description_back(back: Option<&Value>, body: &str) -> bool {
     back.is_some_and(|back| glab::text_of(back, "description").trim() == body.trim())
 }
 
-/// Whether `.changelog/` has a fragment of the issue (platform-changelog.mjs `fragmentFiles`, `issueOfName`).
-fn has_fragment(top: &Path, number: &str) -> bool {
+/// Whether `.changelog/` has a fragment of one of the issues (platform-changelog.mjs `fragmentFiles`, `issueOfName`).
+fn has_fragment(top: &Path, numbers: &[i64]) -> bool {
     let Ok(entries) = fs::read_dir(top.join(".changelog")) else {
         return false;
     };
-    let number: Option<u64> = number.parse().ok();
     entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .any(|name| {
@@ -157,7 +166,7 @@ fn has_fragment(top: &Path, number: &str) -> bool {
                 && name != "README.md"
                 && !digits.is_empty()
                 && name[digits.len()..].starts_with('-')
-                && digits.parse::<u64>().ok() == number
+                && digits.parse::<i64>().is_ok_and(|digits| numbers.contains(&digits))
         })
 }
 
@@ -251,14 +260,21 @@ pub fn run(argv: &Argv) -> Outcome {
         .map(|issue| issue.strip_prefix('#').unwrap_or(issue).to_string())
         .or_else(|| issue_of_branch(&branch).map(|n| n.to_string()))
         .or(closes);
+    // The others of its task (#321), as wt:new --also wrote them.
+    let numbers_of = |number: &str| bundle_of(number.parse().ok(), &issues_in(top));
     if let Some(mr) = open
         && !is_dry
         && !is_update
     {
-        let report = number
+        let report: String = number
             .as_deref()
             .filter(|n| !n.is_empty())
-            .map(|n| box_report(top, n, None))
+            .map(|n| {
+                numbers_of(n)
+                    .iter()
+                    .map(|number| box_report(top, &number.to_string(), None))
+                    .collect()
+            })
             .unwrap_or_default();
         say(&format!(
             "\n✓ the merge request is open already\n  {}\n  {}\n\n  Its description grew out of date? {run} wt:mr --update{report}\n",
@@ -280,20 +296,40 @@ pub fn run(argv: &Argv) -> Outcome {
         ));
     }
 
-    // The labels and the milestone of the work item are those of its merge
-    // request. Labels fall back to the kind of the branch; the milestone does not.
-    let Some(work) = glab::view(top, "issue", &number)? else {
-        return Err(format!(
-            "issue #{number} does not exist — a merge request without a work item is none"
-        ));
-    };
-    let mut labels = strings_of(work.get("labels"));
-    let milestone = work
-        .get("milestone")
+    let numbers = numbers_of(&number);
+    let closes = issues_text(&numbers);
+
+    // The labels and the milestone of the work items are those of its merge
+    // request: every issue's labels, the first milestone one has (an MR has
+    // one). Labels fall back to the kind of the branch; the milestone does not.
+    let mut works: Vec<Value> = Vec::new();
+    for each in &numbers {
+        let Some(work) = glab::view(top, "issue", &each.to_string())? else {
+            return Err(format!(
+                "issue #{each} does not exist — a merge request without a work item is none"
+            ));
+        };
+        works.push(work);
+    }
+    let mut labels: Vec<String> = Vec::new();
+    for label in works.iter().flat_map(|work| strings_of(work.get("labels"))) {
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    let milestone_of = works
+        .iter()
+        .filter_map(|work| work.get("milestone"))
+        .find(|milestone| milestone.get("title").and_then(Value::as_str).is_some());
+    let milestone = milestone_of
         .and_then(|m| m.get("title"))
         .and_then(Value::as_str)
         .map(String::from);
-    let boxes = box_report(top, &number, Some(glab::text_of(&work, "description")));
+    let boxes: String = numbers
+        .iter()
+        .zip(&works)
+        .map(|(each, work)| box_report(top, &each.to_string(), Some(glab::text_of(work, "description"))))
+        .collect();
     if labels.is_empty() {
         labels.push(
             if branch.starts_with("fix/") {
@@ -347,8 +383,8 @@ pub fn run(argv: &Argv) -> Outcome {
             run = breadboard_core::config::run_word()
         ));
     }
-    let body = body_of(&written, &number);
-    if let Some(why) = second_issue(&body, &number) {
+    let body = body_of(&written, &numbers);
+    if let Some(why) = second_issue(&body, &numbers) {
         return Err(format!("{}: {why}", here.shown(&given)));
     }
     let title = git(top, &["log", "-1", "--format=%s"]).out().to_string();
@@ -375,7 +411,7 @@ pub fn run(argv: &Argv) -> Outcome {
         fs::write(&file, format!("{body}\n"))
             .map_err(|error| format!("{} could not be written: {error}", file.display()))?;
         say(&format!(
-            "\n▸ nothing was sent (--dry-run)\n{anew}{}  title     {title}\n  work item #{number}\n  labels    {}\n  milestone {}\n  body      {}\n\n{body}\n",
+            "\n▸ nothing was sent (--dry-run)\n{anew}{}  title     {title}\n  work item {closes}\n  labels    {}\n  milestone {}\n  body      {}\n\n{body}\n",
             if anew.is_empty() { "" } else { "\n" },
             labels.join(", "),
             milestone.as_deref().unwrap_or("none — the issue has none"),
@@ -401,7 +437,7 @@ pub fn run(argv: &Argv) -> Outcome {
         let back = glab::view(top, "mr", &iid).ok().flatten();
         let is_there = is_description_back(back.as_ref(), &body);
         say(&format!(
-            "\n{} description of !{iid} updated, closes #{number}{}\n  {}{boxes}\n",
+            "\n{} description of !{iid} updated, closes {closes}{}\n  {}{boxes}\n",
             if is_there { "✓" } else { "⚠" },
             if is_there {
                 ""
@@ -432,8 +468,7 @@ pub fn run(argv: &Argv) -> Outcome {
     let description = format!("{body}\n");
     let draft = format!("Draft: {title}");
     let label = labels.join(",");
-    let milestone_id = work
-        .get("milestone")
+    let milestone_id = milestone_of
         .map(|m| glab::shown(m.get("id")))
         .filter(|id| !id.is_empty());
     let mut fields = vec![
@@ -486,11 +521,11 @@ pub fn run(argv: &Argv) -> Outcome {
             .unwrap_or_default()
     );
     say(&format!(
-        "\n✓ draft merge request opened, closes #{number}, {carried}\n  {title}\n  {url}{}{anew}{boxes}\n",
+        "\n✓ draft merge request opened, closes {closes}, {carried}\n  {title}\n  {url}{}{anew}{boxes}\n",
         if anew.is_empty() { "" } else { "\n" }
     ));
     // check:changelog fails the MR until it has an entry: say so now, not at the pipeline.
-    if !has_fragment(top, &number) {
+    if !has_fragment(top, &numbers) {
         say(&format!(
             "  No changelog entry yet: {run} changelog:add \"<what users notice>\" (or the label {NO_CHANGELOG})\n",
             run = breadboard_core::config::run_word()
@@ -507,9 +542,12 @@ mod tests {
 
     #[test]
     fn closes_the_issue_unless_the_text_does() {
-        assert_eq!(body_of("Text\n\nRefs #\n", "7"), "Text\n\nCloses #7");
-        assert_eq!(body_of("Text\nRefs #12  \n", "7"), "Text\n\nCloses #7");
-        assert_eq!(body_of("Text\nCloses #3\n\n", "7"), "Text\nCloses #3");
+        assert_eq!(body_of("Text\n\nRefs #\n", &[7]), "Text\n\nCloses #7");
+        assert_eq!(body_of("Text\nRefs #12  \n", &[7]), "Text\n\nCloses #7");
+        assert_eq!(body_of("Text\nCloses #7\n\n", &[7]), "Text\nCloses #7");
+        // A bundle (#321): a Closes for every issue the text doesn't close yet.
+        assert_eq!(body_of("Text\n", &[7, 9]), "Text\n\nCloses #7\nCloses #9");
+        assert_eq!(body_of("Text\nCloses #9\n", &[7, 9]), "Text\nCloses #9\n\nCloses #7");
     }
 
     #[test]
@@ -517,14 +555,21 @@ mod tests {
         assert_eq!(closed_by("x\n\nCloses #349"), vec![349]);
         assert_eq!(closed_by("Fixes #1, #2 and #3. Refs #4"), vec![1, 2, 3]);
         assert_eq!(closed_by("resolves monocircuit/platform#7"), vec![7]);
-        assert_eq!(second_issue("x\n\nCloses #349", "349"), None);
-        assert_eq!(second_issue("Refs #350\n\nCloses #349", "349"), None);
+        assert_eq!(second_issue("x\n\nCloses #349", &[349]), None);
+        assert_eq!(second_issue("Refs #350\n\nCloses #349", &[349]), None);
         assert!(
-            second_issue("Closes #349, #350", "349")
+            second_issue("Closes #349, #350", &[349])
                 .unwrap()
                 .starts_with("the description closes #350 besides #349")
         );
-        assert!(second_issue("Fixes #12\n\nCloses #349", "349").is_some());
+        assert!(second_issue("Fixes #12\n\nCloses #349", &[349]).is_some());
+        // A bundle (#321) closes each of its issues, no other.
+        assert_eq!(second_issue("Closes #349, #350", &[349, 350]), None);
+        assert!(
+            second_issue("Closes #349, #350, #351", &[349, 350])
+                .unwrap()
+                .starts_with("the description closes #351 besides #349 and #350")
+        );
     }
 
     #[test]
@@ -549,8 +594,9 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("README.md"), "").unwrap();
         fs::write(dir.join("307-rust.md"), "").unwrap();
-        assert!(has_fragment(scratch.path(), "307"));
-        assert!(!has_fragment(scratch.path(), "30"));
+        assert!(has_fragment(scratch.path(), &[307]));
+        assert!(has_fragment(scratch.path(), &[321, 307]));
+        assert!(!has_fragment(scratch.path(), &[30]));
     }
 
     // Into a hooks folder of its own: install_push_guard asks git, which in a

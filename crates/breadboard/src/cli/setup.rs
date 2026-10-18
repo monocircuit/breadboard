@@ -13,7 +13,7 @@ mod commands;
 mod conversations;
 pub(in crate::cli) mod epic;
 mod fragments;
-mod gitlab;
+pub(crate) mod gitlab;
 mod herdr;
 mod hook;
 pub(crate) mod init;
@@ -42,8 +42,8 @@ fn shape_of(command: &str) -> Option<Shape> {
     };
     Some(match command {
         "wt:new" => shape(
-            &["--shared", "--fix", "--origin", "--base"],
-            &["--origin", "--base"],
+            &["--shared", "--fix", "--origin", "--base", "--also"],
+            &["--origin", "--base", "--also"],
             Some(1),
             new::USAGE,
         ),

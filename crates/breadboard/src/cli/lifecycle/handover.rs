@@ -230,6 +230,36 @@ pub fn claim_on_origin(main: &Path, feature: &str) -> Result<Option<String>, Str
     Ok(first_claim(&heads.stdout, &number))
 }
 
+/// What claims the issue `number` of a bundle (#321) elsewhere: a branch on
+/// origin carrying it, else an open MR whose description closes it (the
+/// claim of another bundle's issue). Ok(None) when nothing does; Err(why)
+/// when origin did not answer. GitLab not answering claims nothing: the
+/// branch is the claim, the MR only the claim of a bundle's other issues.
+pub fn bundle_claim(main: &Path, number: i64) -> Result<Option<String>, String> {
+    if let Some(branch) = claim_on_origin(main, &format!("{number}-issue"))? {
+        return Ok(Some(format!("origin has the branch {branch}")));
+    }
+    let open = crate::cli::setup::gitlab::list("projects/:fullpath/merge_requests?state=opened&per_page=100")
+        .unwrap_or_default();
+    Ok(open.iter().find_map(|mr| {
+        let description = mr
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        crate::cli::write::mr::closed_by(description)
+            .contains(&(number as u64))
+            .then(|| {
+                format!(
+                    "!{} of {} closes it",
+                    mr.get("iid").and_then(serde_json::Value::as_i64).unwrap_or_default(),
+                    mr.get("source_branch")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                )
+            })
+    }))
+}
+
 /// The first branch of `ls-remote` output that claims the issue `number`.
 fn first_claim(ls_remote: &str, number: &str) -> Option<String> {
     ls_remote.lines().find_map(|line| {
