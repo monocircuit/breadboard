@@ -48,7 +48,7 @@ Issue #{number} of {repo} (`glab issue view {number} --comments`), orchestration
 Branch `{branch}` in `{dir}`, pushed as the claim. {stand}
 Base `{base}`: your one MR goes into it and closes only #{number}.
 
-- Each step done: `bb submit`.
+- Each step: commit it (staged by path), then `bb submit [<box>…]`: checks, pushes, ticks.
 - Where you are and what is next: `bb status`.
 - How an orchestrated agent works (headless runs, waits, actions for the user): `.claude/skills/parallel-work/agent.md`. Read it before the first commit.
 - The orchestrator: {peer}.
@@ -88,7 +88,7 @@ Issue #12 of p (`glab issue view 12 --comments`), orchestration `o` (herdr space
 Branch `feature/12-a-title` in `/r/p-12-a-title`, pushed as the claim. You stand in it.
 Base `main`: your one MR goes into it and closes only #12.
 
-- Each step done: `bb submit`.
+- Each step: commit it (staged by path), then `bb submit [<box>…]`: checks, pushes, ticks.
 - Where you are and what is next: `bb status`.
 - How an orchestrated agent works (headless runs, waits, actions for the user): `.claude/skills/parallel-work/agent.md`. Read it before the first commit.
 - The orchestrator: the one in `/r/p` (`ListAgents`; it messages you first).
