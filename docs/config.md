@@ -293,6 +293,18 @@ says when it last did or why it didn't.
 New migrations (`[stack.migrations]`'s journal changed) are only named in
 the band with their command: each stack runs them itself.
 
+## `[ci]`
+
+A failed MR pipeline (#371): `breadboard serve` retries a job the runner
+failed (its system, a timeout) and a job that failed its first try (a flake
+passes the second); one that failed twice its agent fixes, a headless run
+told the job and its log's end. Each head gets one such run; past
+`max_fix_attempts` of them the MR gets a `look` for the user.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `max_fix_attempts` | `3` | the runs of its agent that may fix an MR's failed pipeline (the row shows `CI fix 2/3`); `0`: the user looks at once |
+
 ## `[ci.watch]`
 
 The CI job watcher (#379): `breadboard serve` reads every finished job of the

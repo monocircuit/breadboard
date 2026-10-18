@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod check;
 pub mod ci;
+pub mod ci_fix;
 pub mod ci_watch;
 pub mod config;
 pub mod conversations;
