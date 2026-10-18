@@ -1,15 +1,14 @@
-//! The herdr spaces (worktree/spaces.mjs): the main one, one per worktree,
-//! where a checkout's space is; and what may close in them.
+//! The herdr spaces (worktree/spaces.mjs): the main one, where a
+//! checkout's space is; and what may close in them. A worktree has none of
+//! its own (#409).
 
 use super::super::herdr::{self, did, has_agent, s};
 use super::super::repo::Repo;
-use super::nvim::{can_edit, editor_command, ide_for};
 use super::tabs::{
-    CHANGELOG, EDITOR, OVERVIEW, ROOT, View, Want, drop_duplicates, ensure_space, ensure_tab, ensure_worktree_space,
-    keep_order, keep_order_except, mark_branch, overall_changelog_command, overview_command,
+    CHANGELOG, OVERVIEW, ROOT, View, Want, ensure_space, ensure_tab, keep_order, overall_changelog_command,
+    overview_command,
 };
-use breadboard_core::record::{self, SPACE};
-use breadboard_core::runs;
+use breadboard_core::record::SPACE;
 use serde_json::Value;
 use std::path::Path;
 
@@ -88,120 +87,6 @@ pub fn main_space(repo: &Repo) -> Option<String> {
     Some(workspace)
 }
 
-/// The tab `nvim` of a worktree, on the files it changes; nothing without nvim.
-pub fn ensure_editor(repo: &Repo, workspace: &str, dir: &Path, tabs: &[Value]) {
-    if !can_edit() {
-        return;
-    }
-    let ide = ide_for(dir, &repo.main);
-    let command = editor_command(dir, None, None, ide.as_deref());
-    ensure_tab(
-        workspace,
-        &Want {
-            label: EDITOR,
-            cwd: dir,
-            command: Some(command),
-        },
-        tabs,
-    );
-}
-
-/// The space of a worktree: `root`, its `overview` (none for an
-/// orchestration's, #332), the tab of its claude conversation (unless an
-/// agent brings its own) and `nvim`, in that order.
-/// No conversation is resumed there (#361): a task agent is a session, not
-/// a tab, and a click opens it in one.
-pub fn worktree_space(repo: &Repo, dir: &Path, has_work_tab: bool) -> Option<String> {
-    let feature = repo.feature_of(dir);
-    // A headless agent (#359) is a session, not a tab: its space keeps `nvim`
-    // but gets no conversation's tab.
-    let is_headless = has_work_tab && runs::is_headless(&repo.main, dir);
-    let (has_editor, has_work_tab) = (has_work_tab, has_work_tab && !is_headless);
-    let main = space_of(repo, &repo.main);
-    let workspace = ensure_worktree_space(
-        &feature,
-        dir,
-        main.as_deref(),
-        &Want {
-            label: ROOT,
-            cwd: dir,
-            command: None,
-        },
-    )?;
-    mark_branch(repo, &workspace, dir);
-    let tabs = herdr::tabs_of(&workspace);
-    // An orchestration's worktree shows in its orchestration's overview: no tab of its own (#332).
-    let is_orchestrated = record::is_orchestrated(&repo.main, dir);
-    let mut closed = Vec::new();
-    if is_orchestrated {
-        closed = close_overview(&workspace, &tabs);
-    } else {
-        ensure_tab(
-            &workspace,
-            &Want {
-                label: OVERVIEW,
-                cwd: dir,
-                command: Some(overview_command(View::Worktree(dir))),
-            },
-            &tabs,
-        );
-    }
-    if has_work_tab {
-        ensure_tab(
-            &workspace,
-            &Want {
-                label: &feature,
-                cwd: dir,
-                command: None,
-            },
-            &tabs,
-        );
-    }
-    ensure_tab(
-        &workspace,
-        &Want {
-            label: ROOT,
-            cwd: dir,
-            command: None,
-        },
-        &tabs,
-    );
-    // Behind the conversation's tab: an agent that brings its own opens it after the move.
-    if has_editor {
-        ensure_editor(repo, &workspace, dir, &tabs);
-    }
-    drop_duplicates(&workspace, &feature);
-    // A tab closed here is out of the order, whatever a slow herdr still lists.
-    keep_order_except(&workspace, &tab_order(is_orchestrated, &feature), &closed);
-    Some(workspace)
-}
-
-/// The tabs of a worktree's space in their order; an orchestrated one has no `overview` (#332).
-pub fn tab_order(is_orchestrated: bool, feature: &str) -> Vec<&str> {
-    if is_orchestrated {
-        vec![ROOT, feature, EDITOR]
-    } else {
-        vec![ROOT, OVERVIEW, feature, EDITOR]
-    }
-}
-
-/// The `overview` tab an orchestrated worktree's space had before #332 closes,
-/// unless something else runs there (a second pane, an agent, this command).
-/// The ids of the tabs herdr closed.
-fn close_overview(workspace: &str, tabs: &[Value]) -> Vec<String> {
-    let olds: Vec<&Value> = tabs.iter().filter(|tab| s(tab, "label") == OVERVIEW).collect();
-    if olds.is_empty() {
-        return Vec::new();
-    }
-    let panes = herdr::panes_of(workspace);
-    let current = herdr::current_pane();
-    olds.into_iter()
-        .filter(|tab| !is_busy(tab, &panes, current.as_ref()))
-        .filter(|tab| did(&["tab", "close", s(tab, "tab_id")]))
-        .map(|tab| s(tab, "tab_id").to_string())
-        .collect()
-}
-
 /// A tab that must not be closed from a script: it runs this command, holds
 /// more than one pane, or an agent is in it.
 pub fn is_busy(tab: &Value, panes: &[Value], current: Option<&Value>) -> bool {
@@ -247,12 +132,6 @@ pub fn busy_reason(tab: &Value, panes: &[Value], current: Option<&Value>) -> Opt
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn an_orchestrated_space_has_no_overview_tab() {
-        assert_eq!(tab_order(true, "332-x"), [ROOT, "332-x", EDITOR]);
-        assert_eq!(tab_order(false, "332-x"), [ROOT, OVERVIEW, "332-x", EDITOR]);
-    }
 
     #[test]
     fn a_tab_stays_for_its_agent_at_work() {
