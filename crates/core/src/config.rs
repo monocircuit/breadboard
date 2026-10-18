@@ -28,6 +28,8 @@ pub struct Config {
     pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
+    /// The cheap review of an MR before its merge is offered (#374).
+    pub review: Review,
     pub check: Check,
     pub main_checkout: MainCheckout,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
@@ -473,6 +475,40 @@ pub struct Tries {
     /// The model that checks and answers a try while its orchestration's
     /// auto mode is on (#384): `claude -p --model <it>`.
     pub checker: String,
+}
+
+/// The review run of an MR (#374): once its bar is full and its pipeline
+/// green, one `claude -p` on a small model reads its diff against its issue
+/// and AGENTS.md, once per head. Off until its cost per review is measured.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Review {
+    pub enabled: bool,
+    /// The model it runs on: `claude -p --model <it>`.
+    pub model: String,
+    /// A diff of fewer changed lines isn't worth a review.
+    pub min_lines: u64,
+    /// One of more isn't cheap to review: the user reads it.
+    pub max_lines: u64,
+    /// What one review may cost at most (`--max-budget-usd`).
+    pub max_dollars: f64,
+    /// Pathspecs left out of the diff and its count (lockfiles, generated files).
+    pub exclude: Vec<String>,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Review {
+            enabled: false,
+            model: "haiku".into(),
+            min_lines: 20,
+            max_lines: 3000,
+            max_dollars: 0.5,
+            exclude: ["pnpm-lock.yaml", "**/Cargo.lock", "**/migrations/meta/**"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
 }
 
 /// The main checkout keeps itself on the default branch (#348): the daemon

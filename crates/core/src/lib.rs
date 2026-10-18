@@ -24,6 +24,7 @@ pub mod permissions;
 pub mod reader;
 pub mod ready;
 pub mod record;
+pub mod review;
 pub mod runs;
 pub mod said;
 pub mod settings;

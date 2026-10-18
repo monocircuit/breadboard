@@ -750,6 +750,7 @@ mod tests {
             open_boxes: vec![],
             issue: None,
             spent: None,
+            review: None,
         }
     }
 }

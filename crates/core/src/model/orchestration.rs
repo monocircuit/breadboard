@@ -205,6 +205,8 @@ pub struct MrFacts {
     pub issue: Option<i64>,
     /// What its issue's agents spent on it (#372), None before they answered.
     pub spent: Option<crate::spend::Spend>,
+    /// Its review at its head (#374): `reviewed ✓`, `review: 2 findings`; a click opens the MR, its comment there.
+    pub review: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -460,14 +462,19 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         url: mr.url.clone(),
         is_draft: mr.is_draft,
         can_mark_ready,
-        blockers: blockers_of(
-            Some(mr),
-            boxes,
-            can_mark_ready,
-            actions,
-            answered,
-            needs_pipeline(mr, merges_on_check),
-        ),
+        blockers: {
+            let needs_pipeline = needs_pipeline(mr, merges_on_check);
+            let mut blockers = blockers_of(Some(mr), boxes, can_mark_ready, actions, answered, needs_pipeline);
+            // Its review (#374) holds the two clicks until it read the head.
+            let tree = issue.tree.as_ref();
+            if let Some(hold) = tree
+                .filter(|_| super::mr_blockers::is_green(mr, tree, needs_pipeline))
+                .and_then(|tree| super::mr_blockers::review_hold_of(tree, mr))
+            {
+                blockers.push(hold.text);
+            }
+            blockers
+        },
         to_check: to_check_of(boxes, actions),
     }
 }
@@ -939,6 +946,11 @@ fn merge_requests_of(
                 .and_then(|number| local.spent.by_issue.get(&number))
                 .filter(|spent| !spent.is_empty())
                 .copied(),
+            review: tree
+                .filter(|_| !is_merged)
+                .zip(mr.sha.as_deref())
+                .and_then(|(tree, sha)| crate::review::review_at(&tree.reviews, sha))
+                .map(|review| review_span(review, &mr.url)),
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)
@@ -1099,7 +1111,31 @@ fn ready_holds_of(issue: &Entry, mr: Option<&Mr>) -> Option<String> {
         };
         return Some(format!("try #{} {word}", open.id));
     }
-    super::change::is_change_open(Some(tree), mr).then(|| "change requested".to_string())
+    if super::change::is_change_open(Some(tree), mr) {
+        return Some("change requested".to_string());
+    }
+    // Serious findings of its review (#374) send it back to its agent: a draft until the next head.
+    mr.and_then(|mr| super::mr_blockers::review_hold_of(tree, mr))
+        .filter(|hold| hold.who == "agent")
+        .map(|hold| hold.text)
+}
+
+/// An MR row's review: green passed, red serious findings, yellow small or running, dim skipped or failed.
+fn review_span(review: &crate::review::Review, url: &str) -> Span {
+    use crate::review::State;
+    let paint = match review.state {
+        State::Running => super::Paint::Yellow,
+        State::Skipped => super::Paint::Dim,
+        State::Done if review.failed.is_some() => super::Paint::Dim,
+        State::Done if review.serious() > 0 => super::Paint::Red,
+        State::Done if !review.findings.is_empty() => super::Paint::Yellow,
+        State::Done => super::Paint::Green,
+    };
+    Span {
+        text: crate::review::row_text(review),
+        paint,
+        url: Some(url.to_string()),
+    }
 }
 
 /// The mark of an MR waiting in the CI queue: its place, a click runs it

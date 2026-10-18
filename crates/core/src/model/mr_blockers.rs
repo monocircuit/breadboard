@@ -108,6 +108,11 @@ pub fn row_blockers_of(
         .map(|tree| (&tree.actions[..], &tree.answered[..]))
         .unwrap_or((&[], &[]));
     let checks = counted_checks_of(boxes, actions, answered);
+    // Its review (#374) once its head is green: serious findings are its agent's.
+    let review = tree
+        .filter(|_| is_green(mr, tree, needs_pipeline))
+        .and_then(|tree| review_hold_of(tree, mr));
+    let is_reviewed_back = review.as_ref().is_some_and(|hold| hold.who == "agent");
     for check in &checks {
         add(
             check.clone(),
@@ -126,7 +131,7 @@ pub fn row_blockers_of(
                 "agent",
                 false,
             );
-        } else if bar.total > 0 && !is_changed {
+        } else if bar.total > 0 && !is_changed && !is_reviewed_back {
             // The bar is full: breadboard marks it ready by itself (#399).
             add(READY_BAR_FULL.into(), "breadboard", false);
         } else if bar.total == 0 {
@@ -222,7 +227,32 @@ pub fn row_blockers_of(
             );
         }
     }
+    // Due or running, it holds only an MR nothing else holds: the actor starts it on `review due`.
+    if let Some(hold) = review.filter(|_| is_reviewed_back || reasons.is_empty()) {
+        reasons.push(Reason {
+            text: hold.text,
+            who: hold.who.into(),
+            is_conflict: false,
+        });
+    }
     reasons
+}
+
+/// What the review of `mr`'s head holds (#374), by the `[review]` of its worktree.
+pub fn review_hold_of(tree: &Tree, mr: &Mr) -> Option<crate::review::Hold> {
+    let is_enabled = crate::config::of(&tree.dir).config.review.enabled;
+    crate::review::hold_of(&tree.reviews, mr.sha.as_deref(), is_enabled)
+}
+
+/// Whether its head passed what a merge needs of it (#374): its pipeline,
+/// or without `needs_pipeline` (#443) wt:check at its pushed head with no
+/// pipeline failed there. Its review starts only then.
+pub fn is_green(mr: &Mr, tree: Option<&Tree>, needs_pipeline: bool) -> bool {
+    if needs_pipeline {
+        mr.pipeline_status() == Some("success")
+    } else {
+        !failed_at_head(mr) && check_lack_of(mr, tree).is_none()
+    }
 }
 
 /// What its wt:check lacks for a merge without a pipeline (#443): passed at
@@ -583,6 +613,78 @@ mod tests {
             reasons(&draft(), &boxes, Some(&changed)),
             ["change requested: rename it → agent"]
         );
+    }
+
+    #[test]
+    fn serious_review_findings_send_it_back_to_its_agent() {
+        use crate::review::{Finding, Review, State, Weight};
+        let review = |weight| Review {
+            iid: 242,
+            head: "abc123".into(),
+            model: "haiku".into(),
+            state: State::Done,
+            findings: vec![Finding {
+                weight,
+                text: "a.rs:1 x".into(),
+            }],
+            skipped: None,
+            lines: 40,
+            tokens: 0,
+            dollars: 0.0,
+            at: String::new(),
+            pid: None,
+            session: None,
+            failed: None,
+        };
+        let reviewed = |weight| Tree {
+            reviews: vec![review(weight)],
+            ..Default::default()
+        };
+        let at = |mr: Mr, sha: &str| Mr {
+            sha: Some(sha.into()),
+            ..mr
+        };
+        let boxes = [work("Tests", true)];
+        let serious = reviewed(Weight::Serious);
+        assert_eq!(
+            reasons(&at(mr(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        // Back to draft by its hold: the review says why, not `ready (bar full)`.
+        assert_eq!(
+            reasons(&at(draft(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        assert!(
+            reasons(&at(mr(), "def456"), &boxes, Some(&serious)).is_empty(),
+            "a new head, [review] off: nothing waits"
+        );
+        assert!(reasons(&at(mr(), "abc123"), &boxes, Some(&reviewed(Weight::Small))).is_empty());
+    }
+
+    #[test]
+    fn its_head_is_green_by_the_pipeline_or_by_wt_check_without_one() {
+        let at = Mr {
+            sha: Some("abc123".into()),
+            pipeline: None,
+            ..mr()
+        };
+        let checked = |sha: &str| Tree {
+            checked: crate::check::CheckState::Tested {
+                sha: sha.into(),
+                packages: vec![],
+            },
+            ..Default::default()
+        };
+        assert!(!is_green(&at, Some(&checked("abc123")), true), "no pipeline yet");
+        assert!(is_green(&mr(), None, true), "the pipeline passed");
+        // #443: a merge into develop on wt:check, its review starts on it.
+        assert!(is_green(&at, Some(&checked("abc123")), false));
+        assert!(
+            !is_green(&at, Some(&checked("0ff1ce")), false),
+            "checked another commit"
+        );
+        assert!(!is_green(&at, None, false), "no worktree here");
     }
 
     #[test]
