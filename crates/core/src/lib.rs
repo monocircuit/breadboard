@@ -12,6 +12,7 @@ pub mod epic;
 pub mod epic_sync;
 pub mod git;
 pub mod gitlab;
+pub mod heal_log;
 pub mod herdr;
 pub mod journal;
 pub mod json;

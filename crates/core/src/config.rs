@@ -41,6 +41,25 @@ pub struct Config {
     pub products: std::collections::BTreeMap<String, Product>,
     /// The team's defaults of the overview's settings panel (#415).
     pub settings: Settings,
+    /// What a merge into the default branch needs (#443).
+    pub merge: Merge,
+}
+
+/// What a merge into the default branch needs (`[merge]`, #443).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Merge {
+    /// Its MR's own pipeline must pass. Off (temporary, until the batch
+    /// branches carry the testing): `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the default branch's pipeline
+    /// after the merge is the safety net.
+    pub needs_pipeline: bool,
+}
+
+impl Default for Merge {
+    fn default() -> Self {
+        Merge { needs_pipeline: true }
+    }
 }
 
 /// The team's defaults of the settings panel (#415, `settings.rs`): what

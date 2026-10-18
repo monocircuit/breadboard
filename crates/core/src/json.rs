@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The parsed file, None when it is missing or no JSON.
 pub fn read(file: &Path) -> Option<Value> {
@@ -31,18 +32,35 @@ pub fn pretty(value: &Value) -> String {
 /// `value` into `file` as `JSON.stringify(value, null, 2)` and a newline,
 /// its folder made first.
 pub fn write_pretty(file: &Path, value: &Value) -> io::Result<()> {
-    if let Some(dir) = file.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(file, format!("{}\n", pretty(value)))
+    write_whole(file, &format!("{}\n", pretty(value)))
 }
 
 /// `value` into `file` as `JSON.stringify(value)` and a newline (`.claude/origin`).
 pub fn write_compact(file: &Path, value: &Value) -> io::Result<()> {
+    write_whole(file, &format!("{value}\n"))
+}
+
+/// `text` into `file` whole (#385): written to a part file next to it, then
+/// renamed over it, so a reader in another process (the overview, the Stop
+/// hook, `wt:action`) sees the old file or the new one, never half of one.
+/// The part's name carries the process and a count, two writers never share one.
+pub fn write_whole(file: &Path, text: &str) -> io::Result<()> {
+    static PARTS: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(file, format!("{value}\n"))
+    let mut name = file.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".{}.{}.part",
+        std::process::id(),
+        PARTS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let part = file.with_file_name(name);
+    let written = fs::write(&part, text).and_then(|()| fs::rename(&part, file));
+    if written.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    written
 }
 
 /// `{ ...object, ...fields }`: a key there keeps its place, a new one goes
@@ -120,6 +138,41 @@ mod tests {
             json!({ "alpha": 3, "beta": null }).as_object().unwrap().clone(),
         );
         assert_eq!(Value::Object(object).to_string(), r#"{"zeta":1,"alpha":3,"beta":null}"#);
+    }
+
+    #[test]
+    fn a_reader_never_sees_half_a_file() {
+        let dir = std::env::temp_dir().join(format!("breadboard-json-{}", std::process::id()));
+        let file = dir.join(".claude/actions.json");
+        let value = |n: usize| json!({ "actions": vec![json!({ "id": n, "text": "x".repeat(400) }); 200] });
+        write_pretty(&file, &value(0)).unwrap();
+        let writer = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                for n in 1..200 {
+                    write_pretty(&file, &value(n)).unwrap();
+                }
+            })
+        };
+        let mut reads = 0;
+        while !writer.is_finished() {
+            let text = fs::read_to_string(&file).unwrap();
+            assert!(
+                serde_json::from_str::<Value>(&text).is_ok(),
+                "cut off after {} bytes",
+                text.len()
+            );
+            reads += 1;
+        }
+        writer.join().unwrap();
+        assert!(reads > 0);
+        let left: Vec<_> = fs::read_dir(file.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, ["actions.json"], "no part file stays");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
