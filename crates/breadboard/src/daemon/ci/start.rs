@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// What `run` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Ran {
+pub(super) enum Ran {
     /// Created, its id when GitLab said it.
     Created(Option<i64>),
     /// GitLab has one of that commit already: none created (#369).
@@ -55,7 +55,7 @@ fn run(main: &Path, start: &ci::Start) -> Result<Ran, String> {
     run_with(main, start, "glab")
 }
 
-fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<Ran, String> {
+pub(super) fn run_with(main: &Path, start: &ci::Start, glab: &str) -> Result<Ran, String> {
     let mr = glab_get(main, glab, &format!("projects/:fullpath/merge_requests/{}", start.iid))?;
     if mr.get("sha").and_then(serde_json::Value::as_str) != Some(start.sha.as_str()) {
         return Ok(Ran::Superseded);

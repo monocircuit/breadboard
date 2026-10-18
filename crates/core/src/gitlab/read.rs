@@ -175,39 +175,41 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt updatedAt } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
     nodes(project, "mergeRequests")
         .iter()
-        .map(|node| crate::ci::OpenMr {
-            blocked_by: blocked_by(node),
-            iid: id_of(node.get("iid")),
-            source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
-            target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
-            is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
-            labels: nodes(node, "labels")
-                .iter()
-                .filter_map(|label| str_at(label, "title").map(String::from))
-                .collect(),
-            sha: str_at(node, "diffHeadSha").map(String::from),
+        .map(|node| {
             // Its newest MR pipeline, of any commit: after a push that skipped CI
             // GitLab's head pipeline is none, and a red one before it matters.
             // A branch's (the `skipped` one a push with ci.skip leaves) isn't one.
             // Newest by id: in a list of MRs gitlab.com gives each one's
             // pipelines in no order of time (by sha, 2026-10-12), and the first
             // taken for the newest started its pipelines again and again (#369).
-            pipeline: nodes(node, "pipelines")
-                .iter()
-                .filter_map(|pipeline| pipeline_of(pipeline, ""))
+            let newest = nodes(node, "pipelines")
+                .into_iter()
                 .filter(|pipeline| {
-                    pipeline
-                        .reference
-                        .as_deref()
-                        .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+                    str_at(pipeline, "ref").is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
                 })
-                .max_by_key(|pipeline| pipeline.id),
+                .max_by_key(|pipeline| id_of(pipeline.get("id")));
+            crate::ci::OpenMr {
+                blocked_by: blocked_by(node),
+                iid: id_of(node.get("iid")),
+                source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
+                target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
+                is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
+                labels: nodes(node, "labels")
+                    .iter()
+                    .filter_map(|label| str_at(label, "title").map(String::from))
+                    .collect(),
+                sha: str_at(node, "diffHeadSha").map(String::from),
+                pipeline: newest.as_ref().and_then(|pipeline| pipeline_of(pipeline, "")),
+                is_refused: newest
+                    .as_ref()
+                    .is_some_and(|pipeline| str_at(pipeline, "failureReason").is_some()),
+            }
         })
         .collect()
 }

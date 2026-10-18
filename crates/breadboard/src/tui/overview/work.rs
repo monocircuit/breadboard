@@ -593,6 +593,14 @@ fn gitlab_line(scene: &mut Scene<Act>, block: &Block, ctx: &Ctx) {
             {
                 mrs::pipeline_region(scene, mr, Rect::new(rect.x + at, rect.y, width, 1));
             }
+            // Its review at its head (#374): `reviewed ✓`, `review: 2 findings`.
+            if let Some(review) = &mr.review {
+                let mut atom = look::spans(std::slice::from_ref(review));
+                if has_bar || has_lacks {
+                    atom.push(look::dim(" ·"));
+                }
+                put(scene, atom, true);
+            }
             if let Some(progress) = &mr.progress {
                 // Its gap before it, its ` ·` after it.
                 let tail = if has_lacks { 2 } else { 0 };
@@ -1579,6 +1587,7 @@ mod tests {
                 issue: None,
                 issues: vec![],
                 spent: None,
+                review: None,
             }),
         }
     }

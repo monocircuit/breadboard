@@ -4,6 +4,7 @@
 pub mod actions;
 pub mod check;
 pub mod ci;
+pub mod ci_fix;
 pub mod ci_watch;
 pub mod config;
 pub mod conversations;
@@ -23,6 +24,7 @@ pub mod permissions;
 pub mod reader;
 pub mod ready;
 pub mod record;
+pub mod review;
 pub mod runs;
 pub mod said;
 pub mod settings;

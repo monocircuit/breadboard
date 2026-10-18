@@ -241,6 +241,7 @@ mod tests {
             checked: CheckState::Tested {
                 sha: sha.into(),
                 packages: Vec::new(),
+                no_test: None,
             },
             ..Default::default()
         };

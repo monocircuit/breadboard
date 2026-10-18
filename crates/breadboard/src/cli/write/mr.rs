@@ -9,6 +9,8 @@
 //! others of a bundle (#321, `issues` of `.claude/origin`), each with its
 //! `Closes`; a description that closes another is refused. It merges into
 //! the worktree's base: develop, or the epic of its orchestration.
+//! A fix that passed wt:check without a test (`--no-test "<reason>"`, #316)
+//! gets its reason as a line of the description.
 
 mod template;
 
@@ -168,6 +170,12 @@ fn has_fragment(top: &Path, numbers: &[i64]) -> bool {
                 && name[digits.len()..].starts_with('-')
                 && digits.parse::<i64>().is_ok_and(|digits| numbers.contains(&digits))
         })
+}
+
+/// The reason the last passed wt:check of the worktree gave for a fix without a test (#316).
+fn no_test_of_stamp(top: &Path) -> Option<String> {
+    let stamp = breadboard_core::check::read_check(top);
+    breadboard_core::json::str_of(stamp.get("passed")?, "no_test").map(String::from)
 }
 
 fn strings_of(value: Option<&Value>) -> Vec<String> {
@@ -383,6 +391,11 @@ pub fn run(argv: &Argv) -> Outcome {
             run = breadboard_core::config::run_word()
         ));
     }
+    // A fix that passed wt:check without a test says why, for the reviewer and the MR's CI job (#316).
+    let written = match no_test_of_stamp(top) {
+        Some(reason) => breadboard_core::check::with_no_test(&written, &reason),
+        None => written,
+    };
     let body = body_of(&written, &numbers);
     if let Some(why) = second_issue(&body, &numbers) {
         return Err(format!("{}: {why}", here.shown(&given)));

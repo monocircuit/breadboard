@@ -207,6 +207,8 @@ pub struct MrFacts {
     pub issues: Vec<i64>,
     /// What its issue's agents spent on it (#372), None before they answered.
     pub spent: Option<crate::spend::Spend>,
+    /// Its review at its head (#374): `reviewed ✓`, `review: 2 findings`; a click opens the MR, its comment there.
+    pub review: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -364,7 +366,13 @@ fn hold_while_develop_is_red(
 /// on develop gets it out, not its agent.
 fn push_blocked_text(tree: &super::Tree, develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
     develop.filter(|pipeline| pipeline.status == "failed")?;
-    let crate::check::CheckState::Failed { failures, .. } = &tree.checked else {
+    // A fix refused for its missing test (#316) is its agent's to fix, not develop's.
+    let crate::check::CheckState::Failed {
+        failures,
+        refused: None,
+        ..
+    } = &tree.checked
+    else {
         return None;
     };
     if tree.unpushed == 0 {
@@ -456,14 +464,19 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         url: mr.url.clone(),
         is_draft: mr.is_draft,
         can_mark_ready,
-        blockers: blockers_of(
-            Some(mr),
-            boxes,
-            can_mark_ready,
-            actions,
-            answered,
-            needs_pipeline(mr, merges_on_check),
-        ),
+        blockers: {
+            let needs_pipeline = needs_pipeline(mr, merges_on_check);
+            let mut blockers = blockers_of(Some(mr), boxes, can_mark_ready, actions, answered, needs_pipeline);
+            // Its review (#374) holds the two clicks until it read the head.
+            let tree = issue.tree.as_ref();
+            if let Some(hold) = tree
+                .filter(|_| super::mr_blockers::is_green(mr, tree, needs_pipeline))
+                .and_then(|tree| super::mr_blockers::review_hold_of(tree, mr))
+            {
+                blockers.push(hold.text);
+            }
+            blockers
+        },
         to_check: to_check_of(boxes, actions),
     }
 }
@@ -635,6 +648,7 @@ fn actions_of(
             develop: remote.and_then(|remote| remote.develop.as_ref()),
             removals: Some(&state.removals),
             pipeline_tries: Some(&state.pipeline_tries),
+            fixes: fixes_of(local),
             now,
         },
     );
@@ -834,43 +848,57 @@ fn merge_requests_of(
             reason.text = place.text();
             reason.who = "breadboard".into();
         }
+        let mut pipeline = match (&ci, hung) {
+            (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
+            // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
+            // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
+            // Quiet while it packs its cache (#424): working, dim and no alarm.
+            (None, Some(hung)) => Span {
+                text: format!(
+                    "⧗ {} {}{}",
+                    hung.job,
+                    crate::ci_watch::minutes(hung.elapsed),
+                    if hung.is_caching() { " caching" } else { "" }
+                ),
+                paint: if hung.is_caching() {
+                    super::Paint::Dim
+                } else {
+                    super::Paint::Red
+                },
+                url: hung
+                    .url
+                    .clone()
+                    .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
+            },
+            // No pipeline of its own needed (#443): none, or a push's skipped one, says so.
+            (None, None)
+                if !needs_pipeline(mr, local.merges_on_check)
+                    && mr.pipeline_status().is_none_or(|status| status == "skipped") =>
+            {
+                Span {
+                    url: mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone()),
+                    ..Span::dim(super::merge::ON_WT_CHECK)
+                }
+            }
+            (None, None) => pipeline_mark(mr.pipeline.as_ref()),
+        };
+        // Its failed pipelines (#371): `CI fix 2/3` from the first fix run of its agent
+        // until one passes, what the queue does about this one (`retrying check:vita`).
+        if let Some(fix) = queue.filter(|_| !is_merged).and_then(|queue| queue.fixes.get(&mr.iid)) {
+            let is_this = mr.pipeline.as_ref().is_some_and(|pipeline| pipeline.id == fix.pipeline);
+            let mark = if is_this {
+                Some(fix.mark_text())
+            } else {
+                fix.count_text()
+            };
+            if let Some(mark) = mark {
+                pipeline.text = format!("{} · {mark}", pipeline.text);
+            }
+        }
         MrFacts {
             iid: mr.iid,
             url: mr.url.clone(),
-            pipeline: match (&ci, hung) {
-                (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
-                // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
-                // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
-                // Quiet while it packs its cache (#424): working, dim and no alarm.
-                (None, Some(hung)) => Span {
-                    text: format!(
-                        "⧗ {} {}{}",
-                        hung.job,
-                        crate::ci_watch::minutes(hung.elapsed),
-                        if hung.is_caching() { " caching" } else { "" }
-                    ),
-                    paint: if hung.is_caching() {
-                        super::Paint::Dim
-                    } else {
-                        super::Paint::Red
-                    },
-                    url: hung
-                        .url
-                        .clone()
-                        .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
-                },
-                // No pipeline of its own needed (#443): none, or a push's skipped one, says so.
-                (None, None)
-                    if !needs_pipeline(mr, local.merges_on_check)
-                        && mr.pipeline_status().is_none_or(|status| status == "skipped") =>
-                {
-                    Span {
-                        url: mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone()),
-                        ..Span::dim(super::merge::ON_WT_CHECK)
-                    }
-                }
-                (None, None) => pipeline_mark(mr.pipeline.as_ref()),
-            },
+            pipeline,
             ci,
             title: mr.title.clone(),
             branch: issue.branch.clone(),
@@ -921,6 +949,11 @@ fn merge_requests_of(
                 .and_then(|number| local.spent.by_issue.get(&number))
                 .filter(|spent| !spent.is_empty())
                 .copied(),
+            review: tree
+                .filter(|_| !is_merged)
+                .zip(mr.sha.as_deref())
+                .and_then(|(tree, sha)| crate::review::review_at(&tree.reviews, sha))
+                .map(|review| review_span(review, &mr.url)),
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)
@@ -1081,11 +1114,45 @@ fn ready_holds_of(issue: &Entry, mr: Option<&Mr>) -> Option<String> {
         };
         return Some(format!("try #{} {word}", open.id));
     }
-    super::change::is_change_open(Some(tree), mr).then(|| "change requested".to_string())
+    if super::change::is_change_open(Some(tree), mr) {
+        return Some("change requested".to_string());
+    }
+    // Serious findings of its review (#374) send it back to its agent: a draft until the next head.
+    mr.and_then(|mr| super::mr_blockers::review_hold_of(tree, mr))
+        .filter(|hold| hold.who == "agent")
+        .map(|hold| hold.text)
+}
+
+/// An MR row's review: green passed, red serious findings, yellow small or running, dim skipped or failed.
+fn review_span(review: &crate::review::Review, url: &str) -> Span {
+    use crate::review::State;
+    let paint = match review.state {
+        State::Running => super::Paint::Yellow,
+        State::Skipped => super::Paint::Dim,
+        State::Done if review.failed.is_some() => super::Paint::Dim,
+        State::Done if review.serious() > 0 => super::Paint::Red,
+        State::Done if !review.findings.is_empty() => super::Paint::Yellow,
+        State::Done => super::Paint::Green,
+    };
+    Span {
+        text: crate::review::row_text(review),
+        paint,
+        url: Some(url.to_string()),
+    }
 }
 
 /// The mark of an MR waiting in the CI queue: its place, a click runs it
 /// now; the page of its last pipeline stays a click away on the MR's.
+/// The failed pipelines the CI queue looks after (#371): None without a
+/// queue, or a try's (dry) one, which retries nothing.
+fn fixes_of(local: &OrchestrationLocal) -> Option<&std::collections::BTreeMap<i64, crate::ci_fix::Fix>> {
+    local
+        .ci
+        .as_ref()
+        .filter(|queue| !queue.is_dry)
+        .map(|queue| &queue.fixes)
+}
+
 fn ci_mark(place: &crate::ci::Place, last: Option<&crate::gitlab::Pipeline>) -> Span {
     Span {
         text: format!("{} ▸", place.text()),
@@ -1260,9 +1327,12 @@ pub fn orchestration_of(
     // Conflicts and failed pipelines reach their agents by themselves, from the one live overview.
     if let Some(remote) = remote.filter(|_| state.is_deliverer) {
         model.tells = conflicts_of(&issues, remote);
-        model
-            .tells
-            .extend(failed_pipelines_of(&issues, remote, remote.develop.as_ref()));
+        model.tells.extend(failed_pipelines_of(
+            &issues,
+            remote,
+            remote.develop.as_ref(),
+            fixes_of(local),
+        ));
     }
     let free_workers: Vec<Worker> = local.free.iter().map(|(worker, _)| worker.clone()).collect();
     let announced = announced_of(
@@ -1724,6 +1794,7 @@ mod tests {
                     task: "test:rs".into(),
                     tests: vec!["tui::overview::work::tests::renders_the_row".into()],
                 }],
+                refused: None,
             },
             ..Default::default()
         };
@@ -1844,6 +1915,50 @@ mod tests {
             .find(|mr| mr.iid == 11)
             .unwrap();
         assert_eq!((one.ci.as_ref(), one.pipeline.text.as_str()), (None, "✓ passed"));
+    }
+
+    #[test]
+    fn the_row_counts_the_fix_runs_of_a_failed_pipeline() {
+        // #371: `CI fix 2/3` until a pipeline passes, what the queue does about this one.
+        use crate::ci::Queue;
+        use crate::ci_fix::{Fix, Stage};
+        let mut remote = remote();
+        let mr = remote.of.get_mut("feature/1-one").unwrap().mr.as_mut().unwrap();
+        let pipeline = mr.pipeline.as_mut().unwrap();
+        pipeline.status = "failed".into();
+        let id = pipeline.id;
+        let row_of = |fix: Fix| {
+            let mut local = local();
+            let mut queue = Queue {
+                at: NOW,
+                ..Default::default()
+            };
+            queue.fixes.insert(11, fix);
+            local.ci = Some(queue);
+            let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+            let mrs = model.merge_requests.unwrap();
+            let row = mrs
+                .open
+                .iter()
+                .filter_map(|row| row.mr.as_ref())
+                .find(|mr| mr.iid == 11)
+                .unwrap();
+            row.pipeline.text.clone()
+        };
+        let fix = |stage: Stage, pipeline: i64| Fix {
+            pipeline,
+            stage,
+            jobs: vec!["check:vita".into()],
+            attempt: 2,
+            max: 3,
+        };
+        assert_eq!(row_of(fix(Stage::Fix, id)), "✗ failed · CI fix 2/3");
+        assert_eq!(
+            row_of(fix(Stage::Retrying, id)),
+            "✗ failed · CI fix 2/3 · retrying check:vita"
+        );
+        // The verdict of an older pipeline: its count only.
+        assert_eq!(row_of(fix(Stage::Bound, id + 1)), "✗ failed · CI fix 2/3");
     }
 
     #[test]

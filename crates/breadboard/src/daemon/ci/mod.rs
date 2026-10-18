@@ -12,10 +12,11 @@
 //!
 //! One module per step (#420), so CI features touch different files:
 //! `queue` the loop, `start` a pipeline started, `preempt` room made for an
-//! MR ahead, `clicks` the run-now clicks; the job watcher (`watch.rs`) and
+//! MR ahead, `clicks` the run-now clicks, `fix` a failed pipeline (#371); the job watcher (`watch.rs`) and
 //! ready (`ready.rs`) are the daemon's own tasks.
 
 mod clicks;
+mod fix;
 mod preempt;
 mod queue;
 mod start;

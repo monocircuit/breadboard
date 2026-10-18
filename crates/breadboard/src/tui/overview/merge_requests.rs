@@ -757,6 +757,7 @@ mod tests {
             issue: None,
             issues: vec![],
             spent: None,
+            review: None,
         }
     }
 }
