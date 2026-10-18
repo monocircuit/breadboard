@@ -324,11 +324,12 @@ pub fn open_space(repo: &Repo, dir: &Path) -> Option<String> {
 /// back as bare shells, and the startup's layout may come late or not at
 /// all. Under the layout's lock, so a pane is judged and typed into by one
 /// process; only a shell that idles in its one pane gets the command, never
-/// a pane that runs something. The labels of the spaces it started one in.
+/// a pane that runs something. What it did and why not, a line each (#401):
+/// a tab whose overview runs (or a space without one) says nothing.
 pub fn heal_overviews(repo: &Repo) -> Vec<String> {
     exclusive(|| {
         let trees = repo.trees();
-        let mut started = Vec::new();
+        let mut said = Vec::new();
         for space in herdr::spaces() {
             let label = s(&space, "label");
             let Some(command) = overview_command_of(repo, &trees, label) else {
@@ -336,13 +337,16 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
             };
             let workspace = s(&space, "workspace_id");
             let tabs = herdr::tabs_of(workspace);
-            if let Some(idle) = tabs::idle_pane_of(workspace, OVERVIEW, &tabs)
-                && herdr::did(&["pane", "run", &idle, &command])
-            {
-                started.push(label.to_string());
+            match tabs::idle_pane_or_why(workspace, OVERVIEW, &tabs) {
+                Ok(idle) if herdr::did(&["pane", "run", &idle, &command]) => {
+                    said.push(format!("the overview runs again in {label} (typed into {idle})"));
+                }
+                Ok(idle) => said.push(format!("{label}: herdr took no `pane run` into {idle}")),
+                Err(tabs::NotIdle::Runs(_) | tabs::NotIdle::NoTab) => {}
+                Err(why) => said.push(format!("{label}: its overview tab left, {why}")),
             }
         }
-        started
+        said
     })
 }
 
