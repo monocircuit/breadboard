@@ -148,7 +148,8 @@ pub fn command(args: &Args) -> ExitCode {
     } else {
         herdr::orchestration_here()
     };
-    let previous = if herdr::moves_tab(proc::is_agent(), origin.as_ref(), stays.as_deref()) {
+    // An agent's own wt:new (not an orchestration's): it leaves the worktree it was in.
+    let previous = if proc::is_agent() && origin.is_none() && stays.is_none() {
         leaving_worktree()
     } else {
         None
@@ -326,7 +327,7 @@ pub fn command(args: &Args) -> ExitCode {
     } else {
         sweep::stale_issue_count().unwrap_or(0)
     };
-    let space = herdr::open_space(&feature, &dir, origin.as_ref(), stays.as_deref());
+    // No herdr space of its own (#409): its rows in the overview are where it shows.
     // Its stack set up and running: its dev server in the background (#407).
     let procs = stack::procs_of(&dir);
     if !procs.is_empty() {
@@ -343,7 +344,7 @@ pub fn command(args: &Args) -> ExitCode {
         dir: Path::new(&dir_text),
         branch: &branch,
         offset,
-        tab: space,
+        tab: None,
         stale,
         silent,
         left,
