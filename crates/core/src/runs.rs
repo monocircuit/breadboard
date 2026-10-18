@@ -358,6 +358,7 @@ pub fn release(usage: &mut Usage, table: &mut Table, queue: &mut Queue, now: i64
             line: RESET_LINE.into(),
             at: now,
             allowed: Vec::new(),
+            is_notice: false,
         });
         run.state = State::Queued;
         run.since = now;
@@ -389,6 +390,10 @@ pub struct Event {
     /// #360: the user's `allow once`), none for later runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<String>,
+    /// A notice (#445: `!N merged`, a note of the orchestrator): it starts
+    /// no run of its own but rides along with the next line that does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_notice: bool,
 }
 
 /// The lines waiting for a run, oldest first.
@@ -510,6 +515,16 @@ pub fn enqueue_line(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> 
 
 /// `enqueue_line` with tool rules allowed for the run that takes it (#360).
 pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String>) -> std::io::Result<()> {
+    enqueue_of(main, dir, line, allowed, false)
+}
+
+/// A notice for the agent of the worktree `dir` (#445): queued like a line,
+/// but it starts no run; the next line that does takes it along.
+pub fn enqueue_notice(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> {
+    enqueue_of(main, dir, line, Vec::new(), true)
+}
+
+fn enqueue_of(main: &Path, dir: &Path, line: &str, allowed: Vec<String>, is_notice: bool) -> std::io::Result<()> {
     let session = crate::conversations::bound_session(dir)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no session bound to the worktree"))?;
     enqueue(
@@ -521,6 +536,7 @@ pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String
             line: line.to_string(),
             at: crate::time::now_ms(),
             allowed,
+            is_notice,
         },
     )
 }
@@ -584,10 +600,11 @@ pub fn ordered(mut waiting: Vec<Waiting>) -> Vec<Waiting> {
     waiting
 }
 
-/// The sessions with lines waiting, each once, with its oldest line's time.
+/// The sessions with lines waiting that start a run, each once, with its
+/// oldest such line's time: one with only notices waits (#445).
 pub fn waiting_in(queue: &Queue) -> Vec<(String, PathBuf, i64)> {
     let mut found: Vec<(String, PathBuf, i64)> = Vec::new();
-    for event in &queue.events {
+    for event in queue.events.iter().filter(|event| !event.is_notice) {
         if !found.iter().any(|(session, ..)| *session == event.session) {
             found.push((event.session.clone(), event.dir.clone(), event.at));
         }
@@ -697,7 +714,8 @@ pub fn states_of(table: &Table, queue: &Queue) -> HashMap<String, Run> {
             (session.clone(), run)
         })
         .collect();
-    for event in &queue.events {
+    // A notice alone leaves it idle: nothing runs for it (#445).
+    for event in queue.events.iter().filter(|event| !event.is_notice) {
         let run = states.entry(event.session.clone()).or_insert_with(|| Run {
             dir: event.dir.clone(),
             name: event.name.clone(),
@@ -731,7 +749,7 @@ pub fn mark_held(agents: &mut HashMap<String, Agent>, queue: &Queue, now: i64) {
         let oldest = queue
             .events
             .iter()
-            .filter(|event| event.session == *session)
+            .filter(|event| event.session == *session && !event.is_notice)
             .map(|event| event.at)
             .min();
         if !agent.pane.is_empty() && oldest.is_some_and(|at| now - at >= HELD_MS) {
@@ -800,6 +818,7 @@ mod tests {
             line: line.into(),
             at,
             allowed: Vec::new(),
+            is_notice: false,
         }
     }
 
@@ -1093,6 +1112,33 @@ mod tests {
         let args = args_of("abc", "1-x", "go", true, &[], &named);
         let at = args.iter().position(|arg| arg == "--strict-mcp-config").unwrap();
         assert_eq!(args[at - 2..at], ["--name", "1-x"]);
+    }
+
+    #[test]
+    fn a_notice_starts_no_run_and_rides_along_with_the_next_line() {
+        let notice = Event {
+            is_notice: true,
+            ..event("a", "[overview] !5 merged", 1)
+        };
+        let alone = Queue {
+            events: vec![notice.clone()],
+        };
+        assert!(waiting_in(&alone).is_empty());
+        assert!(states_of(&Table::default(), &alone).is_empty());
+        // A line for it: it waits from that line's time, and its run takes both.
+        let both = Queue {
+            events: vec![notice, event("a", "[overview] the pipeline of !5 failed", 7)],
+        };
+        assert_eq!(waiting_in(&both), [("a".to_string(), PathBuf::from("/r/p-1"), 7)]);
+        assert_eq!(states_of(&Table::default(), &both)["a"].state, State::Queued);
+        assert_eq!(
+            prompt_of(&both.events),
+            "[overview] !5 merged\n\n[overview] the pipeline of !5 failed"
+        );
+        // Kept as it was written: a line of before reads as no notice.
+        let read: Event = serde_json::from_str(r#"{"session":"a","dir":"/r","name":"n","line":"l","at":0}"#).unwrap();
+        assert!(!read.is_notice);
+        assert!(!serde_json::to_string(&read).unwrap().contains("is_notice"));
     }
 
     #[test]

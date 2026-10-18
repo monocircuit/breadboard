@@ -144,6 +144,7 @@ fn start_headless(main: &Path, dir: &Path, feature: &str, id: String) -> Agent {
         line: BRIEF_PROMPT.to_string(),
         at: now_ms(),
         allowed: Vec::new(),
+        is_notice: false,
     };
     let is_started = is_bound && runs::enqueue(main, event).is_ok();
     if is_started {

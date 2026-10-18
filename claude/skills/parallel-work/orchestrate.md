@@ -183,7 +183,12 @@ sh packages/breadboard/herdr/breadboard.sh runs tell <worktree dir> "<line>"
 ```
 
 The line starts the agent's next run, or goes into the next one when a run
-is in flight.
+is in flight. A line it needn't act on now (`!N is merged`, a hotfix's
+pipeline runs, a rule for later) goes with `runs tell --notice <dir>
+"<line>"`: it starts no run but rides along with the next line that does
+(#445). Every run resumes the agent's whole history, so a notice of its own
+costs a full read, and past the cache's hour a full write too. The
+overview's own `!N merged` is such a notice.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.

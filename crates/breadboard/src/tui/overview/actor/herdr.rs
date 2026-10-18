@@ -169,6 +169,22 @@ pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
     type_into(agent_pane_of(main, &Target::Dir(dir.to_path_buf())).as_ref(), line)
 }
 
+/// A notice for the agent of `dir` (#445, `!N merged`): queued for a task
+/// agent without starting a run, the next line that does takes it along;
+/// typed into the pane of a claude that runs it interactively, as a line is.
+pub fn deliver_notice(main: &Path, dir: &Path, line: &str) -> bool {
+    if breadboard_core::runs::is_headless(main, dir) && held_pane(main, dir).is_none() {
+        return enqueue_notice(main, dir, line);
+    }
+    deliver_to(main, dir, line)
+}
+
+/// A notice queued for the headless agent of `dir`: no run starts for it,
+/// so the daemon isn't woken; false when no session is bound there.
+pub fn enqueue_notice(main: &Path, dir: &Path, line: &str) -> bool {
+    breadboard_core::runs::enqueue_notice(main, dir, &overview_line(line)).is_ok()
+}
+
 /// One line queued for the next run of the headless agent of the worktree
 /// `dir` (#358), the daemon woken to run it; false when no session is bound
 /// there. Queued is in: the daemon runs it, now or once memory allows.
