@@ -648,6 +648,7 @@ impl LocalReader {
                 .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
             settings: crate::settings::rows_of(&self.main, name),
+            merges_on_check: !crate::config::of_main(&self.main).config.merge.needs_pipeline,
             fresh: crate::config::Orchestrator {
                 // A setting (#415): the panel's, else `[orchestrator] auto_fresh`.
                 auto_fresh: crate::settings::of(&self.main, name).auto_fresh,

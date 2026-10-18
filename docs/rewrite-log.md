@@ -4,6 +4,21 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-17 06:00 · CLI / every command · each group keeps its own sorted table
+Chose: no shared command list in `cli/mod.rs`: each group (`read.rs`,
+`write.rs`, `lifecycle.rs`, `setup.rs`) has one `COMMANDS` table, sorted by
+name, one line per command, that both dispatches and names it; a setup
+command's shape (flags, usage) sits in its own module. `usage` prints a
+line per group, sorted (wrapped at 100 columns), and guesses typos from the
+same tables. The group headers no longer list their commands. Against: a
+`linkme`/`inventory` registry, which still needs the `mod` line and adds a
+dependency and linker tricks for no fewer shared lines.
+Why: #420: every new command added a line at the same spots (the end of a
+`COMMANDS` group, the end of a `match`, the header's list), so every two
+open MRs with a command conflicted; in sorted lists two additions land on
+different lines and merge (`cli::tests::two_new_commands_merge_cleanly`,
+`every_group_keeps_its_commands_sorted`).
+
 ## 2026-10-10 08:40 · time · the zone TZ names; a world pins its fixture's
 Chose: local times go through `core::time::local_tm`, which calls `tzset`
 once, so `TZ` is honoured (glibc's localtime_r reads only /etc/localtime

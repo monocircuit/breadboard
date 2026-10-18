@@ -64,7 +64,7 @@ A checkout's dev stack: containers in docker compose, the app on the host. A
 worktree shares the main checkout's stack, or gets its own (`wt:stack`, or
 `wt:new` without `--shared`) with every port moved by an offset and a compose
 project `<project>-<feature>`, written into its env file. Without `[stack]`
-there is no env file, no offset, no stack tabs, no `stack:*`.
+there is no env file, no offset, no stack processes, no `stack:*`.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -84,7 +84,7 @@ of its own (`COMPOSE_PROJECT_NAME`). So at least one port needs an `env`.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `port` | (required) | the app's port; an own stack's is moved by its offset |
-| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); the `dev` tab runs it while the stack is up |
+| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); it runs in the background while the stack is up, its output in `.claude/stack/dev.log` |
 | `env` | none | the variable it is moved with |
 
 ### `[[stack.services]]`
@@ -181,6 +181,12 @@ urls = ["DATABASE_URL"]
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
 
+## `[merge]`
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
+
 ## `[orchestration]`
 
 | Key | Default | What it does |
@@ -233,7 +239,8 @@ The orchestrator's chat (#382): its context shows in the overview's title band.
 What the agents may spend (#372). The overview reads it from claude's
 transcripts: every answer's tokens, priced per model. Tokens are what an
 answer read and wrote anew (input, cache writes, output); cache reads are in
-the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
+the dollars, not in the tokens. An issue's cost is its agents' answers
+while they worked on it and its worktree's try checkers' (#387). A limit is tokens (`"20 M"`, `"500k"`,
 `20000000`) or dollars (`"$40"`).
 
 | Key | Default | What it does |
@@ -269,7 +276,8 @@ starts the image).
 ## `[review]`
 
 A cheap review of an MR before its merge is offered (#374): once its bar is
-full and its pipeline green, the live overview of its orchestration starts
+full and its head green (its pipeline passed, or `wt:check` at its pushed
+head where `[merge] needs_pipeline = false` merges without one), the live overview of its orchestration starts
 one `claude -p --model <model>` in its worktree. It is given only the diff
 against the MR's target (not the repo), the issue and the AGENTS.md of the
 folders it changes, with read-only tools (`Read,Grep,Glob`), no MCP servers

@@ -1,5 +1,4 @@
-//! The commands that write: `wt:action`, `wt:tick`, `wt:note`, `wt:mr`,
-//! `wt:wait`, `wt:journal`, `wt:merge-base` (worktree/commands/*.mjs). They write the files other sessions
+//! The commands that write (worktree/commands/*.mjs). They write the files other sessions
 //! read (`.claude/actions.json`, the records, `.claude/wait.json`) exactly as
 //! today, and GitLab exactly where today's breadboard does (rewrite rules 5, 6).
 
@@ -18,19 +17,29 @@ mod wait;
 
 use std::process::ExitCode;
 
+/// A command: its name and what runs it.
+type Command = (&'static str, fn(&common::Argv) -> common::Outcome);
+
+/// The group's commands, sorted, one per line (#420: two MRs adding one each
+/// change different lines, `cli::tests` checks the order).
+const COMMANDS: &[Command] = &[
+    ("wt:action", action::run),
+    ("wt:epic", epic::run),
+    ("wt:journal", journal::run),
+    ("wt:merge-base", merge_base::run),
+    ("wt:mr", mr::run),
+    ("wt:note", note::run),
+    ("wt:tick", tick::run),
+    ("wt:wait", wait::run),
+];
+
+/// The group's commands, as `usage` lists them.
+pub fn names() -> Vec<&'static str> {
+    COMMANDS.iter().map(|(name, _)| *name).collect()
+}
+
 /// The command's exit code, or None when it isn't one of this group's.
 pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
-    let argv = common::Argv(args);
-    let outcome = match command {
-        "wt:action" => action::run(&argv),
-        "wt:tick" => tick::run(&argv),
-        "wt:note" => note::run(&argv),
-        "wt:mr" => mr::run(&argv),
-        "wt:wait" => wait::run(&argv),
-        "wt:epic" => epic::run(&argv),
-        "wt:journal" => journal::run(&argv),
-        "wt:merge-base" => merge_base::run(&argv),
-        _ => return None,
-    };
-    Some(common::finish(outcome))
+    let (_, run) = COMMANDS.iter().find(|(name, _)| *name == command)?;
+    Some(common::finish(run(&common::Argv(args))))
 }

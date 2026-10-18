@@ -12,6 +12,7 @@
 //! a headless run of the agent.
 
 use super::herdr::quote;
+use crate::cli::lifecycle::stack_procs;
 use breadboard_core::git::feature_of;
 use breadboard_core::herdr::{herdr_here, is_idle_now, is_in_herdr};
 use breadboard_core::reader::View;
@@ -352,11 +353,14 @@ fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<
             let offset = crate::cli::lifecycle::repo::offset_of(dir);
             let stack_dir = quote(&breadboard_core::stack::dir_of(dir).to_string_lossy());
             let port = i64::from(stack.app.port) + offset;
-            // The app up: the stack's logs; down: its dev server, as the space's `dev` tab ran it.
-            if breadboard_core::local::is_app_of(port, dir) {
-                let logs = breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]);
-                format!("cd {stack_dir} && docker {}", logs.join(" "))
+            let logs = stack_procs::logs_of(dir);
+            let is_running = stack_procs::running(dir, stack_procs::DEV).is_some();
+            // Its dev server and tools in the background (#407), or an app up by hand: the logs.
+            if is_running || breadboard_core::local::is_app_of(port, dir) {
+                let compose = breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]);
+                format!("cd {stack_dir} && {}", logs_command(&compose.join(" "), &logs))
             } else {
+                // Down: its dev server in the pane.
                 format!("cd {stack_dir} && {}", stack.app.dev)
             }
         }
@@ -368,6 +372,18 @@ fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<
         }
     };
     Ok((command, None))
+}
+
+/// The services' logs from compose (`docker <compose>`) and the files
+/// `logs` of the stack's processes, followed together: one shell without
+/// job control, so a Ctrl-C in the pane ends both.
+fn logs_command(compose: &str, logs: &[PathBuf]) -> String {
+    if logs.is_empty() {
+        return format!("docker {compose}");
+    }
+    let files: Vec<String> = logs.iter().map(|log| quote(&log.to_string_lossy())).collect();
+    let inner = format!("docker {compose} & exec tail -n 200 -F {}", files.join(" "));
+    format!("sh -c {}", quote(&inner))
 }
 
 /// The worktree's nvim (layout/nvim.rs), on `at` when given; Claude Code's
@@ -405,6 +421,17 @@ mod tests {
         let command = editor_command(Path::new("/nowhere"), Path::new("/nowhere/p-1"), Some(&at));
         assert!(command.starts_with("cd '/nowhere/p-1'; nvim --server"), "{command}");
         assert!(command.ends_with(" +7 'src/a b.ts'"), "{command}");
+    }
+
+    #[test]
+    fn logs_follow_compose_and_the_processes_together() {
+        assert_eq!(logs_command("compose logs -f", &[]), "docker compose logs -f");
+        let both = logs_command("compose logs -f", &["/r/p-1/.claude/stack/dev.log".into()]);
+        assert!(
+            both.starts_with("sh -c 'docker compose logs -f & exec tail -n 200 -F "),
+            "{both}"
+        );
+        assert!(both.contains("dev.log"), "{both}");
     }
 
     #[test]
