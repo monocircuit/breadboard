@@ -2,9 +2,9 @@
 //! that exist (worktree/layout.mjs). A space per purpose:
 //!
 //! ```text
-//! <main space>          root · overview (live, --herdr) · changelog · stack tabs
+//! <main space>          root · overview (live, --herdr) · changelog
 //! ├─ <product>           root · overview (every orchestration of it) · orchestrator · changelog · changes
-//! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim · stack tabs
+//! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
 //!
 //! With `[products.*]` in breadboard.toml (#405) an orchestration works in
@@ -20,6 +20,7 @@ pub mod nvim;
 pub mod orchestrations;
 pub mod resume;
 pub mod spaces;
+pub mod stale;
 pub mod tabs;
 
 use super::args::{Args, Takes};
@@ -28,6 +29,8 @@ use super::herdr::{self, call, s};
 use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
 use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
+use super::stack_procs;
+use breadboard_core::git::Worktree;
 use breadboard_core::record::SPACE;
 use breadboard_core::runs;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
@@ -36,10 +39,9 @@ use spaces::{busy_reason, is_busy, main_space, worktree_space};
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::net::TcpListener;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
-use tabs::{CHANGELOG, OVERVIEW, Opened, ROOT, Want, is_grouped, open_tab};
+use tabs::{CHANGELOG, OVERVIEW, ROOT, is_grouped};
 
 const TAKES: Takes = Takes {
     switches: &["--no-focus"],
@@ -151,7 +153,8 @@ impl Drop for Held {
 }
 
 /// The whole layout from `git worktree list`: the main space, a space per
-/// orchestration and per worktree, the stack tabs of every stack that runs;
+/// orchestration and per worktree, the background processes of every stack
+/// in step with it (`stack_procs`, #407);
 /// a tab of a worktree left in the main space moves into its space, one
 /// whose directory is gone closes. `(main space, a line per change)`; None
 /// when herdr does not answer.
@@ -225,9 +228,9 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
     for name in orchestrations {
-        let workspace = orchestrator_space(repo, &name);
-        // Its epic stack's tabs (#351), in the orchestration's space.
-        let changed = sync_stack_tabs(repo, &repo.checkout_of(&name), workspace.as_deref());
+        orchestrator_space(repo, &name);
+        // Its epic stack's processes (#351, #407).
+        let changed = stack_procs::sync(repo, &repo.checkout_of(&name));
         if !changed.is_empty() {
             report.push(format!("{}: {}", repo.space_label_of(&name), changed.join(" ")));
         }
@@ -267,12 +270,12 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         if before.is_some() && !was_linked && workspace.as_deref().is_some_and(is_grouped) {
             report.push(format!("space {feature} moved into its group"));
         }
-        let changed = sync_stack_tabs(repo, &tree.dir, workspace.as_deref());
+        let changed = stack_procs::sync(repo, &tree.dir);
         if !changed.is_empty() {
             report.push(format!("{feature}: {}", changed.join(" ")));
         }
     }
-    let changed = sync_stack_tabs(repo, &repo.main, Some(&main));
+    let changed = stack_procs::sync(repo, &repo.main);
     if !changed.is_empty() {
         report.push(format!("{SPACE}: {}", changed.join(" ")));
     }
@@ -313,11 +316,7 @@ fn is_stack_up(repo: &Repo, dir: &Path) -> bool {
 /// A worktree's space for a click (the overview, #386): there already, or
 /// made now when the layout left it closed. Its id.
 pub fn open_space(repo: &Repo, dir: &Path) -> Option<String> {
-    exclusive(|| {
-        let workspace = worktree_space(repo, dir, true)?;
-        sync_stack_tabs(repo, dir, Some(&workspace));
-        Some(workspace)
-    })
+    exclusive(|| worktree_space(repo, dir, true))
 }
 
 /// The `overview` tabs that hold only a shell run their overview again
@@ -332,17 +331,7 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
         let mut started = Vec::new();
         for space in herdr::spaces() {
             let label = s(&space, "label");
-            let command = if label == SPACE.get() {
-                tabs::overview_command(tabs::View::Herdr)
-            } else if repo.is_product(label) {
-                tabs::overview_command(tabs::View::Product(label))
-            } else if let Some(name) = repo.orchestration_of(label) {
-                tabs::overview_command(tabs::View::Orchestration(&name))
-            } else if let Some(tree) = trees.iter().find(|tree| {
-                repo.feature_of(&tree.dir) == label && !breadboard_core::record::is_orchestrated(&repo.main, &tree.dir)
-            }) {
-                tabs::overview_command(tabs::View::Worktree(&tree.dir))
-            } else {
+            let Some(command) = overview_command_of(repo, &trees, label) else {
                 continue;
             };
             let workspace = s(&space, "workspace_id");
@@ -357,116 +346,21 @@ pub fn heal_overviews(repo: &Repo) -> Vec<String> {
     })
 }
 
-fn is_port_free(port: i64) -> bool {
-    u16::try_from(port).is_ok_and(|port| TcpListener::bind(("127.0.0.1", port)).is_ok())
-}
-
-/// The tab of a checkout's app (`pnpm dev`) and drizzle studio's.
-const DEV: &str = "dev";
-
-/// While the stack of `dir` runs, its space shows it: a tab per container
-/// following its logs, `dev` and `studio` while their port is free; when it
-/// is down those tabs close, unless busy. A worktree on the shared stack has
-/// none. What changed: `+postgres`, `-dev`.
-pub fn sync_stack_tabs(repo: &Repo, dir: &Path, workspace: Option<&str>) -> Vec<String> {
-    let Some(workspace) = workspace.filter(|_| env_file_of(dir).exists()) else {
-        return Vec::new();
+/// What the `overview` tab of the space `label` runs; None for a space with none.
+pub fn overview_command_of(repo: &Repo, trees: &[Worktree], label: &str) -> Option<String> {
+    let view = if label == SPACE.get() {
+        tabs::View::Herdr
+    } else if repo.is_product(label) {
+        tabs::View::Product(label)
+    } else if let Some(name) = repo.orchestration_of(label) {
+        return Some(tabs::overview_command(tabs::View::Orchestration(&name)));
+    } else {
+        let tree = trees.iter().find(|tree| {
+            repo.feature_of(&tree.dir) == label && !breadboard_core::record::is_orchestrated(&repo.main, &tree.dir)
+        })?;
+        tabs::View::Worktree(&tree.dir)
     };
-    let is_main = dir == repo.main;
-    let offset = if is_main { 0 } else { offset_of(dir) };
-    if !is_main && offset == 0 {
-        return Vec::new();
-    }
-    let Some(stack) = breadboard_core::stack::of(dir) else {
-        return Vec::new();
-    };
-    let vita = stack_dir(dir);
-    let compose = |args: &[&str]| {
-        let all = compose_args(dir, args).unwrap_or_default();
-        let all: Vec<&str> = all.iter().map(String::as_str).collect();
-        super::proc::output("docker", &all, &vita, None)
-    };
-    // A service the env file scales to nothing (`<SERVICE>_SCALE=0`: a task stack's
-    // Postgres, #351) has no container: no tab follows one.
-    let env = breadboard_core::stack::env_of(dir).unwrap_or_default();
-    let services: Vec<String> = compose(&["config", "--services"])
-        .lines()
-        .filter(|service| {
-            let scale = format!("{}_SCALE", service.to_uppercase().replace('-', "_"));
-            env.get(&scale).is_none_or(|value| value.trim() != "0")
-        })
-        .map(String::from)
-        .collect();
-    let is_up = !compose(&["ps", "--status", "running", "-q"]).out().is_empty();
-    let tabs = herdr::tabs_of(workspace);
-    let mut changed = Vec::new();
-    if is_up {
-        let logs = format!(
-            "docker {}",
-            breadboard_core::stack::compose_args(&stack, &["logs", "-f", "--tail", "200"]).join(" ")
-        );
-        let mut wanted: Vec<(String, String)> = services
-            .iter()
-            .map(|service| (service.clone(), format!("{logs} {service}")))
-            .collect();
-        if is_port_free(i64::from(stack.app.port) + offset) {
-            wanted.push((DEV.into(), stack.app.dev.clone()));
-        }
-        for tool in stack.tools.iter().filter(|tool| tool.is_with_stack) {
-            if is_port_free(i64::from(tool.port) + offset) {
-                wanted.push((tool.name.clone(), tool.command(u16::try_from(offset).unwrap_or(0))));
-            }
-        }
-        let mut empty = Vec::new();
-        for (label, command) in wanted {
-            let want = Want {
-                label: &label,
-                cwd: &vita,
-                command: Some(command),
-            };
-            match open_tab(workspace, &want, &tabs) {
-                Opened::Started => changed.push(format!("+{label}")),
-                Opened::Empty => empty.push(label),
-                Opened::Kept => {}
-            }
-        }
-        // A tab herdr gave no pane runs nothing: said, never counted as running (log 2026-10-02 00:45).
-        if !empty.is_empty() {
-            let dot = if changed.is_empty() { "" } else { "· " };
-            changed.push(format!(
-                "{dot}{} opened empty: herdr gave no pane, nothing runs there",
-                empty.join(" ")
-            ));
-        }
-        return changed;
-    }
-    let ours: BTreeSet<&str> = services
-        .iter()
-        .map(String::as_str)
-        .chain([DEV])
-        .chain(
-            stack
-                .tools
-                .iter()
-                .filter(|tool| tool.is_with_stack)
-                .map(|tool| tool.name.as_str()),
-        )
-        .collect();
-    // The panes and the one running this are read only when there is a tab to close (a read per pane).
-    if !tabs.iter().any(|tab| ours.contains(s(tab, "label"))) {
-        return changed;
-    }
-    let panes = herdr::panes_of(workspace);
-    let current = herdr::current_pane();
-    for tab in &tabs {
-        if !ours.contains(s(tab, "label")) || is_busy(tab, &panes, current.as_ref()) {
-            continue;
-        }
-        if call(&["tab", "close", s(tab, "tab_id")]).is_some() {
-            changed.push(format!("-{}", s(tab, "label")));
-        }
-    }
-    changed
+    Some(tabs::overview_command(view))
 }
 
 /// The line of a release: `closed the space x` | `closed 3 tabs of x` and

@@ -236,7 +236,7 @@ there: the same try again runs again once it ended, another try replaces it
 | --- | ------------------- |
 | `e` | the worktree's nvim |
 | `t` | the terminal of its newest open try (`wt:action try … --run`) |
-| `l` | its stack's logs, or its dev server while its app is down |
+| `l` | its stack's logs, the services' and its background processes' (`.claude/stack/*.log`) together, or its dev server while nothing runs |
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
 The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
@@ -362,7 +362,7 @@ breadboard decides which pipelines exist at all:
   checkout) turns the queue off within 10 s: it starts and cancels nothing,
   and pushes start their pipelines again. `git config --unset breadboard.ci`
   turns it on.
-- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci/`,
   the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
   repo is open, it reads the open MRs and the runner's free slots
   (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job

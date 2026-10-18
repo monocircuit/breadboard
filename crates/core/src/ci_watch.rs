@@ -282,6 +282,8 @@ pub struct Hung {
     pub quiet: f64,
     /// The local runner's load while it is busy, when the job runs there.
     pub load: Option<f64>,
+    /// The section of its log it is in (`step_script`, `archive_cache`), when the log says.
+    pub step: Option<String>,
 }
 
 /// What the watcher found, for the overview.
@@ -440,6 +442,63 @@ pub fn overdue_of(running: &[Running], runs: &[Run], watch: &CiWatch) -> Vec<Hun
         .collect()
 }
 
+/// The section a job's log is in now: the innermost of GitLab's
+/// `section_start:<time>:<name>[…]` markers without its `section_end`.
+pub fn step_of(trace: &str) -> Option<String> {
+    let mut open: Vec<&str> = Vec::new();
+    for (at, _) in trace.match_indices("section_") {
+        let rest = &trace[at + "section_".len()..];
+        let (is_start, rest) = if let Some(rest) = rest.strip_prefix("start:") {
+            (true, rest)
+        } else if let Some(rest) = rest.strip_prefix("end:") {
+            (false, rest)
+        } else {
+            continue;
+        };
+        let Some((time, rest)) = rest.split_once(':') else {
+            continue;
+        };
+        if time.is_empty() || !time.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let name = &rest[..rest
+            .find(|c: char| c == '[' || c == '\r' || c == '\x1b' || c.is_whitespace())
+            .unwrap_or(rest.len())];
+        if name.is_empty() {
+            continue;
+        }
+        if is_start {
+            open.push(name);
+        } else if let Some(index) = open.iter().rposition(|known| *known == name) {
+            open.truncate(index);
+        }
+    }
+    open.last().map(|name| (*name).to_string())
+}
+
+/// Whether a section of the log moves the cache or artifacts: it logs
+/// nothing for minutes while it packs `target/` (#424).
+fn is_caching_step(step: &str) -> bool {
+    ["cache", "archive", "upload"].iter().any(|word| step.contains(word)) || step == "download_artifacts"
+}
+
+/// GitLab's words for its own sections, the name itself for one of the script's.
+fn step_label(step: &str) -> &str {
+    match step {
+        "prepare_executor" => "Preparing the executor",
+        "prepare_script" => "Preparing environment",
+        "get_sources" => "Getting source",
+        "restore_cache" => "Restoring cache",
+        "download_artifacts" => "Downloading artifacts",
+        "step_script" => "Executing step script",
+        "after_script" => "Running after_script",
+        "archive_cache" | "archive_cache_on_failure" => "Creating cache",
+        "upload_artifacts_on_success" | "upload_artifacts_on_failure" => "Uploading artifacts",
+        "cleanup_file_variables" => "Cleaning up",
+        other => other,
+    }
+}
+
 /// `10:38` of 638 seconds.
 pub fn minutes(seconds: f64) -> String {
     let seconds = seconds.round() as i64;
@@ -473,15 +532,30 @@ impl Flag {
 
 impl Hung {
     /// Whether its log stayed quiet long enough: one that still writes is slow, not hung.
-    pub fn is_hung(&self, watch: &CiWatch) -> bool {
+    pub fn is_quiet(&self, watch: &CiWatch) -> bool {
         self.quiet >= watch.hang_quiet_seconds
     }
 
-    /// `check:x of !353 runs 25:10, 2.4× its median 10:38, no new log for 1:10`.
+    /// Whether it moves its cache or artifacts now: quiet there is work, not a hang (#424).
+    pub fn is_caching(&self) -> bool {
+        self.step.as_deref().is_some_and(is_caching_step)
+    }
+
+    /// Quiet outside a cache step: worth a question.
+    pub fn is_hung(&self, watch: &CiWatch) -> bool {
+        self.is_quiet(watch) && !self.is_caching()
+    }
+
+    /// `check:x of !353 runs 25:10, 2.4× its median 10:38, no new log for 1:10, in: Executing step script`.
     pub fn line(&self) -> String {
         let of = self.mr.map(|mr| format!(" of !{mr}")).unwrap_or_default();
+        let step = self
+            .step
+            .as_deref()
+            .map(|step| format!(", in: {}", step_label(step)))
+            .unwrap_or_default();
         format!(
-            "{}{of} runs {}, {:.1}× its median {}, no new log for {}",
+            "{}{of} runs {}, {:.1}× its median {}, no new log for {}{step}",
             self.job,
             minutes(self.elapsed),
             self.elapsed / self.median.max(1.0),
@@ -521,7 +595,7 @@ impl Report {
         })
     }
 
-    /// The hung job of an MR's pipeline, if one runs.
+    /// The quiet job of an MR's pipeline, if one runs: hung, or caching.
     pub fn hung_of(&self, mr: i64) -> Option<&Hung> {
         self.hung.iter().find(|hung| hung.mr == Some(mr))
     }
@@ -663,6 +737,15 @@ mod tests {
         assert!(!hung[0].is_hung(&watch));
         hung[0].quiet = 70.0;
         assert!(hung[0].is_hung(&watch));
+        // Quiet while it packs its cache: no hang (#424).
+        hung[0].step = Some("archive_cache".into());
+        assert!(hung[0].is_quiet(&watch) && hung[0].is_caching() && !hung[0].is_hung(&watch));
+        assert!(
+            hung[0].line().ends_with("no new log for 1:10, in: Creating cache"),
+            "{}",
+            hung[0].line()
+        );
+        hung[0].step = None;
         assert_eq!(
             hung[0].line(),
             "check:gauntlet of !353 runs 25:00, 2.4× its median 10:38, no new log for 1:10"
@@ -676,6 +759,33 @@ mod tests {
             ..running(5000.0)
         };
         assert!(overdue_of(&[new], &runs, &watch).is_empty());
+    }
+
+    #[test]
+    fn the_step_is_the_innermost_open_section() {
+        let start = |name: &str| format!("\x1b[0Ksection_start:1760000000:{name}[collapsed=true]\r\x1b[0KTitle\n");
+        let end = |name: &str| format!("\x1b[0Ksection_end:1760000100:{name}\r\x1b[0K\n");
+        let script = format!(
+            "{}{}compiling\n{}",
+            start("get_sources"),
+            end("get_sources"),
+            start("step_script")
+        );
+        assert_eq!(step_of(&script).as_deref(), Some("step_script"));
+        let nested = format!("{script}{}cargo test\n", start("tests"));
+        assert_eq!(step_of(&nested).as_deref(), Some("tests"));
+        let cache = format!(
+            "{nested}{}{}{}Creating cache breadboard-rs-protected...\n",
+            end("tests"),
+            end("step_script"),
+            start("archive_cache")
+        );
+        assert_eq!(step_of(&cache).as_deref(), Some("archive_cache"));
+        assert!(is_caching_step("archive_cache") && is_caching_step("restore_cache"));
+        assert!(is_caching_step("upload_artifacts_on_success") && !is_caching_step("step_script"));
+        // Ended, or a log without sections: no step.
+        assert_eq!(step_of(&format!("{cache}{}", end("archive_cache"))), None);
+        assert_eq!(step_of("plain log, no section_start here\n"), None);
     }
 
     #[test]

@@ -64,7 +64,7 @@ A checkout's dev stack: containers in docker compose, the app on the host. A
 worktree shares the main checkout's stack, or gets its own (`wt:stack`, or
 `wt:new` without `--shared`) with every port moved by an offset and a compose
 project `<project>-<feature>`, written into its env file. Without `[stack]`
-there is no env file, no offset, no stack tabs, no `stack:*`.
+there is no env file, no offset, no stack processes, no `stack:*`.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -84,7 +84,7 @@ of its own (`COMPOSE_PROJECT_NAME`). So at least one port needs an `env`.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `port` | (required) | the app's port; an own stack's is moved by its offset |
-| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); the `dev` tab runs it while the stack is up |
+| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); it runs in the background while the stack is up, its output in `.claude/stack/dev.log` |
 | `env` | none | the variable it is moved with |
 
 ### `[[stack.services]]`
@@ -181,6 +181,12 @@ urls = ["DATABASE_URL"]
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
 
+## `[merge]`
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
+
 ## `[orchestration]`
 
 | Key | Default | What it does |
@@ -200,6 +206,25 @@ space of its own (`⇶ <title>`).
 | --- | ------- | ------------ |
 | `paths` | none | the folders that are the product's; at least one. The name labels the herdr space: letters, digits, `-` and `_` |
 
+## `[settings]`
+
+The team's defaults of the overview's settings panel (#415; `,` or `⚙
+settings` in an orchestration's overview). A change in the panel is kept
+per product in `.claude/products/<name>.json` (for an orchestration of no
+product in its record), local and never committed; it wins over the
+default until `reset`, holds from the next tick, and the orchestration's
+journal says it (`auto-merge into batch: off (by you)`).
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `batching` | `[orchestration] epic_branches` | tasks branch off a batch branch and merge into it; today a new orchestration's epic branch (#350, #411 makes it the product's rolling batch). Off: their MRs go straight into the default branch |
+| `auto_merge_into_batch` | `true` | a task MR into the batch merges by itself once its bar is full and its checks are green; off: it waits for the user's click |
+| `ship_after_tasks` | `5` | the overview suggests shipping the batch once this many tasks are in it (#414), 1 to 99 |
+| `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
+| `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
+| `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
+| (panel only) `agent fresh start` | `[agents] fresh_above` | the share of its context past which an agent retires at its merge (#381); its team default stays `[agents] fresh_above` |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.
@@ -214,7 +239,8 @@ The orchestrator's chat (#382): its context shows in the overview's title band.
 What the agents may spend (#372). The overview reads it from claude's
 transcripts: every answer's tokens, priced per model. Tokens are what an
 answer read and wrote anew (input, cache writes, output); cache reads are in
-the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
+the dollars, not in the tokens. An issue's cost is its agents' answers
+while they worked on it and its worktree's try checkers' (#387). A limit is tokens (`"20 M"`, `"500k"`,
 `20000000`) or dollars (`"$40"`).
 
 | Key | Default | What it does |

@@ -24,6 +24,7 @@ pub mod ready;
 pub mod record;
 pub mod runs;
 pub mod said;
+pub mod settings;
 pub mod setups;
 pub mod snapshot;
 pub mod spend;

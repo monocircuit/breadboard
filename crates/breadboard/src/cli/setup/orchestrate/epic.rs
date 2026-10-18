@@ -15,14 +15,20 @@ use std::path::Path;
 /// orchestration (no record yet) the one `--epic` names or its issues'
 /// milestone, made; None for one that works on develop. Err why it can't
 /// be made.
-pub fn ensure_epic(name: &str, plan: &[Item], given: Option<&str>, is_dry: bool) -> Result<Option<String>, String> {
+pub fn ensure_epic(
+    name: &str,
+    plan: &[Item],
+    given: Option<&str>,
+    product: Option<&str>,
+    is_dry: bool,
+) -> Result<Option<String>, String> {
     let main = repo::main_dir();
     let raw = breadboard_core::json::read(&record::record_file(&main, name));
     if let Some(raw) = &raw {
         return Ok(epic_of(raw));
     }
-    // breadboard.toml's `[orchestration] epic_branches`: without it the default branch, unless `--epic` asks.
-    if given.is_none() && !breadboard_core::config::of(&main).config.orchestration.epic_branches {
+    // The setting `batching` (#415; its default breadboard.toml's): off, the default branch, unless `--epic` asks.
+    if given.is_none() && !breadboard_core::settings::of_product(&main, product).batching {
         return Ok(None);
     }
     let number = match given {

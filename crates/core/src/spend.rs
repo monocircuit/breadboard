@@ -8,7 +8,8 @@
 //! - `today_of`: the repo's agents today (local midnight on), all and per session;
 //! - `of_session`: one session's, between two times (an issue's share of it);
 //! - `spent_of`: an orchestration's, as its overview shows them: today's,
-//!   each issue's (its agents' answers while they worked on it), its own;
+//!   each issue's (its agents' answers while they worked on it, and its
+//!   worktree's try checks, #387), its own;
 //! - `Limit`: `[agents] daily_limit`, in tokens or dollars.
 //!
 //! Tokens are what an answer read and wrote anew: its input, what it wrote
@@ -413,9 +414,10 @@ pub fn spans_of(worker: &crate::record::Worker) -> Vec<(i64, i64, i64)> {
     spans
 }
 
-/// What the agents of an orchestration's `record` spent on each issue: every
-/// worker's answers while it worked on it (`spans_of`).
-pub fn by_issue_of(record: &crate::record::Record) -> HashMap<i64, Spend> {
+/// What the agents of an orchestration's `record` in the repo of `main`
+/// spent on each issue: every worker's answers while it worked on it
+/// (`spans_of`), and the try checkers' in its worktree (`of_checks`).
+pub fn by_issue_of(main: &Path, record: &crate::record::Record) -> HashMap<i64, Spend> {
     let mut by_issue: HashMap<i64, Spend> = HashMap::new();
     for worker in &record.workers {
         for (number, from, to) in spans_of(worker) {
@@ -425,7 +427,45 @@ pub fn by_issue_of(record: &crate::record::Record) -> HashMap<i64, Spend> {
                 .add(of_session(&worker.id, from, to));
         }
     }
+    for issue in &record.issues {
+        let (Some(number), Some(feature)) = (issue.number, &issue.feature) else {
+            continue;
+        };
+        let checks = crate::try_check::checks_of(&crate::git::dir_of(main, feature));
+        let spend = of_checks(&checks);
+        if !spend.is_empty() {
+            by_issue.entry(number).or_default().add(spend);
+        }
+    }
     by_issue
+}
+
+/// What the try checkers of `checks` spent (#387): each one's conversation;
+/// one whose transcript is gone by the tokens its check kept, unpriced.
+pub fn of_checks(checks: &[crate::try_check::Check]) -> Spend {
+    of_checks_by(checks, |session| of_session(session, i64::MIN, i64::MAX))
+}
+
+/// `of_checks`, a session's spend read by `of`.
+fn of_checks_by(checks: &[crate::try_check::Check], of: impl Fn(&str) -> Spend) -> Spend {
+    let mut spend = Spend::default();
+    let mut seen = HashSet::new();
+    for check in checks {
+        let read = match &check.session {
+            Some(session) if !seen.insert(session.as_str()) => continue,
+            Some(session) => of(session),
+            None => Spend::default(),
+        };
+        spend.add(if read.is_empty() {
+            Spend {
+                tokens: check.tokens,
+                dollars: 0.0,
+            }
+        } else {
+            read
+        });
+    }
+    spend
 }
 
 /// What an orchestration's agents spent (#372), as its overview shows it.
@@ -474,7 +514,7 @@ pub fn spent_of(main: &Path, name: &str, record: Option<&crate::record::Record>,
         ..Spent::default()
     };
     if let Some(record) = record {
-        spent.by_issue = by_issue_of(record);
+        spent.by_issue = by_issue_of(main, record);
         for used in spent.by_issue.values() {
             spent.total.add(*used);
         }
@@ -678,6 +718,62 @@ mod tests {
         assert_eq!(spans_of(&worker), [(1, i64::MIN, noon), (3, noon, i64::MAX)]);
         let old = crate::record::Worker::from_value("b", &serde_json::json!({ "issues": [7] }));
         assert_eq!(spans_of(&old), [(7, i64::MIN, i64::MAX)]);
+    }
+
+    fn check(id: i64, session: Option<&str>, tokens: u64) -> crate::try_check::Check {
+        crate::try_check::Check {
+            id,
+            head: "a".into(),
+            model: "haiku".into(),
+            state: crate::try_check::State::Done,
+            verdict: None,
+            evidence: None,
+            at: String::new(),
+            tokens,
+            pid: None,
+            session: session.map(String::from),
+            is_overturned: false,
+        }
+    }
+
+    #[test]
+    fn counts_a_try_checkers_session_toward_its_issue() {
+        let scratch = crate::lock::scratch::Scratch::new();
+        let transcript = scratch.path().join("checker.jsonl");
+        let haiku = ANSWER.replace("claude-opus-5-5", "claude-haiku-4-5-20251001");
+        fs::write(&transcript, format!("{haiku}\n")).unwrap();
+        let of = |session: &str| {
+            let mut spend = Spend::default();
+            if session == "checker" {
+                answers_of_file(&transcript)
+                    .iter()
+                    .for_each(|answer| spend.add(Spend::of(answer)));
+            }
+            spend
+        };
+        // Its session priced from its transcript, once however often it checked;
+        // one whose transcript is gone by the tokens its check kept.
+        let checks = [
+            check(1, Some("checker"), 9),
+            check(2, Some("checker"), 9),
+            check(3, Some("gone"), 40),
+        ];
+        let spend = of_checks_by(&checks, of);
+        assert_eq!(spend.tokens, 1502 + 40);
+        // 2 input + 1000 1-hour writes + 100000 reads + 500 output at Haiku 4.5's.
+        assert!((spend.dollars - (2.0 + 2000.0 + 10_000.0 + 2500.0) / 1_000_000.0).abs() < 1e-12);
+
+        let main = scratch.path().join("platform");
+        let worktree = crate::git::dir_of(&main, "7-own");
+        crate::try_check::write_check(&worktree, &check(1, None, 300)).unwrap();
+        let record = crate::record::Record::from_value(serde_json::json!({ "issues": [
+            { "number": 7, "feature": "7-own" },
+            { "number": 8, "feature": "8-unchecked" },
+        ] }))
+        .unwrap();
+        let by_issue = by_issue_of(&main, &record);
+        assert_eq!(by_issue.get(&7).map(|spend| spend.tokens), Some(300));
+        assert_eq!(by_issue.get(&8), None);
     }
 
     #[test]

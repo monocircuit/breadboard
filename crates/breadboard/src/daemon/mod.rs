@@ -38,6 +38,7 @@ mod ci;
 pub mod client;
 mod feed;
 pub mod gitlab;
+mod glab;
 mod keep_up;
 mod ready;
 pub mod runs;

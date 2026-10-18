@@ -15,7 +15,7 @@ mod space;
 mod workers;
 
 use crate::cli::setup::herdr;
-use crate::cli::setup::proc::{self, Args, fail, name_refusal, outln, quote, step};
+use crate::cli::setup::proc::{self, Args, Shape, fail, name_refusal, outln, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
@@ -39,6 +39,49 @@ pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… 
 /// `--after`'s values and where they stand, the MRs in them: the handover's
 /// reading, one for `--queue --after` and `--to … --after`.
 use crate::cli::lifecycle::handover::{after_args, parse_after};
+
+/// What `wt:orchestrate` takes.
+pub const SHAPE: Shape = Shape::new(
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--shared",
+        "--peer",
+        "--brief",
+        "--queue",
+        "--after",
+        "--dry-run",
+        "--to",
+        "--limit",
+        "--end",
+        "--changelog",
+        "--watch",
+        "--changes",
+        "--fresh",
+        // What the overview's own start passes; `--cap` says it is gone (#229).
+        "--now",
+        "--cap",
+        // The overview's retirement of a full agent at its merge (#381).
+        "--retire",
+        "--mr",
+    ],
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--peer",
+        "--brief",
+        "--to",
+        "--limit",
+        "--retire",
+        "--mr",
+    ],
+    None,
+    USAGE,
+);
 
 fn is_issue_arg(arg: &str) -> bool {
     (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()))
@@ -298,7 +341,17 @@ pub fn command(args: &Args) -> ExitCode {
         }
     }
     // The epic before anything is written: its tasks branch off it (#350).
-    match epic::ensure_epic(&name, &plan, args.value("--epic").as_deref(), is_dry) {
+    // The product it will have decides with its settings whether it batches (#415).
+    let product_of = product::ensure_product(&name, &plan, args.value("--product").as_deref(), true)
+        .ok()
+        .flatten();
+    match epic::ensure_epic(
+        &name,
+        &plan,
+        args.value("--epic").as_deref(),
+        product_of.as_deref(),
+        is_dry,
+    ) {
         Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
         Ok(None) => {}
         Err(why) => fail(&format!("no epic branch: {why}")),
