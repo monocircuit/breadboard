@@ -147,6 +147,8 @@ pub struct Merged {
     pub url: String,
     pub title: String,
     pub issue: Option<(i64, String)>,
+    /// The other issues it closes (#321, a bundle's `Closes` lines), each with its page.
+    pub also: Vec<(i64, String)>,
     pub merged_at: String,
     pub summary: String,
     pub groups: Vec<String>,
@@ -194,7 +196,7 @@ pub struct Closed {
 
 fn refs_of(mr: &Merged) -> String {
     let mut refs = vec![format!("[!{}]({})", mr.iid, mr.url)];
-    if let Some((number, url)) = &mr.issue {
+    for (number, url) in mr.issue.iter().chain(&mr.also) {
         refs.push(format!("[#{number}]({url})"));
     }
     refs.join(" ")
@@ -362,14 +364,17 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
             Some(mr) => {
                 let url = str_of(&mr, "web_url").unwrap_or_default().to_string();
                 let title = str_of(&mr, "title").unwrap_or_default();
+                let base = url
+                    .rsplit_once("merge_requests/")
+                    .map_or(url.as_str(), |(base, _)| base)
+                    .to_string();
                 merged.push(Merged {
                     iid: int_of(&mr, "iid").unwrap_or_default(),
-                    issue: number.map(|number| {
-                        let base = url
-                            .rsplit_once("merge_requests/")
-                            .map_or(url.as_str(), |(base, _)| base);
-                        (number, format!("{base}issues/{number}"))
-                    }),
+                    issue: number.map(|number| (number, format!("{base}issues/{number}"))),
+                    also: also_closed(str_of(&mr, "description").unwrap_or_default(), number)
+                        .into_iter()
+                        .map(|other| (other, format!("{base}issues/{other}")))
+                        .collect(),
                     summary: summary_of(str_of(&mr, "description").unwrap_or_default(), title),
                     title: untitled(title),
                     merged_at: str_of(&mr, "merged_at").unwrap_or_default().to_string(),
@@ -528,6 +533,15 @@ pub fn groups_of(paths: &[String], changesets: &[Changeset]) -> Vec<String> {
 fn listed_groups(paths: &[String], changesets: &[Changeset]) -> Vec<String> {
     let groups = groups_of(paths, changesets);
     if groups.is_empty() { vec![REPO.into()] } else { groups }
+}
+
+/// The issues an MR's `description` closes besides `first` (#321: a bundle's other `Closes` lines).
+pub fn also_closed(description: &str, first: Option<i64>) -> Vec<i64> {
+    crate::cli::write::mr::closed_by(description)
+        .into_iter()
+        .map(|number| number as i64)
+        .filter(|number| Some(*number) != first)
+        .collect()
 }
 
 /// The issue of an MR: its branch's number, else one it closes.
@@ -981,6 +995,10 @@ pub fn write_overall(since: Option<&str>) -> Result<Written, String> {
             Merged {
                 iid: *iid,
                 issue: number.map(|number| (number, format!("{base}issues/{number}"))),
+                also: also_closed(str_of(mr, "description").unwrap_or_default(), number)
+                    .into_iter()
+                    .map(|other| (other, format!("{base}issues/{other}")))
+                    .collect(),
                 summary: summary_of(str_of(mr, "description").unwrap_or_default(), title),
                 title: untitled(title),
                 merged_at: str_of(mr, "merged_at").unwrap_or_default().to_string(),
@@ -1132,6 +1150,22 @@ mod tests {
     }
 
     #[test]
+    fn a_bundles_entry_links_every_issue_it_closes() {
+        let merged = [Merged {
+            iid: 420,
+            url: "https://g/p/-/merge_requests/420".into(),
+            title: "feat(x): y".into(),
+            merged_at: "2026-10-13T10:00:00Z".into(),
+            issue: Some((321, "https://g/p/-/issues/321".into())),
+            also: vec![(322, "https://g/p/-/issues/322".into())],
+            ..Merged::default()
+        }];
+        assert!(changelog_text("t", &merged, &[]).contains(
+            "[!420](https://g/p/-/merge_requests/420) [#321](https://g/p/-/issues/321) [#322](https://g/p/-/issues/322)"
+        ));
+    }
+
+    #[test]
     fn a_tag_names_its_release_as_breadboard_toml_says() {
         let releases = [
             ReleaseTag {
@@ -1225,6 +1259,9 @@ mod tests {
         );
         assert_eq!(issue_of("feature/261-x", ""), Some(261));
         assert_eq!(issue_of("main", "Closes #9"), Some(9));
+        // A bundle (#321): the others its description closes.
+        assert_eq!(also_closed("x\n\nCloses #7\nCloses #9, #11", Some(7)), [9, 11]);
+        assert_eq!(also_closed("Refs #9", Some(7)), Vec::<i64>::new());
         assert_eq!(
             release_notes_of(
                 "# c\n\n## 1.2.0\n\n### Minor\n\n- abcdef0: did it\n\n## 1.1.0\n- old\n",
