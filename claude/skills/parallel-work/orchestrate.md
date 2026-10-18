@@ -63,13 +63,13 @@ What it does, in this order:
    starts on the shared stack anyway, and the command says so.
 4. For a fresh agent `{{run}} wt:new <feature> --origin <name>`, **one after the other**
    (two at once would pick the same free ports). The worktree is one of the
-   main checkout like any other, its space in the same group; `wt:list`, the
+   main checkout like any other, with no space of its own (#409); `wt:list`, the
    overview, `wt:remove` and `wt:prune` know it. The origin is recorded in `.claude/origin` of the
-   worktree; its space opens unfocused, with the usual tabs.
+   worktree; a click on its row in the overview shows it in the detail pane.
 5. Per worktree a new session id, bound to it (`.claude/herdr-session`), and
    its first run queued: `.claude/brief.md` of the worktree as the prompt.
-   No tab: the worktree's space has `root`, `overview`, `nvim` and its stack
-   tabs, no claude.
+   No tab and no space: the worktree is a row in the overview, its agent runs
+   headless and opens in the detail pane (`a`).
 
 A worktree counts as made when it exists: `wt:new` may still fail in its
 summary (#130), and the next issue still starts.
@@ -299,7 +299,7 @@ a merge and never once the plan is stale. ACTIONS holds only what needs the user
 see Merging; gone once merged; each agent posts its own), `try`
 (what only the human can check, and the click that opens its spot:
 `--run <command>` the overview's detail pane running it in the
-worktree, `--url <page>` the page on the worktree's app in its tab group, a
+worktree, `--url <page>` the page on the worktree's app in the browser, a
 path `/atlas/…` on the worktree's port, its stack and app started
 first when the app is down; the row shows the command or page before;
 `browser-check --url` is its old name; `--on test --url <path>` the path on
@@ -380,8 +380,8 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   shows only what it has.
 
 An issue that got no worktree says why; an MR without a worktree gets a
-block of the same shape. A click on a block goes to its worktree's space
-(without one to its MR, else its issue), on `!M` to the MR, on the mark to
+block of the same shape. A click on a block shows its worktree in the detail pane
+(without one it goes to its MR, else its issue), on `!M` to the MR, on the mark to
 its pipeline; hover lights the whole block. Look here before asking an
 agent where it stands.
 

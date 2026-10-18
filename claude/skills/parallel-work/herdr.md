@@ -33,12 +33,10 @@ its space `⇶ <name>` stands on a detached checkout in
 `.claude/orchestrations/<name>/`, its worktrees are worktrees of the main
 checkout, and the orchestration's colour mark tells them from the rest.
 
-The order is fixed: `root`, `overview`, `<feature>` (always the third tab),
-`nvim`, then the rest. herdr can't reorder tabs, so a tab out of place (an
-older space, a tab closed and back, the tab an agent moved in) moves its pane
-into a new tab at the end, what runs in it keeps running. A space never keeps
-two `<feature>` tabs: a spare one, whose shell idles and holds no agent,
-closes.
+The order is fixed: `root`, `overview`, then `orchestrator`, `changelog` and
+`changes` where the space has them. herdr can't reorder tabs, so a tab out of
+place (a tab closed and back, the tab an agent moved in) moves its pane into
+a new tab at the end, what runs in it keeps running.
 
 **Conversations** of every worktree are kept in the claude project of the
 main checkout (`~/.claude/projects/<main checkout>`), so `/resume` in
@@ -69,7 +67,7 @@ part right away.
 where they are (an agent with `EnterWorktree`), an orchestration's agent
 runs headless, its worktree a row in the overview.
 
-`wt:remove` (and so `wt:prune`) **closes** what is left of a worktree's space or tabs. Not blindly:
+`wt:remove` (and so `wt:prune`) **closes** what is left of a worktree's old space or tabs (from before #409). Not blindly:
 a tab with an agent at work, more than one pane, or the tab `wt:remove`
 itself runs in stays. Closing it would cut off a turn or kill a running
 server. An idle agent's tab closes: its conversation lives in the main
@@ -87,7 +85,7 @@ still runs in stays until the agent ends.
 adds what is missing, so it is also the way back after a herdr restart or
 after tabs were closed by hand. herdr restores its tabs after a restart, but
 as bare shells: a tab of ours whose shell idles runs its command again
-(`overview`, `nvim`). No claude is
+(`overview`). No claude is
 resumed in a tab, not even one you ran yourself: resume that by hand
 (`claude --resume`, the worktree's view shows the command). An
 orchestration's agent is the conversation bound to its worktree

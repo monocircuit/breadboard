@@ -4,8 +4,10 @@
 //! ```text
 //! <main space>          root · overview (live, --herdr) · changelog
 //! ├─ <product>           root · overview (every orchestration of it) · orchestrator · changelog · changes
-//! ├─ <feature>           root · overview (this worktree) · <feature> (its agent) · nvim
 //! └─ ⇶ <title>           root · overview · orchestrator · changelog · changes
+//!
+//! A worktree has no space (#409): a click on it splits the overview with a
+//! detail pane (nvim, try, logs, agent).
 //!
 //! With `[products.*]` in breadboard.toml (#405) an orchestration works in
 //! its product's space, and the main space keeps `root` and `overview`: the
