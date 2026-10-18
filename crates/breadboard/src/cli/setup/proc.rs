@@ -81,7 +81,23 @@ pub struct Shape {
     pub flags: &'static [&'static str],
     pub valued: &'static [&'static str],
     pub words: Option<usize>,
-    pub usage: String,
+    pub usage: &'static str,
+}
+
+impl Shape {
+    pub const fn new(
+        flags: &'static [&'static str],
+        valued: &'static [&'static str],
+        words: Option<usize>,
+        usage: &'static str,
+    ) -> Shape {
+        Shape {
+            flags,
+            valued,
+            words,
+            usage,
+        }
+    }
 }
 
 /// What is wrong with the command line before anything happens, None when
@@ -145,10 +161,7 @@ pub fn wants_help(args: &Args) -> bool {
 /// wrong, then the command's usage (exit 1).
 pub fn refuse_misuse(args: &Args, shape: &Shape) {
     if let Some(message) = misuse(args, shape) {
-        fail(&format!(
-            "{message}\n{}",
-            breadboard_core::config::in_repo(&shape.usage)
-        ));
+        fail(&format!("{message}\n{}", breadboard_core::config::in_repo(shape.usage)));
     }
 }
 
@@ -550,7 +563,7 @@ mod tests {
             flags: &["--port", "--all"],
             valued: &["--port"],
             words,
-            usage: "usage: x".into(),
+            usage: "usage: x",
         };
         let wrong = |list: &[&str], words| misuse(&args(list), &shape(words));
         assert_eq!(wrong(&["a", "--port", "3002"], Some(1)), None);

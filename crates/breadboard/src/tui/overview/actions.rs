@@ -248,7 +248,7 @@ fn note_of(items: &[Item]) -> String {
 /// click; without its offer in the view it does nothing.
 fn does_of(item: &Item) -> Option<&'static str> {
     Some(match &item.go {
-        Go::FocusSpace(_) => "opens its space",
+        Go::Detail(_) => "shows its nvim beside",
         Go::FocusAgent(_) => "opens its agent's tab",
         Go::Try { .. } => "runs its try",
         Go::Merge { .. } => match &item.merge {
@@ -314,7 +314,7 @@ fn cleared(blockers: &[String]) -> String {
 }
 
 /// What a click on the rest of the blocks of `items` does, in words, by
-/// their first appearance: `opens its space or runs its try`; "" for none.
+/// their first appearance: `shows its nvim beside or runs its try`; "" for none.
 fn rest_does(items: &[Item]) -> String {
     let mut does: Vec<&str> = Vec::new();
     for item in items.iter().filter(|item| !item.is_inert()) {
@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn hover_on_a_decides_question_lights_no_option() {
         let mut item = item_with(decide());
-        item.go = Go::FocusSpace(PathBuf::from("/w"));
+        item.go = Go::Detail(PathBuf::from("/w"));
         let (_, scene) = drawn(&item, 40);
         let body: Vec<_> = scene
             .regions
@@ -1634,10 +1634,10 @@ mod tests {
         assert!(keyed(&open_question).is_empty() && hint(&open_question).is_empty());
         // Its way to the agent instead: what a click on the rest does.
         let mut in_space = open_question.clone();
-        in_space.go = Go::FocusSpace(PathBuf::from("/w"));
+        in_space.go = Go::Detail(PathBuf::from("/w"));
         assert_eq!(
             hint_text(&in_space),
-            ["a click on the rest opens its space: answer it there"]
+            ["a click on the rest shows its nvim beside: answer it there"]
         );
         let mut auto = item_with(decide());
         auto.is_auto = true;
@@ -1722,7 +1722,7 @@ mod tests {
         assert!(pick.keys(&decide) && !pick.keys(&try_item));
         assert_eq!(pick.option_of(&decide), Some("Bun: flexbox"));
         // Anything else picked (a worktree): no block's digits.
-        let pick = pick_in(&items, Some(&Act::Go(Go::FocusSpace(PathBuf::from("/w")))));
+        let pick = pick_in(&items, Some(&Act::Go(Go::Detail(PathBuf::from("/w")))));
         assert_eq!(pick, Pick::Other);
         assert!(!pick.keys(&decide) && !pick.keys(&try_item));
     }
@@ -1765,7 +1765,7 @@ mod tests {
             ]
         );
         let mut decide = item_with(decide());
-        decide.go = Go::FocusSpace(PathBuf::from("/w"));
+        decide.go = Go::Detail(PathBuf::from("/w"));
         assert_eq!(
             texts_of(&picked_hint(&decide, Some("Bun: flexbox"))),
             [
@@ -1774,7 +1774,7 @@ mod tests {
             ]
         );
         // Answered by keys: not `answer it there`.
-        assert_eq!(texts_of(&picked_hint(&decide, None))[1], "enter opens its space");
+        assert_eq!(texts_of(&picked_hint(&decide, None))[1], "enter shows its nvim beside");
         let mut open = item_with(Action {
             id: 5,
             kind: "decide".into(),
@@ -1809,7 +1809,7 @@ mod tests {
     #[test]
     fn the_note_counts_apart_what_is_answered_and_on_its_way() {
         let mut first = item_with(decide());
-        first.go = Go::FocusSpace(PathBuf::from("/w"));
+        first.go = Go::Detail(PathBuf::from("/w"));
         let mut second = item_with(Action {
             id: 31,
             kind: "look".into(),
@@ -1817,28 +1817,28 @@ mod tests {
             answer: Some("done".into()),
             ..Default::default()
         });
-        second.go = Go::FocusSpace(PathBuf::from("/w"));
+        second.go = Go::Detail(PathBuf::from("/w"));
         assert_eq!(
             note_of(&[first.clone(), second.clone()]),
             "1 for you · 1 answered, on its way · buttons and options answer its agent · \
-             a click on the rest opens its space"
+             a click on the rest shows its nvim beside"
         );
         let mut third = second.clone();
         third.action.as_mut().unwrap().id = 32;
         assert_eq!(
             note_of(&[second, third]),
-            "nothing waits for you · 2 answered, on their way · a click on the rest opens its space"
+            "nothing waits for you · 2 answered, on their way · a click on the rest shows its nvim beside"
         );
         assert_eq!(
             note_of(&[first]),
-            "1 for you · buttons and options answer its agent · a click on the rest opens its space"
+            "1 for you · buttons and options answer its agent · a click on the rest shows its nvim beside"
         );
     }
 
     #[test]
     fn the_note_says_what_a_click_on_the_rest_of_a_block_does() {
         let mut space = item_with(decide());
-        space.go = Go::FocusSpace(PathBuf::from("/w"));
+        space.go = Go::Detail(PathBuf::from("/w"));
         let mut tried = item_with(Action {
             id: 5,
             kind: "try".into(),
@@ -1846,8 +1846,11 @@ mod tests {
         });
         tried.go = Go::Try { dir: None, id: 5 };
         let other = space.clone();
-        assert_eq!(rest_does(&[space.clone()]), "opens its space");
-        assert_eq!(rest_does(&[space, tried, other]), "opens its space or runs its try");
+        assert_eq!(rest_does(&[space.clone()]), "shows its nvim beside");
+        assert_eq!(
+            rest_does(&[space, tried, other]),
+            "shows its nvim beside or runs its try"
+        );
         assert_eq!(rest_does(&[]), "");
     }
 

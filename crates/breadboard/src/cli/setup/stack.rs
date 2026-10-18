@@ -5,13 +5,24 @@
 
 use super::epic::{self, Epic};
 use super::herdr;
-use super::proc::{self, Args, How, fail, outln, step};
+use super::proc::{self, Args, How, Shape, fail, outln, step};
 use super::repo;
+use crate::cli::lifecycle::stack_procs;
 use breadboard_core::config::Stack;
 use breadboard_core::record;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
+
+/// What `stack:up|down|reset|ps` take.
+pub const SHAPE: Shape = Shape::new(
+    &["--port"],
+    &["--port"],
+    Some(1),
+    "usage: pnpm stack:up|down|reset|ps [--port <port> | <feature>]",
+);
+/// What `wt:stack` takes: nothing.
+pub const WT_SHAPE: Shape = Shape::new(&[], &[], Some(0), "usage: pnpm wt:stack");
 
 /// What a new own stack's env file says: the main checkout's with every
 /// port moved by `offset` and a compose project of its own.
@@ -468,19 +479,15 @@ pub fn wt_stack() -> ExitCode {
         }
         None => create_stack(top, &feature),
     };
-    let changed = if herdr::is_in_herdr() {
-        let space = herdr::worktree_space(top, false);
-        herdr::sync_stack_tabs(top, space)
-    } else {
-        Vec::new()
-    };
+    // Its dev server and tools in the background (#407), no herdr tab.
+    let changed = procs_of(top);
     open_app(top, offset);
     let branch = proc::git(&["branch", "--show-current"], top).text().to_string();
     summary(&Summary {
         dir: top,
         branch: &branch,
         offset,
-        tab: (!changed.is_empty()).then(|| format!("stack tabs {}", changed.join(" "))),
+        tab: (!changed.is_empty()).then(|| format!("stack processes {}", changed.join(" "))),
         is_stack_only: true,
         epic_port: epic::epic_port_of(top),
         ..Summary::default()
@@ -607,13 +614,25 @@ pub fn control(action: &str, args: &Args) -> ExitCode {
             proc::run("sh", &["-c", &run(action)], how);
         }
     }
-    if herdr::is_in_herdr() && action != "ps" {
-        let changed = herdr::sync_stack_tabs(&dir, None);
-        if !changed.is_empty() {
-            step(&format!("herdr: {}", changed.join(" ")));
-        }
+    // Its dev server and tools (#407): started with the stack, ended with it.
+    let changed = match action {
+        "ps" => Vec::new(),
+        "down" => stack_procs::stop_all(&dir),
+        _ => procs_of(&dir),
+    };
+    if !changed.is_empty() {
+        step(&format!(
+            "in the background: {} (logs in {})",
+            changed.join(" "),
+            stack_procs::folder(&dir).display()
+        ));
     }
     ExitCode::SUCCESS
+}
+
+/// The background processes of `dir`'s stack in step with it (#407): what changed.
+pub fn procs_of(dir: &Path) -> Vec<String> {
+    stack_procs::sync(&crate::cli::lifecycle::repo::Repo { main: repo::main_dir() }, dir)
 }
 
 #[cfg(test)]
@@ -680,7 +699,7 @@ mod tests {
                 &repo(),
                 &Summary {
                     is_stack_only: true,
-                    tab: Some("stack tabs +postgres".into()),
+                    tab: Some("stack processes +dev".into()),
                     dir,
                     branch: "feature/40-x",
                     offset: 2,
@@ -689,7 +708,7 @@ mod tests {
                 true,
                 |name| name.into()
             ),
-            "\n✓ own stack +2 ready: app 3002, Postgres 5434, herdr: stack tabs +postgres\n"
+            "\n✓ own stack +2 ready: app 3002, Postgres 5434, herdr: stack processes +dev\n"
         );
         assert_eq!(
             summary_text(&repo(), &Summary { stale: 1, ..base }, true, |name| name.into()),

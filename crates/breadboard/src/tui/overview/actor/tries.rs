@@ -1,5 +1,5 @@
-//! What a click on a try opens (try.mjs, #295): `--run` a terminal, the tab
-//! `try` of the worktree's space running the command; `--url` the page on
+//! What a click on a try opens (try.mjs, #295): `--run` a terminal, the
+//! overview's detail pane running the command (#408); `--url` the page on
 //! the worktree's app, its stack and `pnpm dev` started first when the app
 //! is down; `--on test` the path on the test instance once it is deployed.
 //! A newer click takes the place of an older one. And `stack:up` for a try
@@ -10,17 +10,13 @@ use super::{Actor, Effect, browser, herdr};
 use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of};
 use breadboard_core::git::feature_of;
-use breadboard_core::herdr::{is_in_herdr, tabs_of_now};
 use breadboard_core::local::is_port_taken;
 use breadboard_core::model::try_state::{TryState, app_origin, page_of, short_page};
 use breadboard_core::model::{Paint, Span, Tree};
-use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The tab of a worktree's space a terminal try runs in.
-const TRY_TAB: &str = "try";
 /// How long a click waits for `pnpm dev` to answer after the stack is up.
 const APP_WAIT: Duration = Duration::from_secs(120);
 const APP_POLL: Duration = Duration::from_millis(1000);
@@ -45,7 +41,7 @@ pub struct Trying {
 #[derive(Debug, Default)]
 pub struct Tries {
     pub trying: HashMap<PathBuf, Trying>,
-    /// Worktrees whose try terminal a click couldn't open, and why (no herdr, no space, no tab).
+    /// Worktrees whose try terminal a click couldn't open, and why (no herdr, no pane beside).
     pub unopened: HashMap<PathBuf, String>,
     /// What the last click on a try of a worktree did: (its id, the text).
     pub clicked: HashMap<PathBuf, (i64, String)>,
@@ -114,25 +110,25 @@ pub fn click(app: &mut Overview, dir: Option<PathBuf>, id: i64, state: Option<Tr
             open(&app.actor, &page, None);
             app.actor.log(Paint::Green, format!("try #{id}: opened {page}"));
         }
+        // Nothing to open: its worktree beside (#409: it has no space of its own).
         _ => {
             if let Some(dir) = dir {
-                let main = app.actor.main.clone();
-                app.actor.queue(move || {
-                    herdr::focus_space(&main, &dir);
-                    None
+                let (main, detail) = (app.actor.main.clone(), app.actor.detail.clone());
+                super::super::act::in_detail(app, move || {
+                    detail.show(&main, &dir, super::detail::Shows::Editor, None)
                 });
             }
         }
     }
 }
 
-/// The try's command in the tab `try` of the worktree's space (`openTerminal`):
-/// the same try again runs again in its tab, another replaces what ran there.
+/// The try's command in the overview's detail pane (`openTerminal`, #408):
+/// the same try again runs again there, another replaces what ran there.
 fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
-    let main = app.actor.main.clone();
+    let detail = app.actor.detail.clone();
     let dir = dir.to_path_buf();
     app.actor.queue(move || {
-        let text = terminal(&main, &dir, id, &run);
+        let text = detail.run_try(&dir, id, &run);
         Some(Box::new(move |app: &mut Overview| {
             match text {
                 Ok(text) => {
@@ -152,83 +148,12 @@ fn open_terminal(app: &mut Overview, dir: &Path, id: i64, run: String) {
                         format!("try #{id}: {why}: run it there yourself"),
                         Some(run.clone()),
                     );
-                    app.actor.tries.unopened.insert(dir.clone(), why.to_string());
+                    app.actor.tries.unopened.insert(dir.clone(), why);
                 }
             }
             app.redraw();
         }) as Effect)
     });
-}
-
-/// The terminal of a try opened: what happened, or where it stopped (Node
-/// says `no space` for each; the step that failed is named here).
-fn terminal(main: &Path, dir: &Path, id: i64, run: &str) -> Result<String, &'static str> {
-    if !is_in_herdr() {
-        return Err("not in herdr");
-    }
-    let workspace = herdr::space_of(main, dir).ok_or("no space of its worktree in herdr")?;
-    // Asked here, never the shared answer: one from before the last click lacks the tab it
-    // opened, so each click opened one more and none came to the front (#344's try #2).
-    let tabs = tabs_of_now(&workspace);
-    let old: Vec<_> = tabs.iter().filter(|tab| tab.label == TRY_TAB).collect();
-    let file = dir.join(".claude").join("try-tab.json");
-    let known = breadboard_core::json::read(&file);
-    let known_tab = known
-        .as_ref()
-        .and_then(|known| known.get("tab"))
-        .and_then(|tab| tab.as_str())
-        .map(String::from);
-    let known_id = known
-        .as_ref()
-        .and_then(|known| known.get("id"))
-        .and_then(|id| id.as_i64());
-    let known_run = known
-        .as_ref()
-        .and_then(|known| known.get("run"))
-        .and_then(|run| run.as_str())
-        .map(String::from);
-    let mut closed = Vec::new();
-    let text = if old.len() == 1
-        && known_tab.as_deref() == Some(old[0].id.as_str())
-        && known_id == Some(id)
-        && known_run.as_deref() == Some(run)
-    {
-        let is_idle = herdr::idle_pane_of(&workspace, TRY_TAB, &tabs).is_some();
-        herdr::ensure_tab(&workspace, TRY_TAB, dir, Some(run), &tabs);
-        if is_idle {
-            "runs again in the tab try".to_string()
-        } else {
-            "focused, runs in the tab try".to_string()
-        }
-    } else {
-        for tab in &old {
-            herdr::did(&["tab", "close", &tab.id]);
-            closed.push(tab.id.clone());
-        }
-        herdr::ensure_tab(&workspace, TRY_TAB, dir, Some(run), &[]);
-        if old.is_empty() {
-            "runs in the tab try".to_string()
-        } else if known_tab
-            .as_ref()
-            .is_some_and(|known| old.iter().any(|tab| &tab.id == known))
-        {
-            format!("replaced the try of #{}, runs in the tab try", known_id.unwrap_or(0))
-        } else {
-            "replaced what ran in the tab try".to_string()
-        }
-    };
-    let tab = tabs_of_now(&workspace)
-        .into_iter()
-        .find(|tab| tab.label == TRY_TAB && !closed.contains(&tab.id))
-        .ok_or("herdr shows no tab try in its space after opening it")?;
-    let _ = std::fs::create_dir_all(dir.join(".claude"));
-    let _ = std::fs::write(&file, format!("{}\n", json!({ "tab": tab.id, "id": id, "run": run })));
-    herdr::did(&["workspace", "focus", &workspace]);
-    if herdr::did(&["tab", "focus", &tab.id]) {
-        Ok(text)
-    } else {
-        Err("herdr didn't bring its tab try to the front")
-    }
 }
 
 /// The page of a try (`openPage`): on the worktree's own app that is down,
@@ -583,12 +508,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(spot(&actor, &run, Some(&tree)), None);
-        actor
-            .tries
-            .clicked
-            .insert("/r-7".into(), (1, "runs in the tab try".into()));
+        actor.tries.clicked.insert("/r-7".into(), (1, "runs beside".into()));
         let text = breadboard_core::model::text_of(&spot(&actor, &run, Some(&tree)).unwrap());
-        assert_eq!(text, "runs in the tab try cargo run");
+        assert_eq!(text, "runs beside cargo run");
         let page = Action {
             id: 2,
             kind: "try".into(),

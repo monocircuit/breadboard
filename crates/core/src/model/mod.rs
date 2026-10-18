@@ -22,6 +22,7 @@ pub mod memory;
 pub mod merge;
 pub mod merge_order;
 pub mod merge_turn;
+pub mod milestone;
 pub mod mr_blockers;
 pub mod next;
 pub mod numbering;
@@ -193,6 +194,8 @@ pub struct Tree {
     pub answered: Vec<Action>,
     /// Its tries' checker runs (#384).
     pub checks: Vec<crate::try_check::Check>,
+    /// Its MR's reviews (#374), one per head.
+    pub reviews: Vec<crate::review::Review>,
     /// What its work touches, for the merge order.
     pub files: BTreeSet<String>,
     /// Of `files`, the ones its base changed too since the merge base (#332).

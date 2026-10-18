@@ -361,8 +361,12 @@ fn work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
 /// `2 untested` when fewer commits than its ahead are untested.
 fn check_word(row: &TreeRow) -> Option<Span<'static>> {
     let (word, tone) = match &row.tree.checked {
-        CheckState::Tested { .. } => ("✓ tested".to_string(), Tone::Green),
+        CheckState::Tested { no_test: None, .. } => ("✓ tested".to_string(), Tone::Green),
+        CheckState::Tested { .. } => ("✓ tested · no test".to_string(), Tone::Green),
         CheckState::Checking { .. } => ("checking…".into(), Tone::Cyan),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => (format!("✗ {refused}"), Tone::Red),
         CheckState::Failed { .. } => ("✗ failed".into(), Tone::Red),
         CheckState::Untested { count } if *count > 0 && *count != row.tree.ahead => {
             (format!("{count} untested"), Tone::Yellow)
@@ -466,7 +470,7 @@ fn tree_click(row: &TreeRow, is_in_herdr: bool) -> Act {
             dir: Some(tree.dir.clone()),
         })
     } else {
-        Act::Go(Go::FocusSpace(tree.dir.clone()))
+        Act::Go(Go::Detail(tree.dir.clone()))
     }
 }
 
@@ -609,7 +613,7 @@ fn worktrees(scene: &mut Scene<Act>, rows: &[TreeRow], model: &EverythingModel, 
             scene.end_line();
             // A click brings its space `⇶ <title>` to the front, which stands on its checkout.
             let checkout = main.map(|main| orchestrations_dir(main).join(&origin.name));
-            let click = checkout.map_or(Act::Go(Go::Nothing), |dir| Act::Go(Go::FocusSpace(dir)));
+            let click = checkout.map_or(Act::Go(Go::Nothing), |dir| Act::Go(Go::Detail(dir)));
             scene.block(click, |scene| {
                 scene.pad_to(NAME_AT);
                 scene.indent(NAME_AT);
@@ -1181,7 +1185,7 @@ fn issues(scene: &mut Scene<Act>, table: &IssueTable, shown: Shown, rows: &[Tree
                 .as_ref()
                 .and_then(|branch| rows.iter().find(|row| &row.tree.branch == branch));
             let click = match tree {
-                Some(row) => Act::Go(Go::FocusSpace(row.tree.dir.clone())),
+                Some(row) => Act::Go(Go::Detail(row.tree.dir.clone())),
                 None => Act::Go(Go::Show {
                     url: issue.url.clone(),
                     dir: main.cloned(),
@@ -1569,6 +1573,7 @@ mod tests {
         row.tree.checked = CheckState::Failed {
             sha: "1a2b3c4d".into(),
             failures: vec![],
+            refused: None,
         };
         let (column, rest) = work_in(&row, 26);
         assert_eq!(text(&column), "✗ failed ↑3 · 1 changed");
@@ -1627,9 +1632,7 @@ mod tests {
         };
         assert_eq!(
             action("292-overview-every-agent-has-name"),
-            Some(Act::Go(Go::FocusSpace(
-                "/repo/292-overview-every-agent-has-name".into()
-            )))
+            Some(Act::Go(Go::Detail("/repo/292-overview-every-agent-has-name".into())))
         );
         assert_eq!(
             action("!308  draft"),
@@ -1640,13 +1643,13 @@ mod tests {
         );
         assert_eq!(
             action("⇶ breadboard"),
-            Some(Act::Go(Go::FocusSpace(
+            Some(Act::Go(Go::Detail(
                 "/repo/platform/.claude/orchestrations/breadboard".into()
             )))
         );
         assert_eq!(
             action("#300"),
-            Some(Act::Go(Go::FocusSpace(
+            Some(Act::Go(Go::Detail(
                 "/repo/296-overview-hover-highlights-whole-block".into()
             )))
         );

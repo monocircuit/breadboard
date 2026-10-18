@@ -109,6 +109,22 @@ a pane): `running` (a run in flight), `idle`, `asks` (its last run was
 denied a tool and waits for the user, see Permissions) and `queued` (lines
 wait for memory, or for its tab, below).
 
+**Pause all agents** (#397): when the user says "pause", run
+
+```sh
+sh packages/breadboard/herdr/breadboard.sh runs pause [--now] [--ci]
+sh packages/breadboard/herdr/breadboard.sh runs resume
+```
+
+or click `⏸ pause agents` / `▶ resume agents` under the overview's chat.
+Paused, runs in flight finish (`--now` ends them, their lines come back to
+the queue), no run starts and lines keep queueing; the band says `agents
+paused since 13:05 · N lines waiting`. `--ci` switches the CI queue off too.
+The state is a file (`.claude/runs/pause.json`): it outlives `serve`, herdr
+and a reboot. `resume` runs every waiting line, one run per agent, and
+switches the CI queue on again if the pause switched it off. Never end runs
+or daemons by hand to pause.
+
 **A headless agent waits only through a line** (#417). A background command
 (a backgrounded Bash call, a Monitor) is stopped when its run ends, and its
 notification never comes: an agent runs `wt:check`, the gauntlet and builds
@@ -282,7 +298,7 @@ a merge and never once the plan is stale. ACTIONS holds only what needs the user
 `{{run}} wt:action <kind> <text>` — `merge` (the human merges on two clicks,
 see Merging; gone once merged; each agent posts its own), `try`
 (what only the human can check, and the click that opens its spot:
-`--run <command>` a tab `try` in the worktree's space running it in the
+`--run <command>` the overview's detail pane running it in the
 worktree, `--url <page>` the page on the worktree's app in its tab group, a
 path `/atlas/…` on the worktree's port, its stack and app started
 first when the app is down; the row shows the command or page before;
@@ -383,6 +399,14 @@ count as `· N to check after merge`. Until then there is no automatic
 to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
+
+**Temporary** (#443, until the batch branches carry the testing): with
+`[merge] needs_pipeline = false` in breadboard.toml an MR into develop needs
+no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
+for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
+starts none for it (a click on its row still runs one). develop's pipeline
+after each merge is the safety net: while it is red, no merge into develop
+is offered. Into an epic nothing changes.
 
 No agent marks an MR ready (#399): `breadboard serve` does it once its bar
 is full, every box of its issue ticked (after-deploy ones excepted) and no
@@ -617,8 +641,8 @@ origin next to the worktree and in its view. They stay together (#255): the
 worktrees of no orchestration first, then per orchestration its space with
 its worktrees right below in the work order of `wt:plan`; the overview of
 the main space sorts them on every read (`core/src/model/order.rs`). A
-worktree's space shows its agent's state from the status table (How agents
-run) as its third row (`$wt_state`), not from a claude pane: there is none.
+worktree has no space of its own (#409): its agent's state is its row in
+the overview, from the status table (How agents run).
 The tab bar's "N need you" counts the agents that ask (`asks`: a denied
 tool waiting for the user).
 

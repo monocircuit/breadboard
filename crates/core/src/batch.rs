@@ -44,11 +44,11 @@ pub fn is_batch(branch: &str) -> bool {
     parse(branch).is_some()
 }
 
-/// Whether an MR into `target` merges by itself once its bar is full: into
-/// an epic still open (#350), or into a batch while breadboard.toml's
-/// `[batch] auto_merge` is on. Into develop or main it is the user's clicks.
-pub fn is_auto_target(main: &Path, target: &str) -> bool {
-    crate::epic::is_epic(target) || (is_batch(target) && crate::config::of(main).config.batch.auto_merge)
+/// Whether an MR into `target` merges by itself once its bar is full (and
+/// the setting `auto-merge into batch` is on, #415): into a batch, or an
+/// epic still open (#350). Into develop or main it is the user's clicks.
+pub fn is_auto_target(target: &str) -> bool {
+    crate::epic::is_epic(target) || is_batch(target)
 }
 
 /// The batch `product`'s file keeps, None before its first.
@@ -190,13 +190,11 @@ pub fn ensure_current(main: &Path, product: &str, develop: &str, is_dry: bool) -
     Ok(Opened::Made { batch, shipped })
 }
 
-/// The batch a new task of `product` branches off when batching is on
-/// (breadboard.toml's `[batch] batching`), as its file keeps it; None when
-/// it is off or the product has none yet.
+/// The batch a new task of `product` branches off while its setting
+/// `batching` is on (#415), as its file keeps it; None when it is off or
+/// the product has none yet.
 pub fn planned_of(main: &Path, product: &str) -> Option<Batch> {
-    crate::config::of(main)
-        .config
-        .batch
+    crate::settings::of_product(main, Some(product))
         .batching
         .then(|| current_of(main, product))
         .flatten()
@@ -391,13 +389,18 @@ mod tests {
 
     #[test]
     fn an_mr_into_a_batch_or_an_epic_merges_by_itself() {
+        assert!(is_auto_target("batch/breadboard-1"));
+        assert!(is_auto_target("epic/15-breadboard"));
+        assert!(!is_auto_target("develop"));
         let scratch = Scratch::new();
         let main = repo(&scratch);
-        assert!(is_auto_target(&main, "batch/breadboard-1"));
-        assert!(is_auto_target(&main, "epic/15-breadboard"));
-        assert!(!is_auto_target(&main, "develop"));
-        std::fs::write(main.join("breadboard.toml"), "[batch]\nauto_merge = false\n").unwrap();
-        assert!(!is_auto_target(&main, "batch/breadboard-1"), "switched off");
-        assert!(planned_of(&main, "breadboard").is_none());
+        std::fs::write(
+            main.join("breadboard.toml"),
+            "[settings]
+batching = false
+",
+        )
+        .unwrap();
+        assert!(planned_of(&main, "breadboard").is_none(), "batching off");
     }
 }

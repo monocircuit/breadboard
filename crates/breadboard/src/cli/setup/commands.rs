@@ -2,13 +2,16 @@
 //! for. The scripts come from the package.json files, so nothing goes out of
 //! date; a script without a line in commands.json shows its command.
 
-use super::proc::{git, outln};
+use super::proc::{Shape, git, outln};
 use super::repo;
 use super::view::is_color;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+
+/// What `commands` takes.
+pub const SHAPE: Shape = Shape::new(&["--all"], &[], Some(0), "usage: pnpm commands [--all]");
 
 /// Where the lines of the commands are kept, at the repo's root, the one place
 /// a new script gets its line (AGENTS.md): `<package dir>` → script → what it

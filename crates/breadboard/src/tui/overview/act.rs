@@ -6,6 +6,7 @@
 //! resolving conflicts — through the actor (`actor/`), which also does what
 //! the overview does by itself after each read (`after_read`).
 
+use super::actor::detail::Shows;
 use super::actor::{self, auto, browser, chat, fresh, herdr, merge, spawn::Run, tries};
 use super::{Msg, Overview};
 use crate::tui::{Flow, KeyEvent};
@@ -16,6 +17,7 @@ use breadboard_core::model::resolve::resolve_line;
 use breadboard_core::model::{Paint, Tree};
 use breadboard_core::reader::{Local, Model, RemoteOf, View};
 use breadboard_core::time::now_ms;
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -44,6 +46,10 @@ pub enum Act {
     Chat,
     /// The orchestration's auto mode switched (#384).
     Auto,
+    /// The settings panel opened or closed (#415).
+    Settings,
+    /// A setting changed in the panel (#415), by its key.
+    Setting(String, super::settings::Change),
     /// A try a checker answered opened again for the user (#384).
     Overturn {
         dir: PathBuf,
@@ -61,6 +67,8 @@ pub enum Act {
     RunNow(i64),
     /// The daily limit lifted until midnight: the queued runs start (#372).
     LiftLimit,
+    /// Every headless run paused, or resumed (#397): `breadboard runs pause` / `resume`.
+    Pause,
     /// Two clicks delete the worktree of the view.
     Delete,
     /// `stack:up` of a worktree (`u` too).
@@ -190,6 +198,8 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
         Act::Chat => chat::click(app),
         Act::Auto => toggle_auto(app),
+        Act::Settings => return super::settings::toggle(app),
+        Act::Setting(key, change) => return super::settings::change(app, &key, &change),
         Act::Overturn { dir, id } => overturn(app, &dir, id),
         Act::Fresh => fresh::click(app),
         Act::Dismiss(id) => dismiss(app, &id),
@@ -197,6 +207,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         Act::Resolve(iid) => resolve(app, iid),
         Act::RunNow(iid) => run_now(app, iid),
         Act::LiftLimit => lift_limit(app),
+        Act::Pause => pause(app),
     }
     app.redraw();
     Flow::Redraw
@@ -235,19 +246,63 @@ fn open_app(app: &mut Overview, dir: &Path, port: i64, is_shared: bool) {
     app.actor.log(Paint::Dim, hint);
 }
 
-/// A file of a worktree in its nvim, from a view of more than it; why not in the band.
+/// A file of a worktree in the detail pane's nvim, from a view of more than it; why not in the band.
 fn open_file(app: &mut Overview, dir: &Path, file: &str, line: Option<u64>) {
-    let main = app.actor.main.clone();
-    let feature = breadboard_core::git::feature_of(&main, dir);
-    let checkout = super::worktree_view::editor::Checkout {
-        dir,
-        main: &main,
-        is_main: false,
-        feature: &feature,
+    let at = match super::worktree_view::editor::at_of(dir, file, line) {
+        Ok(at) => at,
+        Err(why) => return app.actor.log(Paint::Red, format!("nvim: {why}")),
     };
-    if let Err(why) = super::worktree_view::editor::open_file(&checkout, file, line) {
-        app.actor.log(Paint::Red, format!("nvim: {why}"));
+    let (main, dir, detail) = (app.actor.main.clone(), dir.to_path_buf(), app.actor.detail.clone());
+    in_detail(app, move || detail.show(&main, &dir, Shows::Editor, Some(at)));
+}
+
+/// `job` on the actor's thread (it waits for herdr, nvim, a run), what it did in the band's `detail` entry.
+pub fn in_detail(app: &Overview, job: impl FnOnce() -> Result<String, String> + Send + 'static) {
+    app.actor.queue(move || {
+        let done = job();
+        Some(Box::new(move |app: &mut Overview| {
+            match done {
+                Ok(did) => app.actor.log_as("detail", Paint::Green, did, None),
+                Err(why) => app.actor.log_as("detail", Paint::Red, why, None),
+            }
+            app.redraw();
+        }) as actor::Effect)
+    });
+}
+
+/// The detail pane's keys (#406): `e` `t` `l` `a` switch it, Esc closes it
+/// unless it dropped a pick; the worktree it shows, else the view's worktree.
+fn detail_key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
+    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+        return Flow::Same;
     }
+    let main = app.actor.main.clone();
+    let detail = app.actor.detail.clone();
+    let shown = detail.shown();
+    match key.code {
+        KeyCode::Esc if picked.is_none() && shown.is_some() => in_detail(app, move || detail.close(&main)),
+        KeyCode::Char(key) => {
+            let Some(shows) = Shows::of_key(key) else {
+                return Flow::Same;
+            };
+            let dir = match (&shown, &app.actor.view) {
+                (Some(shown), _) => shown.dir.clone(),
+                (None, View::Worktree(dir)) => dir.clone(),
+                (None, _) => {
+                    app.actor.log_as(
+                        "detail",
+                        Paint::Dim,
+                        "click a worktree or an MR first: its nvim opens beside",
+                        None,
+                    );
+                    return Flow::Redraw;
+                }
+            };
+            in_detail(app, move || detail.show(&main, &dir, shows, None));
+        }
+        _ => return Flow::Same,
+    }
+    Flow::Same
 }
 
 /// What a `Go` of the model does.
@@ -264,23 +319,15 @@ pub fn go_to(app: &mut Overview, go: Go) {
             let state = app.try_state_of(&go);
             tries::click(app, dir.clone(), id, state);
         }
-        Go::FocusSpace(dir) => app.actor.queue(move || {
-            // A headless agent's space the layout left closed opens on the click (#386).
-            if herdr::space_of(&main, &dir).is_none() {
-                let repo = crate::cli::lifecycle::repo::Repo { main: main.clone() };
-                crate::cli::lifecycle::layout::open_space(&repo, &dir);
-            }
-            herdr::focus_space(&main, &dir);
-            None
-        }),
-        // A headless agent has no tab: the click opens it in one (#361).
-        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
-            let opened = super::actor::open_agent::open(&main, &dir);
-            Some(Box::new(move |app: &mut Overview| match opened {
-                Ok(did) => app.actor.log(Paint::Green, did),
-                Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
-            }))
-        }),
+        Go::Detail(dir) => {
+            let detail = app.actor.detail.clone();
+            in_detail(app, move || detail.click(&main, &dir));
+        }
+        // A headless agent has no tab: the click opens it in the detail pane (#361, #409).
+        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => {
+            let detail = app.actor.detail.clone();
+            in_detail(app, move || detail.show(&main, &dir, Shows::Agent, None));
+        }
         // ACTIONS' `held` row (#386): the open claude ended once it idles.
         Go::EndHeld(dir) => app.actor.queue(move || {
             let ended = super::actor::end_held::end(&main, &dir);
@@ -305,7 +352,81 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::Remove(dir) => auto::click_remove(app, &dir),
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
         Go::End => end(app),
+        Go::EpicMr => epic_mr(app),
     }
+}
+
+/// How long after the milestone MR opened its row takes no click: the row
+/// goes once a GitLab read shows the MR (every 30 s at the latest).
+const EPIC_MR_SHOWN: i64 = 60_000;
+
+/// A click on the milestone row of UP NEXT (#402): `wt:epic <name> --mr` in
+/// the background, once while it runs and once it opened the MR.
+fn epic_mr(app: &mut Overview) {
+    let Some(name) = app.orchestration_name() else { return };
+    if app.actor.epic_mr.as_ref().is_some_and(|run| {
+        run.is_running || (run.error.is_none() && run.done_at.is_some_and(|at| now_ms() - at < EPIC_MR_SHOWN))
+    }) {
+        return;
+    }
+    let log = actor::spawn::log_file(&format!("orchestration-epic-mr-{name}.log"));
+    let program = actor::spawn::breadboard();
+    let poster = app.actor.poster();
+    let log_done = log.clone();
+    let shown = format!("{run} wt:epic {name} --mr", run = breadboard_core::config::run_word());
+    let started = actor::spawn::start(
+        actor::spawn::Background {
+            program: &program,
+            args: vec!["wt:epic".into(), name.clone(), "--mr".into()],
+            cwd: &app.actor.main,
+            log: &log,
+            env: vec![],
+            is_paneless: true,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                let error = actor::spawn::error_of(code, &last, "");
+                match &error {
+                    None => {
+                        app.actor.log_as(
+                            "epic-mr",
+                            Paint::Green,
+                            format!("milestone MR: {}", actor::spawn::said(&last)),
+                            None,
+                        );
+                        // The epic's row names the MR, and the offer goes.
+                        app.refresh_gitlab();
+                    }
+                    Some(why) => app
+                        .actor
+                        .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), None),
+                }
+                app.actor.epic_mr = Some(Run {
+                    log: Some(log_done),
+                    done_at: error.is_none().then(now_ms),
+                    error,
+                    ..Run::default()
+                });
+                app.redraw();
+            });
+        },
+    );
+    match started {
+        Ok(()) => {
+            app.actor.epic_mr = Some(Run::running(&log));
+            app.actor
+                .log_as("epic-mr", Paint::Yellow, "opening the milestone MR …", Some(shown));
+        }
+        Err(why) => {
+            app.actor
+                .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), Some(shown));
+            app.actor.epic_mr = Some(Run {
+                error: Some(why),
+                ..Run::default()
+            });
+        }
+    }
+    app.redraw();
 }
 
 /// A click on ✕ end orchestration or its UP NEXT row (end.mjs `clickEnd`):
@@ -526,9 +647,15 @@ fn toggle_auto(app: &mut Overview) {
     };
     let is_on = !model.is_auto;
     let checker = model.checker.clone();
-    let mut fields = serde_json::Map::new();
-    fields.insert("auto".into(), serde_json::json!(is_on));
-    match breadboard_core::record::update_record(&app.actor.main, &name, fields) {
+    // The try checker of the settings panel (#415): kept with the product's settings.
+    let set = breadboard_core::settings::set(
+        &app.actor.main,
+        &name,
+        breadboard_core::settings::TRY_CHECKER,
+        Some(serde_json::json!(is_on)),
+        now_ms(),
+    );
+    match set.map(|_| ()) {
         Ok(()) if is_on => app.actor.log(
             Paint::Green,
             format!("auto mode on: {checker} checks and answers the tries"),
@@ -565,6 +692,33 @@ fn lift_limit(app: &mut Overview) {
                 .log(Paint::Green, "daily limit lifted until midnight: the queued runs start");
         }
         Err(error) => app.actor.log(Paint::Red, format!("daily limit not lifted: {error}")),
+    }
+}
+
+/// The pause toggle (#397): paused, the runs in flight let finish and no
+/// new one starts; resumed, the lines that waited start their runs.
+fn pause(app: &mut Overview) {
+    use breadboard_core::runs;
+    let main = app.actor.main.clone();
+    let done = if runs::paused_of(&main).is_some() {
+        runs::resume(&main).map(|_| {
+            crate::daemon::client::wake_runs(&main);
+            "agents resumed: the lines that waited start their runs"
+        })
+    } else {
+        runs::pause(&main, now_ms(), false).map(|_| "agents paused: no run starts, the lines wait")
+    };
+    match done {
+        Ok(said) => {
+            // Read again now: the band shows it without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
+            app.actor.log(Paint::Green, said);
+        }
+        Err(error) => app
+            .actor
+            .log(Paint::Red, format!("agents not paused or resumed: {error}")),
     }
 }
 
@@ -621,11 +775,23 @@ fn resolve(app: &mut Overview, iid: i64) {
 
 /// A key the frame has no use for: a digit answers the action picked with
 /// Tab, nothing while none is (actions.rs); `u` starts the stack whose
-/// button shows, the default one's in the view of everything.
+/// button shows, the default one's in the view of everything; the detail
+/// pane's keys (#406).
 pub fn key(app: &mut Overview, key: KeyEvent, picked: Option<&Act>) -> Flow {
+    // `,` opens and closes the settings panel of an orchestration (#415), as in an editor's.
+    if key.code == crossterm::event::KeyCode::Char(',')
+        && key.modifiers.is_empty()
+        && app.actor.prompt.is_none()
+        && app.orchestration().is_some()
+    {
+        return super::settings::toggle(app);
+    }
     super::actions::key(app, key, picked)
         .or_else(|| super::everything::key(app, key))
-        .unwrap_or_else(|| super::worktree_view::key(app, key))
+        .unwrap_or_else(|| match super::worktree_view::key(app, key) {
+            Flow::Same => detail_key(app, key, picked),
+            flow => flow,
+        })
 }
 
 /// What a read sets off, by the view: the orchestration's own acts, the main space's `--herdr` sync.

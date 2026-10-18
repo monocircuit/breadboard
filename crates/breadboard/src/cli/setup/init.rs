@@ -15,7 +15,7 @@
 //! nothing else. `--check` writes nothing and fails when a file it renders
 //! differs (CI, so the repo's copies stay those of its breadboard.toml).
 
-use super::proc::{Args, fail, outln};
+use super::proc::{Args, Shape, fail, outln};
 use super::repo;
 use breadboard_core::config::{self, Loaded};
 use regex::Regex;
@@ -24,6 +24,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+/// What `init` takes.
+pub const SHAPE: Shape = Shape::new(&["--check"], &[], Some(0), USAGE);
 
 pub const USAGE: &str = "usage: breadboard init [--check]   breadboard's skill, hooks and herdr plugin into this repo";
 
@@ -45,7 +48,7 @@ const SKILL: [(&str, &str); 5] = [
         "cleanup.md",
         include_str!("../../../../../claude/skills/parallel-work/cleanup.md"),
     ),
-    // Only where products work through batches (`[products.*]`, `[batch] batching`).
+    // Only where products work through batches (`[products.*]`, `[settings] batching`).
     (
         "batches.md",
         include_str!("../../../../../claude/skills/parallel-work/batches.md"),
@@ -331,7 +334,7 @@ pub fn render(template: &str, values: &[(&str, String)], blocks: &[(&str, bool)]
 /// The skill, rendered: `(path in the checkout, text)`.
 fn skill_of(loaded: &Loaded) -> Vec<(PathBuf, String)> {
     let values = values(loaded);
-    let has_batches = loaded.config.batch.batching && !loaded.config.products.is_empty();
+    let has_batches = loaded.config.settings.batching.unwrap_or(true) && !loaded.config.products.is_empty();
     let has_epic_stack = loaded.config.stack.as_ref().is_some_and(|stack| stack.epic.is_some());
     let blocks = [
         ("stack", loaded.config.stack.is_some()),

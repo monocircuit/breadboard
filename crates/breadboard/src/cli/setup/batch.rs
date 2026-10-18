@@ -2,7 +2,7 @@
 //! rolling `batch/<product>-<n>`, opened from origin/develop when the
 //! product has none or its batch shipped. An orchestration still on an epic
 //! branch (#350) keeps it until it ships; one of no product, or with
-//! breadboard.toml's `[batch] batching` off, works on develop.
+//! its setting `batching` off (#415), works on develop.
 
 use crate::cli::lifecycle::handover::read_issue;
 use crate::cli::setup::proc::{git, step};
@@ -24,7 +24,8 @@ pub fn ensure_batch(name: &str, product: Option<&str>, is_dry: bool) -> Result<O
     let Some(product) = product else {
         return Ok(None);
     };
-    if !breadboard_core::config::of(&main).config.batch.batching {
+    // The setting `batching` of the product (#415): off, develop.
+    if !breadboard_core::settings::of_product(&main, Some(product)).batching {
         return Ok(None);
     }
     let _ = git(&["fetch", "--quiet", "origin"], &main);
@@ -65,7 +66,8 @@ pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<
             .and_then(|issue| issue.milestone.as_deref())
             .and_then(|milestone| config.product_of_milestone(milestone))
     });
-    let Some(product) = product.filter(|_| config.batch.batching) else {
+    let Some(product) = product.filter(|product| breadboard_core::settings::of_product(&main, Some(product)).batching)
+    else {
         return Ok(Base::of(&develop));
     };
     let opened = ensure_current(&main, &product, &develop, false)?;

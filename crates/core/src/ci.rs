@@ -174,6 +174,8 @@ pub struct Asked {
     pub cancelled: Vec<i64>,
     /// iid → the last preemption of its pipeline (#419), kept PREEMPT_AGAIN_MS.
     pub preempts: BTreeMap<i64, Preemption>,
+    /// iid → its failed pipelines (#371): what was retried, the fix runs, until one passes.
+    pub fixes: BTreeMap<i64, crate::ci_fix::Fixes>,
 }
 
 /// A pipeline cancelled to make room (#419): for which MR, and when (ms).
@@ -443,6 +445,8 @@ pub struct Queue {
     pub last: Option<String>,
     /// A try's queue: it starts and cancels nothing, so no push may skip CI for it.
     pub is_dry: bool,
+    /// iid → where its failed pipeline stands (#371): retried, its agent fixes it, the user looks.
+    pub fixes: BTreeMap<i64, crate::ci_fix::Fix>,
 }
 
 impl Queue {
@@ -475,13 +479,8 @@ impl Queue {
 
 /// `value` into `file` whole: written beside it, then renamed, so a reader never sees half.
 pub fn write_whole<T: Serialize>(file: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    let beside = file.with_extension(format!("json.{}", std::process::id()));
-    std::fs::write(&beside, format!("{text}\n"))?;
-    std::fs::rename(&beside, file)
+    crate::json::write_whole(file, &format!("{text}\n"))
 }
 
 /// `file` as `T`, the default when missing or broken.
@@ -529,6 +528,8 @@ pub struct OpenMr {
     /// creation, while an older one of that commit passed: GitLab blocks the
     /// merge on it (#369).
     pub blocked_by: Option<i64>,
+    /// Its head pipeline failed at its creation (a `failureReason`: GitLab's activity limit).
+    pub is_refused: bool,
 }
 
 impl OpenMr {
@@ -593,6 +594,9 @@ pub struct Ranks {
     pub preempts: HashMap<i64, Preemption>,
     /// Now (ms): how long a pipeline ran, how long ago an MR was preempted.
     pub now: i64,
+    /// The branch whose MRs merge on wt:check, without a pipeline of their own
+    /// (#443, `[merge] needs_pipeline = false`): the default branch, else None.
+    pub no_pipeline_into: Option<String>,
 }
 
 impl Ranks {
@@ -608,7 +612,13 @@ impl Ranks {
             cancelled: HashSet::new(),
             preempts: HashMap::new(),
             now: 0,
+            no_pipeline_into: None,
         }
+    }
+
+    /// Its merge needs no pipeline (#443): none starts by itself, a click still runs one.
+    fn needs_none(&self, mr: &OpenMr) -> bool {
+        self.no_pipeline_into.as_deref() == Some(mr.target.as_str()) && !self.run_now.contains_key(&mr.iid)
     }
 
     /// An MR of an orchestration whose order the queue reads, or a batch
@@ -821,7 +831,8 @@ pub fn decide(mrs: &[OpenMr], ranks: &Ranks, slots: Slots, started: &HashMap<i64
     }
     let mut waiting: Vec<(Class, (usize, i64, i64), &OpenMr)> = Vec::new();
     // An MR of no orchestration is never touched: no place, no start, no cancel (#369).
-    let members = mrs.iter().filter(|mr| ranks.is_member(mr));
+    // One that merges on wt:check gets no place either: its row says so (#443).
+    let members = mrs.iter().filter(|mr| ranks.is_member(mr) && !ranks.needs_none(mr));
     for mr in members {
         if !wants_pipeline(mr, ranks, started) {
             let is_live_here = mr.is_head_current() && mr.pipeline_status().is_some_and(is_live);
@@ -1407,6 +1418,24 @@ mod tests {
         // An MR in an order without a bar: nothing known, nothing started.
         ranks.bars.clear();
         assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start, None);
+    }
+
+    #[test]
+    fn starts_no_pipeline_into_a_branch_that_merges_on_wt_check() {
+        // #443: `[merge] needs_pipeline = false`: into develop none by itself, into an epic as before.
+        let into_epic = OpenMr {
+            target: "epic/15-x".into(),
+            ..mr(2, "b", None)
+        };
+        let mrs = [mr(1, "a", None), into_epic];
+        let mut ranks = order(&[1, 2]);
+        ranks.no_pipeline_into = Some("develop".into());
+        let decision = decide_now(&mrs, &ranks, slots(4, 0));
+        assert_eq!(decision.start.map(|start| start.iid), Some(2));
+        assert_eq!(decision.places.get(&1), None, "its row says it merges on wt:check");
+        // A click still runs one.
+        ranks.run_now.insert(1, 5);
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start.unwrap().iid, 1);
     }
 
     #[test]

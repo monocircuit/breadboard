@@ -21,6 +21,15 @@ pub fn is_in_herdr() -> bool {
 /// after a restart (`resume_agents_on_restore`).
 pub const PANE_ENV: [&str; 2] = ["HERDR_PANE_ID", "HERDR_TAB_ID"];
 
+/// `command` without [`PANE_ENV`]: a `claude -p` started from a pane (the
+/// overview's retire and checker, #425) is no agent of that pane.
+pub fn off_pane(command: &mut Command) -> &mut Command {
+    for name in PANE_ENV {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// What answers herdr's reads in place of a call of this process: the
 /// overviews' shared reader (`breadboard serve`); its None: ask herdr here.
 pub type SharedReads = fn(&[&str]) -> Option<Option<Value>>;
@@ -196,6 +205,14 @@ pub fn all_panes() -> Vec<Pane> {
         return Vec::new();
     }
     panes_in(herdr(&["pane", "list"]))
+}
+
+/// `all_panes` asked of herdr by this process, never a shared answer: the read a write into a pane follows.
+pub fn all_panes_now() -> Vec<Pane> {
+    if !is_in_herdr() {
+        return Vec::new();
+    }
+    panes_in(herdr_here(&["pane", "list"]))
 }
 
 /// What herdr says an agent does, by its conversation's id (auto-actions.mjs `agentsOf`).

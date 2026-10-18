@@ -8,7 +8,7 @@
 use super::conversations::{self, session_file};
 use super::epic::{self, Epic};
 use super::herdr::{self, field};
-use super::proc::{self, Args, How, fail, name_refusal, outln, set_hint, step};
+use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, step};
 use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
@@ -18,6 +18,14 @@ use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
 use std::path::Path;
 use std::process::{ExitCode, Stdio};
+
+/// What `wt:new` takes.
+pub const SHAPE: Shape = Shape::new(
+    &["--shared", "--fix", "--origin", "--base"],
+    &["--origin", "--base"],
+    Some(1),
+    USAGE,
+);
 
 pub const USAGE: &str =
     "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
@@ -118,7 +126,8 @@ pub fn command(args: &Args) -> ExitCode {
     } else {
         herdr::orchestration_here()
     };
-    let previous = if herdr::moves_tab(proc::is_agent(), origin.as_ref(), stays.as_deref()) {
+    // An agent's own wt:new (not an orchestration's): it leaves the worktree it was in.
+    let previous = if proc::is_agent() && origin.is_none() && stays.is_none() {
         leaving_worktree()
     } else {
         None
@@ -292,7 +301,12 @@ pub fn command(args: &Args) -> ExitCode {
     } else {
         sweep::stale_issue_count().unwrap_or(0)
     };
-    let space = herdr::open_space(&feature, &dir, origin.as_ref(), stays.as_deref());
+    // No herdr space of its own (#409): its rows in the overview are where it shows.
+    // Its stack set up and running: its dev server in the background (#407).
+    let procs = stack::procs_of(&dir);
+    if !procs.is_empty() {
+        step(&format!("in the background: {}", procs.join(" ")));
+    }
     // An orchestration's worktree opens no app tab (#337): nobody looks at it
     // yet, and a tab that comes to the front then passes for another's page.
     if origin.is_none() {
@@ -304,7 +318,7 @@ pub fn command(args: &Args) -> ExitCode {
         dir: Path::new(&dir_text),
         branch: &branch,
         offset,
-        tab: space,
+        tab: None,
         stale,
         silent,
         left,

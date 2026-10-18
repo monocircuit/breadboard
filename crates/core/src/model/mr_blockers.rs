@@ -6,9 +6,12 @@
 use super::Tree;
 use super::agent_state::RUNNING;
 use super::change::is_change_open;
-use super::merge::{GITLAB_RECHECKS, counted_checks_of, is_acceptance, is_work, merge_status_text};
+use super::merge::{
+    GITLAB_RECHECKS, counted_checks_of, failed_at_head, is_acceptance, is_same_commit, is_work, merge_status_text,
+};
 use super::merge_order::After;
 use super::resolve::is_conflict_settled;
+use crate::check::CheckState;
 use crate::gitlab::{IssueBox, Job, Mr};
 use std::collections::HashSet;
 
@@ -37,7 +40,10 @@ pub struct Reason {
 /// rowBlockersOf: the reasons, in order: pipeline, open Work boxes, the
 /// human's checks, the draft, conflicts, the MRs it waits for, a requested
 /// change, unpushed commits. None when it is ready to merge. `done` the iids
-/// known merged or closed: a wait for one of them is over.
+/// known merged or closed: a wait for one of them is over. Without
+/// `needs_pipeline` (#443) wt:check passed at its pushed head stands for
+/// the pipeline.
+#[allow(clippy::too_many_arguments)]
 pub fn row_blockers_of(
     mr: &Mr,
     boxes: &[IssueBox],
@@ -46,6 +52,7 @@ pub fn row_blockers_of(
     jobs: &[Job],
     tree: Option<&Tree>,
     done: &HashSet<i64>,
+    needs_pipeline: bool,
 ) -> Vec<Reason> {
     let mut reasons = Vec::new();
     let mut add = |text: String, who: &str, is_conflict: bool| {
@@ -57,20 +64,25 @@ pub fn row_blockers_of(
     };
 
     let status = mr.pipeline_status();
+    let failed = || {
+        let job = jobs.iter().find(|job| job.status == "failed");
+        format!(
+            "pipeline failed{}",
+            job.map(|job| format!(" at {}", job.name)).unwrap_or_default()
+        )
+    };
     match status {
+        _ if !needs_pipeline => {
+            if failed_at_head(mr) {
+                add(failed(), "agent", false);
+            }
+            if let Some(text) = check_lack_of(mr, tree) {
+                add(text, "agent", false);
+            }
+        }
         None => add("no pipeline yet".into(), "GitLab", false),
         Some(status) if RUNNING.contains(&status) => add(format!("pipeline {status}"), "GitLab", false),
-        Some("failed") => {
-            let job = jobs.iter().find(|job| job.status == "failed");
-            add(
-                format!(
-                    "pipeline failed{}",
-                    job.map(|job| format!(" at {}", job.name)).unwrap_or_default()
-                ),
-                "agent",
-                false,
-            );
-        }
+        Some("failed") => add(failed(), "agent", false),
         Some("success") => {}
         Some(status) => add(format!("pipeline {status}"), "agent", false),
     }
@@ -96,6 +108,11 @@ pub fn row_blockers_of(
         .map(|tree| (&tree.actions[..], &tree.answered[..]))
         .unwrap_or((&[], &[]));
     let checks = counted_checks_of(boxes, actions, answered);
+    // Its review (#374) once its head is green: serious findings are its agent's.
+    let review = tree
+        .filter(|_| is_green(mr, tree, needs_pipeline))
+        .and_then(|tree| review_hold_of(tree, mr));
+    let is_reviewed_back = review.as_ref().is_some_and(|hold| hold.who == "agent");
     for check in &checks {
         add(
             check.clone(),
@@ -114,7 +131,7 @@ pub fn row_blockers_of(
                 "agent",
                 false,
             );
-        } else if bar.total > 0 && !is_changed {
+        } else if bar.total > 0 && !is_changed && !is_reviewed_back {
             // The bar is full: breadboard marks it ready by itself (#399).
             add(READY_BAR_FULL.into(), "breadboard", false);
         } else if bar.total == 0 {
@@ -122,7 +139,7 @@ pub fn row_blockers_of(
             let is_posted = actions.iter().any(|action| action.kind == "merge");
             add(
                 MARK_READY.into(),
-                if is_posted || status == Some("success") {
+                if is_posted || status == Some("success") || !needs_pipeline {
                     "you"
                 } else {
                     "agent"
@@ -161,7 +178,12 @@ pub fn row_blockers_of(
     } else if let Some(text) = merge_status_text(
         mr.merge_status.as_deref(),
         mr.is_draft,
-        status != Some("success"),
+        if needs_pipeline {
+            status != Some("success")
+        } else {
+            failed_at_head(mr)
+        },
+        needs_pipeline,
         mr.target(),
     ) {
         // A rebase is its agent's too; what is left (discussions, an approval) is yours.
@@ -205,7 +227,50 @@ pub fn row_blockers_of(
             );
         }
     }
+    // Due or running, it holds only an MR nothing else holds: the actor starts it on `review due`.
+    if let Some(hold) = review.filter(|_| is_reviewed_back || reasons.is_empty()) {
+        reasons.push(Reason {
+            text: hold.text,
+            who: hold.who.into(),
+            is_conflict: false,
+        });
+    }
     reasons
+}
+
+/// What the review of `mr`'s head holds (#374), by the `[review]` of its worktree.
+pub fn review_hold_of(tree: &Tree, mr: &Mr) -> Option<crate::review::Hold> {
+    let is_enabled = crate::config::of(&tree.dir).config.review.enabled;
+    crate::review::hold_of(&tree.reviews, mr.sha.as_deref(), is_enabled)
+}
+
+/// Whether its head passed what a merge needs of it (#374): its pipeline,
+/// or without `needs_pipeline` (#443) wt:check at its pushed head with no
+/// pipeline failed there. Its review starts only then.
+pub fn is_green(mr: &Mr, tree: Option<&Tree>, needs_pipeline: bool) -> bool {
+    if needs_pipeline {
+        mr.pipeline_status() == Some("success")
+    } else {
+        !failed_at_head(mr) && check_lack_of(mr, tree).is_none()
+    }
+}
+
+/// What its wt:check lacks for a merge without a pipeline (#443): passed at
+/// the commit GitLab has as its head, in its worktree here. None once it did.
+fn check_lack_of(mr: &Mr, tree: Option<&Tree>) -> Option<String> {
+    let Some(tree) = tree else {
+        return Some("wt:check not known (no worktree here)".into());
+    };
+    match &tree.checked {
+        CheckState::Tested { sha, .. } if mr.sha.as_deref().is_some_and(|head| is_same_commit(sha, head)) => None,
+        CheckState::Tested { .. } => Some("wt:check not at the pushed head".into()),
+        CheckState::Checking { .. } => Some("wt:check running".into()),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => Some(format!("wt:check: {refused}")),
+        CheckState::Failed { .. } => Some("wt:check failed".into()),
+        CheckState::Untested { .. } | CheckState::None => Some("wt:check not passed".into()),
+    }
 }
 
 /// How many conflicting files a reason names before `+n`.
@@ -336,7 +401,7 @@ mod tests {
         }
     }
     fn reasons(mr: &Mr, boxes: &[IssueBox], tree: Option<&Tree>) -> Vec<String> {
-        row_blockers_of(mr, boxes, 0, &[], &[], tree, &HashSet::new())
+        row_blockers_of(mr, boxes, 0, &[], &[], tree, &HashSet::new(), true)
             .into_iter()
             .map(|reason| format!("{} → {}", reason.text, reason.who))
             .collect()
@@ -381,9 +446,89 @@ mod tests {
             &jobs,
             None,
             &HashSet::new(),
+            true,
         );
         assert_eq!(found[0].text, "pipeline failed at check:test");
         assert_eq!(found[0].who, "agent");
+    }
+
+    #[test]
+    fn without_its_own_pipeline_wt_check_at_the_pushed_head_stands_for_it() {
+        // #443: `[merge] needs_pipeline = false`, every push's pipeline skipped.
+        let skipped = Mr {
+            sha: Some("abc123".into()),
+            pipeline: Some(Pipeline {
+                status: "skipped".into(),
+                sha: Some("abc123".into()),
+                ..Default::default()
+            }),
+            ..mr()
+        };
+        let checked = |state: CheckState| Tree {
+            checked: state,
+            ..Default::default()
+        };
+        let tested = |sha: &str| {
+            checked(CheckState::Tested {
+                sha: sha.into(),
+                packages: Vec::new(),
+                no_test: None,
+            })
+        };
+        let off = |mr: &Mr, tree: Option<&Tree>| -> Vec<String> {
+            row_blockers_of(mr, &[work("Tests", true)], 0, &[], &[], tree, &HashSet::new(), false)
+                .into_iter()
+                .map(|reason| format!("{} → {}", reason.text, reason.who))
+                .collect()
+        };
+        assert!(off(&skipped, Some(&tested("abc1234567"))).is_empty());
+        assert!(
+            off(
+                &Mr {
+                    pipeline: None,
+                    ..skipped.clone()
+                },
+                Some(&tested("abc123"))
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            off(&skipped, Some(&tested("def456"))),
+            ["wt:check not at the pushed head → agent"]
+        );
+        assert_eq!(
+            off(&skipped, Some(&checked(CheckState::Checking { since: None }))),
+            ["wt:check running → agent"]
+        );
+        assert_eq!(
+            off(&skipped, Some(&checked(CheckState::Untested { count: 2 }))),
+            ["wt:check not passed → agent"]
+        );
+        assert_eq!(off(&skipped, None), ["wt:check not known (no worktree here) → agent"]);
+        // A pipeline a click ran that failed at its head still holds it.
+        let failed = Mr {
+            pipeline: Some(Pipeline {
+                status: "failed".into(),
+                sha: Some("abc123".into()),
+                ..Default::default()
+            }),
+            ..skipped.clone()
+        };
+        assert_eq!(off(&failed, Some(&tested("abc123"))), ["pipeline failed → agent"]);
+        // On, as before: a skipped pipeline is no pass, whatever wt:check says.
+        assert_eq!(
+            reasons(&skipped, &[work("Tests", true)], Some(&tested("abc123"))),
+            ["pipeline skipped → agent"]
+        );
+        // GitLab holds it for its setting: the user's step.
+        let held = Mr {
+            merge_status: Some("ci_must_pass".into()),
+            ..skipped
+        };
+        assert_eq!(
+            off(&held, Some(&tested("abc123"))),
+            [format!("{} → you", super::super::merge::PIPELINE_SETTING)]
+        );
     }
 
     #[test]
@@ -471,6 +616,79 @@ mod tests {
     }
 
     #[test]
+    fn serious_review_findings_send_it_back_to_its_agent() {
+        use crate::review::{Finding, Review, State, Weight};
+        let review = |weight| Review {
+            iid: 242,
+            head: "abc123".into(),
+            model: "haiku".into(),
+            state: State::Done,
+            findings: vec![Finding {
+                weight,
+                text: "a.rs:1 x".into(),
+            }],
+            skipped: None,
+            lines: 40,
+            tokens: 0,
+            dollars: 0.0,
+            at: String::new(),
+            pid: None,
+            session: None,
+            failed: None,
+        };
+        let reviewed = |weight| Tree {
+            reviews: vec![review(weight)],
+            ..Default::default()
+        };
+        let at = |mr: Mr, sha: &str| Mr {
+            sha: Some(sha.into()),
+            ..mr
+        };
+        let boxes = [work("Tests", true)];
+        let serious = reviewed(Weight::Serious);
+        assert_eq!(
+            reasons(&at(mr(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        // Back to draft by its hold: the review says why, not `ready (bar full)`.
+        assert_eq!(
+            reasons(&at(draft(), "abc123"), &boxes, Some(&serious)),
+            ["review: 1 serious finding → agent"]
+        );
+        assert!(
+            reasons(&at(mr(), "def456"), &boxes, Some(&serious)).is_empty(),
+            "a new head, [review] off: nothing waits"
+        );
+        assert!(reasons(&at(mr(), "abc123"), &boxes, Some(&reviewed(Weight::Small))).is_empty());
+    }
+
+    #[test]
+    fn its_head_is_green_by_the_pipeline_or_by_wt_check_without_one() {
+        let at = Mr {
+            sha: Some("abc123".into()),
+            pipeline: None,
+            ..mr()
+        };
+        let checked = |sha: &str| Tree {
+            checked: crate::check::CheckState::Tested {
+                sha: sha.into(),
+                packages: vec![],
+                no_test: None,
+            },
+            ..Default::default()
+        };
+        assert!(!is_green(&at, Some(&checked("abc123")), true), "no pipeline yet");
+        assert!(is_green(&mr(), None, true), "the pipeline passed");
+        // #443: a merge into develop on wt:check, its review starts on it.
+        assert!(is_green(&at, Some(&checked("abc123")), false));
+        assert!(
+            !is_green(&at, Some(&checked("0ff1ce")), false),
+            "checked another commit"
+        );
+        assert!(!is_green(&at, None, false), "no worktree here");
+    }
+
+    #[test]
     fn gives_a_green_draft_without_boxes_to_the_user() {
         let boxes = [];
         assert_eq!(reasons(&draft(), &boxes, None), ["draft: mark ready → you"]);
@@ -531,7 +749,7 @@ mod tests {
             is_hard: true,
         }];
         let done: HashSet<i64> = [248].into();
-        let all: Vec<String> = row_blockers_of(&found, &[], 4, &after, &[], Some(&tree), &done)
+        let all: Vec<String> = row_blockers_of(&found, &[], 4, &after, &[], Some(&tree), &done, true)
             .into_iter()
             .map(|reason| format!("{} → {}", reason.text, reason.who))
             .collect();
@@ -562,7 +780,7 @@ mod tests {
             conflicts: Some(vec!["README.md".into(), "src/a/view.rs".into(), "b.rs".into()]),
             ..Default::default()
         };
-        let all = row_blockers_of(&found, &[], 3, &[], &[], Some(&tree), &HashSet::new());
+        let all = row_blockers_of(&found, &[], 3, &[], &[], Some(&tree), &HashSet::new(), true);
         assert_eq!(
             all[0].text,
             "conflicts with develop (README.md, view.rs +1 · 3 behind): merge develop in"

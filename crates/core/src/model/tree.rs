@@ -191,11 +191,21 @@ pub fn tokens(count: u64) -> String {
     }
 }
 
-/// `✓ tested 1a2b3c4d` / `untested: 2 commits` / `checking…` / `✗ tests failed: …` (check.mjs `checkFact`).
+/// `✓ tested 1a2b3c4d` (`· no test: <reason>`, #316) / `untested: 2 commits` / `checking…` /
+/// `✗ tests failed: …` / `✗ fix without test` (check.mjs `checkFact`).
 pub fn check_fact(checked: &CheckState) -> Option<Span> {
     Some(match checked {
-        CheckState::Tested { sha, .. } => Span::new(format!("✓ tested {}", sha.get(..8).unwrap_or(sha)), Paint::Green),
+        CheckState::Tested { sha, no_test, .. } => Span::new(
+            match no_test {
+                Some(reason) => format!("✓ tested {} · no test: {reason}", sha.get(..8).unwrap_or(sha)),
+                None => format!("✓ tested {}", sha.get(..8).unwrap_or(sha)),
+            },
+            Paint::Green,
+        ),
         CheckState::Checking { .. } => Span::new("checking…", Paint::Cyan),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => Span::new(format!("✗ {refused}"), Paint::Red),
         CheckState::Failed { failures, .. } => {
             let is_test = failures.iter().any(|failure| failure.task == "test");
             let what = failures_text(failures);
@@ -917,7 +927,7 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 _ => lifecycle,
             };
             let go = match (tree, found) {
-                (Some(tree), _) => Go::FocusSpace(tree.dir.clone()),
+                (Some(tree), _) => Go::Detail(tree.dir.clone()),
                 (None, Some(found)) => Go::Show {
                     url: found.url.clone(),
                     dir: None,

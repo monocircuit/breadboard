@@ -66,8 +66,6 @@ pub struct Auto {
     waits_in_flight: HashSet<PathBuf>,
     /// Per worktree, since when each awaited MR has had conflicts.
     wait_conflicts: Arc<Mutex<HashMap<PathBuf, HashMap<i64, i64>>>>,
-    /// The panes whose herdr record of a headless session was released, with it (#386).
-    released: HashSet<(String, String)>,
     /// Which arming of a removal this is, by worktree.
     arms: HashMap<PathBuf, u64>,
     seq: u64,
@@ -158,6 +156,8 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             }
         }
         if is_remote {
+            // An MR whose bar is full and pipeline green gets its review (#374).
+            super::review::after_read(app, &local, &model, remote);
             deliver_waits(app, &local, remote);
             is_changed |= merge_into_batch(app, &model, remote);
         }
@@ -199,27 +199,6 @@ fn end_herdr_resumes(app: &mut Overview, local: &OrchestrationLocal) {
             ))
         })
         .collect();
-    // herdr's record of a headless session on a pane that doesn't run it (one
-    // the daemon's pane id put there before #386, the overview's tab too): a
-    // restart would resume it there. Released once per pane and session.
-    for pane in breadboard_core::herdr::all_panes() {
-        let Some(session) = pane.session.clone().filter(|session| headless.contains_key(session)) else {
-            continue;
-        };
-        if pane.agent.is_some() || !app.actor.auto.released.insert((pane.id.clone(), session.clone())) {
-            continue;
-        }
-        let dir = headless[&session].clone();
-        let main = main.clone();
-        app.actor.queue(move || {
-            let did = super::end_held::release_record(&main, &dir, &pane.id);
-            Some(Box::new(move |app: &mut Overview| {
-                if let Some(did) = did {
-                    app.actor.log(Paint::Dim, did);
-                }
-            }))
-        });
-    }
     for (pid, id) in breadboard_core::conversations::unnamed_resumes() {
         let Some(dir) = headless.get(&id).cloned() else {
             continue;
@@ -276,6 +255,7 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
             Some(plan.work.clone()),
             Some(plan.merge.clone()),
             Some(why),
+            None,
         )
     });
     match written {
@@ -298,10 +278,14 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
 }
 
 /// A task's MR into its batch (or an epic of before) merges by itself once
-/// its turn offers it (#350, #411; `[batch] auto_merge`): the second click's
+/// its turn offers it (#350, #411; the setting `auto-merge into batch`, #415): the second click's
 /// merge, one at a time, never twice at one head; into develop or main it
 /// stays the user's two clicks.
 fn merge_into_batch(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
+    // The setting `auto-merge into batch` (#415): off, the merge waits for the user's click.
+    if !breadboard_core::settings::of(&app.actor.main, &model.name).auto_merge_into_batch {
+        return false;
+    }
     if app
         .actor
         .merges
@@ -324,11 +308,10 @@ fn merge_into_batch(app: &mut Overview, model: &OrchestrationModel, remote: &Rem
             .and_then(|mr| mr.sha.clone())
     };
     let tried = &app.actor.auto.auto_tried;
-    let main = &app.actor.main;
     let found = auto_merge_of(
         &items,
         |branch| remote.of(branch).mr.as_ref().map(|mr| mr.target().to_string()),
-        |target| breadboard_core::batch::is_auto_target(main, target),
+        breadboard_core::batch::is_auto_target,
         |iid| tried.get(&iid).is_some_and(|sha| Some(sha) == head_of(iid).as_ref()),
     );
     let Some((Go::Merge { branch, action }, Some(offer))) = found.map(|item| (item.go.clone(), item.merge.clone()))
@@ -502,7 +485,8 @@ fn about_of(key: &str) -> String {
 fn fallback_text(go: &Go) -> &'static str {
     match go {
         Go::Show { .. } => "opened the page instead",
-        Go::FocusAgent(_) | Go::FocusSpace(_) => "its tab in front instead",
+        Go::FocusAgent(_) => "its tab in front instead",
+        Go::Detail(_) => "shown beside instead",
         _ => "",
     }
 }
@@ -629,7 +613,8 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
-    let limit = breadboard_core::config::of_main(&app.actor.main).config.agents.limit();
+    // The setting `agent fresh start` (#415), by default `[agents] fresh_above`.
+    let limit = breadboard_core::settings::of(&app.actor.main, &model.name).agent_limit;
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {

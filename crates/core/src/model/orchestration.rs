@@ -9,7 +9,7 @@ use super::boxes::{BoxSection, all_sections_of, open_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
-use super::merge::{blockers_of, to_check_of};
+use super::merge::{blockers_of, needs_pipeline, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, files_text, progress_of, row_blockers_of};
@@ -103,10 +103,17 @@ pub struct OrchestrationLocal {
     pub orchestrator_share: Option<f64>,
     /// The last lines of its journal (#382), oldest first.
     pub journal: Vec<String>,
+    /// Its settings as they hold now (#415), the panel's rows.
+    pub settings: Vec<crate::settings::Row>,
+    /// `[merge] needs_pipeline = false` (#443, temporary): an MR into the
+    /// default branch merges on wt:check at its pushed head, no pipeline of its own.
+    pub merges_on_check: bool,
     /// When the orchestrator gets a fresh start (`[orchestrator]`).
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
     pub spent: crate::spend::Spent,
+    /// The runs paused (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
 }
 
 /// What the writing side keeps between frames: the removals, starts and
@@ -198,6 +205,8 @@ pub struct MrFacts {
     pub issue: Option<i64>,
     /// What its issue's agents spent on it (#372), None before they answered.
     pub spent: Option<crate::spend::Spend>,
+    /// Its review at its head (#374): `reviewed ✓`, `review: 2 findings`; a click opens the MR, its comment there.
+    pub review: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -219,6 +228,8 @@ pub struct OrchestrationModel {
     /// Its auto mode (#384): a checker answers its tries; the model that does.
     pub is_auto: bool,
     pub checker: String,
+    /// Its settings (#415): what the settings panel shows.
+    pub settings: Vec<crate::settings::Row>,
     pub chat: Option<Chat>,
     /// No issues recorded: the view says how to start one, nothing else.
     pub is_empty: bool,
@@ -248,6 +259,8 @@ pub struct OrchestrationModel {
     pub spent: Option<String>,
     /// Why no headless run starts (#372): `daily limit reached: $41 of $40`.
     pub held: Option<String>,
+    /// The user paused every headless run (#397): `agents paused since 13:05 · 3 lines waiting`.
+    pub paused: Option<String>,
     /// The Claude usage limit holding the headless runs (#393): `usage limit until 23:30`.
     pub usage: Option<String>,
     /// The CI job watcher's line under the band (#379): `CI: check:x holds pipelines up · …`.
@@ -351,7 +364,13 @@ fn hold_while_develop_is_red(
 /// on develop gets it out, not its agent.
 fn push_blocked_text(tree: &super::Tree, develop: Option<&crate::gitlab::DevelopPipeline>) -> Option<String> {
     develop.filter(|pipeline| pipeline.status == "failed")?;
-    let crate::check::CheckState::Failed { failures, .. } = &tree.checked else {
+    // A fix refused for its missing test (#316) is its agent's to fix, not develop's.
+    let crate::check::CheckState::Failed {
+        failures,
+        refused: None,
+        ..
+    } = &tree.checked
+    else {
         return None;
     };
     if tree.unpushed == 0 {
@@ -391,7 +410,13 @@ fn hold_push_while_develop_is_red(
 }
 
 /// The turns of the open MRs, from their row's reasons.
-fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done: &HashSet<i64>) -> Turns {
+fn turns_of(
+    issues: &[Entry],
+    remote: Option<&Remote>,
+    order: &MergeOrder,
+    done: &HashSet<i64>,
+    merges_on_check: bool,
+) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
     let after_of: HashMap<i64, &[super::merge_order::After]> =
         order.open.iter().map(|item| (item.number, &item.after[..])).collect();
@@ -411,6 +436,7 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
             &part.jobs,
             tree,
             done,
+            needs_pipeline(mr, merges_on_check),
         );
         // Only a merge onto develop waits for it: a task into its epic does not.
         let develop = remote
@@ -424,7 +450,7 @@ fn turns_of(issues: &[Entry], remote: Option<&Remote>, order: &MergeOrder, done:
 }
 
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool) -> MergeOffer {
+fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, merges_on_check: bool) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
@@ -436,7 +462,19 @@ fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool
         url: mr.url.clone(),
         is_draft: mr.is_draft,
         can_mark_ready,
-        blockers: blockers_of(Some(mr), boxes, can_mark_ready, actions, answered),
+        blockers: {
+            let needs_pipeline = needs_pipeline(mr, merges_on_check);
+            let mut blockers = blockers_of(Some(mr), boxes, can_mark_ready, actions, answered, needs_pipeline);
+            // Its review (#374) holds the two clicks until it read the head.
+            let tree = issue.tree.as_ref();
+            if let Some(hold) = tree
+                .filter(|_| super::mr_blockers::is_green(mr, tree, needs_pipeline))
+                .and_then(|tree| super::mr_blockers::review_hold_of(tree, mr))
+            {
+                blockers.push(hold.text);
+            }
+            blockers
+        },
         to_check: to_check_of(boxes, actions),
     }
 }
@@ -528,7 +566,7 @@ fn actions_of(
         if let Some(issue) = issue
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true));
+            item.merge = Some(merge_offer(mr, of(remote, issue), issue, true, local.merges_on_check));
         }
         if is_try(action) {
             item.text = format!("{}  {}", action.text, try_spot(action, None));
@@ -563,7 +601,7 @@ fn actions_of(
                     id: action.id,
                 }
             } else {
-                Go::FocusSpace(tree.dir.clone())
+                Go::Detail(tree.dir.clone())
             };
             let mut item = Item {
                 key: format!("{}#{}", file.display(), action.id),
@@ -588,7 +626,7 @@ fn actions_of(
             if action.kind == "merge"
                 && let Some(mr) = mr
             {
-                item.merge = Some(merge_offer(mr, part, issue, true));
+                item.merge = Some(merge_offer(mr, part, issue, true, local.merges_on_check));
             }
             items.push(item);
         }
@@ -608,6 +646,7 @@ fn actions_of(
             develop: remote.and_then(|remote| remote.develop.as_ref()),
             removals: Some(&state.removals),
             pipeline_tries: Some(&state.pipeline_tries),
+            fixes: fixes_of(local),
             now,
         },
     );
@@ -628,11 +667,18 @@ fn actions_of(
         if let (Some(issue), Some(offer)) = (issue, item.merge.take())
             && let Some(mr) = &of(remote, issue).mr
         {
-            item.merge = Some(merge_offer(mr, of(remote, issue), issue, offer.can_mark_ready));
+            item.merge = Some(merge_offer(
+                mr,
+                of(remote, issue),
+                issue,
+                offer.can_mark_ready,
+                local.merges_on_check,
+            ));
         }
         items.push(item);
     }
     items.extend(workers.actions.iter().cloned());
+    items.extend(super::milestone::milestone_of(local, remote));
     // The end: once all is merged and no worktree is left.
     let has_next_merge = next_merge(issues, remote, order, turns).is_some();
     if remote.is_some() && local.trees.is_empty() && !issues.iter().any(|issue| issue.is_queued) && !has_next_merge {
@@ -741,7 +787,16 @@ fn merge_requests_of(
                 .number
                 .and_then(|number| after_of.get(&number).copied())
                 .unwrap_or(&[]);
-            row_blockers_of(mr, boxes, behind, after, &part.jobs, tree, done)
+            row_blockers_of(
+                mr,
+                boxes,
+                behind,
+                after,
+                &part.jobs,
+                tree,
+                done,
+                needs_pipeline(mr, local.merges_on_check),
+            )
         };
         let status = if is_merged && mr.state == "closed" {
             // Closed without a merge: never `merged` (Node said so for both).
@@ -791,23 +846,57 @@ fn merge_requests_of(
             reason.text = place.text();
             reason.who = "breadboard".into();
         }
+        let mut pipeline = match (&ci, hung) {
+            (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
+            // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
+            // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
+            // Quiet while it packs its cache (#424): working, dim and no alarm.
+            (None, Some(hung)) => Span {
+                text: format!(
+                    "⧗ {} {}{}",
+                    hung.job,
+                    crate::ci_watch::minutes(hung.elapsed),
+                    if hung.is_caching() { " caching" } else { "" }
+                ),
+                paint: if hung.is_caching() {
+                    super::Paint::Dim
+                } else {
+                    super::Paint::Red
+                },
+                url: hung
+                    .url
+                    .clone()
+                    .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
+            },
+            // No pipeline of its own needed (#443): none, or a push's skipped one, says so.
+            (None, None)
+                if !needs_pipeline(mr, local.merges_on_check)
+                    && mr.pipeline_status().is_none_or(|status| status == "skipped") =>
+            {
+                Span {
+                    url: mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone()),
+                    ..Span::dim(super::merge::ON_WT_CHECK)
+                }
+            }
+            (None, None) => pipeline_mark(mr.pipeline.as_ref()),
+        };
+        // Its failed pipelines (#371): `CI fix 2/3` from the first fix run of its agent
+        // until one passes, what the queue does about this one (`retrying check:vita`).
+        if let Some(fix) = queue.filter(|_| !is_merged).and_then(|queue| queue.fixes.get(&mr.iid)) {
+            let is_this = mr.pipeline.as_ref().is_some_and(|pipeline| pipeline.id == fix.pipeline);
+            let mark = if is_this {
+                Some(fix.mark_text())
+            } else {
+                fix.count_text()
+            };
+            if let Some(mark) = mark {
+                pipeline.text = format!("{} · {mark}", pipeline.text);
+            }
+        }
         MrFacts {
             iid: mr.iid,
             url: mr.url.clone(),
-            pipeline: match (&ci, hung) {
-                (Some(place), _) => ci_mark(place, mr.pipeline.as_ref()),
-                // A job of its pipeline far past its median (#379): the mark says which, a click opens it.
-                // ⧗, not ⏳: narrow in every terminal, a wide one leaves a stale cell where it is drawn narrow (#404).
-                (None, Some(hung)) => Span {
-                    text: format!("⧗ {} {}", hung.job, crate::ci_watch::minutes(hung.elapsed)),
-                    paint: super::Paint::Red,
-                    url: hung
-                        .url
-                        .clone()
-                        .or_else(|| mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone())),
-                },
-                (None, None) => pipeline_mark(mr.pipeline.as_ref()),
-            },
+            pipeline,
             ci,
             title: mr.title.clone(),
             branch: issue.branch.clone(),
@@ -857,6 +946,11 @@ fn merge_requests_of(
                 .and_then(|number| local.spent.by_issue.get(&number))
                 .filter(|spent| !spent.is_empty())
                 .copied(),
+            review: tree
+                .filter(|_| !is_merged)
+                .zip(mr.sha.as_deref())
+                .and_then(|(tree, sha)| crate::review::review_at(&tree.reviews, sha))
+                .map(|review| review_span(review, &mr.url)),
         }
     };
     let open: Vec<MrRow> = graph_of(&order.open)
@@ -1017,11 +1111,45 @@ fn ready_holds_of(issue: &Entry, mr: Option<&Mr>) -> Option<String> {
         };
         return Some(format!("try #{} {word}", open.id));
     }
-    super::change::is_change_open(Some(tree), mr).then(|| "change requested".to_string())
+    if super::change::is_change_open(Some(tree), mr) {
+        return Some("change requested".to_string());
+    }
+    // Serious findings of its review (#374) send it back to its agent: a draft until the next head.
+    mr.and_then(|mr| super::mr_blockers::review_hold_of(tree, mr))
+        .filter(|hold| hold.who == "agent")
+        .map(|hold| hold.text)
+}
+
+/// An MR row's review: green passed, red serious findings, yellow small or running, dim skipped or failed.
+fn review_span(review: &crate::review::Review, url: &str) -> Span {
+    use crate::review::State;
+    let paint = match review.state {
+        State::Running => super::Paint::Yellow,
+        State::Skipped => super::Paint::Dim,
+        State::Done if review.failed.is_some() => super::Paint::Dim,
+        State::Done if review.serious() > 0 => super::Paint::Red,
+        State::Done if !review.findings.is_empty() => super::Paint::Yellow,
+        State::Done => super::Paint::Green,
+    };
+    Span {
+        text: crate::review::row_text(review),
+        paint,
+        url: Some(url.to_string()),
+    }
 }
 
 /// The mark of an MR waiting in the CI queue: its place, a click runs it
 /// now; the page of its last pipeline stays a click away on the MR's.
+/// The failed pipelines the CI queue looks after (#371): None without a
+/// queue, or a try's (dry) one, which retries nothing.
+fn fixes_of(local: &OrchestrationLocal) -> Option<&std::collections::BTreeMap<i64, crate::ci_fix::Fix>> {
+    local
+        .ci
+        .as_ref()
+        .filter(|queue| !queue.is_dry)
+        .map(|queue| &queue.fixes)
+}
+
 fn ci_mark(place: &crate::ci::Place, last: Option<&crate::gitlab::Pipeline>) -> Span {
     Span {
         text: format!("{} ▸", place.text()),
@@ -1122,6 +1250,7 @@ pub fn orchestration_of(
         label,
         chat: local.chat.clone(),
         is_auto: record.is_some_and(|record| record.is_auto),
+        settings: local.settings.clone(),
         checker: crate::config::here().config.tries.checker.clone(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
@@ -1139,6 +1268,7 @@ pub fn orchestration_of(
         ci_load: local.ci.as_ref().map(crate::ci::Queue::load_text),
         spent: crate::spend::band_text(&local.spent),
         held: local.spent.held.clone(),
+        paused: local.paused.clone(),
         usage: local.spent.usage.clone(),
         ci_watch: local.ci_watch.as_ref().and_then(crate::ci_watch::Report::line),
         ci_published: None,
@@ -1181,6 +1311,7 @@ pub fn orchestration_of(
                     behind: tree.map(|tree| tree.behind).unwrap_or(0),
                     actions: tree.map(|tree| &tree.actions[..]).unwrap_or(&[]),
                     answered: tree.map(|tree| &tree.answered[..]).unwrap_or(&[]),
+                    needs_pipeline: needs_pipeline(part.mr.as_ref().expect("an MR"), local.merges_on_check),
                 }
             })
             .collect();
@@ -1193,9 +1324,12 @@ pub fn orchestration_of(
     // Conflicts and failed pipelines reach their agents by themselves, from the one live overview.
     if let Some(remote) = remote.filter(|_| state.is_deliverer) {
         model.tells = conflicts_of(&issues, remote);
-        model
-            .tells
-            .extend(failed_pipelines_of(&issues, remote, remote.develop.as_ref()));
+        model.tells.extend(failed_pipelines_of(
+            &issues,
+            remote,
+            remote.develop.as_ref(),
+            fixes_of(local),
+        ));
     }
     let free_workers: Vec<Worker> = local.free.iter().map(|(worker, _)| worker.clone()).collect();
     let announced = announced_of(
@@ -1248,7 +1382,7 @@ pub fn orchestration_of(
             }
         }
     }
-    let turns = turns_of(&issues, remote, &order, &done);
+    let turns = turns_of(&issues, remote, &order, &done, local.merges_on_check);
     model.turn_records = turn_records_of(&issues, remote, &turns);
     model.actions = section("ACTIONS", || {
         actions_of(local, &issues, remote, &order, &turns, &workers, state, now)
@@ -1400,6 +1534,7 @@ mod tests {
                     work: vec![2, 1],
                     merge: vec![1, 2],
                     why: Some("#1 first".into()),
+                    ..Plan::default()
                 }),
                 ..Default::default()
             }),
@@ -1655,6 +1790,7 @@ mod tests {
                     task: "test:rs".into(),
                     tests: vec!["tui::overview::work::tests::renders_the_row".into()],
                 }],
+                refused: None,
             },
             ..Default::default()
         };
@@ -1778,6 +1914,50 @@ mod tests {
     }
 
     #[test]
+    fn the_row_counts_the_fix_runs_of_a_failed_pipeline() {
+        // #371: `CI fix 2/3` until a pipeline passes, what the queue does about this one.
+        use crate::ci::Queue;
+        use crate::ci_fix::{Fix, Stage};
+        let mut remote = remote();
+        let mr = remote.of.get_mut("feature/1-one").unwrap().mr.as_mut().unwrap();
+        let pipeline = mr.pipeline.as_mut().unwrap();
+        pipeline.status = "failed".into();
+        let id = pipeline.id;
+        let row_of = |fix: Fix| {
+            let mut local = local();
+            let mut queue = Queue {
+                at: NOW,
+                ..Default::default()
+            };
+            queue.fixes.insert(11, fix);
+            local.ci = Some(queue);
+            let model = orchestration_of(&local, Some(&remote), &mut ViewState::default(), NOW);
+            let mrs = model.merge_requests.unwrap();
+            let row = mrs
+                .open
+                .iter()
+                .filter_map(|row| row.mr.as_ref())
+                .find(|mr| mr.iid == 11)
+                .unwrap();
+            row.pipeline.text.clone()
+        };
+        let fix = |stage: Stage, pipeline: i64| Fix {
+            pipeline,
+            stage,
+            jobs: vec!["check:vita".into()],
+            attempt: 2,
+            max: 3,
+        };
+        assert_eq!(row_of(fix(Stage::Fix, id)), "✗ failed · CI fix 2/3");
+        assert_eq!(
+            row_of(fix(Stage::Retrying, id)),
+            "✗ failed · CI fix 2/3 · retrying check:vita"
+        );
+        // The verdict of an older pipeline: its count only.
+        assert_eq!(row_of(fix(Stage::Bound, id + 1)), "✗ failed · CI fix 2/3");
+    }
+
+    #[test]
     fn a_closed_mr_says_closed_not_merged() {
         let mut remote = remote();
         let part = remote.of.get_mut("feature/3-three").unwrap();
@@ -1815,6 +1995,7 @@ mod tests {
                 work: vec![2, 1],
                 merge: vec![1, 2],
                 why: Some("#1 first".into()),
+                ..Plan::default()
             })
         );
         let actions = model.actions.unwrap();

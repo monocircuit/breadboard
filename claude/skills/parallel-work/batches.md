@@ -55,8 +55,8 @@ as its base at its next push, its MR retargeted, with no rebase: the shipped
 batch is in `{{branch}}` and the next one starts from there.
 
 An orchestration's checkout `.claude/orchestrations/<name>/` stands detached
-on its product's batch and has its setup (`[[worktrees.setup]]`). breadboard.toml's
-`[batch] batching = false` switches batches off: tasks go into `{{branch}}` as before.
+on its product's batch and has its setup (`[[worktrees.setup]]`). The setting `batching` (#415, the overview's settings panel; its default
+`[settings] batching` in breadboard.toml) off switches batches off: tasks go into `{{branch}}` as before.
 
 ## Merges
 
@@ -71,8 +71,8 @@ MR (every box, tries `looks good`, pipeline green on its current head, no
 conflicts, its turn), the overview marks a draft ready and merges it, one at
 a time, never twice for the same head. A posted `wt:action merge` does no
 harm (it is marked done with the merge). The overview marks a merged task
-`in batch` until its batch reaches `{{branch}}`. breadboard.toml's
-`[batch] auto_merge = false` leaves that merge to the user's click too.
+`in batch` until its batch reaches `{{branch}}`. The setting
+`auto-merge into batch` off leaves that merge to the user's click too.
 
 A task MR into a batch runs only the fast checks (lint and unit tests of the
 packages it changes); the full pipeline (gauntlet, integration tests, image,

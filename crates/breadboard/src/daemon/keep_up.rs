@@ -99,11 +99,11 @@ fn keep_epics_up(main: &Path, store: &Path, glab: &str) {
 /// conflict with develop said once per pair of heads.
 fn keep_batches_up(main: &Path, store: &Path) {
     let loaded = breadboard_core::config::of(main);
-    if !loaded.config.batch.batching {
-        return;
-    }
     let develop = loaded.branch.clone();
     for product in loaded.config.products.keys() {
+        if !breadboard_core::settings::of_product(main, Some(product)).batching {
+            continue;
+        }
         let Some(mut current) = batch::current_of(main, product) else {
             // The first batch opens when a task of the product needs it.
             continue;
@@ -148,7 +148,7 @@ fn keep_batches_up(main: &Path, store: &Path) {
 /// milestone once, `seen` the last one done. The newest milestone's iid,
 /// `seen` when there is none or GitLab doesn't answer.
 fn close_milestone(main: &Path, epic: &str, glab: &str, seen: i64) -> i64 {
-    use super::ci::{glab_get, glab_put};
+    use super::glab::{glab_get, glab_put};
     let endpoint = format!(
         "projects/:fullpath/merge_requests?state=merged&source_branch={}&target_branch=develop&order_by=merged_at&sort=desc&per_page=1",
         epic.replace('/', "%2F")

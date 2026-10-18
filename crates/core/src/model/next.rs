@@ -244,6 +244,7 @@ pub fn updated_plan(plan: Option<&Plan>, states: &HashMap<i64, IssueState>, plan
                 String::new()
             },
         ),
+        milestones: plan.map(|plan| plan.milestones.clone()).unwrap_or_default(),
     }
 }
 
@@ -355,6 +356,7 @@ mod tests {
             work: vec![273, 278],
             merge: vec![273, 278],
             why: Some("#273 first: #278 builds on its NEXT".into()),
+            ..Plan::default()
         }
     }
 
@@ -367,6 +369,7 @@ mod tests {
             work: vec![262, 299],
             merge: vec![256, 273],
             why: Some("#256 then the overall changelog; #262 touches workers".into()),
+            ..Plan::default()
         };
         assert_eq!(
             stale_of(Some(&stale), &states(), true),
@@ -401,13 +404,15 @@ mod tests {
             work: vec![262, 273, 299],
             merge: vec![262],
             why: Some("#262 first".into()),
+            ..Plan::default()
         };
         assert_eq!(
             updated_plan(Some(&old), &states(), &[256, 278, 273, 262]),
             Plan {
                 work: vec![273],
                 merge: vec![278, 273],
-                why: Some(String::new())
+                why: Some(String::new()),
+                ..Plan::default()
             }
         );
         assert_eq!(updated_plan(Some(&plan()), &states(), &[]).why, plan().why);
