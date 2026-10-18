@@ -673,6 +673,7 @@ mod tests {
             checked: crate::check::CheckState::Tested {
                 sha: sha.into(),
                 packages: vec![],
+                no_test: None,
             },
             ..Default::default()
         };
