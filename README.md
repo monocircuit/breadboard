@@ -118,6 +118,19 @@ it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
 its own (~2 GB): use the scripts. The launcher removes such a `target/` once
 (keeping the binary), unless a cargo holds it.
 
+**Install [sccache](https://github.com/mozilla/sccache)** once per machine
+(#446): `pacman -S sccache`, `brew install sccache`, `apt install sccache` or
+`cargo install --locked sccache`. `cargo.sh` makes it rustc's wrapper (cc-rs
+uses it for the C code too), so a dependency is compiled once per version and
+feature set for every `target/`: the store's, and one of your own for an
+uncommitted binary (`CARGO_TARGET_DIR=<dir> sh herdr/cargo.sh build
+--release`), which then compiles only the workspace's crates.
+`sccache --show-stats` shows the hits. `cargo.sh` hands cargo the target and
+the jobs as `--config`, not as `CARGO_*` variables: sccache counts those into
+every crate's key, so another target would miss them all. Without sccache,
+cargo compiles as before, after one line that says so; a `RUSTC_WRAPPER` you
+set (empty: none) wins. CI's cargo jobs don't use it.
+
 **A stored copy is what its key says** (#339). cargo's hash of a workspace
 crate leaves out where the workspace is, and it judges freshness by mtimes:
 in a shared `target/`, a worktree's older files count as built after another

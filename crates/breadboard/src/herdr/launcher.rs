@@ -36,20 +36,33 @@ mod tests {
 
     /// A cargo that "builds" a binary saying `<CARGO_SAYS or ran> <args>`
     /// (with `CARGO_SAYS_SOURCE`: what the checkout's crates/core/lib.rs
-    /// says) into `CARGO_TARGET_DIR` (else the package's target/), carrying
+    /// says) into the target/ cargo.sh hands it (`--config build.target-dir`,
+    /// else `CARGO_TARGET_DIR`, else the package's), carrying
     /// `BREADBOARD_SOURCE_KEY` as the real build does; each call logged with
-    /// its jobs and that dir, a `clean` in `<log>.clean` only. One that fails
+    /// its jobs and that dir, a `clean` in `<log>.clean` only, and with
+    /// `CARGO_ENV_LOG` (a file) what its environment holds for rustc. One that fails
     /// with `CARGO_FAIL` set, edits a source while it builds with
     /// `CARGO_EDITS` (a file), takes a second with `CARGO_SLOW`, copies what
     /// the store's lock says of it into `<log>.lock` with `CARGO_SHOWS_LOCK`
     /// (the lock). Only the
     /// tools the launcher has (no dirname: a short PATH).
     const CARGO: &str = r#"#!/bin/sh
+dir=$CARGO_TARGET_DIR
+jobs=$CARGO_BUILD_JOBS
+while [ "$1" = --config ]; do
+  case $2 in
+    build.target-dir=*) dir=${2#*=\"} && dir=${dir%\"} ;;
+    build.jobs=*) jobs=${2#*=} ;;
+  esac
+  shift 2
+done
+[ -n "$CARGO_ENV_LOG" ] && echo "wrapper=${RUSTC_WRAPPER-unset} target=${CARGO_TARGET_DIR-unset} jobs=${CARGO_BUILD_JOBS-unset}" >>"$CARGO_ENV_LOG"
 if [ "$1" = clean ]; then
-  echo "$* in ${CARGO_TARGET_DIR:-} from $PWD" >>"$CARGO_LOG.clean"
+  echo "$* in ${dir:-} from $PWD" >>"$CARGO_LOG.clean"
   exit 0
 fi
-echo "$* jobs=${CARGO_BUILD_JOBS:-} in ${CARGO_TARGET_DIR:-}" >>"$CARGO_LOG"
+echo "$* jobs=${jobs:-} in ${dir:-}" >>"$CARGO_LOG"
+[ "$1" = fmt ] && exit 0
 [ -n "$CARGO_FAIL" ] && exit 101
 for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
 [ -n "$CARGO_SLOW" ] && sleep 1
@@ -57,7 +70,7 @@ for arg; do case $arg in */Cargo.toml) package=${arg%/*} ;; esac; done
 says=${CARGO_SAYS:-ran}
 [ -n "$CARGO_SAYS_SOURCE" ] && says=$(cat "$package/crates/core/lib.rs")
 [ -n "$CARGO_EDITS" ] && echo edited >>"$CARGO_EDITS"
-target=${CARGO_TARGET_DIR:-$package/target}
+target=${dir:-$package/target}
 mkdir -p "$target/release"
 printf '#!/bin/sh\necho "%s $*"\n# breadboard-source-key:%s\n' "$says" "${BREADBOARD_SOURCE_KEY:-}" >"$target/release/breadboard"
 chmod +x "$target/release/breadboard"
@@ -316,6 +329,11 @@ chmod +x "$target/release/breadboard"
 
     /// `sh herdr/cargo.sh <args>` of the package at `package`, as pnpm lint:rs runs it.
     fn cargo_in(checkout: &Checkout, package: &Path, args: &[&str]) -> Output {
+        cargo_with(checkout, package, args, &[])
+    }
+
+    /// cargo_in with the variables `env` set.
+    fn cargo_with(checkout: &Checkout, package: &Path, args: &[&str], env: &[(&str, &Path)]) -> Output {
         Command::new("sh")
             .arg("herdr/cargo.sh")
             .args(args)
@@ -328,9 +346,47 @@ chmod +x "$target/release/breadboard"
             .env("HOME", &checkout.root)
             .env("CARGO_LOG", checkout.root.join("cargo.log"))
             .env("GIT_CEILING_DIRECTORIES", &checkout.root)
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    // #446: with sccache on the PATH it wraps rustc, its server started
+    // before the lock; without it one line says so and cargo runs as before.
+    // Either way the target/ and the jobs reach cargo as --config, never in
+    // the environment rustc (and so sccache's key) gets.
+    #[test]
+    fn sccache_wraps_rustc_when_there_is_one_and_one_line_says_when_not() {
+        let checkout = Checkout::new("sccache");
+        let store = checkout.root.join("repo/.git/breadboard/target");
+        let seen = checkout.root.join("env.log");
+        let without = cargo_with(&checkout, &checkout.package, &["test"], &[("CARGO_ENV_LOG", &seen)]);
+        assert!(without.status.success(), "{}", err(&without));
+        let said: Vec<_> = err(&without).lines().filter(|line| line.contains("no sccache")).map(String::from).collect();
+        assert_eq!(said.len(), 1, "{}", err(&without));
+        let env = fs::read_to_string(&seen).unwrap();
+        assert!(env.lines().all(|line| line == "wrapper= target=unset jobs=unset"), "{env}");
+
+        let sccache = checkout.bin.join("sccache");
+        let started = checkout.root.join("started");
+        fs::write(&sccache, format!("#!/bin/sh\necho \"$*\" >>{}\n", started.display())).unwrap();
+        fs::set_permissions(&sccache, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_file(&seen).unwrap();
+        let with = cargo_with(&checkout, &checkout.package, &["test"], &[("CARGO_ENV_LOG", &seen)]);
+        assert!(with.status.success(), "{}", err(&with));
+        assert!(!err(&with).contains("no sccache"), "{}", err(&with));
+        let env = fs::read_to_string(&seen).unwrap();
+        let wrapped = format!("wrapper={} target=unset jobs=unset", sccache.display());
+        assert!(env.lines().all(|line| line == wrapped), "{env}");
+        assert_eq!(fs::read_to_string(&started).unwrap(), "--start-server\n");
+        let calls = fs::read_to_string(checkout.root.join("cargo.log")).unwrap();
+        assert!(calls.lines().all(|call| call.ends_with(&format!("in {}", store.display()))), "{calls}");
+
+        // fmt compiles nothing: no wrapper, no line.
+        let fmt = cargo_with(&checkout, &checkout.package, &["fmt", "--check"], &[]);
+        assert!(fmt.status.success(), "{}", err(&fmt));
+        assert!(!err(&fmt).contains("sccache"), "{}", err(&fmt));
     }
 
     // #336: clippy and test of every worktree compile in the store's
