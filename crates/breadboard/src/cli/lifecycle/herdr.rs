@@ -353,21 +353,26 @@ pub fn is_idle(pane: &str) -> bool {
     })
 }
 
-/// The command lines of what runs in the foreground of `pane` (herdr's
-/// `process-info`), empty when herdr says none.
-pub fn foreground_commands(pane: &str) -> Vec<String> {
-    call(&["pane", "process-info", "--pane", pane])
-        .and_then(|result| {
-            result
-                .get("process_info")?
-                .get("foreground_processes")?
-                .as_array()
-                .cloned()
-        })
-        .unwrap_or_default()
-        .iter()
+/// What runs in the foreground of `pane`, from one `process-info`: whether
+/// its shell idles there, and the command lines of the processes in front.
+pub fn foreground_of(pane: &str) -> (bool, Vec<String>) {
+    let Some(info) =
+        call(&["pane", "process-info", "--pane", pane]).and_then(|result| result.get("process_info").cloned())
+    else {
+        return (false, Vec::new());
+    };
+    let shell = info.get("shell_pid").and_then(Value::as_i64);
+    let is_idle = shell.is_some_and(|shell| {
+        shell != 0 && info.get("foreground_process_group_id").and_then(Value::as_i64) == Some(shell)
+    });
+    let commands = info
+        .get("foreground_processes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(|process| process.get("cmdline")?.as_str().map(String::from))
-        .collect()
+        .collect();
+    (is_idle, commands)
 }
 
 /// The pids from `pid` up to init, from Linux's /proc; only `pid` without it.

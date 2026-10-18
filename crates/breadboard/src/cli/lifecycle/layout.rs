@@ -295,11 +295,10 @@ fn why_kept(pane: &Value, current: Option<&Value>) -> Option<String> {
     if tabs::is_agents(pane) {
         return Some("an agent runs there".into());
     }
-    let id = s(pane, "pane_id");
-    if herdr::is_idle(id) {
+    let (is_idle, commands) = herdr::foreground_of(s(pane, "pane_id"));
+    if is_idle {
         return None;
     }
-    let commands = herdr::foreground_commands(id);
     match commands.iter().find(|command| !is_viewer(command)) {
         None if !commands.is_empty() => None,
         None => Some("something runs there".into()),
