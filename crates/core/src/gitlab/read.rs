@@ -44,6 +44,8 @@ pub struct Memory {
 
 const PIPELINE_FIELDS: &str = "id iid status path sha ref createdAt updatedAt finishedAt";
 const JOB_FIELDS: &str = "id name status webPath finishedAt";
+/// The open branches' MRs per page: each brings its pipeline's jobs, 100 cost more than GitLab allows (#454).
+const MRS_PAGE: usize = 50;
 
 fn mr_fields() -> String {
     format!(
@@ -74,30 +76,19 @@ fn later_deploys_query() -> String {
 /// The issues blocking each of `$iids`.
 const LINKS_QUERY: &str = "query($project: ID!, $iids: [String!]) { project(fullPath: $project) { issues(iids: $iids, state: all, first: 100) { nodes { iid blockedByIssues { nodes { iid } } } } } }";
 
-/// develop, and where there are any the MRs of the open branches, the
-/// issues, the awaited MRs. GraphQL refuses a variable no field uses: each
-/// declared with its field.
-fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool, has_epic: bool) -> String {
+/// develop, and where there are any the issues, the awaited MRs, the epic's
+/// pipelines. GraphQL refuses a variable no field uses: each declared with
+/// its field. The MRs are `mrs_query`'s: together they cost more than GitLab
+/// allows one query (#454).
+fn orchestration_query(has_issues: bool, has_awaited: bool, has_epic: bool) -> String {
     let mut decls = vec!["$project: ID!"];
     let mut parts = vec![format!(
         "develop: pipelines(ref: \"develop\", first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
     )];
     if has_epic {
         decls.push("$epic: String");
-        decls.push("$epics: [String!]");
         parts.push(format!(
             "epicPipelines: pipelines(ref: $epic, first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
-        ));
-        parts.push(format!(
-            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 1) {{ nodes {{ {} }} }}",
-            mr_fields()
-        ));
-    }
-    if has_branches {
-        decls.push("$branches: [String!]");
-        parts.push(format!(
-            "mrs: mergeRequests(sourceBranches: $branches, first: 100, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }}",
-            mr_fields()
         ));
     }
     if has_issues {
@@ -117,11 +108,30 @@ fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool, 
     )
 }
 
-/// The next page of the open branches' MRs.
-fn mrs_page_query() -> String {
+/// A page of the open branches' MRs (`$after` from the page before), and
+/// with `has_epic` the epic's MR into develop.
+fn mrs_query(has_branches: bool, has_epic: bool) -> String {
+    let mut decls = vec!["$project: ID!"];
+    let mut parts = Vec::new();
+    if has_epic {
+        decls.push("$epics: [String!]");
+        parts.push(format!(
+            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 1) {{ nodes {{ {} }} }}",
+            mr_fields()
+        ));
+    }
+    if has_branches {
+        decls.push("$branches: [String!]");
+        decls.push("$after: String");
+        parts.push(format!(
+            "mrs: mergeRequests(sourceBranches: $branches, first: {MRS_PAGE}, after: $after, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }}",
+            mr_fields()
+        ));
+    }
     format!(
-        "query($project: ID!, $branches: [String!], $after: String) {{ project(fullPath: $project) {{ mrs: mergeRequests(sourceBranches: $branches, first: 100, after: $after, sort: UPDATED_DESC) {{ nodes {{ {} }} pageInfo {{ hasNextPage endCursor }} }} }} }}",
-        mr_fields()
+        "query({}) {{ project(fullPath: $project) {{ {} }} }}",
+        decls.join(", "),
+        parts.join(" ")
     )
 }
 
@@ -166,8 +176,8 @@ pub fn queries() -> Vec<(&'static str, String)> {
         ("deploy", deploy_query()),
         ("later deploys", later_deploys_query()),
         ("links", LINKS_QUERY.into()),
-        ("orchestration", orchestration_query(true, true, true, true)),
-        ("mrs page", mrs_page_query()),
+        ("orchestration", orchestration_query(true, true, true)),
+        ("mrs", mrs_query(true, true)),
         ("issues page", ISSUES_PAGE_QUERY.into()),
         ("worktree", worktree_query(true, true)),
         ("everything", EVERYTHING_QUERY.into()),
@@ -660,44 +670,53 @@ pub async fn read_orchestration(
         .filter(|iid| cache.raw("states", &iid.to_string()).is_none())
         .collect();
 
-    // One request: the MRs of the open branches, the issues, the awaited, develop.
+    // Two requests at once: the issues, the awaited, develop; the MRs of the open branches and the epic.
     let first_issues: Vec<String> = open_numbers.iter().take(BATCH).map(i64::to_string).collect();
     let query = orchestration_query(
-        !open_branches.is_empty(),
         !first_issues.is_empty(),
         !awaited_unknown.is_empty(),
         ask.epic.is_some(),
     );
     let awaited_iids: Vec<String> = awaited_unknown.iter().map(i64::to_string).collect();
     let mut variables = json!({});
+    let mut mrs_variables = json!({});
     if let Some(epic) = &ask.epic {
         variables["epic"] = json!(epic);
-        variables["epics"] = json!([epic]);
+        mrs_variables["epics"] = json!([epic]);
     }
-    for (name, values) in [
-        ("branches", &open_branches),
-        ("iids", &first_issues),
-        ("awaited", &awaited_iids),
-    ] {
+    for (name, values) in [("iids", &first_issues), ("awaited", &awaited_iids)] {
         if !values.is_empty() {
             variables[name] = json!(values);
         }
     }
-    let project = match gitlab.graphql(&gitlab.on_branch(&query), variables).await {
-        Ok(project) => project,
+    if !open_branches.is_empty() {
+        mrs_variables["branches"] = json!(open_branches);
+    }
+    let has_mrs = !open_branches.is_empty() || ask.epic.is_some();
+    let query = gitlab.on_branch(&query);
+    let first_mrs = gitlab.on_branch(&mrs_query(!open_branches.is_empty(), ask.epic.is_some()));
+    let (project, mrs) = tokio::join!(gitlab.graphql(&query, variables), async {
+        if has_mrs {
+            gitlab.graphql(&first_mrs, mrs_variables).await
+        } else {
+            Ok(Value::Null)
+        }
+    });
+    let (project, mrs) = match (project, mrs) {
+        (Ok(project), Ok(mrs)) => (project, mrs),
         // GitLab answered, its GraphQL didn't (an older GitLab, a proxy): REST, Node's route.
-        Err(error) if error.status.is_some() => {
+        (Err(error), _) | (_, Err(error)) if error.status.is_some() => {
             memory.is_rest_only = true;
             return super::rest::read_orchestration(gitlab, cache, memory, ask, is_full).await;
         }
-        Err(error) => return Err(error),
+        (Err(error), _) | (_, Err(error)) => return Err(error),
     };
     memory.is_rest_only = false;
     if project.is_null() {
         return Err(GitlabError::new("GitLab knows no such project"));
     }
-    let mut mr_nodes = nodes(&project, "mrs");
-    let mut page = project
+    let mut mr_nodes = nodes(&mrs, "mrs");
+    let mut page = mrs
         .get("mrs")
         .and_then(|mrs| mrs.get("pageInfo"))
         .cloned()
@@ -705,7 +724,7 @@ pub async fn read_orchestration(
     while page.get("hasNextPage").and_then(Value::as_bool) == Some(true) {
         let more = gitlab
             .graphql(
-                &mrs_page_query(),
+                &mrs_query(true, false),
                 json!({ "branches": open_branches, "after": page.get("endCursor") }),
             )
             .await?;
@@ -831,7 +850,7 @@ pub async fn read_orchestration(
         Box::new(EpicRemote {
             branch: branch.clone(),
             pipeline: last_finished("epicPipelines").map(|pipeline| pipeline_remote(&pipeline, &web)),
-            mr: nodes(&project, "epicMrs").first().map(|node| mr_of(node).0),
+            mr: nodes(&mrs, "epicMrs").first().map(|node| mr_of(node).0),
         })
     });
     let develop = last_finished("develop").map(|pipeline| pipeline_remote(&pipeline, &web));
@@ -1127,6 +1146,20 @@ mod tests {
             panic!(
                 "{} was behind the queries: written anew, commit it (the gauntlet checks it against gitlab.com's schema)",
                 file.display()
+            );
+        }
+    }
+
+    /// GitLab refuses a query above its complexity limit, and the overview reads nothing (#454):
+    /// each stays under ALLOWED with every part it can have, room left for a field or two.
+    #[test]
+    fn every_query_costs_less_than_gitlab_allows() {
+        use super::super::complexity::{ALLOWED, complexity};
+        for (name, query) in queries() {
+            let cost = complexity(&query);
+            assert!(
+                cost <= ALLOWED,
+                "the {name} query costs {cost} (GitLab refuses above 250): split it or ask for less of it"
             );
         }
     }
