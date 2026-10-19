@@ -1,4 +1,5 @@
-//! The commands that write (worktree/commands/*.mjs). They write the files other sessions
+//! The commands that write (worktree/commands/*.mjs), and `status`, `submit`:
+//! a task's steps in one (`bb status`, #427). They write the files other sessions
 //! read (`.claude/actions.json`, the records, `.claude/wait.json`) exactly as
 //! today, and GitLab exactly where today's breadboard does (rewrite rules 5, 6).
 
@@ -13,6 +14,8 @@ mod journal;
 mod merge_base;
 pub(crate) mod mr;
 mod note;
+mod status;
+mod submit;
 mod tick;
 mod wait;
 
@@ -24,6 +27,8 @@ type Command = (&'static str, fn(&common::Argv) -> common::Outcome);
 /// The group's commands, sorted, one per line (#420: two MRs adding one each
 /// change different lines, `cli::tests` checks the order).
 const COMMANDS: &[Command] = &[
+    ("status", status::run),
+    ("submit", submit::run),
     ("wt:action", action::run),
     ("wt:batch", batch::run),
     ("wt:epic", epic::run),

@@ -61,7 +61,7 @@ repo is to it comes from its `breadboard.toml`):
 | `{{run}} wt:new <feature> --shared` | the same but on the **shared** stack of the main checkout (copies its `{{stack.env}}`), no containers — for work that never starts the app |
 {{/stack}}
 | `{{run}} wt:new <feature> --fix` | branch `fix/<feature>` instead |
-| `{{run}} wt:orchestrate <name> <issue>…` | **several issues at once**: a space `⇶ <name>` for this session, per issue a worktree (`wt:new --origin <name>`) and an agent briefed on it, run headless (`claude -p --resume`) only when something happens for it, no tab, nothing running while it waits; a permission it would ask for becomes an overview action, a click on its name opens it in a tab: WORK of its overview shows where each is, `SendMessage` carries only decisions. `--dry-run` first. When and how: [orchestrate.md](orchestrate.md) |
+| `{{run}} wt:orchestrate <name> <issue>…` | **several issues at once**: a space `⇶ <name>` for this session, per issue a worktree (`wt:new --origin <name>`) and an agent briefed on it, run headless (`claude -p --resume`) only when something happens for it, no tab, nothing running while it waits; a permission it would ask for becomes an overview action, a click on its name opens it in a tab: WORK of its overview shows where each is, `SendMessage` carries only decisions. `--dry-run` first. When and how: [orchestrate.md](orchestrate.md); an agent started by it: [agent.md](agent.md) |
 {{#stack}}
 | `{{run}} wt:stack` | inside a worktree: move it from the shared stack to an own one |
 {{/stack}}

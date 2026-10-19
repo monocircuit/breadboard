@@ -68,7 +68,10 @@ pub fn lines_of(snapshots: &[Snapshot], now: i64) -> Vec<String> {
 fn take(repo: &Repo, feature: &str, now: i64) -> Done {
     let dir = repo.dir_of(feature);
     if !dir.is_dir() {
-        return fail(format!("{feature} has no worktree ({})", dir.display()));
+        return fail(format!(
+            "{feature} has no worktree ({}): pnpm wt:list names them",
+            dir.display()
+        ));
     }
     snapshot::prune(&repo.main, now);
     match snapshot::take(&dir, feature, now) {

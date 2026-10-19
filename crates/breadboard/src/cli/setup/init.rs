@@ -4,7 +4,8 @@
 //! - the skill `parallel-work` in `.claude/skills/`, rendered from
 //!   `claude/skills/parallel-work/` with the repo's commands, branch, stack;
 //! - Claude Code's hooks in `.claude/settings.json`: `hook pre-edit` (no edit
-//!   in the main checkout) and `hook stop-answers` (the overview's answers);
+//!   in the main checkout), `hook pre-bash` (no merge, `--no-verify` or force
+//!   push by an agent, #427) and `hook stop-answers` (the overview's answers);
 //! - in a repo breadboard isn't developed in: the herdr plugin with the
 //!   repo's id (`[herdr] plugin`), its keys and base config, the nvim Lua and
 //!   the Chromium extension in `.breadboard/`, where herdr links it from;
@@ -31,7 +32,7 @@ pub const SHAPE: Shape = Shape::new(&["--check"], &[], Some(0), USAGE);
 pub const USAGE: &str = "usage: breadboard init [--check]   breadboard's skill, hooks and herdr plugin into this repo";
 
 /// The skill's templates, by their file name.
-const SKILL: [(&str, &str); 5] = [
+const SKILL: [(&str, &str); 6] = [
     (
         "SKILL.md",
         include_str!("../../../../../claude/skills/parallel-work/SKILL.md"),
@@ -43,6 +44,11 @@ const SKILL: [(&str, &str); 5] = [
     (
         "orchestrate.md",
         include_str!("../../../../../claude/skills/parallel-work/orchestrate.md"),
+    ),
+    // What an orchestrated agent's brief leaves out (#429).
+    (
+        "agent.md",
+        include_str!("../../../../../claude/skills/parallel-work/agent.md"),
     ),
     (
         "cleanup.md",
@@ -132,6 +138,7 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
     };
     let mut all = vec![
         ("run", run),
+        ("bb", loaded.bb().into()),
         ("branch", loaded.branch.clone()),
         ("repo", loaded.name()),
         ("space", loaded.space()),
@@ -412,7 +419,7 @@ fn files_of(loaded: &Loaded) -> Vec<(PathBuf, String)> {
 
 /// The hooks `.claude/settings.json` needs, with what each runs: through the
 /// package's shims where breadboard is developed, else the `breadboard` on PATH.
-fn hooks_of(is_developed: bool) -> [(&'static str, Option<&'static str>, String); 2] {
+fn hooks_of(is_developed: bool) -> [(&'static str, Option<&'static str>, String); 3] {
     let run = |hook: &str| {
         if is_developed {
             format!("sh \"$CLAUDE_PROJECT_DIR/packages/breadboard/hooks/{hook}\"")
@@ -422,6 +429,7 @@ fn hooks_of(is_developed: bool) -> [(&'static str, Option<&'static str>, String)
     };
     [
         ("PreToolUse", Some("Edit|Write|MultiEdit|NotebookEdit"), run("pre-edit")),
+        ("PreToolUse", Some("Bash"), run("pre-bash")),
         ("Stop", None, run("stop-answers")),
     ]
 }
@@ -707,6 +715,11 @@ mod tests {
         assert_eq!(
             merged["hooks"]["PreToolUse"][0]["matcher"],
             "Edit|Write|MultiEdit|NotebookEdit"
+        );
+        assert_eq!(merged["hooks"]["PreToolUse"][1]["matcher"], "Bash");
+        assert_eq!(
+            merged["hooks"]["PreToolUse"][1]["hooks"][0]["command"],
+            "breadboard hook pre-bash"
         );
         assert_eq!(with_hooks(&merged, false), None, "once");
         // The package's shims count as breadboard's too.
