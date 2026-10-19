@@ -16,6 +16,7 @@
 use breadboard_core::conversations::{interactive_pids_of, interactive_resumes, running_claudes, transcript_of};
 use breadboard_core::lock::PidFile;
 use breadboard_core::permissions;
+use breadboard_core::pickup;
 use breadboard_core::runs::{
     self, Event, Queue, Run, STARTING_MS, State, Table, Usage, Waiting, allowed_of, args_of, change_queue,
     change_usage, prompt_of, read_or_default, room_for, status_file, write_whole,
@@ -61,6 +62,7 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
             let (starts, is_waking) = {
                 let (main, in_flight, table) = (main.clone(), in_flight.clone(), table.clone());
                 tokio::task::spawn_blocking(move || {
+                    pick_up_cut(&main, &in_flight, &table, now_ms());
                     let is_waking = wake_due(&main, &in_flight, now_ms());
                     (take_starts(&main, &in_flight, &table), is_waking)
                 })
@@ -137,7 +139,10 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
             at,
         })
         .collect();
-    let chosen = pick(waiting, room_for(runs::available(), starting));
+    // A few at a time (#445): after a crash every cut-off agent waits its turn.
+    let max_runs = breadboard_core::config::of_main(main).config.agents.max_runs;
+    let room = room_for(runs::available(), starting).min(max_runs.saturating_sub(flying.len()));
+    let chosen = pick(waiting, room);
     if chosen.is_empty() {
         return Vec::new();
     }
@@ -163,6 +168,44 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
         starts
     })
     .unwrap_or_default()
+}
+
+/// The runs a crash, an OOM kill or a reboot cut off (#445): each picked up
+/// once, resumed with a line or, past the fresh-start rule, taken over by a
+/// fresh session with a handoff from the disk (core's `pickup`).
+fn pick_up_cut(main: &Path, in_flight: &InFlight, table: &Mutex<()>, now: i64) {
+    let read: Table = read_or_default(&status_file(main));
+    let flying = locked(in_flight).clone();
+    let cut = pickup::cut_off_of(&read, |session| flying.contains_key(session));
+    if cut.is_empty() {
+        return;
+    }
+    let mut events = Vec::new();
+    change_table(main, table, |read| {
+        for session in &cut {
+            let Some(run) = read.runs.get_mut(session) else {
+                continue;
+            };
+            if run.state != State::Running {
+                continue;
+            }
+            if !pickup::is_bound(run, session) {
+                run.state = State::Idle;
+                run.pid = None;
+                continue;
+            }
+            let fresh = breadboard_core::record::origin_of(&run.dir)
+                .map(|origin| breadboard_core::settings::of(main, &origin.name).agent_fresh)
+                .unwrap_or_default();
+            if let Some(event) = pickup::pick_up(main, session, run, &fresh, now) {
+                eprintln!("breadboard runs: {}", pickup::said_of(run, &event, session));
+                events.push(event);
+            }
+        }
+    });
+    if !events.is_empty() {
+        let _ = change_queue(main, |queue| pickup::queue_first(queue, events));
+    }
 }
 
 /// The wakes of the sessions without a run (#417): a due one's line queued,
