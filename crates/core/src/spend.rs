@@ -604,10 +604,10 @@ pub fn spent_of(main: &Path, name: &str, record: Option<&crate::record::Record>,
 /// None while nothing was spent and no limit is set.
 pub fn band_text(spent: &Spent) -> Option<String> {
     let mut text = format!("today {}", spent.today.total.text());
-    text.push_str(&wakes_text(&spent.today));
     if let Some(limit) = spent.daily_limit {
         text.push_str(&format!(" of {} a day", limit.text()));
     }
+    text.push_str(&wakes_text(&spent.today));
     if let Some(budget) = spent.budget {
         text.push_str(&format!(" · budget {}", budget.against(&spent.total)));
     }
@@ -615,14 +615,14 @@ pub fn band_text(spent: &Spent) -> Option<String> {
     (!spent.today.total.is_empty() || spent.daily_limit.is_some() || spent.budget.is_some()).then_some(text)
 }
 
-/// ` (wake-ups ≈ $3, work ≈ $9)`: what of today's dollars went into the
+/// ` · wake-ups ≈ $3, work ≈ $9`: what of today's dollars went into the
 /// runs' wake-ups (#445) and what into work; empty without a wake-up.
 pub fn wakes_text(today: &Today) -> String {
     if today.wakes.dollars <= 0.0 {
         return String::new();
     }
     format!(
-        " (wake-ups ≈ {}, work ≈ {})",
+        " · wake-ups ≈ {}, work ≈ {}",
         dollars_text(today.wakes.dollars),
         dollars_text((today.total.dollars - today.wakes.dollars).max(0.0))
     )
@@ -942,7 +942,7 @@ mod tests {
         };
         assert_eq!(
             band_text(&spent).as_deref(),
-            Some("today 4.2 M tokens · ≈ $12 (wake-ups ≈ $3.10, work ≈ $9.30) · list prices")
+            Some("today 4.2 M tokens · ≈ $12 · wake-ups ≈ $3.10, work ≈ $9.30 · list prices")
         );
         spent.today.wakes = Spend::default();
         spent.daily_limit = Some(Limit::Dollars(40.0));
