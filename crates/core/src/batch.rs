@@ -376,6 +376,8 @@ pub fn commit_file(main: &Path, branch: &str, path: &str, text: &str, message: &
 pub struct Looked {
     pub batch: String,
     pub develop: String,
+    /// A shipped batch's merged MR whose issues weren't all closed (#414): looked at again.
+    pub is_closing: bool,
 }
 
 pub fn looked_file(store: &Path, product: &str) -> std::path::PathBuf {
@@ -400,6 +402,7 @@ pub fn heads_of(main: &Path, batch: &str, develop: &str) -> Looked {
     Looked {
         batch: remote_head(main, batch).unwrap_or_default(),
         develop: remote_head(main, develop).unwrap_or_default(),
+        is_closing: false,
     }
 }
 
