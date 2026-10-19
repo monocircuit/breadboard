@@ -324,7 +324,7 @@ change is requested).
 Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
-the worktree, have its agent tick the done boxes), `pipeline` (a failed
+the worktree, a small run of its own ticks the done boxes: Sonnet at low effort with the issue, the MR and the agent's handoff, its agent not woken, #445), `pipeline` (a failed
 MR pipeline whose line didn't reach its agent; queued, it arrives on the
 first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
@@ -545,15 +545,19 @@ again, and once it idled past the prompt cache's hour a resume writes all of
 it to the cache anew. So above `[agents] fresh_above` (150 k tokens of
 context), or above `idle_fresh_above` (100 k) and idle longer than
 `idle_minutes` (55), it isn't freed but retires at its merge, never mid-issue:
-`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
-conversation one last run that writes `.claude/handoff.md` (a page at most:
-what it learned about the files it changed), keeps it next to the record
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` takes the
+handoff it wrote at its last real run (`.claude/handoff-next.md`, a page at
+most: what it learned about the files it changed; `wt:action merge` asks for
+it once its context passes `idle_fresh_above`), else gives its conversation
+one last run that writes `.claude/handoff.md`, but only while its cache is
+warm: a cold one is never woken for it. It keeps the handoff next to the record
 (`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then its
 worktree goes. A fresh agent on those files gets the handoff of the retired
 agent sharing the most of them as its own `.claude/handoff.md`, its brief's
-`## Handoff` says whose it is. The overview says it in advance: the agent's
+`## Handoff` says whose it is; a freed agent's handoff is kept too, for
+when it starts fresh later. The overview says it in advance: the agent's
 node `fresh start at its next issue`, UP NEXT `#380 → fresh agent (Mira
-retires, 47 %)`, and the changelog notes the retirement under its merge.
+retires, 162 k)`, and the changelog notes the retirement under its merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`

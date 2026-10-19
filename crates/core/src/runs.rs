@@ -666,6 +666,36 @@ pub fn lean_flags_of(main: &Path) -> Vec<String> {
     lean_flags(&mcp, user.as_ref())
 }
 
+/// The model of a small run (#445): a mechanical event (the boxes of a
+/// merged MR) needs no agent's history, only the issue and the event.
+pub const SMALL_MODEL: &str = "sonnet";
+
+/// The command line of a small run: no session of its own kept, `SMALL_MODEL`
+/// at low effort, lean (`lean`), auto mode as every run's; its answer as text.
+pub fn small_args(prompt: &str, lean: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-p".into(), prompt.to_string(), "--no-session-persistence".into()];
+    args.extend(lean.iter().cloned());
+    // After `--settings`: the flags win over the user's model and effort.
+    args.extend(["--model".into(), SMALL_MODEL.into(), "--effort".into(), "low".into()]);
+    args.extend(crate::permissions::run_flags(&[]));
+    args.extend(["--output-format".into(), "text".into()]);
+    args
+}
+
+/// The prompt of the small run that ticks a merged MR's boxes (#445) in
+/// place of its agent: `event` the line its agent would have got;
+/// `has_handoff`: its worktree has the handoff its agent wrote.
+pub fn boxes_prompt(event: &str, has_handoff: bool) -> String {
+    format!(
+        "[breadboard] You are a small run of your own, not the agent of this worktree: its agent is not woken for this. {event} Read the issue and what the MR changed (glab issue view, glab mr diff){handoff}. Tick only the boxes the merged work plainly did; leave the after-deploy ones and every box you are unsure of. Change no file, commit and push nothing. End with one line: which boxes you ticked, which stay open.",
+        handoff = if has_handoff {
+            format!(", and its agent's handoff in {}", crate::fresh::HANDOFF_NEXT)
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// The command line of a run of `session` (claude's arguments): `--resume`
 /// a conversation that has a transcript, else `--session-id` starts it. The
 /// prompt comes right after `-p`: the tool lists take every word up to the
@@ -1112,6 +1142,23 @@ mod tests {
         let args = args_of("abc", "1-x", "go", true, &[], &named);
         let at = args.iter().position(|arg| arg == "--strict-mcp-config").unwrap();
         assert_eq!(args[at - 2..at], ["--name", "1-x"]);
+    }
+
+    #[test]
+    fn a_small_run_is_sonnet_at_low_effort_without_a_session() {
+        let lean = lean_flags(&[], Some(&serde_json::json!({ "model": "opus[1m]" })));
+        let args = small_args("tick them", &lean);
+        assert_eq!(&args[..3], ["-p", "tick them", "--no-session-persistence"]);
+        let at = |flag: &str| args.iter().position(|arg| arg == flag).unwrap();
+        assert_eq!(args[at("--model") + 1], "sonnet");
+        assert_eq!(args[at("--effort") + 1], "low");
+        assert!(at("--settings") < at("--model"));
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!args.contains(&"--resume".to_string()));
+        assert!(
+            boxes_prompt("MR !5 is merged: tick the boxes of #4 that are done.", false)
+                .contains("not the agent of this worktree: its agent is not woken for this. MR !5 is merged")
+        );
     }
 
     #[test]

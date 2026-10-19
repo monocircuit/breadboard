@@ -50,8 +50,7 @@ pub fn handoff_for(name: &str, item: &handover::Issue) -> Option<(std::path::Pat
     let found = record::record_of(&main, name)?;
     let paths = breadboard_core::gitlab::paths_of(&item.description);
     let (worker, shared) = breadboard_core::model::workers::handoff_of(&found.retired(), &paths)?;
-    let retired = worker.retired.as_ref()?;
-    let kept = main.join(retired.handoff.as_ref()?);
+    let kept = main.join(worker.handoff()?);
     if !kept.exists() {
         return None;
     }
@@ -71,13 +70,13 @@ pub fn handoff_text(worker: &record::Worker, shared: &[String]) -> String {
         let list: Vec<String> = worker.issues.iter().map(|number| format!("#{number}")).collect();
         format!(" ({})", list.join(", "))
     };
-    let context = worker
-        .retired
-        .as_ref()
-        .map(|retired| retired.context_text())
-        .unwrap_or_default();
+    // A free one's (#445) was written at its last run: it starts fresh, not retired.
+    let left = match &worker.retired {
+        Some(retired) => format!("retired{}", retired.context_text()),
+        None => "left it for a fresh agent".into(),
+    };
     format!(
-        "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and retired{context}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
+        "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and {left}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
         shared.join(", ")
     )
 }

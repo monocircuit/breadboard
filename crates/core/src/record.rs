@@ -315,6 +315,9 @@ pub struct Freed {
     pub at: Option<String>,
     pub from: Option<String>,
     pub mr: Option<i64>,
+    /// The handoff it wrote at its last run (#445), next to the record: a
+    /// fresh agent reads it once this one starts fresh.
+    pub handoff: Option<String>,
 }
 
 /// An agent that retired at its merge (#381): one that starts fresh (#445),
@@ -366,6 +369,22 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Its kept handoff (relative to the main checkout): the retired one's, else the free one's (#445).
+    pub fn handoff(&self) -> Option<&str> {
+        self.retired
+            .as_ref()
+            .and_then(|retired| retired.handoff.as_deref())
+            .or_else(|| self.free.as_ref().and_then(|free| free.handoff.as_deref()))
+    }
+
+    /// When it left that handoff.
+    pub fn handoff_at(&self) -> Option<&str> {
+        self.retired
+            .as_ref()
+            .and_then(|retired| retired.at.as_deref())
+            .or_else(|| self.free.as_ref().and_then(|free| free.at.as_deref()))
+    }
+
     pub fn from_value(id: &str, value: &Value) -> Worker {
         let history = value.get("history").and_then(Value::as_array).map(|starts| {
             starts
@@ -400,6 +419,7 @@ impl Worker {
             at: str_of(free, "at").map(String::from),
             from: str_of(free, "from").map(String::from),
             mr: int_of(free, "mr"),
+            handoff: str_of(free, "handoff").map(String::from),
         });
         let retired = value
             .get("retired")
@@ -562,11 +582,12 @@ impl Record {
             .collect()
     }
 
-    /// The agents that retired with a handoff (#381), the latest last.
+    /// The agents that left a handoff (#381): retired, or free with the
+    /// one written at their last run (#445).
     pub fn retired(&self) -> Vec<&Worker> {
         self.workers
             .iter()
-            .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+            .filter(|worker| worker.handoff().is_some())
             .collect()
     }
 }

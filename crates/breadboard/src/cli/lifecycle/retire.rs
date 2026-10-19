@@ -1,8 +1,10 @@
 //! `wt:orchestrate <name> --retire <feature> --mr <iid>` (#381): an agent
 //! that starts fresh (#445, `[agents]`) retires at its merge instead of taking a
-//! next issue. Its claude ends, one last run of its conversation writes its
-//! handoff into `.claude/handoff.md` of its worktree (what it learned about
-//! the files it changed, a page at most), the handoff is kept next to the
+//! next issue. Its claude ends; its handoff (what it learned about the files
+//! it changed, a page at most) is the one it wrote at its last real run into
+//! `.claude/handoff-next.md` (#445, `wt:action merge` asks for it), else one
+//! last run writes it while its cache is warm, never once it is cold; the
+//! handoff is kept next to the
 //! record, and the record marks it retired. The overview runs this before
 //! the worktree goes; a fresh agent on those files reads the handoff.
 
@@ -13,7 +15,7 @@ use super::proc::{Done, fail, step};
 use super::repo::Repo;
 use breadboard_core::conversations::context_of;
 use breadboard_core::conversations::interactive_pids_of;
-use breadboard_core::fresh::k;
+use breadboard_core::fresh::{HANDOFF_NEXT, k};
 use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
 use breadboard_core::runs::args_of;
@@ -75,7 +77,8 @@ pub fn command(args: &Args) -> Done {
     };
     let share = context_share_of(&id).unwrap_or(0.0);
     let context = context_of(&id).unwrap_or_default();
-    let why = fresh_rule(&repo.main, name)
+    let rule = fresh_rule(&repo.main, name);
+    let why = rule
         .why(&context, now_ms())
         .unwrap_or_else(|| format!("its context holds {} tokens", k(context.used)));
     let agent = record::record_of(&repo.main, name)
@@ -111,12 +114,32 @@ pub fn command(args: &Args) -> Done {
         Err(why) => step(&format!("its uncommitted work could not be kept: {why}")),
     }
     let changed: Vec<String> = work_files(&dir).into_iter().collect();
-    let written = dir.join(HANDOFF);
-    let _ = fs::remove_file(&written);
-    step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
-    let ran = last_run(&repo.main, &dir, &id, feature, &handoff_prompt(iid, &why, &changed));
+    let read = |file: &Path| fs::read_to_string(file).ok().filter(|text| !text.trim().is_empty());
+    let idle = context.at.map(|at| now_ms() - at).unwrap_or(i64::MAX);
+    // Written at its last real run (#445, `wt:action merge` asks for it): nothing to wake.
+    let (written, ran) = if let Some(text) = read(&dir.join(HANDOFF_NEXT)) {
+        step(&format!(
+            "{shown} wrote its handoff at its last run ({HANDOFF_NEXT}): no run of its own"
+        ));
+        (Some(text), "written at its last run".to_string())
+    } else if idle < rule.idle_ms {
+        // Its cache still warm: one more run reads it cheaply.
+        let written = dir.join(HANDOFF);
+        let _ = fs::remove_file(&written);
+        step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
+        let ran = last_run(&repo.main, &dir, &id, feature, &handoff_prompt(iid, &why, &changed));
+        (read(&written), ran)
+    } else {
+        // Cold: a run would write its whole history to the cache again for one page.
+        (
+            None,
+            format!(
+                "none at its last run, and idle {} its cache is gone: no run wakes it for one",
+                breadboard_core::time::span(idle.min(365 * 86_400_000))
+            ),
+        )
+    };
     let kept = handoff_file(&repo.main, name, &id);
-    let written = fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty());
     let kept_work = snapshot::newest(&repo.main, feature).map(|newest| snapshot_line(feature, &newest.time));
     let handoff = match with_snapshot(written, kept_work.as_deref()) {
         Some(text) => {

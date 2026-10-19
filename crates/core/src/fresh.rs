@@ -82,6 +82,40 @@ impl Fresh {
     }
 }
 
+/// Where an agent writes its handoff at the end of its last real run (#445):
+/// when it posts its merge and may retire at it, so retiring needs no
+/// wake-up of its own. Beside `.claude/handoff.md`, the one it got.
+pub const HANDOFF_NEXT: &str = ".claude/handoff-next.md";
+
+/// The handoff the agent of `dir` wrote at its last run, kept next to the
+/// record of `name` (`handoff_file`): its path there relative to `main`,
+/// None when it wrote none.
+pub fn keep_handoff(main: &std::path::Path, name: &str, id: &str, dir: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join(HANDOFF_NEXT))
+        .ok()
+        .filter(|text| !text.trim().is_empty())?;
+    let kept = crate::record::handoff_file(main, name, id);
+    std::fs::create_dir_all(kept.parent()?).ok()?;
+    std::fs::write(&kept, text).ok()?;
+    Some(kept.strip_prefix(main).unwrap_or(&kept).display().to_string())
+}
+
+/// What `wt:action merge` tells an agent that may retire at its merge
+/// (#445): its context past `idle_above`, it is fresh past `above` or once
+/// idle. The handoff is written now, in this run, while its cache is warm;
+/// None for one that will take its next issue itself.
+pub fn handoff_request(fresh: &Fresh, used: u64) -> Option<String> {
+    (used > fresh.idle_above).then(|| {
+        format!(
+            "  Your context holds {} tokens: past {} a fresh agent takes your next issue, past {} once you idle {}. So write your handoff now, in this run, into {HANDOFF_NEXT}: at most one page on what you learned about the files you changed: where things live, the rules and pitfalls you found, what is unfinished or fragile. Facts a newcomer needs, not the story of your issue. Should you retire, breadboard keeps it; no run wakes you for it later.",
+            k(used),
+            k(fresh.above),
+            k(fresh.idle_above),
+            span(fresh.idle_ms)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,6 +150,28 @@ mod tests {
             Some("its context holds 162 k tokens, above 150 k")
         );
         assert_eq!(fresh.text(), "150 k, or 100 k idle 55 min");
+    }
+
+    #[test]
+    fn asks_for_the_handoff_at_the_merge_only_of_one_that_may_retire() {
+        let fresh = Fresh::default();
+        assert_eq!(handoff_request(&fresh, 80_000), None);
+        let asked = handoff_request(&fresh, 120_000).unwrap();
+        assert!(asked.starts_with("  Your context holds 120 k tokens: past 150 k a fresh agent"));
+        assert!(asked.contains("now, in this run, into .claude/handoff-next.md"));
+    }
+
+    #[test]
+    fn keeps_the_handoff_it_wrote_next_to_the_record() {
+        let scratch = crate::lock::scratch::Scratch::new();
+        let main = scratch.join("platform");
+        let dir = scratch.join("platform-7-x");
+        std::fs::create_dir_all(dir.join(".claude")).unwrap();
+        assert_eq!(keep_handoff(&main, "o", "s1", &dir), None);
+        std::fs::write(dir.join(HANDOFF_NEXT), "# notes\n").unwrap();
+        let kept = keep_handoff(&main, "o", "s1", &dir).unwrap();
+        assert_eq!(kept, ".claude/orchestrations/o.handoffs/s1.md");
+        assert_eq!(std::fs::read_to_string(main.join(kept)).unwrap(), "# notes\n");
     }
 
     #[test]

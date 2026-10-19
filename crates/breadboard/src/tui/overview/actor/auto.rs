@@ -418,6 +418,11 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
     if app.actor.auto.in_flight.contains(key) {
         return;
     }
+    // A mechanical event (#445): a small run of its own, its agent not woken.
+    if key.starts_with("boxes:") {
+        small_run(app, dir, key, line);
+        return;
+    }
     app.actor.auto.in_flight.insert(key.to_string());
     let (main, dir, key, line) = (
         app.actor.main.clone(),
@@ -453,6 +458,63 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
             }
         }) as Effect)
     });
+}
+
+/// The boxes of a merged MR ticked by a small run (#445, `runs::small_args`)
+/// in its worktree, in place of waking its agent with its whole history:
+/// given only the event, the issue and the agent's handoff. Once, as a line is.
+fn small_run(app: &mut Overview, dir: &Path, key: &str, line: &str) {
+    let main = app.actor.main.clone();
+    let feature = feature_of(&main, dir);
+    let has_handoff = dir.join(breadboard_core::fresh::HANDOFF_NEXT).exists();
+    let prompt = breadboard_core::runs::boxes_prompt(line, has_handoff);
+    let args = breadboard_core::runs::small_args(&prompt, &breadboard_core::runs::lean_flags_of(&main));
+    let log = spawn::log_file(&format!("overview-boxes-{feature}.log"));
+    let poster = app.actor.poster();
+    let (done_key, done_feature) = (key.to_string(), feature.clone());
+    app.actor.auto.in_flight.insert(key.to_string());
+    let started = spawn::start(
+        Background {
+            program: Path::new("claude"),
+            args,
+            cwd: dir,
+            log: &log,
+            env: vec![],
+            is_paneless: true,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                app.actor.auto.in_flight.remove(&done_key);
+                let (paint, text) = if code == Some(0) {
+                    app.actor.auto.sent.insert(done_key.clone());
+                    (Paint::Green, format!("the boxes of {done_feature}: {last}"))
+                } else {
+                    (Paint::Red, format!("the boxes of {done_feature} not ticked: {last}"))
+                };
+                app.actor.log_as(&done_key, paint, text, None);
+                app.redraw();
+            });
+        },
+    );
+    match started {
+        Ok(()) => {
+            mark_sent(dir, key);
+            app.actor.log(
+                Paint::Dim,
+                format!(
+                    "a small run ({}) ticks the done boxes of {feature}; its agent is not woken",
+                    breadboard_core::runs::SMALL_MODEL
+                ),
+            );
+        }
+        Err(why) => {
+            app.actor.auto.in_flight.remove(key);
+            app.actor.log(
+                Paint::Red,
+                format!("the small run for {feature}'s boxes didn't start: {why}"),
+            );
+        }
+    }
 }
 
 /// What a sent line told its agent, in a few words, by its key (auto-actions.mjs's keys).
@@ -808,7 +870,13 @@ impl Free {
             "name": self.agent,
             "files": files,
             "mrs": mrs,
-            "free": { "at": to_iso(now_ms()), "from": feature_of(&self.main, &self.dir), "mr": self.iid },
+            "free": {
+                "at": to_iso(now_ms()),
+                "from": feature_of(&self.main, &self.dir),
+                "mr": self.iid,
+                // Written at its last run (#445): read by a fresh agent once this one starts fresh.
+                "handoff": breadboard_core::fresh::keep_handoff(&self.main, &self.name, &self.id, &self.dir),
+            },
         });
         let _ = write_worker(
             &self.main,

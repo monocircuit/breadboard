@@ -83,10 +83,10 @@ pub fn retiring_of(
 /// the one sharing the most of them, the one retired last on a tie; None
 /// when no handoff shares a path. With the paths it shares.
 pub fn handoff_of<'a>(retired: &[&'a Worker], paths: &[String]) -> Option<(&'a Worker, Vec<String>)> {
-    let at = |worker: &Worker| worker.retired.as_ref().and_then(|retired| retired.at.clone());
+    let at = |worker: &Worker| worker.handoff_at().map(String::from);
     retired
         .iter()
-        .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+        .filter(|worker| worker.handoff().is_some())
         .map(|worker| (*worker, shared_of(paths, &worker.files)))
         .filter(|(_, shared)| !shared.is_empty())
         .max_by(|(a, a_shared), (b, b_shared)| a_shared.len().cmp(&b_shared.len()).then(at(a).cmp(&at(b))))

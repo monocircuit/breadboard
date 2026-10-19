@@ -408,7 +408,7 @@ pub fn auto_actions_of(
                 actions.push(base(
                     "clean up",
                     format!("clean up:{}:boxes", issue.branch),
-                    format!("#{} has {open} open boxes: click to have its agent tick the done ones", found.iid),
+                    format!("#{} has {open} open boxes: click to have a small run tick the done ones, its agent not woken", found.iid),
                     merged_at.as_deref(),
                     Go::Send {
                         dir: tree.dir.clone(),
