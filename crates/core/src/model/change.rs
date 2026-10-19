@@ -1,10 +1,10 @@
 //! A requested change and work that isn't pushed (#228, worktree/change.mjs,
-//! overview/change.mjs): facts on the worktree's node and its MR row, and an
-//! automatic `push` once commits sit unpushed for long.
+//! overview/change.mjs): facts on the worktree's node and its MR row; breadboard
+//! pushes the commits itself (#450, core's `push`), no row asks for it.
 
-use super::{Paint, Span, Tree, counted};
+use super::{Paint, Span, Tree};
 use crate::gitlab::Mr;
-use crate::time::to_iso;
+use crate::push::Stage;
 
 /// How long commits may sit unpushed before someone is needed.
 pub const UNPUSHED_MS: i64 = 10 * 60_000;
@@ -37,95 +37,45 @@ pub fn change_fact(tree: &Tree, mr: Option<&Mr>) -> Option<Span> {
     Some(Span::new(format!("change requested: {}", change.text), Paint::Yellow))
 }
 
-/// `2 commits not pushed`, red once they sit there long; `(no remote branch)` when origin has none.
+/// `2 commits + a merge of develop not pushed` (#450): what its upstream lacks.
+pub fn unpushed_text(tree: &Tree) -> String {
+    format!(
+        "{} not pushed",
+        crate::push::commits_text(tree.unpushed, tree.unpushed_own, tree.merged_base.as_deref())
+    )
+}
+
+/// `2 commits not pushed`, `(no remote branch)` when origin has none, and
+/// what breadboard's push is at (#450): `· wt:check running, then push`;
+/// red once a person is needed, or once they sit there long with nothing at them.
 pub fn unpushed_fact(tree: &Tree, now: i64) -> Option<Span> {
     if tree.unpushed == 0 {
         return None;
     }
-    let text = format!(
-        "{} not pushed{}",
-        counted(tree.unpushed, "commit"),
-        if tree.has_remote_branch {
-            ""
-        } else {
-            " (no remote branch)"
-        }
-    );
-    Some(Span::new(
-        text,
-        if is_unpushed_long(tree, now) {
-            Paint::Red
-        } else {
-            Paint::Yellow
-        },
-    ))
-}
-
-/// How long, as `25 min` or `3 h`.
-fn since(at: i64, now: i64) -> String {
-    let minutes = ((now - at) as f64 / 60_000.0).round() as i64;
-    if minutes < 120 {
-        format!("{minutes} min")
+    let remote = if tree.has_remote_branch {
+        ""
     } else {
-        format!("{} h", (minutes as f64 / 60.0).round() as i64)
-    }
-}
-
-/// The automatic `push` of a worktree holding commits origin doesn't have for
-/// longer than UNPUSHED_MS: its text, when, the key it is sent under, the
-/// line its click tells the agent.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Unpushed {
-    pub key: String,
-    pub text: String,
-    pub at: String,
-    pub line: String,
-    pub is_sent: bool,
-}
-
-/// unpushedActionOf: None while the commits are young. When `mr` is merged
-/// the push guard refuses the branch: the commits need an issue of their own.
-pub fn unpushed_action_of(branch: &str, tree: &Tree, mr: Option<&Mr>, now: i64) -> Option<Unpushed> {
-    if !is_unpushed_long(tree, now) {
-        return None;
-    }
-    let at = tree.unpushed_at.unwrap_or(now);
-    let key = format!(
-        "unpushed:{branch}:{}:{}",
-        tree.unpushed,
-        tree.pushed.as_deref().unwrap_or("none")
-    );
-    let fact = format!(
-        "{} for {}",
-        unpushed_fact(tree, now).map(|span| span.text).unwrap_or_default(),
-        since(at, now)
-    );
-    let is_sent = tree.sent.contains(&key);
-    let commits = format!("{} of {branch}", counted(tree.unpushed, "commit"));
-    let line = match mr.filter(|mr| mr.is_merged()) {
-        Some(mr) => format!(
-            "[overview] {commits} came after !{} was merged and are not pushed: they get their own issue, branch and draft MR now (glab issue create, {run} wt:new, cherry-pick them, push, {run} wt:mr), waiting with {run} wt:wait if they must.",
-            mr.iid,
-            run = crate::config::run_word()
-        ),
-        None => format!(
-            "[overview] {commits} {} not pushed: push now (git push{}), a draft MR from the first commit ({run} wt:mr). Waiting for another MR comes after the push.",
-            if tree.unpushed == 1 { "is" } else { "are" },
-            if tree.has_remote_branch { "" } else { " -u origin HEAD" },
-            run = crate::config::run_word()
-        ),
+        " (no remote branch)"
     };
-    Some(Unpushed {
-        text: if is_sent {
-            format!("{fact}: its agent was told")
-        } else {
-            format!("{fact}: click to tell its agent")
-        },
-        at: to_iso(at),
-        key,
-        line,
-        is_sent,
-    })
+    let (at, paint) = match tree
+        .pushing
+        .as_ref()
+        .map(|pushing| (pushing.stage, pushing.why.as_deref()))
+    {
+        Some((Stage::Checking, _)) => (" · wt:check running, then push".to_string(), Paint::Yellow),
+        Some((Stage::Told, why)) => (
+            format!(
+                " · wt:check failed{}: its agent fixes it",
+                why.map(|why| format!(" ({why})")).unwrap_or_default()
+            ),
+            Paint::Yellow,
+        ),
+        Some((Stage::Dirty, _)) => (" · uncommitted changes: its agent commits them".into(), Paint::Yellow),
+        Some((Stage::Asked, why)) => (format!(" · {}: you look", why.unwrap_or("stuck")), Paint::Red),
+        None if is_unpushed_long(tree, now) => (String::new(), Paint::Red),
+        None => (String::new(), Paint::Yellow),
+    };
+    Some(Span::new(format!("{}{remote}{at}", unpushed_text(tree)), paint))
 }
 
 #[cfg(test)]
@@ -197,12 +147,44 @@ mod tests {
             (fact.text.as_str(), fact.paint),
             ("2 commits not pushed (no remote branch)", Paint::Red)
         );
-        let action = unpushed_action_of("feature/9-x", &at(25 * 60_000), None, now).unwrap();
+    }
+
+    #[test]
+    fn says_what_breadboards_push_is_at() {
+        let now = parse_iso("2026-09-29T12:00:00Z").unwrap();
+        let at = |stage: Stage, why: Option<&str>| Tree {
+            unpushed: 77,
+            unpushed_own: 2,
+            merged_base: Some("develop".into()),
+            unpushed_at: Some(now - 3 * UNPUSHED_MS),
+            has_remote_branch: true,
+            pushing: Some(crate::push::Pushing {
+                head: "b".into(),
+                stage,
+                at: now,
+                reds: 1,
+                why: why.map(String::from),
+            }),
+            ..Default::default()
+        };
+        let text = |tree: &Tree| unpushed_fact(tree, now).map(|span| (span.text, span.paint)).unwrap();
         assert_eq!(
-            action.text,
-            "2 commits not pushed (no remote branch) for 25 min: click to tell its agent"
+            text(&at(Stage::Checking, None)),
+            (
+                "2 commits + a merge of develop not pushed · wt:check running, then push".into(),
+                Paint::Yellow
+            )
         );
-        assert!(action.line.contains("push now (git push -u origin HEAD)"));
-        assert!(unpushed_action_of("feature/9-x", &at(60_000), None, now).is_none());
+        assert_eq!(
+            text(&at(Stage::Told, Some("vita-web test"))).0,
+            "2 commits + a merge of develop not pushed · wt:check failed (vita-web test): its agent fixes it"
+        );
+        assert_eq!(
+            text(&at(Stage::Asked, Some("push refused"))),
+            (
+                "2 commits + a merge of develop not pushed · push refused: you look".into(),
+                Paint::Red
+            )
+        );
     }
 }

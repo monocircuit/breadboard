@@ -453,7 +453,7 @@ pub fn cli(args: &[String]) -> ExitCode {
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
             let now = now_ms();
             let today = breadboard_core::spend::today_of(&main, now);
-            println!("today {}", today.total.text());
+            println!("today {} · {}", today.total.text(), breadboard_core::spend::BASIS);
             match runs::paused_now(&main) {
                 Some(text) => println!("{text} (breadboard runs resume)"),
                 None => println!("agents run (breadboard runs pause stops them)"),

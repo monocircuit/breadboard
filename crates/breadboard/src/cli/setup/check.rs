@@ -6,8 +6,14 @@
 //! names the packages and tasks it ran and the source key of the binary
 //! that ran it (#366): the hook holds the packages against git's own list. The
 //! stamp's format stays (rule 5): Node's hook and overview read it.
+//!
+//! A fix brings its regression test (#316): on a `fix/*` branch whose change
+//! holds no test change it refuses before anything runs (stamped `failed`
+//! with `refused`), `--no-test "<reason>"` lets it pass with the reason in
+//! `passed.no_test`, which wt:mr puts into the MR description. `--mr` is the
+//! same rule for the MR's CI job, the reason read from its description.
 
-use super::proc::{Stream, fail, git, outln, step, write_bytes};
+use super::proc::{Args, Shape, Stream, fail, git, outln, step, write_bytes};
 use super::repo;
 use breadboard_core::check::{self, failures_line, failures_of};
 pub use breadboard_core::check::{Failure, read_check};
@@ -21,11 +27,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+/// What `wt:check` takes: a fix's reason to come without a test, or `--mr` (#316).
+pub const SHAPE: Shape = Shape::new(
+    &["--no-test", "--mr"],
+    &["--no-test"],
+    Some(0),
+    "usage: pnpm wt:check [--no-test \"<reason>\"] [--mr]",
+);
+
 /// What wt:check runs, through turbo.
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
 /// breadboard's cargo checks (#336): only when the branch changes its Rust
 /// sources, never because develop was merged in or a package it depends on
-/// changed. They run through herdr/cargo.sh, in the clone's shared target/.
+/// changed. They run through herdr/cargo.sh, in the checkout's own target/.
 const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
 /// The Rust sources of breadboard, as the launcher keys its builds on them
 /// (herdr/breadboard.sh `sources`: the crates and what they embed).
@@ -275,6 +289,134 @@ pub fn scope_of(turbo: &Path, dir: &Path, base: &str, head: Option<&str>) -> Res
     Ok(Scope { tasks, filters })
 }
 
+/// Whether the change from `base` to `head` (the working tree, untracked
+/// files too, without one) changes a test (#316, core's `is_test_change`).
+pub fn has_test_change(dir: &Path, base: &str, head: Option<&str>) -> bool {
+    let mut diff = vec!["diff", "--name-only", "--no-renames", base];
+    diff.extend(head);
+    let changed: Vec<String> = git(&diff, dir).text().lines().map(String::from).collect();
+    let text_of = |file: &str| match head {
+        Some(head) => {
+            let shown = git(&["show", &format!("{head}:{file}")], dir);
+            shown.is_ok.then_some(shown.out)
+        }
+        None => fs::read_to_string(dir.join(file)).ok(),
+    };
+    let is_changed_test = |file: &String| {
+        if check::is_test_file(file) {
+            return true;
+        }
+        if !file.ends_with(".rs") {
+            return false;
+        }
+        let mut hunks = vec!["diff", "-U0", "--no-renames", base];
+        hunks.extend(head);
+        hunks.extend(["--", file.as_str()]);
+        let ends = check::hunk_ends(git(&hunks, dir).text());
+        check::is_test_change(file, text_of(file).as_deref(), &ends)
+    };
+    if changed.iter().any(is_changed_test) {
+        return true;
+    }
+    if head.is_some() {
+        return false;
+    }
+    // A new file: every line of it is changed.
+    git(&["ls-files", "--others", "--exclude-standard"], dir)
+        .text()
+        .lines()
+        .any(|file| {
+            let text = fs::read_to_string(dir.join(file)).ok();
+            let end = text.as_deref().map_or(0, |text| text.lines().count() as u64);
+            check::is_test_change(file, text.as_deref(), &[end])
+        })
+}
+
+/// What the rule of #316 says of a branch: a fix without a test change is
+/// refused unless it gives a reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestRule {
+    /// A feature, or a fix with its test: nothing to say.
+    Kept,
+    /// A fix without a test, passed for the reason given.
+    Excused(String),
+    /// A fix without a test and without a reason.
+    Refused,
+}
+
+pub fn test_rule_of(branch: &str, has_test_change: impl FnOnce() -> bool, reason: Option<&str>) -> TestRule {
+    if !check::is_fix_branch(branch) || has_test_change() {
+        return TestRule::Kept;
+    }
+    match reason.map(str::trim).filter(|reason| !reason.is_empty()) {
+        Some(reason) => TestRule::Excused(reason.to_string()),
+        None => TestRule::Refused,
+    }
+}
+
+/// Why a fix without a test is refused, and the way out; `against` names the base.
+fn refusal_of(branch: &str, against: &str, is_ci: bool) -> String {
+    let run = breadboard_core::config::run_word();
+    let way_out = if is_ci {
+        format!(
+            "no test can catch it (docs, config, wording): {run} wt:check --no-test \"<reason>\", then {run} wt:mr --update puts the reason into the MR description; retry this job"
+        )
+    } else {
+        format!(
+            "no test can catch it (docs, config, wording): {run} wt:check --no-test \"<reason>\"; {run} wt:mr puts the reason into the MR description"
+        )
+    };
+    format!(
+        "{branch} is a fix that changes no test against {against}: a fix brings the test that would have caught it (#316).\n  Write it (a *.test.*, *.spec.*, *.check.* file, a tests/ folder, a Rust #[cfg(test)] module), commit, run {run} wt:check again;\n  {way_out}."
+    )
+}
+
+/// `passed` of a stamp with the reason a fix passed without a test.
+fn passed_with(mut passed: Value, no_test: Option<&str>) -> Value {
+    if let (Some(reason), Some(object)) = (no_test, passed.as_object_mut()) {
+        object.insert("no_test".into(), json!(reason));
+    }
+    passed
+}
+
+/// `pnpm wt:check --mr`: the rule of #316 for an MR's CI job (`check:fix-test`,
+/// as `changelog:check --mr`): its source branch, its diff base and the reason
+/// in its description from GitLab's variables, else the checkout's.
+pub fn mr_command(args: &Args) -> ExitCode {
+    if args.has("--no-test") {
+        fail(
+            "--mr reads the reason from the MR description (its line **No regression test:** <reason>), not from --no-test",
+        );
+    }
+    let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
+    if dir.is_empty() {
+        fail("wt:check runs in a checkout of the repo");
+    }
+    let dir = PathBuf::from(dir);
+    let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let branch = var("CI_MERGE_REQUEST_SOURCE_BRANCH_NAME")
+        .unwrap_or_else(|| git(&["branch", "--show-current"], &dir).text().to_string());
+    let against = breadboard_core::git::base_of(&dir).remote;
+    let Some(base) = var("CI_MERGE_REQUEST_DIFF_BASE_SHA").or_else(|| {
+        Some(git(&["merge-base", &against, "HEAD"], &dir).text().to_string()).filter(|sha| !sha.is_empty())
+    }) else {
+        fail(&format!("no base to compare with (fetch {against})"))
+    };
+    let reason = var("CI_MERGE_REQUEST_DESCRIPTION").and_then(|text| check::no_test_of(&text));
+    let short: String = base.chars().take(8).collect();
+    match test_rule_of(
+        &branch,
+        || has_test_change(&dir, &base, Some("HEAD")),
+        reason.as_deref(),
+    ) {
+        TestRule::Kept if check::is_fix_branch(&branch) => outln!("✓ {branch} is a fix with its test"),
+        TestRule::Kept => outln!("✓ {branch} is no fix: no test asked for"),
+        TestRule::Excused(reason) => outln!("✓ {branch} is a fix without a test, for its reason: {reason}"),
+        TestRule::Refused => fail(&refusal_of(&branch, &short, true)),
+    }
+    ExitCode::SUCCESS
+}
+
 /// What breadboard.toml says of a package whose tests need the stack (`[[check.stack_tests]]`).
 fn ci_only(dir: &Path, package: &str) -> Option<String> {
     breadboard_core::config::of(dir)
@@ -294,14 +436,14 @@ fn breadboard_package(dir: &Path) -> Option<String> {
 
 /// wt:check without turbo: `[check] run` once over the branch, stamped like
 /// turbo's; without it nothing to check, stamped at once.
-fn plain_check(dir: &Path, sha: &str, tree: &str) -> ExitCode {
+fn plain_check(dir: &Path, sha: &str, tree: &str, no_test: Option<&str>) -> ExitCode {
     let loaded = breadboard_core::config::of(dir);
     let short: String = sha.chars().take(8).collect();
     let Some(run) = loaded.config.check.plain().map(String::from) else {
         write_check(
             dir,
             json!({
-                "passed": { "sha": sha, "tree": tree, "packages": [], "at": to_iso(now_ms()), "duration": 0 },
+                "passed": passed_with(json!({ "sha": sha, "tree": tree, "packages": [], "at": to_iso(now_ms()), "duration": 0 }), no_test),
                 "failed": null, "running": null,
             }),
         );
@@ -338,7 +480,7 @@ fn plain_check(dir: &Path, sha: &str, tree: &str) -> ExitCode {
         dir,
         json!({
             "running": null, "failed": null,
-            "passed": { "sha": sha, "tree": tree, "packages": [], "at": at, "duration": duration },
+            "passed": passed_with(json!({ "sha": sha, "tree": tree, "packages": [], "at": at, "duration": duration }), no_test),
         }),
     );
     outln!("\n✓ checked in {duration} s: {run}\n  {short} may be pushed\n");
@@ -618,7 +760,17 @@ fn migrations_refusal(dir: &Path, remote: &str, epic: Option<String>) -> Option<
         .find_map(|base| stale_migrations(dir, &base))
 }
 
-pub fn command() -> ExitCode {
+pub fn command(args: &Args) -> ExitCode {
+    if args.has("--mr") {
+        return mr_command(args);
+    }
+    let given = args.value("--no-test");
+    if args.has("--no-test") && given.as_deref().is_none_or(|reason| reason.trim().is_empty()) {
+        fail(&format!(
+            "--no-test needs its reason: {} wt:check --no-test \"<why no test can catch this fix>\"",
+            breadboard_core::config::run_word()
+        ));
+    }
     let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
     if dir.is_empty() {
         fail("wt:check runs in a checkout of the repo");
@@ -647,8 +799,38 @@ pub fn command() -> ExitCode {
     let Some(tree) = working_tree_of(&dir) else {
         fail("couldn't read the working tree (git add -A in a copy of the index failed)")
     };
+    let branch = git(&["branch", "--show-current"], &dir).text().to_string();
+    let no_test = match test_rule_of(&branch, || has_test_change(&dir, &base, None), given.as_deref()) {
+        TestRule::Kept => {
+            if given.is_some() {
+                outln!("  (--no-test: {branch} is no fix without a test, the reason isn't recorded)");
+            }
+            None
+        }
+        TestRule::Excused(reason) => {
+            outln!(
+                "  (a fix without a test, for its reason: {reason}; {} wt:mr puts it into the MR description, --update into an open one)",
+                breadboard_core::config::run_word()
+            );
+            Some(reason)
+        }
+        TestRule::Refused => {
+            write_check(
+                &dir,
+                json!({
+                    "running": null,
+                    "failed": { "sha": sha, "tree": tree, "packages": [], "failures": [], "refused": check::FIX_WITHOUT_TEST, "at": to_iso(now_ms()), "duration": 0 },
+                }),
+            );
+            fail(&refusal_of(
+                &branch,
+                &format!("{} ({})", against.local, &base[..base.len().min(8)]),
+                false,
+            ));
+        }
+    };
     let Some(turbo) = turbo else {
-        return plain_check(&dir, &sha, &tree);
+        return plain_check(&dir, &sha, &tree, no_test.as_deref());
     };
     let scope = scope_of(&turbo, &dir, &base, None).unwrap_or_else(|error| fail(&error));
     let planned = plan_of(&turbo, &dir, &scope).unwrap_or_else(|error| fail(&error));
@@ -659,7 +841,7 @@ pub fn command() -> ExitCode {
         write_check(
             &dir,
             json!({
-                "passed": { "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": to_iso(now_ms()), "duration": 0 },
+                "passed": passed_with(json!({ "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": to_iso(now_ms()), "duration": 0 }), no_test.as_deref()),
                 "failed": null, "running": null,
             }),
         );
@@ -745,7 +927,7 @@ pub fn command() -> ExitCode {
         &dir,
         json!({
             "running": null, "failed": null,
-            "passed": { "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": at, "duration": duration },
+            "passed": passed_with(json!({ "sha": sha, "tree": tree, "packages": packages, "tasks": scope.tasks, "binary": crate::source_key(), "at": at, "duration": duration }), no_test.as_deref()),
         }),
     );
     let head = git(&["rev-parse", "HEAD"], &dir).text().to_string();
@@ -762,6 +944,23 @@ pub fn command() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asks_a_fix_for_its_test_or_a_reason() {
+        assert_eq!(test_rule_of("feature/1-a", || false, None), TestRule::Kept);
+        assert_eq!(test_rule_of("fix/1-a", || true, None), TestRule::Kept);
+        assert_eq!(test_rule_of("fix/1-a", || false, None), TestRule::Refused);
+        assert_eq!(test_rule_of("fix/1-a", || false, Some("  ")), TestRule::Refused);
+        assert_eq!(
+            test_rule_of("fix/1-a", || false, Some(" a typo ")),
+            TestRule::Excused("a typo".into())
+        );
+        assert_eq!(
+            passed_with(json!({ "sha": "a" }), Some("a typo")),
+            json!({ "sha": "a", "no_test": "a typo" })
+        );
+        assert!(refusal_of("fix/1-a", "develop", false).contains("wt:check --no-test \"<reason>\""));
+    }
 
     #[test]
     fn refuses_a_migration_older_than_the_base_s_newest() {

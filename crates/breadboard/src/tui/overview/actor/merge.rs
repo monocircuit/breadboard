@@ -2,7 +2,8 @@
 //! a click opens the MR; the first click arms the merge for 5 s, the second
 //! reads the MR, its issue's boxes and its worktree's tries again, marks a
 //! draft ready when it may, and merges as the user with the MR's squash
-//! setting, the source branch deleted, at the commit whose pipeline passed.
+//! setting, the source branch deleted, at the commit whose pipeline passed
+//! (or, into the default branch without one, #443, wt:check passed at).
 //! Then the order carries on: its agent hears it. The other open MRs are
 //! not told to merge develop in; one that conflicts gets that from its own
 //! conflict (#392). With the redraft of a try
@@ -13,8 +14,9 @@ use super::glab::{self, mr_endpoint, ready_title};
 use super::{Actor, Poster, browser, herdr};
 use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of, answered_of, done_action};
+use breadboard_core::check::{CheckState, check_of};
 use breadboard_core::gitlab::{IssueBox, Mr, Pipeline, boxes_of};
-use breadboard_core::model::merge::blockers_of;
+use breadboard_core::model::merge::{blockers_of, is_same_commit, needs_pipeline};
 use breadboard_core::model::order::{Go, MergeOffer};
 use breadboard_core::model::{Paint, Span};
 use serde_json::Value;
@@ -363,13 +365,18 @@ impl Running {
         let (boxes, mut fresh, mut squash) = fresh_of(boxes, first)?;
         let cant = |why: String| format!("can't merge: {why}");
         let (actions, answered) = self.tries();
-        let blockers = blockers_of(Some(&fresh), &boxes, self.can_mark_ready, &actions, &answered);
+        let merges_on_check = !breadboard_core::config::of_main(&self.main).config.merge.needs_pipeline;
+        let needs = needs_pipeline(&fresh, merges_on_check);
+        let mut blockers = blockers_of(Some(&fresh), &boxes, self.can_mark_ready, &actions, &answered, needs);
+        if !needs && let Some(why) = self.check_lack(&fresh) {
+            blockers.push(why);
+        }
         if !blockers.is_empty() {
             return Err(format!("can't merge: {}", blockers.join(" · ")));
         }
         if fresh.is_draft {
             (fresh, squash) = self.mark_ready(&fresh)?;
-            let blockers = blockers_of(Some(&fresh), &boxes, false, &actions, &answered);
+            let blockers = blockers_of(Some(&fresh), &boxes, false, &actions, &answered, needs);
             if !blockers.is_empty() {
                 return Err(format!("marked ready, can't merge: {}", blockers.join(" · ")));
             }
@@ -390,7 +397,7 @@ impl Running {
             std::thread::sleep(RETRY);
             (fresh, squash) = self.read_mr().map_err(cant)?;
             if fresh.merge_status.as_deref() != Some("mergeable") {
-                let blockers = blockers_of(Some(&fresh), &boxes, false, &actions, &answered);
+                let blockers = blockers_of(Some(&fresh), &boxes, false, &actions, &answered, needs);
                 let why = if blockers.is_empty() {
                     reason_of(&error)
                 } else {
@@ -401,6 +408,20 @@ impl Running {
             self.put_merge(&fresh, squash).map_err(|error| reason_of(&error))?;
         }
         Ok((fresh, squash))
+    }
+
+    /// Without a pipeline of its own (#443): None once wt:check passed at the
+    /// head GitLab merges, in its worktree; else why not.
+    fn check_lack(&self, fresh: &Mr) -> Option<String> {
+        let Some(dir) = &self.dir else {
+            return Some("wt:check not known (no worktree here)".into());
+        };
+        match check_of(dir) {
+            CheckState::Tested { sha, .. } if fresh.sha.as_deref().is_some_and(|head| is_same_commit(&sha, head)) => {
+                None
+            }
+            _ => Some("wt:check not passed at the pushed head".into()),
+        }
     }
 
     /// The worktree's tries fresh from its file: the overview's copy may be old.
@@ -635,10 +656,10 @@ mod tests {
         assert_eq!(mr.pipeline_status(), Some("success"));
         assert_eq!(mr.merge_status.as_deref(), Some("draft_status"));
         assert_eq!(
-            blockers_of(Some(&mr), &[], false, &[], &[]),
+            blockers_of(Some(&mr), &[], false, &[], &[], true),
             ["draft: its agent posts the merge"]
         );
-        assert!(blockers_of(Some(&mr), &[], true, &[], &[]).is_empty());
+        assert!(blockers_of(Some(&mr), &[], true, &[], &[], true).is_empty());
     }
 
     #[test]
