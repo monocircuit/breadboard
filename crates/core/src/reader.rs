@@ -874,6 +874,15 @@ impl LocalReader {
                         .record
                         .as_ref()
                         .and_then(|record| crate::batch::branch_of_record(&self.main, record)),
+                    shipping: local
+                        .record
+                        .as_ref()
+                        .and_then(|record| record.product.as_deref())
+                        .map(|product| crate::batch::shipping_of(&self.main, product))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| entry.branch)
+                        .collect(),
                 })
             }
             Local::Worktree(local) => RemoteAsk::Worktree {

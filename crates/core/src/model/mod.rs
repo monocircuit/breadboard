@@ -30,6 +30,7 @@ pub mod orchestration;
 pub mod orchestrator;
 pub mod order;
 pub mod resolve;
+pub mod ship;
 pub mod tree;
 pub mod try_state;
 pub mod waiting;

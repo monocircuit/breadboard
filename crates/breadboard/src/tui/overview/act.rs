@@ -117,6 +117,8 @@ pub enum Fold {
     Collides(i64),
     /// The whole problem of a worktree's issue, past its first two lines (#390).
     Problem(i64),
+    /// BATCH's task MRs (#414).
+    Batch,
 }
 
 /// Opens what was folded, folds what was open.
@@ -156,6 +158,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
+                Fold::Batch => folds.is_batch_shown = !folds.is_batch_shown,
                 Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
                 Fold::Collides(number) => toggle(&mut folds.boxes.collides, number),
@@ -353,31 +356,71 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::HandOver { .. } | Go::StartFresh(_) => auto::click_start(app, &go),
         Go::End => end(app),
         Go::EpicMr => epic_mr(app),
+        Go::ShipBatch(product) => ship_batch(app, &product),
     }
 }
 
-/// How long after the milestone MR opened its row takes no click: the row
-/// goes once a GitLab read shows the MR (every 30 s at the latest).
+/// How long after the milestone or batch MR opened its row takes no click:
+/// the row goes once a GitLab read shows the MR (every 30 s at the latest).
 const EPIC_MR_SHOWN: i64 = 60_000;
 
-/// A click on the milestone row of UP NEXT (#402): `wt:epic <name> --mr` in
-/// the background, once while it runs and once it opened the MR.
+/// An MR into develop a click opens in the background: the milestone MR
+/// of an epic (#402) or the batch MR of a product (#414).
+struct Opening {
+    /// Its actor's slot: `epic_mr`, `ship`.
+    slot: fn(&mut actor::Actor) -> &mut Option<Run>,
+    /// The key of its log lines, and its log file's name.
+    key: &'static str,
+    /// `milestone MR`, `batch MR`.
+    what: &'static str,
+    args: Vec<String>,
+}
+
+/// A click on the milestone row of UP NEXT (#402): `wt:epic <name> --mr`.
 fn epic_mr(app: &mut Overview) {
     let Some(name) = app.orchestration_name() else { return };
-    if app.actor.epic_mr.as_ref().is_some_and(|run| {
+    open_mr(
+        app,
+        Opening {
+            slot: |actor| &mut actor.epic_mr,
+            key: "epic-mr",
+            what: "milestone MR",
+            args: vec!["wt:epic".into(), name, "--mr".into()],
+        },
+    );
+}
+
+/// A click on `ship batch` or the ship row of UP NEXT (#414): `wt:batch <product> --ship`.
+fn ship_batch(app: &mut Overview, product: &str) {
+    open_mr(
+        app,
+        Opening {
+            slot: |actor| &mut actor.ship,
+            key: "ship",
+            what: "batch MR",
+            args: vec!["wt:batch".into(), product.to_string(), "--ship".into()],
+        },
+    );
+}
+
+/// `opening`'s command in the background, once while it runs and once it opened the MR.
+fn open_mr(app: &mut Overview, opening: Opening) {
+    let Some(name) = app.orchestration_name() else { return };
+    let Opening { slot, key, what, args } = opening;
+    if slot(&mut app.actor).as_ref().is_some_and(|run| {
         run.is_running || (run.error.is_none() && run.done_at.is_some_and(|at| now_ms() - at < EPIC_MR_SHOWN))
     }) {
         return;
     }
-    let log = actor::spawn::log_file(&format!("orchestration-epic-mr-{name}.log"));
+    let log = actor::spawn::log_file(&format!("orchestration-{key}-{name}.log"));
     let program = actor::spawn::breadboard();
     let poster = app.actor.poster();
     let log_done = log.clone();
-    let shown = format!("{run} wt:epic {name} --mr", run = breadboard_core::config::run_word());
+    let shown = format!("{} {}", breadboard_core::config::run_word(), args.join(" "));
     let started = actor::spawn::start(
         actor::spawn::Background {
             program: &program,
-            args: vec!["wt:epic".into(), name.clone(), "--mr".into()],
+            args,
             cwd: &app.actor.main,
             log: &log,
             env: vec![],
@@ -389,19 +432,17 @@ fn epic_mr(app: &mut Overview) {
                 match &error {
                     None => {
                         app.actor.log_as(
-                            "epic-mr",
+                            key,
                             Paint::Green,
-                            format!("milestone MR: {}", actor::spawn::said(&last)),
+                            format!("{what}: {}", actor::spawn::said(&last)),
                             None,
                         );
-                        // The epic's row names the MR, and the offer goes.
+                        // The row names the MR, and the offer goes.
                         app.refresh_gitlab();
                     }
-                    Some(why) => app
-                        .actor
-                        .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), None),
+                    Some(why) => app.actor.log_as(key, Paint::Red, format!("no {what}: {why}"), None),
                 }
-                app.actor.epic_mr = Some(Run {
+                *slot(&mut app.actor) = Some(Run {
                     log: Some(log_done),
                     done_at: error.is_none().then(now_ms),
                     error,
@@ -413,14 +454,14 @@ fn epic_mr(app: &mut Overview) {
     );
     match started {
         Ok(()) => {
-            app.actor.epic_mr = Some(Run::running(&log));
+            *slot(&mut app.actor) = Some(Run::running(&log));
             app.actor
-                .log_as("epic-mr", Paint::Yellow, "opening the milestone MR …", Some(shown));
+                .log_as(key, Paint::Yellow, format!("opening the {what} …"), Some(shown));
         }
         Err(why) => {
             app.actor
-                .log_as("epic-mr", Paint::Red, format!("no milestone MR: {why}"), Some(shown));
-            app.actor.epic_mr = Some(Run {
+                .log_as(key, Paint::Red, format!("no {what}: {why}"), Some(shown));
+            *slot(&mut app.actor) = Some(Run {
                 error: Some(why),
                 ..Run::default()
             });
