@@ -943,6 +943,17 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// How an agent of this repo types `bb status` / `bb submit`: `bb`, the
+    /// monorepo's shim (#427), where breadboard runs through pnpm, else
+    /// `breadboard` (as `in_repo` says it).
+    pub fn bb(&self) -> &'static str {
+        if self.config.repo.run.as_deref() == Some("pnpm") {
+            "bb"
+        } else {
+            "breadboard"
+        }
+    }
+
     /// `origin/<branch>`.
     pub fn base(&self) -> String {
         format!("origin/{}", self.branch)

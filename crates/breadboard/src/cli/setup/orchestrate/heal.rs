@@ -10,8 +10,9 @@ use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
 
-/// The line of a brief that names the base (handover/brief.rs).
-static BASE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Its base is `([^`]+)`").unwrap());
+/// The line of a brief that names the base (handover/brief.rs): `Base `…``
+/// since the lean brief (#429), `Its base is `…`` in the briefs before it.
+static BASE_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)(Its base is |^Base )`([^`]+)`").unwrap());
 
 /// The checkout of `name` up to its base: a line when it moved, one with
 /// why when it can't (it stays where it is), none when it is up to date.
@@ -33,8 +34,8 @@ pub fn follow_checkout(main: &Path, name: &str) -> Option<String> {
 
 /// `brief` with its base line naming `base`, None when it does already (or has none).
 pub fn with_base(brief: &str, base: &str) -> Option<String> {
-    let named = BASE_LINE.captures(brief)?.get(1)?.as_str();
-    (named != base).then(|| BASE_LINE.replace(brief, format!("Its base is `{base}`")).into_owned())
+    let named = BASE_LINE.captures(brief)?.get(2)?.as_str();
+    (named != base).then(|| BASE_LINE.replace(brief, format!("${{1}}`{base}`")).into_owned())
 }
 
 /// The briefs of the worktrees of `name` set right where they name another
@@ -71,5 +72,11 @@ mod tests {
         );
         assert_eq!(with_base(brief, "main"), None);
         assert_eq!(with_base("# no base line\n", "develop"), None);
+        // The lean brief's line (#429).
+        let brief = "# #1 x\n\nBranch `b` in `/d`.\nBase `main`: your one MR goes into it.\n";
+        assert_eq!(
+            with_base(brief, "epic/15-o").as_deref(),
+            Some("# #1 x\n\nBranch `b` in `/d`.\nBase `epic/15-o`: your one MR goes into it.\n")
+        );
     }
 }
