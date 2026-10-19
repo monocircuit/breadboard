@@ -480,7 +480,8 @@ impl Running {
             let _ = done_action(file, *id);
         }
         let mut tell = |dir: &Path, about: String, line: String| {
-            let is_in = herdr::deliver_to(&self.main, dir, &line);
+            // A notice (#445): it starts no run, it rides along with the agent's next.
+            let is_in = herdr::deliver_notice(&self.main, dir, &line);
             if !is_in {
                 self.pending.lock().unwrap_or_else(|e| e.into_inner()).push((
                     dir.to_path_buf(),
@@ -573,7 +574,7 @@ pub fn retry_lines(actor: &Actor, dirs: Vec<PathBuf>) {
             if !dirs.contains(&dir) {
                 continue;
             }
-            if herdr::deliver_to(&main, &dir, &line) {
+            if herdr::deliver_notice(&main, &dir, &line) {
                 typed.push((breadboard_core::git::feature_of(&main, &dir), about, line));
             } else {
                 left.push((dir, about, line));

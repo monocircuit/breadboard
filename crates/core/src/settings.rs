@@ -38,10 +38,13 @@ pub const SHIP_TASKS: &str = "ship_after_tasks";
 pub const SHIP_DAYS: &str = "ship_after_days";
 pub const TRY_CHECKER: &str = "try_checker";
 pub const AUTO_FRESH: &str = "auto_fresh";
-pub const AGENT_FRESH: &str = "agent_fresh_above";
+// In thousands of tokens: a panel's change of the percent before (#381) is no value of these.
+pub const AGENT_FRESH: &str = "agent_fresh_above_k";
+pub const AGENT_IDLE_FRESH: &str = "agent_idle_fresh_above_k";
+pub const AGENT_IDLE_MINUTES: &str = "agent_idle_minutes";
 
 /// Every setting, in the panel's order.
-pub const DEFS: [Def; 7] = [
+pub const DEFS: [Def; 9] = [
     Def {
         key: BATCHING,
         label: "batching",
@@ -89,11 +92,31 @@ pub const DEFS: [Def; 7] = [
     Def {
         key: AGENT_FRESH,
         label: "agent fresh start",
-        about: "an agent past this share of its context retires at its merge, its next issue goes to a fresh one (#381)",
+        about: "an agent past this much context retires at its merge, its next issue goes to a fresh one with its handoff (#381, #445)",
         kind: Kind::Count {
-            unit: "%",
+            unit: "k tokens",
+            min: 10,
+            max: 1000,
+        },
+    },
+    Def {
+        key: AGENT_IDLE_FRESH,
+        label: "agent fresh start when idle",
+        about: "past this much context it retires too once idle past the time below: its cache is gone, a resume writes it all again (#445)",
+        kind: Kind::Count {
+            unit: "k tokens",
+            min: 10,
+            max: 1000,
+        },
+    },
+    Def {
+        key: AGENT_IDLE_MINUTES,
+        label: "agent idle time",
+        about: "how long idle that is: a little under the prompt cache's hour (#445)",
+        kind: Kind::Count {
+            unit: "min",
             min: 1,
-            max: 100,
+            max: 600,
         },
     },
 ];
@@ -117,7 +140,9 @@ pub fn defaults_of(config: &Config) -> Map<String, Value> {
         AUTO_FRESH.into(),
         json!(given.auto_fresh.unwrap_or(config.orchestrator.auto_fresh)),
     );
-    out.insert(AGENT_FRESH.into(), json!(config.agents.fresh_above));
+    out.insert(AGENT_FRESH.into(), json!(config.agents.fresh_above / 1000));
+    out.insert(AGENT_IDLE_FRESH.into(), json!(config.agents.idle_fresh_above / 1000));
+    out.insert(AGENT_IDLE_MINUTES.into(), json!(config.agents.idle_minutes));
     out
 }
 
@@ -235,8 +260,9 @@ pub struct Settings {
     pub ship_after_days: i64,
     pub try_checker: bool,
     pub auto_fresh: bool,
-    /// `agent fresh start` as a share of the context window, 0.4 (`[agents] fresh_above`, #381).
-    pub agent_limit: f64,
+    /// When an agent starts fresh (#445): `agent fresh start`, `… when idle`
+    /// and `agent idle time`, by default `[agents]`'s.
+    pub agent_fresh: crate::fresh::Fresh,
 }
 
 pub fn of(main: &Path, name: &str) -> Settings {
@@ -254,7 +280,11 @@ fn settings_of(rows: &[Row]) -> Settings {
         ship_after_days: count(SHIP_DAYS),
         try_checker: switch(TRY_CHECKER),
         auto_fresh: switch(AUTO_FRESH),
-        agent_limit: count(AGENT_FRESH) as f64 / 100.0,
+        agent_fresh: crate::fresh::Fresh {
+            above: count(AGENT_FRESH).max(0) as u64 * 1000,
+            idle_above: count(AGENT_IDLE_FRESH).max(0) as u64 * 1000,
+            idle_ms: count(AGENT_IDLE_MINUTES) * 60_000,
+        },
     }
 }
 
@@ -342,7 +372,15 @@ mod tests {
             (json!(5), json!(2))
         );
         assert_eq!(defaults[TRY_CHECKER], json!(false));
-        assert_eq!(defaults[AGENT_FRESH], json!(40), "[agents] fresh_above");
+        assert_eq!(
+            (
+                defaults[AGENT_FRESH].clone(),
+                defaults[AGENT_IDLE_FRESH].clone(),
+                defaults[AGENT_IDLE_MINUTES].clone()
+            ),
+            (json!(150), json!(100), json!(55)),
+            "[agents]"
+        );
         let config =
             Config::parse("[settings]\nbatching = false\nauto_merge_into_batch = false\nship_after_tasks = 8\n")
                 .unwrap();
@@ -383,9 +421,15 @@ mod tests {
         assert_eq!(line, "auto-merge into batch: on (the default again)");
         assert!(of(&main, "a").auto_merge_into_batch);
         assert!(!rows_of(&main, "a").iter().any(|row| row.is_overridden));
-        assert!((of(&main, "a").agent_limit - 0.4).abs() < 1e-9);
-        set(&main, "a", AGENT_FRESH, Some(json!(60)), 0).unwrap();
-        assert!((of(&main, "b").agent_limit - 0.6).abs() < 1e-9);
+        assert_eq!(of(&main, "a").agent_fresh, crate::fresh::Fresh::default());
+        let line = set(&main, "a", AGENT_FRESH, Some(json!(200)), 0).unwrap();
+        assert_eq!(line, "agent fresh start: 200 k tokens (by you)");
+        set(&main, "a", AGENT_IDLE_MINUTES, Some(json!(30)), 0).unwrap();
+        let fresh = of(&main, "b").agent_fresh;
+        assert_eq!(
+            (fresh.above, fresh.idle_above, fresh.idle_ms),
+            (200_000, 100_000, 30 * 60_000)
+        );
         // One of no product keeps its own, in its record.
         set(&main, "alone", SHIP_TASKS, Some(json!(3)), 0).unwrap();
         assert_eq!(of(&main, "alone").ship_after_tasks, 3);
