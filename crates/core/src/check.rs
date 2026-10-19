@@ -57,10 +57,20 @@ fn failures_in(value: Option<&Value>) -> Vec<Failure> {
 pub enum CheckState {
     /// wt:check runs, since then.
     Checking { since: Option<String> },
-    /// The last check that passed tested HEAD's tree.
-    Tested { sha: String, packages: Vec<String> },
-    /// The last check of HEAD's tree failed.
-    Failed { sha: String, failures: Vec<Failure> },
+    /// The last check that passed tested HEAD's tree; `no_test` the reason a
+    /// fix passed without a test change (`--no-test`, #316).
+    Tested {
+        sha: String,
+        packages: Vec<String>,
+        no_test: Option<String>,
+    },
+    /// The last check of HEAD's tree failed; `refused` why it ran nothing
+    /// (`fix without test`, #316).
+    Failed {
+        sha: String,
+        failures: Vec<Failure>,
+        refused: Option<String>,
+    },
     /// None of them: commits since the last pass (since develop without one).
     Untested { count: u64 },
     /// Nothing of its own yet.
@@ -93,12 +103,14 @@ pub fn check_state_of(
         return CheckState::Tested {
             sha: head.into(),
             packages: strs_of(passed, "packages"),
+            no_test: str_of(passed, "no_test").map(String::from),
         };
     }
     if let Some(failed) = failed.filter(|failed| tree_is(failed)) {
         return CheckState::Failed {
             sha: head.into(),
             failures: failures_in(failed.get("failures")),
+            refused: str_of(failed, "refused").map(String::from),
         };
     }
     if passed.is_none() && ahead == 0 {
@@ -226,6 +238,84 @@ pub fn failures_line(failures: &[Failure], count: usize) -> String {
         .join(" · ")
 }
 
+/// What a refused fix is stamped and shown as (#316).
+pub const FIX_WITHOUT_TEST: &str = "fix without test";
+/// The line of an MR description that says why a fix comes without a test:
+/// wt:mr writes it from the stamp, the MR's CI job reads it (#316).
+pub const NO_TEST_LINE: &str = "**No regression test:**";
+static NO_TEST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[ \t]*(?:\*\*)?No regression test:(?:\*\*)?[ \t]*(\S.*?)[ \t]*$").unwrap());
+
+/// The reason an MR description gives for a fix without a test.
+pub fn no_test_of(description: &str) -> Option<String> {
+    NO_TEST.captures(description).map(|found| found[1].to_string())
+}
+
+/// `description` with its no-test line set to `reason`: replaced where it
+/// has one, else put first (a reviewer sees it at once, and GitLab hands CI
+/// only the first 2700 characters, `CI_MERGE_REQUEST_DESCRIPTION`).
+pub fn with_no_test(description: &str, reason: &str) -> String {
+    let line = format!("{NO_TEST_LINE} {reason}");
+    if NO_TEST.is_match(description) {
+        return NO_TEST.replace(description, regex::NoExpand(&line)).into_owned();
+    }
+    format!("{line}\n\n{}", description.trim_start())
+}
+
+/// Whether a branch is a fix, the kind that brings its regression test (#316).
+pub fn is_fix_branch(branch: &str) -> bool {
+    branch.starts_with("fix/")
+}
+
+/// A test file by its path, the one pattern of #316: `*.test.*` (and
+/// `*.int.test.*`), `*.spec.*`, `*.check.*` (the gauntlet's), or anything in
+/// a `tests/` folder (Rust's integration tests). Rust's `#[cfg(test)]`
+/// modules are lines of a file, [`is_test_change`] judges those.
+pub fn is_test_file(path: &str) -> bool {
+    let mut parts = path.split('/').collect::<Vec<_>>();
+    let name = parts.pop().unwrap_or_default();
+    if parts.contains(&"tests") {
+        return true;
+    }
+    let pieces: Vec<&str> = name.split('.').collect();
+    // `a.test.ts`: the marker between the name and its extension.
+    pieces.len() >= 3
+        && pieces[1..pieces.len() - 1]
+            .iter()
+            .any(|piece| matches!(*piece, "test" | "spec" | "check"))
+}
+
+/// The last line (1-based, of the file after the change) each of `git diff
+/// -U0`'s hunks of one file reaches: a deletion where it stood.
+pub fn hunk_ends(diff: &str) -> Vec<u64> {
+    static HUNK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^@@ -\S+ \+(\d+)(?:,(\d+))? @@").unwrap());
+    HUNK.captures_iter(diff)
+        .filter_map(|found| {
+            let start: u64 = found[1].parse().ok()?;
+            let count: u64 = found.get(2).map_or(Some(1), |count| count.as_str().parse().ok())?;
+            Some(start + count.saturating_sub(1))
+        })
+        .collect()
+}
+
+/// Whether a changed file is a test change: a test file, or a Rust file
+/// changed after its `#[cfg(test)]` (where its test module begins, at its
+/// end as rustfmt's convention has it). `text` is the file after the change
+/// (None: deleted), `ends` its hunks' last lines.
+pub fn is_test_change(path: &str, text: Option<&str>, ends: &[u64]) -> bool {
+    if is_test_file(path) {
+        return true;
+    }
+    let (true, Some(text)) = (path.ends_with(".rs"), text) else {
+        return false;
+    };
+    let Some(module) = text.lines().position(|line| line.trim() == "#[cfg(test)]") else {
+        return false;
+    };
+    let module = module as u64 + 1;
+    ends.iter().any(|end| *end > module)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,7 +357,8 @@ mod tests {
             ),
             CheckState::Tested {
                 sha: SHA.into(),
-                packages: vec!["a".into()]
+                packages: vec!["a".into()],
+                no_test: None
             }
         );
         let record = json!({
@@ -282,7 +373,8 @@ mod tests {
                     package: "a".into(),
                     task: "test".into(),
                     tests: vec!["x".into()]
-                }]
+                }],
+                refused: None
             }
         );
     }
@@ -367,5 +459,61 @@ mod tests {
             failures_text(&failures),
             "@monocircuit/vita (a > 1, a > 2, +1 more) · @monocircuit/breadboard lint"
         );
+    }
+
+    #[test]
+    fn knows_a_test_file_by_its_path() {
+        for path in [
+            "src/a.test.ts",
+            "products/vita/web/src/x.int.test.ts",
+            "e2e/landing.spec.ts",
+            "packages/breadboard-gauntlet/src/checks/cli.check.mjs",
+            "packages/breadboard/crates/core/tests/check.rs",
+        ] {
+            assert!(is_test_file(path), "{path}");
+        }
+        for path in [
+            "src/test.ts",
+            "src/check.rs",
+            "docs/testing.md",
+            "src/a.ts",
+            "contest.ts",
+        ] {
+            assert!(!is_test_file(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn counts_a_rust_change_in_its_test_module() {
+        let text = "fn a() {}\n\n#[cfg(test)]\nmod tests {\n    fn b() {}\n}\n";
+        assert!(is_test_change("src/a.rs", Some(text), &[5]));
+        assert!(!is_test_change("src/a.rs", Some(text), &[1, 3]));
+        assert!(!is_test_change("src/a.rs", Some("fn a() {}\n"), &[1]));
+        assert!(!is_test_change("src/a.rs", None, &[5]));
+        assert!(!is_test_change("src/a.ts", Some(text), &[5]));
+        assert!(is_test_change("src/a.rs", Some(text), &[6]));
+        assert_eq!(
+            hunk_ends("@@ -1,2 +1 @@ x\n-a\n@@ -9 +10,3 @@\n+b\n@@ -20 +21,0 @@\n"),
+            vec![1, 12, 21]
+        );
+    }
+
+    #[test]
+    fn reads_and_sets_the_no_test_line() {
+        assert_eq!(
+            no_test_of("Why.\n\n**No regression test:** a typo\n\nCloses #1"),
+            Some("a typo".into())
+        );
+        assert_eq!(no_test_of("No regression test: docs only"), Some("docs only".into()));
+        assert_eq!(no_test_of("No regression test:\nCloses #1"), None);
+        assert_eq!(
+            with_no_test("Why.\n", "a typo"),
+            "**No regression test:** a typo\n\nWhy.\n"
+        );
+        assert_eq!(
+            with_no_test("Why.\n\n**No regression test:** old\n\nCloses #1", "new $1"),
+            "Why.\n\n**No regression test:** new $1\n\nCloses #1"
+        );
+        assert!(is_fix_branch("fix/316-a") && !is_fix_branch("feature/316-a"));
     }
 }

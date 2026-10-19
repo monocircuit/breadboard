@@ -183,7 +183,12 @@ sh packages/breadboard/herdr/breadboard.sh runs tell <worktree dir> "<line>"
 ```
 
 The line starts the agent's next run, or goes into the next one when a run
-is in flight.
+is in flight. A line it needn't act on now (`!N is merged`, a hotfix's
+pipeline runs, a rule for later) goes with `runs tell --notice <dir>
+"<line>"`: it starts no run but rides along with the next line that does
+(#445). Every run resumes the agent's whole history, so a notice of its own
+costs a full read, and past the cache's hour a full write too. The
+overview's own `!N merged` is such a notice.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
@@ -312,14 +317,13 @@ overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
 `look` (go to the agent's space) — and the automatic `permission` (what auto
-mode would have asked in a run, see Permissions), `push` (commits a worktree
-holds unpushed for over 10 minutes; the click queues the order for its
-agent) and `merge` (a ready, green MR without its agent's, none while a
-change is requested).
-Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
+mode would have asked in a run, see Permissions) and `merge` (a ready, green MR without its agent's, none while a
+change is requested). Commits an agent left unpushed get no row:
+breadboard checks and pushes them itself (README, "Headless agents").
+Sorted by what blocks most: `permission`, `decide`, `plan`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
-the worktree, have its agent tick the done boxes), `pipeline` (a failed
+the worktree, a small run of its own ticks the done boxes: Sonnet at low effort with the issue, the MR and the agent's handoff, its agent not woken, #445), `pipeline` (a failed
 MR pipeline whose line didn't reach its agent; queued, it arrives on the
 first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
@@ -399,6 +403,14 @@ count as `· N to check after merge`. Until then there is no automatic
 to merge`. A `broken` on a try of a ready MR puts it back to draft and
 withdraws its agent's merge; the agent posts it again once the fix is
 pushed, green and tried again.
+
+**Temporary** (#443, until the batch branches carry the testing): with
+`[merge] needs_pipeline = false` in breadboard.toml an MR into develop needs
+no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
+for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
+starts none for it (a click on its row still runs one). develop's pipeline
+after each merge is the safety net: while it is red, no merge into develop
+is offered. Into an epic nothing changes.
 
 No agent marks an MR ready (#399): `breadboard serve` does it once its bar
 is full, every box of its issue ticked (after-deploy ones excepted) and no
@@ -522,8 +534,7 @@ moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
 <old>` for a day). The old worktree keeps its space until its clean-up.
 `--to` takes the old name too. Refused while a run of the agent is in
-flight or it waits for an answer, or above `--limit` (`[agents]
-fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
+flight or it waits for an answer, or when it starts fresh (below). An issue no free
 agent shares a file with goes to a fresh agent: another issue's context
 buys it nothing.
 
@@ -536,17 +547,24 @@ the worktree's, and the worktree goes. An agent that never ran is freed
 too. Its next issue is its next run, in the new worktree, the path of every
 handover. While the record keeps a free agent, the space `⇶ <name>` stays.
 
-**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
-context window) it isn't freed but retires at its merge, never mid-issue:
-`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
-conversation one last run that writes `.claude/handoff.md` (a page at most:
-what it learned about the files it changed), keeps it next to the record
+**A full agent retires** (#381, #445): every resume reads its whole history
+again, and once it idled past the prompt cache's hour a resume writes all of
+it to the cache anew. So above `[agents] fresh_above` (150 k tokens of
+context), or above `idle_fresh_above` (100 k) and idle longer than
+`idle_minutes` (55), it isn't freed but retires at its merge, never mid-issue:
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` takes the
+handoff it wrote at its last real run (`.claude/handoff-next.md`, a page at
+most: what it learned about the files it changed; `wt:action merge` asks for
+it once its context passes `idle_fresh_above`), else gives its conversation
+one last run that writes `.claude/handoff.md`, but only while its cache is
+warm: a cold one is never woken for it. It keeps the handoff next to the record
 (`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then its
 worktree goes. A fresh agent on those files gets the handoff of the retired
 agent sharing the most of them as its own `.claude/handoff.md`, its brief's
-`## Handoff` says whose it is. The overview says it in advance: the agent's
+`## Handoff` says whose it is; a freed agent's handoff is kept too, for
+when it starts fresh later. The overview says it in advance: the agent's
 node `fresh start at its next issue`, UP NEXT `#380 → fresh agent (Mira
-retires, 47 %)`, and the changelog notes the retirement under its merge.
+retires, 162 k)`, and the changelog notes the retirement under its merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
@@ -633,8 +651,8 @@ origin next to the worktree and in its view. They stay together (#255): the
 worktrees of no orchestration first, then per orchestration its space with
 its worktrees right below in the work order of `wt:plan`; the overview of
 the main space sorts them on every read (`core/src/model/order.rs`). A
-worktree's space shows its agent's state from the status table (How agents
-run) as its third row (`$wt_state`), not from a claude pane: there is none.
+worktree has no space of its own (#409): its agent's state is its row in
+the overview, from the status table (How agents run).
 The tab bar's "N need you" counts the agents that ask (`asks`: a denied
 tool waiting for the user).
 

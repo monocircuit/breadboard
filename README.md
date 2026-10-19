@@ -100,33 +100,44 @@ from: a few ms), else makes it first:
 - from the repo's store, `<git common dir>/breadboard/bin/<key>/`, when any
   checkout of the clone built these sources before (a copy, ~15 MB): a new
   worktree of `wt:new`, a pull another checkout made first;
-- else `cargo build --release` into the store's `target/`, one for every
-  worktree (the dependencies are built once; one build at a time), its
-  progress on stderr, kept in the store for the others (the newest 8).
+- else `cargo build --release` in the checkout's own `target/`, its progress
+  on stderr, kept in the store for the others (the newest 8).
 
-Uncommitted changes to the crates build in the store's `target/` too, but
-stay out of the store's `bin/`. So a `git pull` never leaves the code from
-before running, `wt:new` needs no `pnpm install`, and a worktree costs no
-cargo target of its own. Without cargo (https://rustup.rs) and without a build
-of those sources, the binary from before runs and says so.
+Uncommitted changes to the crates build there too, but stay out of the
+store's `bin/`. So a `git pull` never leaves the code from before running and
+`wt:new` needs no `pnpm install`. Without cargo (https://rustup.rs) and
+without a build of those sources, the binary from before runs and says so.
 
-**Every cargo run goes through `herdr/cargo.sh`** (#336): the launcher's
-build and `lint:rs`, `test:rs`. It sets `CARGO_TARGET_DIR` to the store's
-`target/` (cargo locks it: a second run waits instead of compiling beside
-it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
-`cargo` in the package would compile everything again into a `target/` of
-its own (~2 GB): use the scripts. The launcher removes such a `target/` once
-(keeping the binary), unless a cargo holds it.
+**Every cargo run goes through `herdr/cargo.sh`** (#336, #446): the
+launcher's build and `lint:rs`, `test:rs`. Each checkout compiles in its own
+`target/`, so no worktree waits for another's build or check; a
+`CARGO_TARGET_DIR` you set wins (one of your own for an uncommitted binary).
+It runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`).
+
+**Install [sccache](https://github.com/mozilla/sccache)** once per machine:
+`pacman -S sccache`, `brew install sccache`, `apt install sccache` or
+`cargo install --locked sccache`. `cargo.sh` makes it rustc's wrapper (cc-rs
+uses it for the C code too, `aws-lc-sys`), so a dependency is compiled once
+per version and feature set for every `target/`: a new worktree's first
+build and check compile only the workspace's crates. `sccache --show-stats`
+shows the hits. `cargo.sh` hands cargo the target and the jobs as `--config`,
+not as `CARGO_*` variables: sccache counts those into every crate's key, so
+another target would miss them all. Without sccache every `target/` compiles
+all dependencies (minutes, ~2 GB), after one line that says so; a
+`RUSTC_WRAPPER` you set (empty: none) wins. CI's cargo jobs don't use it.
+The store's `target/` from before (`<git common dir>/breadboard/target`) is
+unused once every worktree has this `cargo.sh`: remove it then.
 
 **A stored copy is what its key says** (#339). cargo's hash of a workspace
 crate leaves out where the workspace is, and it judges freshness by mtimes:
-in a shared `target/`, a worktree's older files count as built after another
-worktree's build, and the binary (or clippy's verdict, the test binaries) is
-the other one's. So `cargo.sh` holds a `flock` on the target for the whole
+in a `target/` two checkouts share (a `CARGO_TARGET_DIR` set by hand), a
+worktree's older files count as built after the other's build, and the
+binary (or clippy's verdict, the test binaries) is the other one's. So
+`cargo.sh` holds a `flock` on the target for the whole
 run and, when another checkout used it last (`.breadboard-from`), cleans the
 workspace's own crates first: switching worktrees recompiles breadboard and
-core, never the dependencies. The launcher reads the sources' key under the
-store's lock, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
+core, never the dependencies. The launcher reads the sources' key right
+before the build, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
 binary carries it (`breadboard --source-key`). It stores a build only when
 the sources were committed and unchanged across it and the file carries the
 key, and it uses a stored copy only when that copy carries its key (found with
@@ -143,9 +154,9 @@ of your own keeps its claude in a tab (#361).
   worktree view's `resume` row): `claude --resume <id> --name <feature>` in
   the tab `<feature>` of its worktree's space, once no run of it is in
   flight; its queue waits until that claude ends.
-- **The sidebar and the tab bar read the status table**: the space of a
-  worktree shows what its agent waits for (`$wt_state`, the space's third
-  row), and "N need you" counts its `asks`.
+- **The tab bar reads the status table**: "N need you" counts its `asks`;
+  what an agent waits for is its row in the overview (a worktree has no
+  space of its own, #409).
 
 - **A line for an agent is queued**, not typed into a pane: the overview's
   deliveries (`deliver_to`) and `breadboard runs tell <dir> <line…>` append
@@ -178,6 +189,13 @@ of your own keeps its claude in a tab (#361).
   (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
   band says `agents paused since 13:05 · N lines waiting`. The state is
   `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.
+- **The review run** (#374), `[review]` in breadboard.toml
+  ([`docs/config.md`](docs/config.md)): an MR whose bar is full and whose
+  head is green (its pipeline, or `wt:check` where it merges without one) gets one `claude -p` on a small model over its diff and
+  issue before its merge is offered (`breadboard_core::review`, the
+  overview's `actor/review.rs`). Not a task run: it starts beside the queue,
+  within the same memory and never while the daily limit or a pause holds.
+  Serious findings go to the MR's agent, all of them into an MR comment.
 - **The Claude usage limit** (#393): a run whose result is the limit (an
   error with a 429 or the limit's words, `resets 11:30pm`) leaves its
   session `limit` and holds every run until a minute after the reset, or
@@ -187,6 +205,22 @@ of your own keeps its claude in a tab (#361).
   `[breadboard] the usage limit reset: continue where you stopped` ahead of
   them. The band says `usage limit until 23:30`, and the orchestrator's
   chat is told once when it holds and once when the runs go on.
+- **Unpushed commits** (#450, `crates/breadboard/src/daemon/push.rs`, the
+  rules in `crates/core/src/push.rs`): a run cut off (herdr killed, OOM)
+  leaves its commits unpushed while the agent idles, and a push needs no
+  LLM. Every 15 s the daemon looks at each orchestrated worktree; one with
+  commits its upstream lacks, its agent's last run ended a minute ago and
+  none queued, no claude open in it, no `wt:check` or background command
+  running and nothing uncommitted gets `wt:check` run by breadboard, then
+  `git push` and a draft MR (`wt:mr`, `Closes #<n>`) when it has none. One
+  at a time across the clone's daemons (`.claude/runs/push.pid`), only while
+  memory allows a run. A red check is one line to the agent (the failing
+  task, the log's end); red again after its fix, or a push git refused, a
+  `look` action of the worktree. Uncommitted changes are one line to the
+  agent, never checked. ACTIONS has no row for them: the node says
+  `2 commits + a merge of develop not pushed · wt:check running, then push`
+  (`.claude/pushing.json`). Off with `git config breadboard.push off`
+  (every gauntlet world but `push.check.mjs`'s).
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
   `asks` (the run was denied a tool, its `permission_denials`), `limit`
   (the usage limit), and `queued` from the queue. The overview reads it as
@@ -236,7 +270,7 @@ there: the same try again runs again once it ended, another try replaces it
 | --- | ------------------- |
 | `e` | the worktree's nvim |
 | `t` | the terminal of its newest open try (`wt:action try … --run`) |
-| `l` | its stack's logs, or its dev server while its app is down |
+| `l` | its stack's logs, the services' and its background processes' (`.claude/stack/*.log`) together, or its dev server while nothing runs |
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
 The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
@@ -362,7 +396,7 @@ breadboard decides which pipelines exist at all:
   checkout) turns the queue off within 10 s: it starts and cancels nothing,
   and pushes start their pipelines again. `git config --unset breadboard.ci`
   turns it on.
-- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci.rs`,
+- **`breadboard serve` starts them** (`crates/breadboard/src/daemon/ci/`,
   the rules in `crates/core/src/ci.rs`): every 10 s, while an overview of the
   repo is open, it reads the open MRs and the runner's free slots
   (`concurrent` of `/etc/gitlab-runner/config.toml` minus the running job

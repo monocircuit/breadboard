@@ -27,10 +27,9 @@ time it
    here, `keys.toml` appended, and the sidebar rows (`../crates/breadboard/src/herdr/sidebar.rs`,
    colours from your `[theme.custom]`): the spaces of an orchestration
    (`pnpm wt:orchestrate`) marked `⇶ <name>` (or its `--title`) in its colour (`$orch1`..`$orch3`
-   in `blue`, `teal`, `mauve`), and under each agent of a worktree what it
-   waits for (`$wt_state`, see below). A base with its own
+   in `blue`, `teal`, `mauve`). A base with its own
    `[ui.sidebar.spaces]` keeps it; one with its own `[ui.sidebar.agents]`
-   keeps its rows and gets them for claude with the state added
+   keeps its rows and gets them for claude with the repo added
    (`rows_by_agent`),
 3. starts the herdr **session `platform`** — its own server next to your
    default session — with the pinned herdr first on `PATH`,
@@ -155,27 +154,9 @@ together. Rows of your own stay for other agents; claude gets these
 
 ## What an agent waits for
 
-Under each agent in a worktree's space the sidebar says what it waits for,
-so you see it without the overview, its MR behind it (`· !n`): the same
-words as WORK in the overview of an orchestration (#288), the first
-that holds:
-
-| Line | When | Colour |
-| ---- | ---- | ------ |
-| `at work` | the agent works | `yellow` |
-| `asks you` | it asks something (herdr: blocked) or stopped on a question | `red`, bold |
-| `waits for the pipeline` | its MR's pipeline runs, or GitLab has none yet for its last push | `blue` |
-| `pipeline failed` | the pipeline of its MR failed | `red` |
-| `waits for you: merge, try #4, decide` | its open actions (`wt:action`), a merge once its MR's pipeline passed and no try is open | `red` |
-| `checks open: try #2 broken` | its MR's pipeline passed, but a try (or in WORK an acceptance box) is open | `red` |
-| `waits for !n`, `→ next #n after !m` | `wt:wait`, a handover announced for it | `blue` |
-| `change requested`, `not pushed: 2 commits` | a change open for its MR, commits origin lacks | `red` |
-| `free` | none of these: nothing to do | `teal` |
-
-The overview of the main space reports it (`../crates/breadboard/src/tui/overview/actor/sync.rs`,
-token `$wt_state`), every couple of seconds, GitLab's part every half
-minute. The row that shows it comes with the config (`--reload` renews it);
-the main checkout's agents get no line.
+A worktree has no space of its own (#409): what its agent waits for is its
+row in the overview of its product or orchestration (WORK), not a sidebar
+line. The token `$wt_state` of before is cleared from the panes that had it.
 
 The same overview **notifies** (herdr's notifications, titled with the
 worktree) when its agent starts asking something, the pipeline of its MR

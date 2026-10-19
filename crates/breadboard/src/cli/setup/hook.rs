@@ -7,7 +7,7 @@
 
 use super::check::{self, Failure};
 use super::gitlab;
-use super::proc::{errln, fail, git};
+use super::proc::{Shape, errln, fail, git};
 use breadboard_core::ci::PushOption;
 use breadboard_core::json::str_of;
 use breadboard_core::time::{now_ms, to_iso};
@@ -15,6 +15,9 @@ use serde_json::{Map, Value, json};
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
+
+/// What `hook` takes: the hook and git's two words.
+pub const SHAPE: Shape = Shape::new(&[], &[], Some(3), USAGE);
 
 pub const USAGE: &str = "usage: breadboard hook pre-push <remote> <url>   (git runs it, the refs on stdin)";
 

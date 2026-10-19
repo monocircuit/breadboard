@@ -6,7 +6,7 @@
 
 use super::fragments::{self, Entry};
 use super::gitlab;
-use super::proc::{Args, errln, fail, step};
+use super::proc::{Args, Shape, errln, fail, step};
 use super::repo;
 use super::view;
 use breadboard_core::config::Release as ReleaseTag;
@@ -20,6 +20,14 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+/// What `changelog` takes.
+pub const SHAPE: Shape = Shape::new(
+    &["--since", "--watch"],
+    &["--since"],
+    Some(0),
+    "usage: pnpm changelog [--since 30d|2w|<date>] [--watch]",
+);
 
 const GROUPS: [(&str, &str); 9] = [
     ("feat", "Features"),
@@ -151,7 +159,7 @@ pub struct Merged {
 }
 
 /// The line under a merge whose agent retired then (#381), from the record:
-/// who, at what share of its context, and that its handoff is kept.
+/// who, at how much context, and that its handoff is kept.
 pub fn retired_note(found: &record::Record, iid: i64) -> Option<String> {
     let worker = found
         .workers
@@ -163,10 +171,7 @@ pub fn retired_note(found: &record::Record, iid: i64) -> Option<String> {
         .clone()
         .or_else(|| worker.name.clone())
         .unwrap_or_else(|| "its agent".into());
-    let context = retired
-        .context
-        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
-        .unwrap_or_default();
+    let context = retired.context_text();
     let handoff = if retired.handoff.is_some() {
         "its handoff kept for a fresh agent"
     } else {
@@ -348,7 +353,7 @@ pub fn write_changelog(name: &str) -> Option<Rewritten> {
     };
     let mut merged = Vec::new();
     let mut closed = Vec::new();
-    let spent = breadboard_core::spend::by_issue_of(&found);
+    let spent = breadboard_core::spend::by_issue_of(&main, &found);
     for (number, mr, issue) in read {
         match mr {
             Some(mr) => {

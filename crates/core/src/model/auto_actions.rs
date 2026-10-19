@@ -1,20 +1,21 @@
 //! The automatic actions of an orchestration (auto-actions.mjs): what the
 //! overview finds waiting without anyone posting it: a merge that is ready, a
-//! failed pipeline, commits sitting unpushed, the clean-up after a merge, an
+//! failed pipeline, the clean-up after a merge, an
 //! agent that stopped on a question. And the lines it sends by itself about
 //! conflicts and failed pipelines, as data: the writing side sends them.
 
-use super::change::{is_change_open, unpushed_action_of};
+use super::change::is_change_open;
 use super::half_merged::half_merged_action_of;
 use super::merge::checks_of;
 use super::order::{Go, Item, Target};
 use super::resolve::is_conflict_settled;
 use super::{Entry, Tree};
+use crate::ci_fix::{Fix, Stage};
 use crate::conversations::{first_line, question_of};
 use crate::gitlab::{DevelopPipeline, Job, Mr, Remote};
 use crate::herdr::Agent;
 use crate::time::to_iso;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The automatic wt:remove of a worktree, as the writing side keeps it.
@@ -53,9 +54,10 @@ pub fn failed_key_of(mr: &Mr) -> String {
 const LOG_LINE_CHARS: usize = 200;
 
 /// The line that tells an agent its MR's pipeline failed: the failed jobs with
-/// their urls and the end of the first one's log. A job develop's last
+/// their urls, what to do (fix, wt:check, push: `fix` the how-manyth run
+/// that is, #371) and the end of the first one's log. A job develop's last
 /// pipeline fails too is not the MR's doing: the line says so.
-pub fn pipeline_line_of(mr: &Mr, jobs: &[Job], develop: Option<&DevelopPipeline>) -> String {
+pub fn pipeline_line_of(mr: &Mr, jobs: &[Job], develop: Option<&DevelopPipeline>, fix: Option<&Fix>) -> String {
     let failed: Vec<&Job> = jobs.iter().filter(|job| job.status == "failed").collect();
     let on_develop: HashSet<&str> = develop
         .map(|develop| {
@@ -97,10 +99,20 @@ pub fn pipeline_line_of(mr: &Mr, jobs: &[Job], develop: Option<&DevelopPipeline>
             "develop fails the same job{}: not yours, waits for the fix (say so in the MR)",
             if theirs.len() == 1 { "" } else { "s" }
         ))
-    } else if theirs.is_empty() {
-        "look into it".into()
     } else {
-        crate::config::in_repo(&format!("look into it (develop fails {names} too: not yours)"))
+        let count = fix
+            .and_then(Fix::count_text)
+            .map(|count| format!(" ({count})"))
+            .unwrap_or_default();
+        let fix_it = format!(
+            "fix it, {run} wt:check and push in this run{count}",
+            run = crate::config::run_word()
+        );
+        if theirs.is_empty() {
+            fix_it
+        } else {
+            crate::config::in_repo(&format!("{fix_it} (develop fails {names} too: not yours)"))
+        }
     };
     let log = own
         .first()
@@ -170,8 +182,33 @@ pub fn conflicts_of(issues: &[Entry], remote: &Remote) -> Vec<Tell> {
         .collect()
 }
 
-/// The failed pipelines of open MRs whose agent wasn't told yet, once per pipeline.
-pub fn failed_pipelines_of(issues: &[Entry], remote: &Remote, develop: Option<&DevelopPipeline>) -> Vec<Tell> {
+/// What the CI queue did about the failed pipeline of `mr` (#371): Some while
+/// a queue runs (`fixes` its queue.json's), whose look at this very pipeline
+/// may not have come yet; None without a queue: its agent is told at once.
+pub fn fix_of<'a>(fixes: Option<&'a BTreeMap<i64, Fix>>, mr: &Mr) -> Option<Option<&'a Fix>> {
+    let id = mr.pipeline.as_ref().map(|pipeline| pipeline.id);
+    fixes.map(|fixes| fixes.get(&mr.iid).filter(|fix| Some(fix.pipeline) == id))
+}
+
+/// Whether the failed pipeline of `mr` is its agent's to fix: always without
+/// a queue; with one, once the queue found a job that failed twice and the
+/// bound of fix runs not reached (a flake's retry passes, the runner's
+/// failures are retried, never fixed).
+pub fn is_agents_to_fix(fix: Option<Option<&Fix>>) -> bool {
+    match fix {
+        None => true,
+        Some(fix) => fix.is_some_and(|fix| fix.stage == Stage::Fix),
+    }
+}
+
+/// The failed pipelines of open MRs whose agent wasn't told yet, once per
+/// pipeline; with a CI queue (`fixes`) only those it leaves to the agent.
+pub fn failed_pipelines_of(
+    issues: &[Entry],
+    remote: &Remote,
+    develop: Option<&DevelopPipeline>,
+    fixes: Option<&BTreeMap<i64, Fix>>,
+) -> Vec<Tell> {
     issues
         .iter()
         .filter_map(|issue| {
@@ -182,10 +219,14 @@ pub fn failed_pipelines_of(issues: &[Entry], remote: &Remote, develop: Option<&D
                 .mr
                 .as_ref()
                 .filter(|mr| mr.is_open() && mr.pipeline_status() == Some("failed"))?;
+            let fix = fix_of(fixes, mr);
+            if !is_agents_to_fix(fix) {
+                return None;
+            }
             let key = failed_key_of(mr);
             (!tree.sent.contains(&key)).then(|| Tell::Send {
                 dir: tree.dir.clone(),
-                line: pipeline_line_of(mr, &part.jobs, develop),
+                line: pipeline_line_of(mr, &part.jobs, develop, fix.flatten()),
                 key,
                 iid: mr.iid,
                 id: Some(claude.id.clone()),
@@ -204,13 +245,15 @@ pub struct AutoFacts<'a> {
     pub removals: Option<&'a HashMap<PathBuf, Removal>>,
     /// Why the line of a failed pipeline didn't get in yet, by its key.
     pub pipeline_tries: Option<&'a HashMap<String, String>>,
+    /// The CI queue's failed pipelines by iid (#371), None without a queue.
+    pub fixes: Option<&'a BTreeMap<i64, Fix>>,
     pub now: i64,
 }
 
 /// The automatic actions of the issues, `key` the same for as long as the cause lasts:
 /// - `merge`: ready and green, every check done, GitLab says mergeable; a ready draft too;
 /// - `pipeline`: the pipeline of the open MR failed and its line didn't get in yet;
-/// - `push`: commits sit unpushed for long;
+/// - `look`: its failed pipeline is past what the CI queue does by itself (#371);
 /// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
 /// - `waits`: the agent asks something or stopped on a question;
@@ -293,7 +336,30 @@ pub fn auto_actions_of(
                 actions.push(item);
             }
             let failed = failed_key_of(mr);
-            if status == Some("failed") && !sent.contains(&failed) {
+            let fix = fix_of(facts.fixes, mr);
+            // Past the fix runs, or the runner fails it again and again: the user looks (#371).
+            if let Some(fix) = fix
+                .flatten()
+                .filter(|fix| status == Some("failed") && fix.is_for_user())
+                && let Some(text) = fix.look_text(mr.iid)
+            {
+                let url = mr
+                    .pipeline
+                    .as_ref()
+                    .and_then(|pipeline| pipeline.web_url.clone())
+                    .unwrap_or_else(|| mr.url.clone());
+                actions.push(base(
+                    "look",
+                    format!("ci-fix:{}", issue.branch),
+                    text,
+                    pipeline_at.as_deref(),
+                    Go::Show {
+                        url,
+                        dir: tree.map(|tree| tree.dir.clone()),
+                    },
+                ));
+            }
+            if status == Some("failed") && !sent.contains(&failed) && is_agents_to_fix(fix) {
                 let job = part.jobs.iter().find(|job| job.status == "failed");
                 let what = job
                     .map(|job| format!("job {} failed", job.name))
@@ -316,7 +382,7 @@ pub fn auto_actions_of(
                     Some(tree) => Go::Send {
                         dir: tree.dir.clone(),
                         key: failed.clone(),
-                        line: pipeline_line_of(mr, &part.jobs, facts.develop),
+                        line: pipeline_line_of(mr, &part.jobs, facts.develop, fix.flatten()),
                         fallback: Box::new(show),
                     },
                     None => show,
@@ -329,30 +395,6 @@ pub fn auto_actions_of(
                     go,
                 ));
             }
-        }
-        if let Some(tree) = tree
-            && let Some(unpushed) = unpushed_action_of(&issue.branch, tree, mr, facts.now)
-        {
-            let focus = Go::FocusAgent(tree.dir.clone());
-            // Its row says a click tells its agent: it tries herdr's agent of its tab,
-            // known conversation or not, and brings the tab to the front when none takes it.
-            let go = if unpushed.is_sent {
-                focus
-            } else {
-                Go::Send {
-                    dir: tree.dir.clone(),
-                    key: unpushed.key.clone(),
-                    line: unpushed.line.clone(),
-                    fallback: Box::new(focus),
-                }
-            };
-            actions.push(base(
-                "push",
-                format!("push:{}", issue.branch),
-                unpushed.text,
-                Some(&unpushed.at),
-                go,
-            ));
         }
         let is_running = agent.is_some_and(|agent| agent.status.as_deref() == Some("working"));
         if let Some(tree) = tree
@@ -408,7 +450,7 @@ pub fn auto_actions_of(
                 actions.push(base(
                     "clean up",
                     format!("clean up:{}:boxes", issue.branch),
-                    format!("#{} has {open} open boxes: click to have its agent tick the done ones", found.iid),
+                    format!("#{} has {open} open boxes: click to have a small run tick the done ones, its agent not woken", found.iid),
                     merged_at.as_deref(),
                     Go::Send {
                         dir: tree.dir.clone(),
@@ -673,18 +715,13 @@ mod tests {
     }
 
     #[test]
-    fn asks_for_a_push_once_commits_sit_unpushed_for_long() {
+    fn asks_nothing_for_commits_unpushed_for_long_breadboard_pushes_them() {
         let mut late = issue();
         let tree = late.tree.as_mut().unwrap();
         tree.unpushed = 2;
         tree.unpushed_at = Some(NOW - 11 * 60_000);
         tree.pushed = Some("a".into());
         tree.has_remote_branch = true;
-        assert_eq!(
-            kinds(&[late.clone()], &Remote::default()),
-            [pair("push", "2 commits not pushed for 11 min: click to tell its agent")]
-        );
-        late.tree.as_mut().unwrap().unpushed_at = Some(NOW);
         assert!(kinds(&[late], &Remote::default()).is_empty());
     }
 
@@ -744,6 +781,39 @@ mod tests {
         assert_eq!(
             kinds(&[unbound], &gitlab),
             [pair("pipeline", "!70 job check:vita failed: click to tell its agent")]
+        );
+        // The CI queue's (#371): nothing while it retries, a look past the bound.
+        let fixes = |stage: Stage| {
+            BTreeMap::from([(
+                70,
+                Fix {
+                    stage,
+                    jobs: vec!["check:vita".into()],
+                    attempt: 3,
+                    max: 3,
+                    ..Default::default()
+                },
+            )])
+        };
+        let retrying = fixes(Stage::Retrying);
+        let facts = AutoFacts {
+            fixes: Some(&retrying),
+            now: NOW,
+            ..Default::default()
+        };
+        assert!(kinds_with(&[issue()], &gitlab, &HashMap::new(), &facts).is_empty());
+        let bound = fixes(Stage::Bound);
+        let facts = AutoFacts {
+            fixes: Some(&bound),
+            now: NOW,
+            ..Default::default()
+        };
+        assert_eq!(
+            kinds_with(&[issue()], &gitlab, &HashMap::new(), &facts),
+            [pair(
+                "look",
+                "!70 check:vita still fails after 3 CI fix runs of its agent: look at it"
+            )]
         );
     }
 
@@ -996,9 +1066,24 @@ mod tests {
                 ..Default::default()
             },
         ];
+        let fix_it = format!("fix it, {} wt:check and push in this run", crate::config::run_word());
         assert_eq!(
-            pipeline_line_of(&failed, &jobs, None),
-            "[overview] the pipeline of !70 failed: job check:vita, j2: look into it; its log ends: FAIL a.test.mjs ⏎ 1 failing"
+            pipeline_line_of(&failed, &jobs, None, None),
+            format!(
+                "[overview] the pipeline of !70 failed: job check:vita, j2: {fix_it}; its log ends: FAIL a.test.mjs ⏎ 1 failing"
+            )
+        );
+        // The CI queue's how-manyth fix run it is (#371).
+        let fix = Fix {
+            pipeline: 41,
+            stage: Stage::Fix,
+            attempt: 2,
+            max: 3,
+            ..Default::default()
+        };
+        assert!(
+            pipeline_line_of(&failed, &jobs, None, Some(&fix))
+                .contains(&format!("{fix_it} (CI fix 2/3); its log ends"))
         );
         let develop = |status: &str, name: &str| DevelopPipeline {
             jobs: vec![Job {
@@ -1009,10 +1094,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            pipeline_line_of(&failed, &jobs, Some(&develop("failed", "check:vita"))),
+            pipeline_line_of(&failed, &jobs, Some(&develop("failed", "check:vita")), None),
             "[overview] the pipeline of !70 failed: job check:vita, j2: develop fails the same job: not yours, waits for the fix (say so in the MR)"
         );
-        assert!(pipeline_line_of(&failed, &jobs, Some(&develop("success", "check:vita"))).contains(": look into it;"));
+        assert!(
+            pipeline_line_of(&failed, &jobs, Some(&develop("success", "check:vita")), None)
+                .contains(&format!(": {fix_it};"))
+        );
         let mut both = jobs.clone();
         both.push(Job {
             name: "scan:deps".into(),
@@ -1022,12 +1110,13 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            pipeline_line_of(&failed, &both, Some(&develop("failed", "scan:deps")))
-                .contains("look into it (develop fails scan:deps too: not yours); its log ends: FAIL a.test.mjs")
+            pipeline_line_of(&failed, &both, Some(&develop("failed", "scan:deps")), None).contains(&format!(
+                "{fix_it} (develop fails scan:deps too: not yours); its log ends: FAIL a.test.mjs"
+            ))
         );
         assert_eq!(
-            pipeline_line_of(&failed, &[], None),
-            "[overview] the pipeline of !70 failed: p: look into it"
+            pipeline_line_of(&failed, &[], None, None),
+            format!("[overview] the pipeline of !70 failed: p: {fix_it}")
         );
     }
 
@@ -1067,22 +1156,46 @@ mod tests {
             }
         };
         assert_eq!(
-            failed_pipelines_of(std::slice::from_ref(&entry), &of("failed"), None),
+            failed_pipelines_of(std::slice::from_ref(&entry), &of("failed"), None, None),
             [Tell::Send {
                 dir: "/w/a".into(),
                 key: "pipeline:!221:9".into(),
-                line: "[overview] the pipeline of !221 failed: p: look into it".into(),
+                line: format!(
+                    "[overview] the pipeline of !221 failed: p: fix it, {} wt:check and push in this run",
+                    crate::config::run_word()
+                ),
                 iid: 221,
                 id: Some("c1".into()),
             }]
         );
-        assert!(failed_pipelines_of(std::slice::from_ref(&entry), &of("success"), None).is_empty());
+        assert!(failed_pipelines_of(std::slice::from_ref(&entry), &of("success"), None, None).is_empty());
+        // With a CI queue (#371): only once it leaves the pipeline to the agent.
+        let fix = |stage: Stage, pipeline: i64| {
+            BTreeMap::from([(
+                221,
+                Fix {
+                    pipeline,
+                    stage,
+                    attempt: 1,
+                    max: 3,
+                    ..Default::default()
+                },
+            )])
+        };
+        let is_told = |fixes: &BTreeMap<i64, Fix>| {
+            !failed_pipelines_of(std::slice::from_ref(&entry), &of("failed"), None, Some(fixes)).is_empty()
+        };
+        assert!(!is_told(&BTreeMap::new()), "told before the queue looked");
+        assert!(!is_told(&fix(Stage::Retrying, 9)), "told while its job is retried");
+        assert!(!is_told(&fix(Stage::Fix, 8)), "told of an older pipeline's verdict");
+        assert!(!is_told(&fix(Stage::Bound, 9)), "told past the bound");
+        assert!(is_told(&fix(Stage::Fix, 9)));
         let mut told = entry.clone();
         told.tree.as_mut().unwrap().sent = ["pipeline:!221:9".to_string()].into();
-        assert!(failed_pipelines_of(&[told], &of("failed"), None).is_empty());
+        assert!(failed_pipelines_of(&[told], &of("failed"), None, None).is_empty());
         let mut alone = entry;
         alone.tree.as_mut().unwrap().claude = None;
-        assert!(failed_pipelines_of(&[alone], &of("failed"), None).is_empty());
+        assert!(failed_pipelines_of(&[alone], &of("failed"), None, None).is_empty());
         let _ = parse_iso("");
     }
 }

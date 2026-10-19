@@ -1,17 +1,21 @@
 //! `wt:orchestrate <name> --retire <feature> --mr <iid>` (#381): an agent
-//! above `[agents] fresh_above` retires at its merge instead of taking a
-//! next issue. Its claude ends, one last run of its conversation writes its
-//! handoff into `.claude/handoff.md` of its worktree (what it learned about
-//! the files it changed, a page at most), the handoff is kept next to the
+//! that starts fresh (#445, `[agents]`) retires at its merge instead of taking a
+//! next issue. Its claude ends; its handoff (what it learned about the files
+//! it changed, a page at most) is the one it wrote at its last real run into
+//! `.claude/handoff-next.md` (#445, `wt:action merge` asks for it), else one
+//! last run writes it while its cache is warm, never once it is cold; the
+//! handoff is kept next to the
 //! record, and the record marks it retired. The overview runs this before
 //! the worktree goes; a fresh agent on those files reads the handoff.
 
 use super::args::Args;
 use super::claude::{bound_session, context_share_of, is_conversation_running};
-use super::handover::{agent_of, context_limit, end_claude, refusal_of};
+use super::handover::{agent_of, end_claude, fresh_rule, refusal_of};
 use super::proc::{Done, fail, step};
 use super::repo::Repo;
+use breadboard_core::conversations::context_of;
 use breadboard_core::conversations::interactive_pids_of;
+use breadboard_core::fresh::{HANDOFF_NEXT, k};
 use breadboard_core::git::work_files;
 use breadboard_core::record::{self, handoff_file, is_name, write_worker};
 use breadboard_core::runs::args_of;
@@ -40,7 +44,8 @@ pub fn is_retire(words: &[String]) -> bool {
 }
 
 /// The prompt of the last run: the handoff, a page at most, facts only.
-pub fn handoff_prompt(iid: i64, share: f64, limit: f64, files: &[String]) -> String {
+/// `why`: why it starts fresh (`Fresh::why`), `its context holds 162 k tokens, above 150 k`.
+pub fn handoff_prompt(iid: i64, why: &str, files: &[String]) -> String {
     let named: Vec<&str> = files.iter().take(NAMED).map(String::as_str).collect();
     let more = if files.len() > NAMED {
         format!(" and {} more", files.len() - NAMED)
@@ -53,14 +58,8 @@ pub fn handoff_prompt(iid: i64, share: f64, limit: f64, files: &[String]) -> Str
         format!("the files you changed ({}{more})", named.join(", "))
     };
     format!(
-        "[overview] !{iid} is merged. Your context is at {} %, above {} %: you retire, and a fresh agent takes the next issue on these files. Write your handoff now into {HANDOFF} of this worktree, at most one page: what you learned about {files}: where things live, the rules and pitfalls you found, what is unfinished or fragile. Facts a newcomer needs, not the story of your issue. Write only that file, then stop: nothing else to do or answer.",
-        percent(share),
-        percent(limit)
+        "[overview] !{iid} is merged. You retire ({why}), and a fresh agent takes the next issue on these files. Write your handoff now into {HANDOFF} of this worktree, at most one page: what you learned about {files}: where things live, the rules and pitfalls you found, what is unfinished or fragile. Facts a newcomer needs, not the story of your issue. Write only that file, then stop: nothing else to do or answer."
     )
-}
-
-fn percent(share: f64) -> i64 {
-    (share * 100.0).round() as i64
 }
 
 pub fn command(args: &Args) -> Done {
@@ -78,20 +77,20 @@ pub fn command(args: &Args) -> Done {
         return fail(format!("{feature} has no agent bound to it ({})", dir.display()));
     };
     let share = context_share_of(&id).unwrap_or(0.0);
-    let limit = context_limit(&repo.main, name);
+    let context = context_of(&id).unwrap_or_default();
+    let rule = fresh_rule(&repo.main, name);
+    let why = rule
+        .why(&context, now_ms())
+        .unwrap_or_else(|| format!("its context holds {} tokens", k(context.used)));
     let agent = record::record_of(&repo.main, name)
         .and_then(|record| record.worker(&id).cloned())
         .unwrap_or_default();
     let shown = agent.name.clone().unwrap_or_else(|| feature.to_string());
-    step(&format!(
-        "{shown} retires: its context is at {} %, above {} %",
-        percent(share),
-        percent(limit)
-    ));
+    step(&format!("{shown} retires: {why}"));
     // Never mid-issue: only an agent that is idle (its MR merged, nothing asked) retires.
     let found = agent_of(&repo.main, &id)
         .map_err(|why| super::proc::Fail(format!("{why}: can't tell whether {shown} is idle; nothing changed")))?;
-    if let Some(why) = refusal_of(found.as_ref(), true, None, 1.0) {
+    if let Some(why) = refusal_of(found.as_ref(), true, None) {
         return fail(format!(
             "{shown} not retired: {why}; only an idle agent retires, never mid-issue"
         ));
@@ -116,12 +115,32 @@ pub fn command(args: &Args) -> Done {
         Err(why) => step(&format!("its uncommitted work could not be kept: {why}")),
     }
     let changed: Vec<String> = work_files(&dir).into_iter().collect();
-    let written = dir.join(HANDOFF);
-    let _ = fs::remove_file(&written);
-    step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
-    let ran = last_run(&dir, &id, feature, &handoff_prompt(iid, share, limit, &changed));
+    let read = |file: &Path| fs::read_to_string(file).ok().filter(|text| !text.trim().is_empty());
+    let idle = context.at.map(|at| now_ms() - at).unwrap_or(i64::MAX);
+    // Written at its last real run (#445, `wt:action merge` asks for it): nothing to wake.
+    let (written, ran) = if let Some(text) = read(&dir.join(HANDOFF_NEXT)) {
+        step(&format!(
+            "{shown} wrote its handoff at its last run ({HANDOFF_NEXT}): no run of its own"
+        ));
+        (Some(text), "written at its last run".to_string())
+    } else if idle < rule.idle_ms {
+        // Its cache still warm: one more run reads it cheaply.
+        let written = dir.join(HANDOFF);
+        let _ = fs::remove_file(&written);
+        step(&format!("{shown}'s last run writes its handoff ({HANDOFF})"));
+        let ran = last_run(&repo.main, &dir, &id, feature, &handoff_prompt(iid, &why, &changed));
+        (read(&written), ran)
+    } else {
+        // Cold: a run would write its whole history to the cache again for one page.
+        (
+            None,
+            format!(
+                "none at its last run, and idle {} its cache is gone: no run wakes it for one",
+                breadboard_core::time::span(idle.min(365 * 86_400_000))
+            ),
+        )
+    };
     let kept = handoff_file(&repo.main, name, &id);
-    let written = fs::read_to_string(&written).ok().filter(|text| !text.trim().is_empty());
     let kept_work = snapshot::newest(&repo.main, feature).map(|newest| snapshot_line(feature, &newest.time));
     let handoff = match with_snapshot(written, kept_work.as_deref()) {
         Some(text) => {
@@ -157,6 +176,7 @@ pub fn command(args: &Args) -> Done {
             "from": feature,
             "mr": iid,
             "context": share,
+            "tokens": context.used,
             "handoff": handoff,
         },
     });
@@ -166,8 +186,8 @@ pub fn command(args: &Args) -> Done {
     // Unbound: nothing resumes it in the worktree, and wt:remove can take it.
     let _ = fs::remove_file(breadboard_core::conversations::session_file(&dir));
     super::proc::done(&format!(
-        "{shown} retired at {} %{}",
-        percent(share),
+        "{shown} retired at {} tokens{}",
+        k(context.used),
         if handoff.is_some() {
             format!(", its handoff kept: {}", relative(&repo.main, &kept))
         } else {
@@ -179,10 +199,17 @@ pub fn command(args: &Args) -> Done {
 
 /// One run of the conversation `id` in `dir` with `prompt`, waited for up to
 /// `LAST_RUN`: what became of it, for the line when no handoff came.
-fn last_run(dir: &Path, id: &str, name: &str, prompt: &str) -> String {
+fn last_run(main: &Path, dir: &Path, id: &str, name: &str, prompt: &str) -> String {
     // Run from the overview's pane: herdr would resume it there after a restart (#425).
     let spawned = breadboard_core::herdr::off_pane(&mut Command::new("claude"))
-        .args(args_of(id, name, prompt, true, &[]))
+        .args(args_of(
+            id,
+            name,
+            prompt,
+            true,
+            &[],
+            &breadboard_core::runs::lean_flags_of(main),
+        ))
         // On the model of its kind of work (#373), as its runs were.
         .args(stage::model_args(
             &breadboard_core::config::of(dir).config,
@@ -241,13 +268,16 @@ mod tests {
 
     #[test]
     fn asks_for_a_page_on_the_files_it_changed() {
-        let prompt = handoff_prompt(313, 0.47, 0.4, &["a.rs".into(), "b.rs".into()]);
-        assert!(prompt.starts_with("[overview] !313 is merged. Your context is at 47 %, above 40 %: you retire"));
+        let why = "its context holds 162 k tokens, above 150 k";
+        let prompt = handoff_prompt(313, why, &["a.rs".into(), "b.rs".into()]);
+        assert!(prompt.starts_with(
+            "[overview] !313 is merged. You retire (its context holds 162 k tokens, above 150 k), and a fresh agent"
+        ));
         assert!(prompt.contains("into .claude/handoff.md of this worktree, at most one page"));
         assert!(prompt.contains("the files you changed (a.rs, b.rs)"));
         let many: Vec<String> = (0..25).map(|n| format!("f{n}")).collect();
-        assert!(handoff_prompt(1, 0.5, 0.4, &many).contains(", f19 and 5 more)"));
-        assert!(handoff_prompt(1, 0.5, 0.4, &[]).contains("about the files you worked on:"));
+        assert!(handoff_prompt(1, why, &many).contains(", f19 and 5 more)"));
+        assert!(handoff_prompt(1, why, &[]).contains("about the files you worked on:"));
     }
 
     #[test]

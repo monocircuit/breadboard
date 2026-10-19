@@ -53,7 +53,7 @@ pub fn read_tried(store: &Path, name: &str) -> Tried {
 
 pub fn write_tried(store: &Path, name: &str, tried: &Tried) {
     if let Ok(text) = serde_json::to_string(tried) {
-        let _ = std::fs::write(tried_file(store, name), text + "\n");
+        let _ = crate::json::write_whole(&tried_file(store, name), &(text + "\n"));
     }
 }
 

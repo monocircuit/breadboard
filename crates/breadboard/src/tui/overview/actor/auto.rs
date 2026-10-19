@@ -156,6 +156,8 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             }
         }
         if is_remote {
+            // An MR whose bar is full and pipeline green gets its review (#374).
+            super::review::after_read(app, &local, &model, remote);
             deliver_waits(app, &local, remote);
             is_changed |= merge_into_epic(app, &model, remote);
         }
@@ -418,6 +420,11 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
     if app.actor.auto.in_flight.contains(key) {
         return;
     }
+    // A mechanical event (#445): a small run of its own, its agent not woken.
+    if key.starts_with("boxes:") {
+        small_run(app, dir, key, line);
+        return;
+    }
     app.actor.auto.in_flight.insert(key.to_string());
     let (main, dir, key, line) = (
         app.actor.main.clone(),
@@ -455,6 +462,63 @@ pub fn send_once(app: &mut Overview, dir: &Path, key: &str, line: &str, fallback
     });
 }
 
+/// The boxes of a merged MR ticked by a small run (#445, `runs::small_args`)
+/// in its worktree, in place of waking its agent with its whole history:
+/// given only the event, the issue and the agent's handoff. Once, as a line is.
+fn small_run(app: &mut Overview, dir: &Path, key: &str, line: &str) {
+    let main = app.actor.main.clone();
+    let feature = feature_of(&main, dir);
+    let has_handoff = dir.join(breadboard_core::fresh::HANDOFF_NEXT).exists();
+    let prompt = breadboard_core::runs::boxes_prompt(line, has_handoff);
+    let args = breadboard_core::runs::small_args(&prompt, &breadboard_core::runs::lean_flags_of(&main));
+    let log = spawn::log_file(&format!("overview-boxes-{feature}.log"));
+    let poster = app.actor.poster();
+    let (done_key, done_feature) = (key.to_string(), feature.clone());
+    app.actor.auto.in_flight.insert(key.to_string());
+    let started = spawn::start(
+        Background {
+            program: Path::new("claude"),
+            args,
+            cwd: dir,
+            log: &log,
+            env: vec![],
+            is_paneless: true,
+        },
+        move |code, last| {
+            poster.post(move |app: &mut Overview| {
+                app.actor.auto.in_flight.remove(&done_key);
+                let (paint, text) = if code == Some(0) {
+                    app.actor.auto.sent.insert(done_key.clone());
+                    (Paint::Green, format!("the boxes of {done_feature}: {last}"))
+                } else {
+                    (Paint::Red, format!("the boxes of {done_feature} not ticked: {last}"))
+                };
+                app.actor.log_as(&done_key, paint, text, None);
+                app.redraw();
+            });
+        },
+    );
+    match started {
+        Ok(()) => {
+            mark_sent(dir, key);
+            app.actor.log(
+                Paint::Dim,
+                format!(
+                    "a small run ({}) ticks the done boxes of {feature}; its agent is not woken",
+                    breadboard_core::runs::SMALL_MODEL
+                ),
+            );
+        }
+        Err(why) => {
+            app.actor.auto.in_flight.remove(key);
+            app.actor.log(
+                Paint::Red,
+                format!("the small run for {feature}'s boxes didn't start: {why}"),
+            );
+        }
+    }
+}
+
 /// What a sent line told its agent, in a few words, by its key (auto-actions.mjs's keys).
 fn about_of(key: &str) -> String {
     let iid = |rest: &str| {
@@ -469,8 +533,6 @@ fn about_of(key: &str) -> String {
         breadboard_core::config::in_repo(&format!("to merge develop in ({} conflicts with it)", iid(rest)))
     } else if let Some(rest) = key.strip_prefix("pipeline:") {
         format!("that the pipeline of {} failed", iid(rest))
-    } else if key.starts_with("unpushed:") {
-        "to push its commits".into()
     } else if let Some(rest) = key.strip_prefix("boxes:") {
         format!("to tick the done boxes of {}'s issue", iid(rest))
     } else {
@@ -609,8 +671,9 @@ fn remove_merged(
         return false;
     }
     let mut is_changed = false;
-    // The setting `agent fresh start` (#415), by default `[agents] fresh_above`.
-    let limit = breadboard_core::settings::of(&app.actor.main, &model.name).agent_limit;
+    // The settings `agent fresh start` … (#415, #445), by default `[agents]`'s.
+    let rule = breadboard_core::settings::of(&app.actor.main, &model.name).agent_fresh;
+    let now = now_ms();
     for issue in issues(local) {
         let Some(tree) = &issue.tree else { continue };
         if app.state.removals.contains_key(&tree.dir) || app.actor.auto.freeing.contains(&tree.dir) {
@@ -625,10 +688,10 @@ fn remove_merged(
         }
         // Its conversation is its agent (#361): a headless one that never ran has no row yet, and is freed too.
         if let (Some(claude), Some(mr)) = (&tree.claude, mr) {
-            if claude.share() <= limit {
+            if rule.why(&claude.context(), now).is_none() {
                 free_then_remove(app, name, local, tree, claude.id.clone(), mr.iid);
             } else {
-                // Full (#381): it retires with a handoff, its next issue goes to a fresh agent.
+                // Full, or idle past its cache (#381, #445): it retires with a handoff, its next issue goes to a fresh agent.
                 retire_then_remove(app, name, tree, mr.iid);
             }
             continue;
@@ -807,7 +870,13 @@ impl Free {
             "name": self.agent,
             "files": files,
             "mrs": mrs,
-            "free": { "at": to_iso(now_ms()), "from": feature_of(&self.main, &self.dir), "mr": self.iid },
+            "free": {
+                "at": to_iso(now_ms()),
+                "from": feature_of(&self.main, &self.dir),
+                "mr": self.iid,
+                // Written at its last run (#445): read by a fresh agent once this one starts fresh.
+                "handoff": breadboard_core::fresh::keep_handoff(&self.main, &self.name, &self.id, &self.dir),
+            },
         });
         let _ = write_worker(
             &self.main,
@@ -1151,7 +1220,6 @@ mod tests {
             "to merge develop in (!316 conflicts with it)"
         );
         assert_eq!(about_of("pipeline:!318:2901"), "that the pipeline of !318 failed");
-        assert_eq!(about_of("unpushed:feature/x:2:none"), "to push its commits");
         assert_eq!(about_of("boxes:!303"), "to tick the done boxes of !303's issue");
     }
 

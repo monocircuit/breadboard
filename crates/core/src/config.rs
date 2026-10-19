@@ -28,6 +28,8 @@ pub struct Config {
     pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
+    /// The cheap review of an MR before its merge is offered (#374).
+    pub review: Review,
     pub check: Check,
     pub main_checkout: MainCheckout,
     /// The fragments folded into a changelog at a release; None: no `changelog:*`.
@@ -41,6 +43,25 @@ pub struct Config {
     pub products: std::collections::BTreeMap<String, Product>,
     /// The team's defaults of the overview's settings panel (#415).
     pub settings: Settings,
+    /// What a merge into the default branch needs (#443).
+    pub merge: Merge,
+}
+
+/// What a merge into the default branch needs (`[merge]`, #443).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Merge {
+    /// Its MR's own pipeline must pass. Off (temporary, until the batch
+    /// branches carry the testing): `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the default branch's pipeline
+    /// after the merge is the safety net.
+    pub needs_pipeline: bool,
+}
+
+impl Default for Merge {
+    fn default() -> Self {
+        Merge { needs_pipeline: true }
+    }
 }
 
 /// The team's defaults of the settings panel (#415, `settings.rs`): what
@@ -65,11 +86,23 @@ pub struct Product {
     pub paths: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ci {
     /// The CI job watcher's thresholds (#379, `[ci.watch]`).
     pub watch: CiWatch,
+    /// How many runs of its agent may fix an MR's failed pipeline, one per
+    /// head (#371): past them the user looks. 0: no fix run, the user looks at once.
+    pub max_fix_attempts: u32,
+}
+
+impl Default for Ci {
+    fn default() -> Self {
+        Ci {
+            watch: CiWatch::default(),
+            max_fix_attempts: 3,
+        }
+    }
 }
 
 /// When the CI job watcher (#379) flags a job: the critical path of most
@@ -398,10 +431,19 @@ pub struct Agents {
     /// What an orchestration's agents may spend in all, shown against its
     /// spend in its band; None: none shown.
     pub orchestration_budget: Option<crate::spend::Limit>,
-    /// The share of its context window, in percent, above which an agent
-    /// retires at its merge instead of taking a next issue: its next one
-    /// goes to a fresh agent with its written handoff (#381).
-    pub fresh_above: u8,
+    /// The context, in tokens, above which an agent retires at its merge
+    /// instead of taking a next issue: its next one goes to a fresh agent
+    /// with its written handoff (#381, #445).
+    pub fresh_above: u64,
+    /// The context above which it retires once idle longer than
+    /// `idle_minutes`: its prompt cache is gone, a resume writes it all again.
+    pub idle_fresh_above: u64,
+    /// How long idle that is: a little under the cache's hour.
+    pub idle_minutes: u32,
+    /// The MCP configs (files, relative to the main checkout) a headless
+    /// run loads (#445); none by default: every server's tools are in
+    /// each call's context.
+    pub mcp_configs: Vec<String>,
     /// The model of each kind of work (#373, `stage.rs`).
     pub models: Models,
     /// The labels that make an issue's agent a `docs` one (#373).
@@ -422,25 +464,18 @@ pub struct Models {
     pub orchestrator: Option<String>,
 }
 
-/// `[agents] fresh_above` when the file says nothing.
-pub const FRESH_ABOVE: u8 = 40;
-
 impl Default for Agents {
     fn default() -> Self {
         Agents {
             daily_limit: None,
             orchestration_budget: None,
-            fresh_above: FRESH_ABOVE,
+            fresh_above: 150_000,
+            idle_fresh_above: 100_000,
+            idle_minutes: 55,
+            mcp_configs: Vec::new(),
             models: Models::default(),
             docs_labels: vec!["documentation".into()],
         }
-    }
-}
-
-impl Agents {
-    /// `fresh_above` as a share of the window, 0.4.
-    pub fn limit(&self) -> f64 {
-        f64::from(self.fresh_above) / 100.0
     }
 }
 
@@ -462,6 +497,40 @@ pub struct Tries {
     /// The model that checks and answers a try while its orchestration's
     /// auto mode is on (#384): `claude -p --model <it>`.
     pub checker: String,
+}
+
+/// The review run of an MR (#374): once its bar is full and its pipeline
+/// green, one `claude -p` on a small model reads its diff against its issue
+/// and AGENTS.md, once per head. Off until its cost per review is measured.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Review {
+    pub enabled: bool,
+    /// The model it runs on: `claude -p --model <it>`.
+    pub model: String,
+    /// A diff of fewer changed lines isn't worth a review.
+    pub min_lines: u64,
+    /// One of more isn't cheap to review: the user reads it.
+    pub max_lines: u64,
+    /// What one review may cost at most (`--max-budget-usd`).
+    pub max_dollars: f64,
+    /// Pathspecs left out of the diff and its count (lockfiles, generated files).
+    pub exclude: Vec<String>,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Review {
+            enabled: false,
+            model: "haiku".into(),
+            min_lines: 20,
+            max_lines: 3000,
+            max_dollars: 0.5,
+            exclude: ["pnpm-lock.yaml", "**/Cargo.lock", "**/migrations/meta/**"]
+                .map(String::from)
+                .to_vec(),
+        }
+    }
 }
 
 /// The main checkout keeps itself on the default branch (#348): the daemon
@@ -686,11 +755,15 @@ impl Config {
     /// What serde can't say: names and ports that must be there and apart.
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
-        if !(1..=100).contains(&self.agents.fresh_above) {
+        let agents = &self.agents;
+        if agents.fresh_above < 10_000 || agents.idle_fresh_above < 10_000 {
             return bad(
                 "agents.fresh_above",
-                "must be a percent of the context window, 1 to 100",
+                "fresh_above and idle_fresh_above are tokens of context now (#445), at least 10_000, e.g. 150_000",
             );
+        }
+        if agents.idle_minutes == 0 {
+            return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");
         }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))
@@ -1020,16 +1093,22 @@ const LOOK_AGAIN: Duration = if cfg!(test) {
     Duration::from_secs(1)
 };
 
-/// The configs read, by the checkout they are in: the file's time then, when it was looked at.
-type Cache = HashMap<PathBuf, (Option<SystemTime>, Instant, Arc<Loaded>)>;
+/// The configs read, by the checkout they are in: the file's stamp then, when it was looked at.
+type Cache = HashMap<PathBuf, (Option<Stamp>, Instant, Arc<Loaded>)>;
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// A directory asked before: its checkout, the main checkout, whether the
 /// checkout has a file of its own and when that was looked at.
 type Mains = HashMap<PathBuf, (PathBuf, PathBuf, bool, Instant)>;
 static MAINS: LazyLock<Mutex<Mains>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn mtime(main: &Path) -> Option<SystemTime> {
-    std::fs::metadata(main.join(FILE)).and_then(|meta| meta.modified()).ok()
+/// A file's time and size: a write that truncates and fills it within one
+/// tick of the file system's clock keeps its time, and a read in between
+/// (git rewriting it on a pull or merge) would hold an empty config (#447).
+type Stamp = (SystemTime, u64);
+
+fn stamp(main: &Path) -> Option<Stamp> {
+    let meta = std::fs::metadata(main.join(FILE)).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// The config of the main checkout `main`, read again once its file changed.
@@ -1045,7 +1124,7 @@ fn of_root(root: &Path, main: &Path) -> Arc<Loaded> {
     {
         return Arc::clone(loaded);
     }
-    let time = mtime(root);
+    let time = stamp(root);
     if let Some((was, at, loaded)) = cache.get_mut(root)
         && *was == time
     {
@@ -1306,5 +1385,23 @@ mod tests {
         assert_eq!(of(&tree).main, main);
         assert_eq!(of(&main).space(), "repo");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_filled_within_its_time_is_read_again() {
+        let main = std::env::temp_dir().join(format!("config-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&main).unwrap();
+        let at = SystemTime::now();
+        let touch = |text: &str| {
+            std::fs::write(main.join(FILE), text).unwrap();
+            let file = std::fs::File::options().write(true).open(main.join(FILE)).unwrap();
+            file.set_modified(at).unwrap();
+        };
+        // Caught truncated by git's rewrite, filled within the same tick (#447).
+        touch("");
+        assert!(of_main(&main).config.products.is_empty());
+        touch("[products.breadboard]\npaths = [\"packages/breadboard\"]\n");
+        assert!(of_main(&main).config.products.contains_key("breadboard"));
+        let _ = std::fs::remove_dir_all(&main);
     }
 }

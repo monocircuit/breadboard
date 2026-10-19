@@ -73,7 +73,11 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
                 tokio::spawn(run(main.clone(), start, in_flight.clone(), table.clone()));
             }
         }
-        let is_queued = !read_or_default::<Queue>(&runs::queue_file(&main)).events.is_empty();
+        // Notices alone start nothing (#445): no reason to stay.
+        let is_queued = read_or_default::<Queue>(&runs::queue_file(&main))
+            .events
+            .iter()
+            .any(|event| !event.is_notice);
         // Runs the usage limit stopped wait for its reset here (#393).
         let is_stopped = !read_or_default::<Usage>(&runs::usage_file(&main)).sessions.is_empty();
         busy.store(
@@ -175,7 +179,10 @@ fn wake_due(main: &Path, in_flight: &InFlight, now: i64) -> bool {
         .filter(|(session, run)| run.state != State::Running && !flying.contains_key(*session));
     let mut is_left = false;
     for (dir, found) in wake::wakes_in(idle.map(|(session, run)| (session.as_str(), run.dir.as_path()))) {
-        let is_overtaken = queue.events.iter().any(|event| event.session == found.session)
+        let is_overtaken = queue
+            .events
+            .iter()
+            .any(|event| event.session == found.session && !event.is_notice)
             || (found.kind == wake::Kind::Itself && breadboard_core::wait::wait_of(&dir).is_some());
         if is_overtaken {
             wake::clear_wake(&dir);
@@ -199,6 +206,7 @@ fn wake_due(main: &Path, in_flight: &InFlight, now: i64) -> bool {
                 line,
                 at: now,
                 allowed: Vec::new(),
+                is_notice: false,
             },
         );
         match queued {
@@ -283,7 +291,14 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     }
     // A wake of a run before is overtaken by this one (#417).
     wake::clear_wake(&dir);
-    let mut args = args_of(&session, &name, &prompt, is_known, &allowed_of(&events));
+    let mut args = args_of(
+        &session,
+        &name,
+        &prompt,
+        is_known,
+        &allowed_of(&events),
+        &runs::lean_flags_of(&main),
+    );
     // The model of its kind of work (#373): a run of failed pipelines only is a CI fix.
     let stage = stage::of_run(&dir, events.iter().map(|event| event.line.as_str()));
     args.extend(stage::model_args(&breadboard_core::config::of(&main).config, stage));
@@ -358,6 +373,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
                 Event {
                     line: runs::ENDED_BY_PAUSE.into(),
                     allowed: Vec::new(),
+                    is_notice: false,
                     ..first.clone()
                 },
             );
@@ -417,7 +433,7 @@ fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
         .collect()
 }
 
-/// `breadboard runs [tell <dir> <line…> | continue | pause [--now] [--ci] |
+/// `breadboard runs [tell [--notice] <dir> <line…> | continue | pause [--now] [--ci] |
 /// resume]`: the status table of the repo's headless agents with what they
 /// spent today, a line queued for the agent of the worktree `dir`, the daily
 /// limit lifted until midnight, or every run paused (#397: the runs in
@@ -439,7 +455,12 @@ pub fn cli(args: &[String]) -> ExitCode {
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
             let now = now_ms();
             let today = breadboard_core::spend::today_of(&main, now);
-            println!("today {}", today.total.text());
+            println!(
+                "today {}{} · {}",
+                today.total.text(),
+                breadboard_core::spend::wakes_text(&today),
+                breadboard_core::spend::BASIS
+            );
             match runs::paused_now(&main) {
                 Some(text) => println!("{text} (breadboard runs resume)"),
                 None => println!("agents run (breadboard runs pause stops them)"),
@@ -483,11 +504,21 @@ pub fn cli(args: &[String]) -> ExitCode {
                 }
             }
         }
-        Some("tell") if args.len() >= 3 => {
-            let dir = PathBuf::from(&args[1]);
+        Some("tell") if args.len() >= 3 && !(args[1] == "--notice" && args.len() < 4) => {
+            // `--notice`: it starts no run, it rides along with the next (#445).
+            let is_notice = args[1] == "--notice";
+            let rest = &args[usize::from(is_notice) + 1..];
+            let dir = PathBuf::from(&rest[0]);
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let line = args[2..].join(" ");
-            if crate::tui::overview::actor::herdr::enqueue(&main, &dir, &line) {
+            let line = rest[1..].join(" ");
+            let herdr = |line: &str| {
+                if is_notice {
+                    crate::tui::overview::actor::herdr::enqueue_notice(&main, &dir, line)
+                } else {
+                    crate::tui::overview::actor::herdr::enqueue(&main, &dir, line)
+                }
+            };
+            if herdr(&line) {
                 ExitCode::SUCCESS
             } else {
                 eprintln!("breadboard runs: no agent bound to {}", dir.display());
@@ -546,7 +577,7 @@ pub fn cli(args: &[String]) -> ExitCode {
         },
         _ => {
             eprintln!(
-                "usage: breadboard runs [tell <dir> <line…> | release <dir> | continue | pause [--now] [--ci] | resume]"
+                "usage: breadboard runs [tell [--notice] <dir> <line…> | release <dir> | continue | pause [--now] [--ci] | resume]"
             );
             ExitCode::from(2)
         }
@@ -617,6 +648,7 @@ mod tests {
             line: "go".into(),
             at,
             allowed: Vec::new(),
+            is_notice: false,
         };
         let queue = Queue {
             events: vec![event(0), event(5 * 60_000)],

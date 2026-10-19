@@ -15,7 +15,7 @@ use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
 use super::half_merged::half_merged_fact;
-use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
+use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
@@ -26,6 +26,7 @@ use super::workers::{Suggestion, TRIES_AGAIN};
 use super::{Docker, Entry, Fact, Paint, Span, Tone, Tree, text_of};
 use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
+use crate::fresh::Fresh;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
 
@@ -191,11 +192,21 @@ pub fn tokens(count: u64) -> String {
     }
 }
 
-/// `✓ tested 1a2b3c4d` / `untested: 2 commits` / `checking…` / `✗ tests failed: …` (check.mjs `checkFact`).
+/// `✓ tested 1a2b3c4d` (`· no test: <reason>`, #316) / `untested: 2 commits` / `checking…` /
+/// `✗ tests failed: …` / `✗ fix without test` (check.mjs `checkFact`).
 pub fn check_fact(checked: &CheckState) -> Option<Span> {
     Some(match checked {
-        CheckState::Tested { sha, .. } => Span::new(format!("✓ tested {}", sha.get(..8).unwrap_or(sha)), Paint::Green),
+        CheckState::Tested { sha, no_test, .. } => Span::new(
+            match no_test {
+                Some(reason) => format!("✓ tested {} · no test: {reason}", sha.get(..8).unwrap_or(sha)),
+                None => format!("✓ tested {}", sha.get(..8).unwrap_or(sha)),
+            },
+            Paint::Green,
+        ),
         CheckState::Checking { .. } => Span::new("checking…", Paint::Cyan),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => Span::new(format!("✗ {refused}"), Paint::Red),
         CheckState::Failed { failures, .. } => {
             let is_test = failures.iter().any(|failure| failure.task == "test");
             let what = failures_text(failures);
@@ -222,9 +233,9 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
 }
 
 /// How full an agent's context is and when it last answered.
-/// `limit`: the share of its context above which it retires at its merge
-/// (#381): said in advance, `fresh start at its next issue`.
-pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
+/// Whether it retires at its merge (`fresh`, #381, #445) is said in
+/// advance: `fresh start at its next issue`.
+pub fn agent_fact(claude: &Claude, now: i64, fresh: &Fresh) -> Fact {
     let Some(at) = claude.at else {
         return vec![Span::dim("no answer yet")];
     };
@@ -240,7 +251,7 @@ pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
         Span::new(format!("{}%", (share * 100.0).round() as i64), paint),
         Span::dim(format!(" of {} · {}", tokens(claude.window), ago(at, now))),
     ];
-    if share > limit {
+    if fresh.why(&claude.context(), now).is_some() {
         fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
     }
     fact
@@ -442,8 +453,8 @@ pub struct TreeFacts<'a> {
     /// What the agents spent (#372): today per session, per issue.
     pub spent: Option<&'a crate::spend::Spent>,
     pub now: i64,
-    /// `[agents] fresh_above` as a share (#381); None: `CONTEXT_LIMIT`.
-    pub limit: Option<f64>,
+    /// When an agent starts fresh (#445); None: breadboard.toml's defaults.
+    pub fresh_rule: Option<Fresh>,
 }
 
 /// The tree of the issues: `live`, the worktrees there and the issues that
@@ -504,9 +515,9 @@ fn queued_text(issue: &Entry, facts: &TreeFacts, names: &Names) -> String {
         }
         return if worker.is_merged {
             format!(
-                "→ {} (free, {} %)",
+                "→ {} (free, {})",
                 names.shown(&worker.name),
-                (worker.share * 100.0).round() as i64
+                crate::fresh::k(worker.used)
             )
         } else {
             format!("→ {} once its MR is merged", names.shown(&worker.name))
@@ -638,7 +649,7 @@ fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeF
             }
             agent.push(Span::dim(format!("was {was}")));
         }
-        lines.context = context_of(claude, facts.limit.unwrap_or(CONTEXT_LIMIT));
+        lines.context = context_of(claude, &facts.fresh_rule.unwrap_or_default(), now);
         lines.model = claude.model.as_deref().and_then(model_word).map(Span::dim);
     }
     lines
@@ -652,9 +663,9 @@ pub fn model_word(model: &str) -> Option<String> {
 }
 
 /// `48%` of its agent's context, green, yellow from half, red from 80 %;
-/// past `limit` (#381) `· fresh start at its next issue`; `no answer yet`
-/// before its first.
-fn context_of(claude: &Claude, limit: f64) -> Fact {
+/// starting fresh (#381, #445) `· fresh start at its next issue`; `no
+/// answer yet` before its first.
+fn context_of(claude: &Claude, fresh: &Fresh, now: i64) -> Fact {
     if claude.at.is_none() {
         return vec![Span::dim("no answer yet")];
     }
@@ -667,7 +678,7 @@ fn context_of(claude: &Claude, limit: f64) -> Fact {
         Paint::Green
     };
     let mut fact = vec![Span::new(format!("{}%", (share * 100.0).round() as i64), paint)];
-    if share > limit {
+    if fresh.why(&claude.context(), now).is_some() {
         fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
     }
     fact
@@ -1120,13 +1131,20 @@ mod tests {
     fn says_a_full_agent_starts_fresh_at_its_next_issue() {
         let claude = Claude {
             at: Some(0),
-            used: 94_000,
-            window: 200_000,
+            used: 120_000,
+            window: 1_000_000,
             ..crate::model::handovers::tests::claude_of("c1")
         };
         let text = |fact: Fact| fact.iter().map(|span| span.text.clone()).collect::<String>();
-        assert!(text(agent_fact(&claude, 0, 0.4)).ends_with(" · fresh start at its next issue"));
-        assert!(!text(agent_fact(&claude, 0, 0.5)).contains("fresh start"));
+        let fresh = Fresh::default();
+        // 120 k: fresh once idle past its cache's time (#445), not before.
+        assert!(!text(agent_fact(&claude, 10 * 60_000, &fresh)).contains("fresh start"));
+        assert!(text(agent_fact(&claude, 60 * 60_000, &fresh)).ends_with(" · fresh start at its next issue"));
+        let full = Claude {
+            used: 160_000,
+            ..claude
+        };
+        assert!(text(agent_fact(&full, 0, &fresh)).ends_with(" · fresh start at its next issue"));
     }
 
     #[test]
@@ -1876,7 +1894,7 @@ mod tests {
             queue,
             [
                 format!("→ {shown} after !256"),
-                format!("→ {shown} (free, 0 %)"),
+                format!("→ {shown} (free, 0 k)"),
                 format!("→ {shown}: its handover failed: wt:orchestrate: not built yet; a click tries again"),
             ]
         );

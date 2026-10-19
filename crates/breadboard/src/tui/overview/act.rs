@@ -323,14 +323,11 @@ pub fn go_to(app: &mut Overview, go: Go) {
             let detail = app.actor.detail.clone();
             in_detail(app, move || detail.click(&main, &dir));
         }
-        // A headless agent has no tab: the click opens it in one (#361).
-        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => app.actor.queue(move || {
-            let opened = super::actor::open_agent::open(&main, &dir);
-            Some(Box::new(move |app: &mut Overview| match opened {
-                Ok(did) => app.actor.log(Paint::Green, did),
-                Err(why) => app.actor.log(Paint::Red, format!("the agent stays headless: {why}")),
-            }))
-        }),
+        // A headless agent has no tab: the click opens it in the detail pane (#361, #409).
+        Go::FocusAgent(dir) if breadboard_core::runs::is_headless(&main, &dir) => {
+            let detail = app.actor.detail.clone();
+            in_detail(app, move || detail.show(&main, &dir, Shows::Agent, None));
+        }
         // ACTIONS' `held` row (#386): the open claude ended once it idles.
         Go::EndHeld(dir) => app.actor.queue(move || {
             let ended = super::actor::end_held::end(&main, &dir);

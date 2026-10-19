@@ -279,7 +279,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             write.write_all(b"true\n").await
         }
         Ok(Request::Gitlab { main, view, ask }) => {
-            // The first overview of a repo starts its CI queue and its marks, for as long as the daemon runs.
+            // The first overview of a repo starts its CI queue, its marks and its pushes, for as long as the daemon runs.
             if main.is_absolute()
                 && state
                     .queues
@@ -290,6 +290,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
                 tokio::spawn(super::ci::schedule(main.clone()));
                 tokio::spawn(super::ready::mark(main.clone()));
                 tokio::spawn(super::watch::watch(main.clone()));
+                tokio::spawn(super::push::push(main.clone()));
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.
             start_engine(state, &main);
@@ -351,7 +352,7 @@ fn start_engine(state: &State, main: &Path) {
     // herdr's stale records of the repo's spaces go at every start (#425), the
     // status's tick after a restore of herdr: `herdr heal`, on its own.
     if herdr::is_in_herdr() {
-        crate::herdr::plugin::start_heal(main);
+        let _ = crate::herdr::plugin::start_heal(main);
     }
 }
 
