@@ -62,6 +62,20 @@ description you write). `{{bb}} status` says where you are and the next step.
   meanwhile: the command says so, and the change gets its own issue, branch
   and draft MR at once ([orchestrate.md](orchestrate.md), "Change requests").
 
+## Your context
+
+Every line in your context is paid again in each later run. Delegate what
+produces long output and keep only its answer:
+
+- test runs (`{{run}} wt:check`, the gauntlet, one package's tests) to the
+  subagent `test-runner`, a failed CI job's log to `ci-log`, where
+  `.claude/agents/` has them (#373); they answer with what failed and why;
+- reading and searching across many files to `Explore`.
+
+Run it yourself when you need it: then raw logs and diffs go to a file
+(`> /tmp/<name>.log`), and you read what you need with `grep` or `tail`,
+never the whole output.
+
 ## Telling
 
 The overview shows your work: state, commits, MR, pipeline, boxes, what you
