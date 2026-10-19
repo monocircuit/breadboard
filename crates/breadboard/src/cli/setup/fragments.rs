@@ -552,7 +552,7 @@ fn root_of() -> std::path::PathBuf {
         .text()
         .to_string();
     if top.is_empty() {
-        fail("not inside the repo");
+        fail("not inside the repo: cd into a checkout of it");
     }
     top.into()
 }

@@ -897,7 +897,8 @@ pub fn has_stack() -> bool {
 
 /// `text` in the words of the repo of the working directory: its commands
 /// as it types them (`pnpm wt:new` → `breadboard wt:new` where breadboard.toml
-/// names no `[repo] run`) and its default branch for `develop`. For what is
+/// names no `[repo] run`; `bb submit` → `breadboard submit` there too, `bb`
+/// is the monorepo's shim, #427) and its default branch for `develop`. For what is
 /// written once in the words of the repo breadboard is developed in: the
 /// usage and help texts, the lines said.
 pub fn in_repo(text: &str) -> String {
@@ -907,12 +908,14 @@ pub fn in_repo(text: &str) -> String {
         )
         .unwrap()
     });
+    static BB: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bbb (status|submit)\b").unwrap());
     static DEVELOP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bdevelop\b").unwrap());
     let loaded = here();
     let run = loaded.config.repo.run.as_deref().unwrap_or("breadboard");
     let mut text = std::borrow::Cow::Borrowed(text);
     if run != "pnpm" {
         text = std::borrow::Cow::Owned(COMMAND.replace_all(&text, format!("{run} $1").as_str()).into_owned());
+        text = std::borrow::Cow::Owned(BB.replace_all(&text, "breadboard $1").into_owned());
     }
     if loaded.branch != "develop" {
         text = std::borrow::Cow::Owned(DEVELOP.replace_all(&text, loaded.branch.as_str()).into_owned());
@@ -1192,13 +1195,13 @@ mod tests {
     #[test]
     fn says_a_command_as_the_repo_types_it() {
         // Here, in the repo breadboard is developed in, `pnpm` stays when its file names it.
-        let text = "usage: pnpm wt:new <f> · pnpm install · pnpm herdr:install, from develop";
+        let text = "usage: pnpm wt:new <f> · pnpm install · pnpm herdr:install · bb submit, from develop";
         if run_word() == "pnpm" && here().branch == "develop" {
             assert_eq!(in_repo(text), text);
         } else if run_word() == "breadboard" {
-            assert!(
-                in_repo(text).starts_with("usage: breadboard wt:new <f> · pnpm install · breadboard herdr:install")
-            );
+            assert!(in_repo(text).starts_with(
+                "usage: breadboard wt:new <f> · pnpm install · breadboard herdr:install · breadboard submit"
+            ));
         }
     }
 

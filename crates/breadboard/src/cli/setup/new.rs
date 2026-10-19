@@ -105,7 +105,10 @@ pub fn command(args: &Args) -> ExitCode {
     let branch = format!("{}/{feature}", if args.has("--fix") { "fix" } else { "feature" });
     let dir = repo::dir_of(&feature);
     if dir.exists() {
-        fail(&format!("{} exists already", dir.display()));
+        fail(&format!(
+            "{} exists already: work in it (pnpm wt:list names every worktree), or pnpm wt:remove {feature} first",
+            dir.display()
+        ));
     }
     let origin_name = args.value("--origin");
     if let Some(name) = origin_name.as_deref().filter(|name| !is_name(name)) {
@@ -137,7 +140,9 @@ pub fn command(args: &Args) -> ExitCode {
     step("git fetch");
     proc::git(&["fetch", "--prune"], &main);
     if proc::git(&["rev-parse", "--verify", "--quiet", &branch], &main).is_ok {
-        fail(&format!("the branch {branch} exists already"));
+        fail(&format!(
+            "the branch {branch} exists already: pnpm wt:list shows whether a worktree holds it; else start the task under another name"
+        ));
     }
     // The base: given, else a hotfix's develop, the orchestration's epic, the product's batch (#411), develop.
     let base = given_base.unwrap_or_else(|| {
@@ -145,10 +150,15 @@ pub fn command(args: &Args) -> ExitCode {
             .unwrap_or_else(|why| fail(&format!("no batch to branch off: {why}")))
     });
     if !proc::git(&["rev-parse", "--verify", "--quiet", &base.remote], &main).is_ok {
-        fail(&format!("origin has no branch {}: nothing to start from", base.local));
+        fail(&format!(
+            "origin has no branch {}: nothing to start from. git fetch origin, or name the base with --base <branch>",
+            base.local
+        ));
     }
     if proc::git(&["ls-remote", "--exit-code", "--heads", "origin", &branch], &main).is_ok {
-        fail(&format!("origin has a branch {branch} already"));
+        fail(&format!(
+            "origin has a branch {branch} already: someone claimed this work. Say so instead of starting (pnpm wt:issues lists the claims)"
+        ));
     }
     // One claim check with wt:orchestrate's (handover.rs): `feature/34-…`, `fix/34-…`, not `…/134-…`.
     // An origin that doesn't answer stops nothing here: the push of the claim says so.
