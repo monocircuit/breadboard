@@ -633,7 +633,7 @@ impl LocalReader {
             record_file: record::record_file(&self.main, name),
             free: free_agents(record.as_ref()),
             free_memory: free_memory(),
-            context_limit: Some(crate::settings::of(&self.main, name).agent_limit),
+            fresh_rule: Some(crate::settings::of(&self.main, name).agent_fresh),
             agents: agents_of(&self.main, &panes),
             chat,
             setups: live_setups_of(&self.main, name),
@@ -873,7 +873,7 @@ impl LocalReader {
                     epic: local
                         .record
                         .as_ref()
-                        .and_then(|record| crate::epic::epic_of(&record.raw)),
+                        .and_then(|record| crate::batch::branch_of_record(&self.main, record)),
                 })
             }
             Local::Worktree(local) => RemoteAsk::Worktree {
@@ -1011,10 +1011,11 @@ fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent
     agents
 }
 
-/// The epic branch of an orchestration's record and how far develop has gone
-/// on since it (#350), from what origin was last fetched.
+/// The epic branch of an orchestration's record (#350), else its product's
+/// batch (#411), and how far develop has gone on since it, from what origin
+/// was last fetched.
 fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::model::epic_row::EpicLocal> {
-    let branch = crate::epic::epic_of(&record?.raw)?;
+    let branch = crate::batch::branch_of_record(main, record?)?;
     let behind = git::git(
         main,
         &[

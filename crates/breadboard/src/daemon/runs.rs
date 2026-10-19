@@ -72,7 +72,11 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
                 tokio::spawn(run(main.clone(), start, in_flight.clone(), table.clone()));
             }
         }
-        let is_queued = !read_or_default::<Queue>(&runs::queue_file(&main)).events.is_empty();
+        // Notices alone start nothing (#445): no reason to stay.
+        let is_queued = read_or_default::<Queue>(&runs::queue_file(&main))
+            .events
+            .iter()
+            .any(|event| !event.is_notice);
         // Runs the usage limit stopped wait for its reset here (#393).
         let is_stopped = !read_or_default::<Usage>(&runs::usage_file(&main)).sessions.is_empty();
         busy.store(
@@ -174,7 +178,10 @@ fn wake_due(main: &Path, in_flight: &InFlight, now: i64) -> bool {
         .filter(|(session, run)| run.state != State::Running && !flying.contains_key(*session));
     let mut is_left = false;
     for (dir, found) in wake::wakes_in(idle.map(|(session, run)| (session.as_str(), run.dir.as_path()))) {
-        let is_overtaken = queue.events.iter().any(|event| event.session == found.session)
+        let is_overtaken = queue
+            .events
+            .iter()
+            .any(|event| event.session == found.session && !event.is_notice)
             || (found.kind == wake::Kind::Itself && breadboard_core::wait::wait_of(&dir).is_some());
         if is_overtaken {
             wake::clear_wake(&dir);
@@ -198,6 +205,7 @@ fn wake_due(main: &Path, in_flight: &InFlight, now: i64) -> bool {
                 line,
                 at: now,
                 allowed: Vec::new(),
+                is_notice: false,
             },
         );
         match queued {
@@ -261,7 +269,22 @@ fn run_command(dir: &Path, args: Vec<String>) -> tokio::process::Command {
     for name in breadboard_core::herdr::PANE_ENV {
         command.env_remove(name);
     }
+    if let Some(path) = path_with_bb(dir, &std::env::var_os("PATH").unwrap_or_default()) {
+        command.env("PATH", path);
+    }
     command
+}
+
+/// `path` with the folder of `bb` (#427) of the worktree `dir` first: the
+/// agent's `bb status` and `bb submit`. None where the repo has no `bb`.
+fn path_with_bb(dir: &Path, path: &std::ffi::OsStr) -> Option<std::ffi::OsString> {
+    let bin = dir.join("packages/breadboard/bin");
+    if !bin.join("bb").is_file() {
+        return None;
+    }
+    let mut dirs = vec![bin.clone()];
+    dirs.extend(std::env::split_paths(path).filter(|dir| *dir != bin));
+    std::env::join_paths(dirs).ok()
 }
 
 /// One run of `start`: `claude -p` in its worktree, its stream into its
@@ -282,7 +305,17 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     }
     // A wake of a run before is overtaken by this one (#417).
     wake::clear_wake(&dir);
-    let mut command = run_command(&dir, args_of(&session, &name, &prompt, is_known, &allowed_of(&events)));
+    let mut command = run_command(
+        &dir,
+        args_of(
+            &session,
+            &name,
+            &prompt,
+            is_known,
+            &allowed_of(&events),
+            &runs::lean_flags_of(&main),
+        ),
+    );
     // What it leaves running is found by this (`wake::leftover_of`).
     command.env(wake::RUN_ENV, &session);
     let spawned = command.spawn();
@@ -353,6 +386,7 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
                 Event {
                     line: runs::ENDED_BY_PAUSE.into(),
                     allowed: Vec::new(),
+                    is_notice: false,
                     ..first.clone()
                 },
             );
@@ -412,7 +446,7 @@ fn asked_of(dir: &Path, name: &str, lines: &[String]) -> Vec<runs::Denial> {
         .collect()
 }
 
-/// `breadboard runs [tell <dir> <line…> | continue | pause [--now] [--ci] |
+/// `breadboard runs [tell [--notice] <dir> <line…> | continue | pause [--now] [--ci] |
 /// resume]`: the status table of the repo's headless agents with what they
 /// spent today, a line queued for the agent of the worktree `dir`, the daily
 /// limit lifted until midnight, or every run paused (#397: the runs in
@@ -434,7 +468,12 @@ pub fn cli(args: &[String]) -> ExitCode {
             states.sort_by(|a, b| a.1.name.cmp(&b.1.name));
             let now = now_ms();
             let today = breadboard_core::spend::today_of(&main, now);
-            println!("today {}", today.total.text());
+            println!(
+                "today {}{} · {}",
+                today.total.text(),
+                breadboard_core::spend::wakes_text(&today),
+                breadboard_core::spend::BASIS
+            );
             match runs::paused_now(&main) {
                 Some(text) => println!("{text} (breadboard runs resume)"),
                 None => println!("agents run (breadboard runs pause stops them)"),
@@ -478,11 +517,21 @@ pub fn cli(args: &[String]) -> ExitCode {
                 }
             }
         }
-        Some("tell") if args.len() >= 3 => {
-            let dir = PathBuf::from(&args[1]);
+        Some("tell") if args.len() >= 3 && !(args[1] == "--notice" && args.len() < 4) => {
+            // `--notice`: it starts no run, it rides along with the next (#445).
+            let is_notice = args[1] == "--notice";
+            let rest = &args[usize::from(is_notice) + 1..];
+            let dir = PathBuf::from(&rest[0]);
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-            let line = args[2..].join(" ");
-            if crate::tui::overview::actor::herdr::enqueue(&main, &dir, &line) {
+            let line = rest[1..].join(" ");
+            let herdr = |line: &str| {
+                if is_notice {
+                    crate::tui::overview::actor::herdr::enqueue_notice(&main, &dir, line)
+                } else {
+                    crate::tui::overview::actor::herdr::enqueue(&main, &dir, line)
+                }
+            };
+            if herdr(&line) {
                 ExitCode::SUCCESS
             } else {
                 eprintln!("breadboard runs: no agent bound to {}", dir.display());
@@ -541,7 +590,7 @@ pub fn cli(args: &[String]) -> ExitCode {
         },
         _ => {
             eprintln!(
-                "usage: breadboard runs [tell <dir> <line…> | release <dir> | continue | pause [--now] [--ci] | resume]"
+                "usage: breadboard runs [tell [--notice] <dir> <line…> | release <dir> | continue | pause [--now] [--ci] | resume]"
             );
             ExitCode::from(2)
         }
@@ -612,6 +661,7 @@ mod tests {
             line: "go".into(),
             at,
             allowed: Vec::new(),
+            is_notice: false,
         };
         let queue = Queue {
             events: vec![event(0), event(5 * 60_000)],
@@ -641,6 +691,21 @@ mod tests {
             .collect();
         assert_eq!(removed, ["HERDR_PANE_ID", "HERDR_TAB_ID"]);
         assert_eq!(command.as_std().get_current_dir(), Some(Path::new("/w/1-x")));
+    }
+
+    #[test]
+    fn a_run_finds_bb_on_its_path() {
+        let dir = std::env::temp_dir().join(format!("runs-bb-{}", std::process::id()));
+        let bin = dir.join("packages/breadboard/bin");
+        assert_eq!(path_with_bb(&dir, "/usr/bin".as_ref()), None);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("bb"), "").unwrap();
+        let path = format!("/usr/bin:{}", bin.display());
+        assert_eq!(
+            path_with_bb(&dir, path.as_ref()),
+            Some(format!("{}:/usr/bin", bin.display()).into())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

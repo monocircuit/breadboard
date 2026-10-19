@@ -1,6 +1,6 @@
 ---
 name: parallel-work
-description: Start every task (feature, issue, fix, docs) in its own git worktree of {{repo}} with {{run}} wt:new, and clean it up with {{run}} wt:remove after the merge. Use at the start of any work that will change files, when another session works in the same checkout, when two branches must run in the browser or migrate the database at the same time, when asked to work on several issues at once ({{run}} wt:orchestrate), and for every question or step of breadboard's workflow: the wt:*, stack:* and overview commands, herdr spaces, epics, and an orchestration's agents (their brief, waiting for another MR with wt:wait, wt:check before a push). Load it before answering how or when to post a wt:action (note, merge, try, decide, plan, look).
+description: Start every task (feature, issue, fix, docs) in its own git worktree of {{repo}} with {{run}} wt:new, and clean it up with {{run}} wt:remove after the merge. Use at the start of any work that will change files, when another session works in the same checkout, when two branches must run in the browser or migrate the database at the same time, when asked to work on several issues at once ({{run}} wt:orchestrate), and for every question or step of breadboard's workflow: the wt:*, stack:* and overview commands, herdr spaces, batches, and an orchestration's agents (their brief, waiting for another MR with wt:wait, wt:check before a push). Load it before answering how or when to post a wt:action (note, merge, try, decide, plan, look).
 ---
 
 # Every task in its own worktree
@@ -11,9 +11,9 @@ works in another's checkout: two agents in one directory switch the branch
 under each other and mix their uncommitted changes.
 
 - The **main checkout** stays on `{{branch}}`. It is where `wt:new` is run from
-  and where the default dev stack lives, not where work happens.{{#epics}} A worktree's
-  **base** is `{{branch}}`, or for a task of an orchestration its epic branch:
-  branch, epic stack, merges and milestone MR in [epics.md](epics.md).{{/epics}}
+  and where the default dev stack lives, not where work happens.{{#batches}} A worktree's
+  **base** is `{{branch}}`, or for a task of a product its batch branch:
+  branch, batch stack, merges and hotfixes in [batches.md](batches.md).{{/batches}}
 - Start the worktree before the first change to a file, right after reading
   the issue. **On an issue, the name starts with its number**
   (`{{run}} wt:new 34-full-test-pipeline` → `feature/34-full-test-pipeline`),
@@ -44,7 +44,7 @@ you, another session is working here: don't touch them.
 
 Rare details sit next to this file, read when needed:
 [orchestrate.md](orchestrate.md) (orchestrations and their agents), [herdr.md](herdr.md),
-[cleanup.md](cleanup.md){{#epics}}, [epics.md](epics.md){{/epics}}.
+[cleanup.md](cleanup.md){{#batches}}, [batches.md](batches.md){{/batches}}.
 
 ## Commands
 
@@ -53,7 +53,7 @@ repo is to it comes from its `breadboard.toml`):
 
 | Command | Does |
 | ------- | ---- |
-| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; an orchestration's task: its epic; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#epics}}{{#epic_stack}}. An orchestration's task gets a task stack on demand instead ([epics.md](epics.md)){{/epic_stack}}{{/epics}}{{/stack}} |
+| `{{run}} wt:new <feature>` | `git fetch`, worktree `../{{main}}-<feature>` on `feature/<feature>` from `origin/<base>` (`{{branch}}`; a task of a product: its batch, a hotfix: `{{branch}}`; `--base <branch>` sets it), pushes the branch, {{setup}}{{#stack}}, and gives it an **own dev stack**: free ports, own `{{stack.env}}`, `{{stack.setup}}`{{#batches}}{{#epic_stack}}. An orchestration's task gets a task stack on demand instead ([batches.md](batches.md)){{/epic_stack}}{{/batches}}{{/stack}} |
 {{#stack}}
 | `{{run}} wt:new <feature> --shared` | the same but on the **shared** stack of the main checkout (copies its `{{stack.env}}`), no containers — for work that never starts the app |
 {{/stack}}
@@ -62,7 +62,7 @@ repo is to it comes from its `breadboard.toml`):
 {{#stack}}
 | `{{run}} wt:stack` | inside a worktree: move it from the shared stack to an own one |
 {{/stack}}
-| `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its orchestration's epic; `wt:new --base <branch>`) once, for **exactly one issue** (a description closing a second, or one other than the branch's, is refused) — title from the last commit, description from the template with `Closes #<issue>`, the **labels and the milestone of the work item**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
+| `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its product's batch; `wt:new --base <branch>`) once, for **exactly one issue** (a description closing a second, or one other than the branch's, is refused) — title from the last commit, description from the template with `Closes #<issue>`, the **labels and the milestone of the work item**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
 | `{{run}} wt:check [--no-test "<reason>"]` | inside a worktree, **before every push**: {{check}}. The pre-push hook refuses a commit whose tree it didn't pass (`.claude/checked.json`; docs-only passes): check, commit, push. A `fix/*` branch that changes no test is refused (#316): write the test, or `--no-test "<reason>"` when none can (it goes into the MR description for CI's `check:fix-test`). The overview shows `✓ tested <sha>` / `untested: N commits` / `checking…` / `✗ tests failed: …` / `✗ fix without test` per worktree |
 | `{{run}} wt:herdr` | inside herdr: the main space (`root`, `overview`), a space per worktree, the tabs of every running stack (see below) |
 | `{{run}} wt:prune [--dry-run]` | **after merges**: every worktree whose branch is gone from origin and fully in its base is closed with `wt:remove`, its leftover local branches deleted. Everything with own commits or uncommitted changes is only listed |

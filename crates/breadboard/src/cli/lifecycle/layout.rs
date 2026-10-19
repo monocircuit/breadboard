@@ -28,20 +28,18 @@ use super::claude::share_conversations;
 use super::herdr::{self, call, s};
 use super::plugin;
 use super::proc::{Done, NOTICE, done, fail, say_wait, step};
-use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
+use super::repo::Repo;
 use super::stack_procs;
 use breadboard_core::git::Worktree;
 use breadboard_core::record::SPACE;
-use breadboard_core::runs;
 use orchestrations::{mark_origins, orchestrator_space, prune_orchestrators, restore_chat, sort_spaces};
 use serde_json::Value;
-use spaces::{busy_reason, is_busy, main_space, worktree_space};
+use spaces::{busy_reason, is_busy, main_space};
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
-use tabs::{CHANGELOG, OVERVIEW, ROOT, is_grouped};
+use tabs::{CHANGELOG, OVERVIEW, ROOT};
 
 const TAKES: Takes = Takes {
     switches: &["--no-focus"],
@@ -57,7 +55,9 @@ pub fn command(args: &Args) -> Done {
         return Ok(());
     }
     if !herdr::is_in() {
-        return fail("this runs inside herdr (HERDR_ENV is not set)");
+        return fail(
+            "this runs inside herdr (HERDR_ENV is not set): start it with pnpm herdr, then run it in one of its panes",
+        );
     }
     let repo = Repo::here()?;
     // Said first: the layout takes seconds, today's was silent until its end;
@@ -189,26 +189,8 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
             let feature = repo.feature_of(&tree.dir);
             label == feature || label.starts_with(&format!("{feature} :"))
         });
-        if let Some(tree) = tree {
-            let feature = repo.feature_of(&tree.dir);
-            if let Some(workspace) = worktree_space(repo, &tree.dir, false) {
-                for pane in &own {
-                    let moved = call(&[
-                        "pane",
-                        "move",
-                        s(pane, "pane_id"),
-                        "--workspace",
-                        &workspace,
-                        "--new-tab",
-                    ]);
-                    if let Some(created) =
-                        moved.and_then(|moved| herdr::id_at(&moved, &["move_result", "created_tab", "tab_id"]))
-                    {
-                        call(&["tab", "rename", &created, &feature]);
-                    }
-                }
-            }
-            report.push(format!("{label} moved into the space {feature}"));
+        // A worktree has no space of its own any more (#409): its tab stays where it is.
+        if tree.is_some() {
             continue;
         }
         let is_gone = own.iter().all(|pane| s(pane, "cwd").ends_with(" (deleted)"));
@@ -239,40 +221,14 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
         }
     }
 
-    let known: HashMap<String, Value> = herdr::spaces()
-        .into_iter()
-        .map(|space| (s(&space, "label").to_string(), space))
-        .collect();
+    // No worktree has a space of its own (#409): those of before close once nothing runs in them.
+    report.extend(retire_worktree_spaces(repo, &trees));
     for tree in &trees {
-        let feature = repo.feature_of(&tree.dir);
-        let before = known.get(&feature);
-        // A headless agent's space closed by hand stays closed (#386): its
-        // agent needs no tab; only a running stack or an open try does, and
-        // the overview opens it again on a click (`open_space`).
-        let is_headless = runs::is_headless(&repo.main, &tree.dir);
-        if !is_space_wanted(before.is_some(), is_headless, || {
-            has_open_try(&tree.dir) || is_stack_up(repo, &tree.dir)
-        }) {
-            continue;
-        }
-        let workspace = worktree_space(repo, &tree.dir, true);
-        match (before, &workspace) {
-            (None, Some(_)) => report.push(format!("space {feature} opened")),
-            // Today's said nothing: a space may be there now, without its tabs.
-            (None, None) => report.push(format!(
-                "space {feature} not set up: herdr gave no id back for it (worktree open, workspace create)"
-            )),
-            _ => {}
-        }
-        let was_linked = before
-            .and_then(|space| space.get("worktree")?.get("is_linked_worktree")?.as_bool())
-            .unwrap_or(false);
-        if before.is_some() && !was_linked && workspace.as_deref().is_some_and(is_grouped) {
-            report.push(format!("space {feature} moved into its group"));
-        }
+        // Claude Code's IDE plugin for the nvim of the detail pane, cloned here: a click clones nothing.
+        nvim::ide_for(&tree.dir, &repo.main);
         let changed = stack_procs::sync(repo, &tree.dir);
         if !changed.is_empty() {
-            report.push(format!("{feature}: {}", changed.join(" ")));
+            report.push(format!("{}: {}", repo.feature_of(&tree.dir), changed.join(" ")));
         }
     }
     let changed = stack_procs::sync(repo, &repo.main);
@@ -285,38 +241,88 @@ pub fn layout(repo: &Repo, should_resume: bool) -> Option<(String, Vec<String>)>
     Some((main, report))
 }
 
-/// Whether the layout keeps a worktree's space: one that is there, any of a
-/// worktree whose agent has a tab, and a headless one's only while something
-/// of it needs a tab (`is_needed`: a running stack, an open try) (#386).
-pub fn is_space_wanted(has_space: bool, is_headless: bool, is_needed: impl FnOnce() -> bool) -> bool {
-    has_space || !is_headless || is_needed()
-}
-
-/// Whether a try of the worktree `dir` waits for the user's answer.
-fn has_open_try(dir: &Path) -> bool {
-    breadboard_core::actions::actions_of(&breadboard_core::actions::actions_file(dir))
+/// The spaces worktrees had before #409 close: one whose every pane idles
+/// in its shell or runs nvim or a log viewer goes as a whole; one where
+/// anything else runs (a claude, a dev server, this command) is kept, a
+/// line saying why, until it ends. What closed and what stays.
+pub fn retire_worktree_spaces(repo: &Repo, trees: &[Worktree]) -> Vec<String> {
+    let features: BTreeSet<String> = trees
         .iter()
-        .any(|action| action.is_try() && action.answer.is_none())
-}
-
-/// Whether the own stack of `dir` has a container running.
-fn is_stack_up(repo: &Repo, dir: &Path) -> bool {
-    if dir == repo.main || !env_file_of(dir).exists() || offset_of(dir) == 0 {
-        return false;
+        .filter(|tree| {
+            tree.dir != repo.main
+                && !tree
+                    .dir
+                    .starts_with(breadboard_core::git::orchestrations_dir(&repo.main))
+        })
+        .map(|tree| repo.feature_of(&tree.dir))
+        .collect();
+    let current = herdr::current_pane();
+    let mut said = Vec::new();
+    for space in herdr::spaces() {
+        let label = s(&space, "label");
+        if !features.contains(label) || label == SPACE.get() || repo.is_product(label) {
+            continue;
+        }
+        let workspace = s(&space, "workspace_id");
+        let tabs = herdr::tabs_of(workspace);
+        let panes = herdr::panes_of(workspace);
+        let busy: Vec<String> = panes
+            .iter()
+            .filter_map(|pane| {
+                let why = why_kept(pane, current.as_ref())?;
+                let tab = tabs
+                    .iter()
+                    .find(|tab| s(tab, "tab_id") == s(pane, "tab_id"))
+                    .map_or("a tab", |tab| s(tab, "label"));
+                Some(format!("{tab}: {why}"))
+            })
+            .collect();
+        if busy.is_empty() {
+            if call(&["workspace", "close", workspace]).is_some() {
+                said.push(format!("space {label} closed: a worktree has no space any more"));
+            }
+        } else {
+            said.push(format!("space {label} kept until it ends ({})", busy.join("; ")));
+        }
     }
-    let Some(all) = compose_args(dir, &["ps", "--status", "running", "-q"]) else {
-        return false;
-    };
-    let all: Vec<&str> = all.iter().map(String::as_str).collect();
-    !super::proc::output("docker", &all, &stack_dir(dir), None)
-        .out()
-        .is_empty()
+    said
 }
 
-/// A worktree's space for a click (the overview, #386): there already, or
-/// made now when the layout left it closed. Its id.
-pub fn open_space(repo: &Repo, dir: &Path) -> Option<String> {
-    exclusive(|| worktree_space(repo, dir, true))
+/// Why a pane of a worktree's old space keeps it: an agent, this command,
+/// anything but an idle shell, nvim or a log viewer. None when it may close.
+fn why_kept(pane: &Value, current: Option<&Value>) -> Option<String> {
+    if current.is_some_and(|current| s(current, "pane_id") == s(pane, "pane_id")) {
+        return Some("it runs this command".into());
+    }
+    if tabs::is_agents(pane) {
+        return Some("an agent runs there".into());
+    }
+    let (is_idle, commands) = herdr::foreground_of(s(pane, "pane_id"));
+    if is_idle {
+        return None;
+    }
+    match commands.iter().find(|command| !is_viewer(command)) {
+        None if !commands.is_empty() => None,
+        None => Some("something runs there".into()),
+        Some(command) => Some(format!(
+            "{} runs there",
+            command.split_whitespace().next().unwrap_or(command)
+        )),
+    }
+}
+
+/// Whether a command only shows something: nvim, a pager, a log being followed.
+pub fn is_viewer(command: &str) -> bool {
+    let mut words = command.split_whitespace();
+    let program = words
+        .next()
+        .map(|program| program.rsplit('/').next().unwrap_or(program))
+        .unwrap_or("");
+    match program {
+        "nvim" | "vim" | "vi" | "less" | "more" | "tail" | "sh" | "bash" | "zsh" | "fish" => true,
+        "docker" => command.split_whitespace().any(|word| word == "logs"),
+        _ => false,
+    }
 }
 
 /// The `overview` tabs that hold only a shell run their overview again
@@ -505,14 +511,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_closed_space_of_a_headless_agent_stays_closed_until_needed() {
-        let never = || -> bool { panic!("asked what a space it keeps needs") };
-        // A space that is there is kept, and so is any of an agent with a tab.
-        assert!(is_space_wanted(true, true, never));
-        assert!(is_space_wanted(false, false, never));
-        // A headless agent's missing space comes back only for a stack or a try.
-        assert!(!is_space_wanted(false, true, || false));
-        assert!(is_space_wanted(false, true, || true));
+    fn an_old_space_closes_under_nvim_a_pager_or_logs_only() {
+        assert!(is_viewer("nvim --listen /r/p-1/.claude/nvim.sock"));
+        assert!(is_viewer("/usr/bin/tail -n 200 -F dev.log"));
+        assert!(is_viewer(
+            "docker compose --env-file .env.local logs -f --tail 200 postgres"
+        ));
+        assert!(!is_viewer("docker compose up"));
+        assert!(!is_viewer("claude --resume x"));
+        assert!(!is_viewer("node scripts/dev.mjs"));
     }
 
     #[test]

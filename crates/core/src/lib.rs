@@ -2,6 +2,7 @@
 //! today's, read and written in the same places (rewrite rule 5).
 
 pub mod actions;
+pub mod batch;
 pub mod check;
 pub mod ci;
 pub mod ci_fix;
@@ -10,6 +11,7 @@ pub mod config;
 pub mod conversations;
 pub mod epic;
 pub mod epic_sync;
+pub mod fresh;
 pub mod git;
 pub mod gitlab;
 pub mod heal_log;
@@ -21,6 +23,7 @@ pub mod lock;
 pub mod main_update;
 pub mod model;
 pub mod permissions;
+pub mod push;
 pub mod reader;
 pub mod ready;
 pub mod record;

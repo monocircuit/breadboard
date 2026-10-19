@@ -681,8 +681,8 @@ mod tests {
         )));
         assert_eq!(text.matches(&status).count(), 1);
         assert!(text.contains("\n\n[[keys.command]]\nkey = \"prefix+o\"\n\n# The spaces of an orchestration"));
-        // The agents' rows end the file, as Node writes them: `… }] }]]`.
-        assert!(text.ends_with("}] }]]\n"), "{text}");
+        // The agents' rows end the file.
+        assert!(text.ends_with("\"agent\"]]\n"), "{text}");
         assert!(!write_config_over(&session, &own).unwrap().is_changed);
         fs::remove_dir_all(&root).unwrap();
     }

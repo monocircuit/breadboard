@@ -125,14 +125,14 @@ WHERE and a herdr tab of its name.
 | `url` | `http://localhost:{port}` | where it is looked at |
 | `is_with_stack` | `false` | its tab opens while the stack runs, as `dev` does; else WHERE has a button that starts it |
 
-### `[stack.epic]`
+### `[stack.batch]`
 
-An orchestration's epic stack and the task stacks on it. The orchestration's
-checkout runs a full stack. Its database service keeps a template database,
+The batch stack (#411, the epic stack of #351) and the task stacks on it.
+The orchestration's checkout, on its product's batch, runs a full stack. Its database service keeps a template database,
 migrated and seeded, that nothing connects to. A worktree of the orchestration
-gets a task stack: its own stack without that service, on the epic's compose
-network, with its databases made on the epic's service. A task stack starts on
-demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.epic]`, an
+gets a task stack: its own stack without that service, on the batch stack's compose
+network, with its databases made on the batch stack's service. A task stack starts on
+demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.batch]`, an
 orchestration's worktrees get own stacks like any other. It needs
 `[stack.migrations]`, whose `run` migrates the template.
 
@@ -147,7 +147,7 @@ orchestration's worktrees get own stacks like any other. It needs
 | `task_setup` | none | what a task stack runs, in order, after its containers are up and its migrations applied |
 | `env` | none | a table of what a task stack's env file sets besides; `{network}` is the epic's compose network |
 
-`[[stack.epic.databases]]` are the databases a task gets, `<name>_<feature>`:
+`[[stack.batch.databases]]` are the databases a task gets, `<name>_<feature>`:
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -159,15 +159,15 @@ orchestration's worktrees get own stacks like any other. It needs
 | `name_env` | none | the env file's variable set to its name |
 
 ```toml
-[stack.epic]
+[stack.batch]
 template = "app_tpl"
 stamp = "db"
 seed = "npm run seed"
 
-[stack.epic.env]
+[stack.batch.env]
 NETWORK = "{network}"
 
-[[stack.epic.databases]]
+[[stack.batch.databases]]
 name = "app"
 is_clone = true
 owner = "app"
@@ -186,12 +186,6 @@ urls = ["DATABASE_URL"]
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
-
-## `[orchestration]`
-
-| Key | Default | What it does |
-| --- | ------- | ------------ |
-| `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
 
 ## `[products.<name>]`
 
@@ -217,13 +211,13 @@ journal says it (`auto-merge into batch: off (by you)`).
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
-| `batching` | `[orchestration] epic_branches` | tasks branch off a batch branch and merge into it; today a new orchestration's epic branch (#350, #411 makes it the product's rolling batch). Off: their MRs go straight into the default branch |
-| `auto_merge_into_batch` | `true` | a task MR into the batch merges by itself once its bar is full and its checks are green; off: it waits for the user's click |
+| `batching` | `true` | a task of a product branches off the product's rolling batch `batch/<product>-<n>` and its MR goes into it (#411): opened from the default branch when the product has none, the next the moment one shipped, kept in the product's file (`batch`). Off: their MRs go straight into the default branch. A hotfix (`wt:new --fix` of an issue labelled `hotfix`) always does |
+| `auto_merge_into_batch` | `true` | a task MR into the batch merges by itself once its bar is full and its checks are green, with a merge commit, never squashed; off: it waits for the user's click |
 | `ship_after_tasks` | `5` | the overview suggests shipping the batch once this many tasks are in it (#414), 1 to 99 |
 | `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
 | `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
 | `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
-| (panel only) `agent fresh start` | `[agents] fresh_above` | the share of its context past which an agent retires at its merge (#381); its team default stays `[agents] fresh_above` |
+| (panel only) `agent fresh start`, `agent fresh start when idle`, `agent idle time` | `[agents] fresh_above`, `idle_fresh_above`, `idle_minutes` | when an agent retires at its merge (#381, #445), in thousands of tokens and minutes; their team defaults stay `[agents]`'s |
 
 ## `[orchestrator]`
 
@@ -247,13 +241,18 @@ while they worked on it and its worktree's try checkers' (#387). A limit is toke
 | --- | ------- | ------------ |
 | `daily_limit` | none | what the repo's claudes may spend from local midnight: once it is reached the run engine of headless agents starts no new run, their lines wait in the queue and the overview says why; its `continue anyway` lifts it until midnight (`breadboard runs continue`) |
 | `orchestration_budget` | none | what an orchestration's agents may spend in all: shown against what they spent in its band |
-| `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+| `fresh_above` | `150_000` | the context, in tokens, above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381, #445). Every resume reads the whole history again, so a large one costs on every event |
+| `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
+| `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
+| `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
 
 ```toml
 [agents]
 daily_limit = "$40"
 orchestration_budget = "200 M"
-fresh_above = 40
+fresh_above = 150_000
+idle_fresh_above = 100_000
+idle_minutes = 55
 ```
 
 ## `[tries]`

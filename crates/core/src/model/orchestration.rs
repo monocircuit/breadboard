@@ -80,11 +80,11 @@ pub struct OrchestrationLocal {
     /// Its record, None without one.
     pub record: Option<Record>,
     pub record_file: PathBuf,
-    /// Its free agents (#289) with the share of their context used.
-    pub free: Vec<(Worker, f64)>,
+    /// Its free agents (#289) with their context.
+    pub free: Vec<(Worker, crate::fresh::Context)>,
     pub free_memory: Option<u64>,
-    /// breadboard.toml's `[agents] fresh_above` as a share (#381); None: the default.
-    pub context_limit: Option<f64>,
+    /// When its agents start fresh (#445, the settings'); None: breadboard.toml's defaults.
+    pub fresh_rule: Option<crate::fresh::Fresh>,
     /// What herdr says each agent does, by conversation; empty outside herdr.
     pub agents: HashMap<String, Agent>,
     pub chat: Option<Chat>,
@@ -809,7 +809,7 @@ fn merge_requests_of(
                 .map(|at| merged_when(at, now))
                 .unwrap_or_default();
             let word = if crate::epic::is_in_epic(mr, part.issue.as_ref()) {
-                "in epic"
+                crate::epic::in_word(mr)
             } else {
                 "merged"
             };
@@ -1356,7 +1356,7 @@ pub fn orchestration_of(
                 free: &local.free,
                 runs: Some(&state.runs),
                 now,
-                limit: local.context_limit,
+                fresh: local.fresh_rule,
             },
         )
     })
@@ -1459,7 +1459,7 @@ pub fn orchestration_of(
                 turns: Some(&turns),
                 setups: &local.setups,
                 now,
-                limit: local.context_limit,
+                fresh_rule: local.fresh_rule,
             },
             local.free_memory,
         )
