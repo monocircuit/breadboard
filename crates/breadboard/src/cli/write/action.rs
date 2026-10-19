@@ -452,6 +452,19 @@ pub fn run(argv: &Argv) -> Outcome {
     let action = result.as_ref().ok().cloned().unwrap_or_default();
     written(result, &file)?;
     say(&posted(&action, name.as_deref(), orchestration.is_some()));
+    // Its last real run (#445): the handoff now, while its cache is warm, not in a wake-up at its merge.
+    if kind == "merge"
+        && orchestration.is_none()
+        && let (Some(name), Some(main), Some(dir)) = (name.as_deref(), here.main.as_deref(), here.worktree())
+        && let Some(context) = breadboard_core::conversations::bound_session(dir)
+            .and_then(|id| breadboard_core::conversations::context_of(&id))
+        && let Some(asked) = breadboard_core::fresh::handoff_request(
+            &breadboard_core::settings::of(main, name).agent_fresh,
+            context.used,
+        )
+    {
+        say(&asked);
+    }
     Ok(ExitCode::SUCCESS)
 }
 

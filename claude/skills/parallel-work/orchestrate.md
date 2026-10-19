@@ -50,9 +50,9 @@ What it does, in this order:
    of the main checkout, with the orchestrator's conversation
    (`orchestrator: { sessionId, cwd }`, see The orchestrator's chat). A
    second run with the same name adds to it. The
-   space `⇶ <name>` stands on the orchestration's epic branch
-   `epic/<N>-<name>` (made from `origin/{{branch}}` at the first run, the base
-   of every task{{#epics}}, [epics.md](epics.md){{/epics}}) in `.claude/orchestrations/<name>/`,
+   space `⇶ <name>` stands on its product's batch
+   `batch/<product>-<n>` (opened from `origin/{{branch}}` when the product has none, the base
+   of every task{{#batches}}, [batches.md](batches.md){{/batches}}) in `.claude/orchestrations/<name>/`,
    so herdr hangs it under `{{space}}` like a worktree's.
 3. Per issue, **at once** whatever the number at work: to a free or idle
    agent whose worktrees share the most files with the paths the issue
@@ -183,7 +183,12 @@ sh packages/breadboard/herdr/breadboard.sh runs tell <worktree dir> "<line>"
 ```
 
 The line starts the agent's next run, or goes into the next one when a run
-is in flight.
+is in flight. A line it needn't act on now (`!N is merged`, a hotfix's
+pipeline runs, a rule for later) goes with `runs tell --notice <dir>
+"<line>"`: it starts no run but rides along with the next line that does
+(#445). Every run resumes the agent's whole history, so a notice of its own
+costs a full read, and past the cache's hour a full write too. The
+overview's own `!N merged` is such a notice.
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
@@ -318,7 +323,7 @@ breadboard checks and pushes them itself (README, "Headless agents").
 Sorted by what blocks most: `permission`, `decide`, `plan`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
-the worktree, have its agent tick the done boxes), `pipeline` (a failed
+the worktree, a small run of its own ticks the done boxes: Sonnet at low effort with the issue, the MR and the agent's handoff, its agent not woken, #445), `pipeline` (a failed
 MR pipeline whose line didn't reach its agent; queued, it arrives on the
 first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
@@ -414,7 +419,7 @@ automatically` in the orchestration's journal. Its row says `ready (bar
 full) → breadboard` until then. A box unticked again puts an MR it marked
 ready back to draft; a person who sets it back to draft is respected until
 the next push (`draft by hand: ready after the next push → you`). Into
-develop and into an epic alike, for a repo GitLab serves.
+develop and into a batch alike, for a repo GitLab serves.
 
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
@@ -430,12 +435,12 @@ an MR that merges cleanly keeps its green pipeline and stays offered;
 `clean up` offers the worktree. Agents still never run `glab mr merge`: the
 click is the user's (`core/src/model/merge.rs`).
 
-**Into an epic the merge needs no click.** A task MR whose target is its
-orchestration's epic branch merges by itself under the same rule (bar full,
-pipeline green, no conflicts, its turn), without a posted `merge`: the
-overview marks a draft ready and merges it; the row says `in epic` until the
-epic reaches `{{branch}}`. The two clicks stay for the milestone MR epic →
-`{{branch}}` and for anything into `{{branch}}` or `main`{{#epics}} ([epics.md](epics.md)){{/epics}}.
+**Into a batch the merge needs no click.** A task MR whose target is its
+product's batch (or an epic branch of before) merges by itself under the same rule (bar full,
+fast checks green, no conflicts, its turn), without a posted `merge`: the
+overview marks a draft ready and merges it with a merge commit, never squashed; the row says `in batch` until the
+batch reaches `{{branch}}`. The two clicks stay for shipping the batch to
+`{{branch}}` and for anything into `{{branch}}` or `main`{{#batches}} ([batches.md](batches.md)){{/batches}}.
 
 ## Change requests
 
@@ -529,8 +534,7 @@ moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
 <old>` for a day). The old worktree keeps its space until its clean-up.
 `--to` takes the old name too. Refused while a run of the agent is in
-flight or it waits for an answer, or above `--limit` (`[agents]
-fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
+flight or it waits for an answer, or when it starts fresh (below). An issue no free
 agent shares a file with goes to a fresh agent: another issue's context
 buys it nothing.
 
@@ -543,17 +547,24 @@ the worktree's, and the worktree goes. An agent that never ran is freed
 too. Its next issue is its next run, in the new worktree, the path of every
 handover. While the record keeps a free agent, the space `⇶ <name>` stays.
 
-**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
-context window) it isn't freed but retires at its merge, never mid-issue:
-`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
-conversation one last run that writes `.claude/handoff.md` (a page at most:
-what it learned about the files it changed), keeps it next to the record
+**A full agent retires** (#381, #445): every resume reads its whole history
+again, and once it idled past the prompt cache's hour a resume writes all of
+it to the cache anew. So above `[agents] fresh_above` (150 k tokens of
+context), or above `idle_fresh_above` (100 k) and idle longer than
+`idle_minutes` (55), it isn't freed but retires at its merge, never mid-issue:
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` takes the
+handoff it wrote at its last real run (`.claude/handoff-next.md`, a page at
+most: what it learned about the files it changed; `wt:action merge` asks for
+it once its context passes `idle_fresh_above`), else gives its conversation
+one last run that writes `.claude/handoff.md`, but only while its cache is
+warm: a cold one is never woken for it. It keeps the handoff next to the record
 (`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then its
 worktree goes. A fresh agent on those files gets the handoff of the retired
 agent sharing the most of them as its own `.claude/handoff.md`, its brief's
-`## Handoff` says whose it is. The overview says it in advance: the agent's
+`## Handoff` says whose it is; a freed agent's handoff is kept too, for
+when it starts fresh later. The overview says it in advance: the agent's
 node `fresh start at its next issue`, UP NEXT `#380 → fresh agent (Mira
-retires, 47 %)`, and the changelog notes the retirement under its merge.
+retires, 162 k)`, and the changelog notes the retirement under its merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`

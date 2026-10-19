@@ -92,7 +92,7 @@ pub fn run(argv: &Argv) -> Outcome {
     };
     let Some(epic) = epic_of(&record.raw) else {
         return Err(format!(
-            "{name} has no epic branch: its tasks go to develop one by one (pnpm wt:orchestrate {name} --epic <n>)"
+            "{name} has no epic branch: its tasks go through its product's batch (#411)"
         ));
     };
     let mrs = "projects/:fullpath/merge_requests";

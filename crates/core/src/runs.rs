@@ -358,6 +358,7 @@ pub fn release(usage: &mut Usage, table: &mut Table, queue: &mut Queue, now: i64
             line: RESET_LINE.into(),
             at: now,
             allowed: Vec::new(),
+            is_notice: false,
         });
         run.state = State::Queued;
         run.since = now;
@@ -389,6 +390,10 @@ pub struct Event {
     /// #360: the user's `allow once`), none for later runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed: Vec<String>,
+    /// A notice (#445: `!N merged`, a note of the orchestrator): it starts
+    /// no run of its own but rides along with the next line that does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_notice: bool,
 }
 
 /// The lines waiting for a run, oldest first.
@@ -510,6 +515,16 @@ pub fn enqueue_line(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> 
 
 /// `enqueue_line` with tool rules allowed for the run that takes it (#360).
 pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String>) -> std::io::Result<()> {
+    enqueue_of(main, dir, line, allowed, false)
+}
+
+/// A notice for the agent of the worktree `dir` (#445): queued like a line,
+/// but it starts no run; the next line that does takes it along.
+pub fn enqueue_notice(main: &Path, dir: &Path, line: &str) -> std::io::Result<()> {
+    enqueue_of(main, dir, line, Vec::new(), true)
+}
+
+fn enqueue_of(main: &Path, dir: &Path, line: &str, allowed: Vec<String>, is_notice: bool) -> std::io::Result<()> {
     let session = crate::conversations::bound_session(dir)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no session bound to the worktree"))?;
     enqueue(
@@ -521,6 +536,7 @@ pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String
             line: line.to_string(),
             at: crate::time::now_ms(),
             allowed,
+            is_notice,
         },
     )
 }
@@ -584,10 +600,11 @@ pub fn ordered(mut waiting: Vec<Waiting>) -> Vec<Waiting> {
     waiting
 }
 
-/// The sessions with lines waiting, each once, with its oldest line's time.
+/// The sessions with lines waiting that start a run, each once, with its
+/// oldest such line's time: one with only notices waits (#445).
 pub fn waiting_in(queue: &Queue) -> Vec<(String, PathBuf, i64)> {
     let mut found: Vec<(String, PathBuf, i64)> = Vec::new();
-    for event in &queue.events {
+    for event in queue.events.iter().filter(|event| !event.is_notice) {
         if !found.iter().any(|(session, ..)| *session == event.session) {
             found.push((event.session.clone(), event.dir.clone(), event.at));
         }
@@ -606,11 +623,92 @@ pub fn allowed_of(events: &[Event]) -> Vec<String> {
     allowed
 }
 
+/// What of the user's own settings (`~/.claude/settings.json`) a lean run
+/// keeps (#445): the model and effort it would have in a tab, and what
+/// auto mode and the permissions go by. Its hooks, plugins and skills not.
+const KEPT_SETTINGS: [&str; 5] = ["model", "effortLevel", "autoMode", "permissions", "env"];
+
+/// The flags that keep a run's first call lean (#445): only the MCP servers
+/// of `mcp` (`[agents] mcp_configs`, none by default) with
+/// `--strict-mcp-config`, only the repo's settings and skills
+/// (`--setting-sources project,local`: no user-level skill like a deck of
+/// flash cards), and of the user's settings what a tab's run would go by
+/// (`KEPT_SETTINGS`) given back with `--settings`. `user`: the user's
+/// settings as read, None without them.
+pub fn lean_flags(mcp: &[PathBuf], user: Option<&Value>) -> Vec<String> {
+    let mut flags: Vec<String> = vec!["--strict-mcp-config".into()];
+    if !mcp.is_empty() {
+        flags.push("--mcp-config".into());
+        flags.extend(mcp.iter().map(|file| file.display().to_string()));
+    }
+    flags.extend(["--setting-sources".into(), "project,local".into()]);
+    let kept: serde_json::Map<String, Value> = KEPT_SETTINGS
+        .iter()
+        .filter_map(|key| Some((key.to_string(), user?.get(*key)?.clone())))
+        .collect();
+    if !kept.is_empty() {
+        flags.extend(["--settings".into(), Value::Object(kept).to_string()]);
+    }
+    flags
+}
+
+/// `lean_flags` of the repo of `main`: its `[agents] mcp_configs` (relative
+/// to the main checkout), the user's settings from claude's config directory.
+pub fn lean_flags_of(main: &Path) -> Vec<String> {
+    let mcp: Vec<PathBuf> = crate::config::of_main(main)
+        .config
+        .agents
+        .mcp_configs
+        .iter()
+        .map(|file| main.join(file))
+        .collect();
+    let user = crate::json::read(&crate::conversations::claude_dir().join("settings.json"));
+    lean_flags(&mcp, user.as_ref())
+}
+
+/// The model of a small run (#445): a mechanical event (the boxes of a
+/// merged MR) needs no agent's history, only the issue and the event.
+pub const SMALL_MODEL: &str = "sonnet";
+
+/// The command line of a small run: no session of its own kept, `SMALL_MODEL`
+/// at low effort, lean (`lean`), auto mode as every run's; its answer as text.
+pub fn small_args(prompt: &str, lean: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-p".into(), prompt.to_string(), "--no-session-persistence".into()];
+    args.extend(lean.iter().cloned());
+    // After `--settings`: the flags win over the user's model and effort.
+    args.extend(["--model".into(), SMALL_MODEL.into(), "--effort".into(), "low".into()]);
+    args.extend(crate::permissions::run_flags(&[]));
+    args.extend(["--output-format".into(), "text".into()]);
+    args
+}
+
+/// The prompt of the small run that ticks a merged MR's boxes (#445) in
+/// place of its agent: `event` the line its agent would have got;
+/// `has_handoff`: its worktree has the handoff its agent wrote.
+pub fn boxes_prompt(event: &str, has_handoff: bool) -> String {
+    format!(
+        "[breadboard] You are a small run of your own, not the agent of this worktree: its agent is not woken for this. {event} Read the issue and what the MR changed (glab issue view, glab mr diff){handoff}. Tick only the boxes the merged work plainly did; leave the after-deploy ones and every box you are unsure of. Change no file, commit and push nothing. End with one line: which boxes you ticked, which stay open.",
+        handoff = if has_handoff {
+            format!(", and its agent's handoff in {}", crate::fresh::HANDOFF_NEXT)
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// The command line of a run of `session` (claude's arguments): `--resume`
 /// a conversation that has a transcript, else `--session-id` starts it. The
 /// prompt comes right after `-p`: the tool lists take every word up to the
-/// next flag, a prompt after them would be one more tool.
-pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed: &[String]) -> Vec<String> {
+/// next flag, a prompt after them would be one more tool. `lean`: the
+/// flags of a lean start (`lean_flags_of`, #445).
+pub fn args_of(
+    session: &str,
+    name: &str,
+    prompt: &str,
+    is_known: bool,
+    allowed: &[String],
+    lean: &[String],
+) -> Vec<String> {
     // A prompt starting with `-` would read as a flag.
     let prompt = if prompt.starts_with('-') {
         format!(" {prompt}")
@@ -623,6 +721,7 @@ pub fn args_of(session: &str, name: &str, prompt: &str, is_known: bool, allowed:
         session.into(),
     ]);
     args.extend(["--name".into(), name.into()]);
+    args.extend(lean.iter().cloned());
     // Auto mode as in a tab, what would ask denied, the user's allows of this run (#360).
     args.extend(crate::permissions::run_flags(allowed));
     // `-p` with stream-json needs `--verbose`.
@@ -645,7 +744,8 @@ pub fn states_of(table: &Table, queue: &Queue) -> HashMap<String, Run> {
             (session.clone(), run)
         })
         .collect();
-    for event in &queue.events {
+    // A notice alone leaves it idle: nothing runs for it (#445).
+    for event in queue.events.iter().filter(|event| !event.is_notice) {
         let run = states.entry(event.session.clone()).or_insert_with(|| Run {
             dir: event.dir.clone(),
             name: event.name.clone(),
@@ -679,7 +779,7 @@ pub fn mark_held(agents: &mut HashMap<String, Agent>, queue: &Queue, now: i64) {
         let oldest = queue
             .events
             .iter()
-            .filter(|event| event.session == *session)
+            .filter(|event| event.session == *session && !event.is_notice)
             .map(|event| event.at)
             .min();
         if !agent.pane.is_empty() && oldest.is_some_and(|at| now - at >= HELD_MS) {
@@ -748,6 +848,7 @@ mod tests {
             line: line.into(),
             at,
             allowed: Vec::new(),
+            is_notice: false,
         }
     }
 
@@ -986,7 +1087,7 @@ mod tests {
 
     #[test]
     fn resumes_a_known_conversation_and_starts_a_new_one() {
-        let args = args_of("abc", "1-x", "go", true, &[]);
+        let args = args_of("abc", "1-x", "go", true, &[], &[]);
         assert_eq!(&args[..4], ["-p", "go", "--resume", "abc"]);
         assert!(args.windows(2).any(|pair| pair == ["--permission-mode", "auto"]));
         assert!(
@@ -994,12 +1095,97 @@ mod tests {
                 .any(|pair| pair == ["--disallowedTools", "AskUserQuestion"])
         );
         assert!(!args.contains(&"--allowedTools".to_string()));
-        assert_eq!(&args_of("abc", "1-x", "go", false, &[])[2..4], ["--session-id", "abc"]);
-        assert_eq!(args_of("abc", "1-x", "-x", true, &[])[1], " -x");
+        assert_eq!(
+            &args_of("abc", "1-x", "go", false, &[], &[])[2..4],
+            ["--session-id", "abc"]
+        );
+        assert_eq!(args_of("abc", "1-x", "-x", true, &[], &[])[1], " -x");
         let rules = ["Bash(git push:*)".to_string(), "WebFetch".to_string()];
-        let allowing = args_of("abc", "1-x", "go", true, &rules);
+        let allowing = args_of("abc", "1-x", "go", true, &rules, &[]);
         let at = allowing.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(&allowing[at + 1..at + 3], rules);
+    }
+
+    #[test]
+    fn a_run_starts_lean_with_the_users_model_and_auto_mode_kept() {
+        let user = serde_json::json!({
+            "model": "opus[1m]",
+            "effortLevel": "medium",
+            "autoMode": { "environment": ["a"] },
+            "hooks": { "SessionStart": [] },
+            "voice": { "enabled": true },
+        });
+        let flags = lean_flags(&[], Some(&user));
+        assert_eq!(
+            &flags[..3],
+            ["--strict-mcp-config", "--setting-sources", "project,local"]
+        );
+        assert_eq!(flags[3], "--settings");
+        let kept: Value = serde_json::from_str(&flags[4]).unwrap();
+        assert_eq!(
+            kept,
+            serde_json::json!({ "model": "opus[1m]", "effortLevel": "medium", "autoMode": { "environment": ["a"] } })
+        );
+        // None by default; the ones the config names.
+        assert!(!flags.contains(&"--mcp-config".to_string()));
+        let named = lean_flags(&[PathBuf::from("/r/p/.mcp.agents.json")], None);
+        assert_eq!(
+            named,
+            [
+                "--strict-mcp-config",
+                "--mcp-config",
+                "/r/p/.mcp.agents.json",
+                "--setting-sources",
+                "project,local"
+            ]
+        );
+        let args = args_of("abc", "1-x", "go", true, &[], &named);
+        let at = args.iter().position(|arg| arg == "--strict-mcp-config").unwrap();
+        assert_eq!(args[at - 2..at], ["--name", "1-x"]);
+    }
+
+    #[test]
+    fn a_small_run_is_sonnet_at_low_effort_without_a_session() {
+        let lean = lean_flags(&[], Some(&serde_json::json!({ "model": "opus[1m]" })));
+        let args = small_args("tick them", &lean);
+        assert_eq!(&args[..3], ["-p", "tick them", "--no-session-persistence"]);
+        let at = |flag: &str| args.iter().position(|arg| arg == flag).unwrap();
+        assert_eq!(args[at("--model") + 1], "sonnet");
+        assert_eq!(args[at("--effort") + 1], "low");
+        assert!(at("--settings") < at("--model"));
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert!(!args.contains(&"--resume".to_string()));
+        assert!(
+            boxes_prompt("MR !5 is merged: tick the boxes of #4 that are done.", false)
+                .contains("not the agent of this worktree: its agent is not woken for this. MR !5 is merged")
+        );
+    }
+
+    #[test]
+    fn a_notice_starts_no_run_and_rides_along_with_the_next_line() {
+        let notice = Event {
+            is_notice: true,
+            ..event("a", "[overview] !5 merged", 1)
+        };
+        let alone = Queue {
+            events: vec![notice.clone()],
+        };
+        assert!(waiting_in(&alone).is_empty());
+        assert!(states_of(&Table::default(), &alone).is_empty());
+        // A line for it: it waits from that line's time, and its run takes both.
+        let both = Queue {
+            events: vec![notice, event("a", "[overview] the pipeline of !5 failed", 7)],
+        };
+        assert_eq!(waiting_in(&both), [("a".to_string(), PathBuf::from("/r/p-1"), 7)]);
+        assert_eq!(states_of(&Table::default(), &both)["a"].state, State::Queued);
+        assert_eq!(
+            prompt_of(&both.events),
+            "[overview] !5 merged\n\n[overview] the pipeline of !5 failed"
+        );
+        // Kept as it was written: a line of before reads as no notice.
+        let read: Event = serde_json::from_str(r#"{"session":"a","dir":"/r","name":"n","line":"l","at":0}"#).unwrap();
+        assert!(!read.is_notice);
+        assert!(!serde_json::to_string(&read).unwrap().contains("is_notice"));
     }
 
     #[test]

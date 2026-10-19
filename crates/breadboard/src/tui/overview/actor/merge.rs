@@ -174,6 +174,7 @@ pub fn mr_of_rest(value: &Value) -> Mr {
         url: text("web_url").unwrap_or_default(),
         pipeline,
         branch: text("source_branch").unwrap_or_default(),
+        target: text("target_branch").unwrap_or_default(),
         ..Mr::default()
     }
 }
@@ -479,7 +480,8 @@ impl Running {
             let _ = done_action(file, *id);
         }
         let mut tell = |dir: &Path, about: String, line: String| {
-            let is_in = herdr::deliver_to(&self.main, dir, &line);
+            // A notice (#445): it starts no run, it rides along with the agent's next.
+            let is_in = herdr::deliver_notice(&self.main, dir, &line);
             if !is_in {
                 self.pending.lock().unwrap_or_else(|e| e.into_inner()).push((
                     dir.to_path_buf(),
@@ -535,8 +537,11 @@ fn merge_endpoint(iid: i64) -> String {
     format!("{}/merge", mr_endpoint(iid))
 }
 
-/// The fields of the merge: the source branch deleted, the MR's squash, at the commit whose pipeline passed.
+/// The fields of the merge: the source branch deleted, the MR's squash, at
+/// the commit whose pipeline passed. Into a batch never squashed (#411):
+/// each task keeps its commits under its own merge commit.
 fn merge_fields(squash: bool, fresh: &Mr) -> [(&'static str, String); 3] {
+    let squash = squash && !breadboard_core::batch::is_batch(fresh.target());
     [
         ("should_remove_source_branch", "true".into()),
         ("squash", squash.to_string()),
@@ -569,7 +574,7 @@ pub fn retry_lines(actor: &Actor, dirs: Vec<PathBuf>) {
             if !dirs.contains(&dir) {
                 continue;
             }
-            if herdr::deliver_to(&main, &dir, &line) {
+            if herdr::deliver_notice(&main, &dir, &line) {
                 typed.push((breadboard_core::git::feature_of(&main, &dir), about, line));
             } else {
                 left.push((dir, about, line));
@@ -641,6 +646,15 @@ mod tests {
         assert_eq!(read_reason("glab: 404 Not Found"), "GitLab doesn't find it");
         assert_eq!(read_reason("glab: 403 Forbidden"), "GitLab refuses to show it to you");
         assert_eq!(read_reason("connection refused (HTTP 502)"), "connection refused");
+    }
+
+    #[test]
+    fn a_merge_into_a_batch_is_never_squashed() {
+        let mr = |target: &str| mr_of_rest(&json!({ "iid": 4, "sha": "abc", "target_branch": target }));
+        let squash = |mr: &Mr| merge_fields(true, mr)[1].1.clone();
+        assert_eq!(squash(&mr("batch/breadboard-1")), "false");
+        assert_eq!(squash(&mr("develop")), "true", "elsewhere the MR's setting");
+        assert_eq!(merge_fields(false, &mr("develop"))[1].1, "false");
     }
 
     #[test]

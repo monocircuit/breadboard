@@ -68,6 +68,7 @@ mod tests {
             description: String::new(),
             feature: "12-a-title".into(),
             is_fix: false,
+            is_hotfix: false,
             dir: PathBuf::from("/r/p-12-a-title"),
             why: None,
             branch: "feature/12-a-title".into(),
