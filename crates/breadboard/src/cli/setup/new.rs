@@ -1,6 +1,7 @@
 //! `pnpm wt:new <feature> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]`
 //! (commands/new.mjs): a worktree on a new branch from its base (#349:
-//! `--base`, else its orchestration's, else develop), the
+//! `--base`, else develop for a hotfix, its orchestration's epic, its
+//! product's batch (#411), else develop), the
 //! empty branch pushed as the claim on its issue, installed, its own stack,
 //! its herdr space; the agent that ran it moves along.
 
@@ -110,14 +111,13 @@ pub fn command(args: &Args) -> ExitCode {
     if let Some(name) = origin_name.as_deref().filter(|name| !is_name(name)) {
         fail(&name_refusal("the orchestration", Some(name), USAGE));
     }
-    // The base: given, else the orchestration's record's (its epic), else develop.
-    let base = match args.value("--base") {
-        Some(base) if record::is_branch(&base) => Base::of(&base),
+    let given_base = match args.value("--base") {
+        Some(base) if record::is_branch(&base) => Some(Base::of(&base)),
         Some(base) => fail(&format!("{base} is no branch name\n{USAGE}")),
-        None => record::planned_base(&repo::main_dir(), origin_name.as_deref()),
+        None => None,
     };
     super::heal_plugin();
-    let origin = origin_name.map(|name| Origin {
+    let origin = origin_name.clone().map(|name| Origin {
         slot: herdr::slot_of(&name),
         name,
     });
@@ -139,6 +139,11 @@ pub fn command(args: &Args) -> ExitCode {
     if proc::git(&["rev-parse", "--verify", "--quiet", &branch], &main).is_ok {
         fail(&format!("the branch {branch} exists already"));
     }
+    // The base: given, else a hotfix's develop, the orchestration's epic, the product's batch (#411), develop.
+    let base = given_base.unwrap_or_else(|| {
+        super::batch::base_of_new(&feature, origin_name.as_deref(), args.has("--fix"))
+            .unwrap_or_else(|why| fail(&format!("no batch to branch off: {why}")))
+    });
     if !proc::git(&["rev-parse", "--verify", "--quiet", &base.remote], &main).is_ok {
         fail(&format!("origin has no branch {}: nothing to start from", base.local));
     }

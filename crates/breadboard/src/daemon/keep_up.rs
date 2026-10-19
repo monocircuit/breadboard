@@ -8,9 +8,13 @@
 //! each orchestration's epic checkout takes develop in once develop moved
 //! (core's `epic_sync`): merged, pushed when the epic's `wt:check` passes;
 //! a conflict, a failed check or a checkout it can't touch is a `look`
-//! action of the orchestration, never a force.
+//! action of the orchestration, never a force. A product's batch (#411)
+//! takes develop in only on a conflict: the daemon opens the next batch once
+//! one shipped, and says a conflict with develop (a hotfix went past the
+//! batch) as a `look` action of the product's orchestrations.
 
 use breadboard_core::actions::{NewAction, add_action};
+use breadboard_core::batch;
 use breadboard_core::epic::epic_of;
 use breadboard_core::epic_sync::{self, Synced, Tried};
 use breadboard_core::git::{orchestrations_dir, orchestrator_checkouts};
@@ -48,6 +52,7 @@ pub async fn keep_up(main: PathBuf) {
                 main_update::run_steps(&main, &store, &files, &settings);
             }
             keep_epics_up(&main, &store, "glab");
+            keep_batches_up(&main, &store);
         })
         .await;
     }
@@ -87,6 +92,54 @@ fn keep_epics_up(main: &Path, store: &Path, glab: &str) {
             },
         );
         let _ = std::fs::remove_dir(&lock);
+    }
+}
+
+/// Every product's batch: the next opened once it shipped (#411), and a
+/// conflict with develop said once per pair of heads.
+fn keep_batches_up(main: &Path, store: &Path) {
+    let loaded = breadboard_core::config::of(main);
+    let develop = loaded.branch.clone();
+    for product in loaded.config.products.keys() {
+        if !breadboard_core::settings::of_product(main, Some(product)).batching {
+            continue;
+        }
+        let Some(mut current) = batch::current_of(main, product) else {
+            // The first batch opens when a task of the product needs it.
+            continue;
+        };
+        if batch::is_shipped(main, &current, &develop) {
+            match batch::ensure_current(main, product, &develop, false) {
+                Ok(opened) => current = opened.batch().clone(),
+                Err(_) => continue,
+            }
+        }
+        let heads = batch::heads_of(main, &current.branch, &develop);
+        if heads == batch::read_looked(store, product) {
+            continue;
+        }
+        if let Some(files) = batch::conflicts_with_develop(main, &current.branch, &develop) {
+            for name in recorded(main) {
+                if record_of(main, &name).and_then(|record| record.product).as_deref() != Some(product) {
+                    continue;
+                }
+                let text = format!(
+                    "{} conflicts with {develop} in {}: a hotfix went past it. Merge {develop} into it in .claude/orchestrations/{name} (git merge origin/{develop}), resolve, pnpm wt:check, git push origin HEAD:{}",
+                    current.branch,
+                    files.join(", "),
+                    current.branch
+                );
+                let _ = add_action(
+                    &record_file(main, &name),
+                    NewAction {
+                        kind: "look".into(),
+                        text,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        batch::write_looked(store, product, &heads);
     }
 }
 
@@ -383,6 +436,80 @@ mod tests {
         // The same develop commit is not tried again.
         keep_epics_up(&main, &store, "/nonexistent/glab");
         assert_eq!(looks().len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_shipped_batch_opens_the_next_and_a_hotfix_conflict_is_said_once() {
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let toml = "[repo]\ndefault_branch = \"develop\"\n[products.breadboard]\npaths = [\"b\"]\n";
+        let (main, other) = world(&root, toml);
+        let record = record_file(&main, "breadboard");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, r#"{ "issues": [], "product": "breadboard" }"#).unwrap();
+        git(&main, &["fetch", "--quiet", "origin"]);
+        batch::ensure_current(&main, "breadboard", "develop", false).unwrap();
+        let store = main_update::store_of(&main).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        let change = |branch: &str, file: &str, text: &str| {
+            git(&other, &["fetch", "--quiet", "origin"]);
+            git(
+                &other,
+                &["checkout", "--quiet", "-B", branch, &format!("origin/{branch}")],
+            );
+            std::fs::write(other.join(file), text).unwrap();
+            git(&other, &["add", "."]);
+            git(&other, &["commit", "--quiet", "-m", "feat: x"]);
+            git(&other, &["push", "--quiet", "origin", branch]);
+            git(&main, &["fetch", "--quiet", "origin"]);
+        };
+        // A task in the batch, a hotfix of the same line in develop: said once.
+        change("batch/breadboard-1", "README.md", "the batch's\n");
+        change("develop", "README.md", "the hotfix\n");
+        let looks = || -> Vec<String> {
+            let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+            raw["actions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|action| action["text"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        keep_batches_up(&main, &store);
+        assert_eq!(looks().len(), 1, "{:?}", looks());
+        assert!(
+            looks()[0].starts_with("batch/breadboard-1 conflicts with develop in README.md"),
+            "{:?}",
+            looks()
+        );
+        keep_batches_up(&main, &store);
+        assert_eq!(looks().len(), 1, "the same heads: said once");
+        // The batch shipped (develop took it in, resolved): the next opens.
+        git(&other, &["fetch", "--quiet", "origin"]);
+        git(&other, &["checkout", "--quiet", "-B", "develop", "origin/develop"]);
+        let merged = Command::new("git")
+            .args(["merge", "--quiet", "--no-edit", "origin/batch/breadboard-1"])
+            .current_dir(&other)
+            .output()
+            .unwrap();
+        assert!(!merged.status.success(), "it conflicts");
+        std::fs::write(other.join("README.md"), "both\n").unwrap();
+        git(&other, &["commit", "--quiet", "-am", "Merge the batch"]);
+        git(&other, &["push", "--quiet", "origin", "develop"]);
+        git(&main, &["fetch", "--quiet", "origin"]);
+        keep_batches_up(&main, &store);
+        assert_eq!(
+            batch::current_of(&main, "breadboard").map(|batch| batch.branch),
+            Some("batch/breadboard-2".into())
+        );
+        assert_eq!(
+            git(&main, &["rev-parse", "origin/batch/breadboard-2"]),
+            git(&main, &["rev-parse", "origin/develop"])
+        );
+        assert_eq!(looks().len(), 1, "the new batch has develop");
         let _ = std::fs::remove_dir_all(&root);
     }
 

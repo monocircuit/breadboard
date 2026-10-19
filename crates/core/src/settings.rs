@@ -127,15 +127,11 @@ pub fn def_of(key: &str) -> Option<&'static Def> {
 }
 
 /// The team's defaults as breadboard.toml says them; what it leaves out
-/// holds as built in (batching follows `[orchestration] epic_branches`
-/// until the file says, fresh starts `[orchestrator] auto_fresh`).
+/// holds as built in (batching on, #411; fresh starts `[orchestrator] auto_fresh`).
 pub fn defaults_of(config: &Config) -> Map<String, Value> {
     let given = &config.settings;
     let mut out = Map::new();
-    out.insert(
-        BATCHING.into(),
-        json!(given.batching.unwrap_or(config.orchestration.epic_branches)),
-    );
+    out.insert(BATCHING.into(), json!(given.batching.unwrap_or(true)));
     out.insert(AUTO_MERGE.into(), json!(given.auto_merge_into_batch.unwrap_or(true)));
     out.insert(SHIP_TASKS.into(), json!(given.ship_after_tasks.unwrap_or(5)));
     out.insert(SHIP_DAYS.into(), json!(given.ship_after_days.unwrap_or(2)));
@@ -369,7 +365,7 @@ mod tests {
     fn the_defaults_come_from_the_file_and_what_it_leaves_out() {
         let config = Config::parse("").unwrap();
         let defaults = defaults_of(&config);
-        assert_eq!(defaults[BATCHING], json!(false), "follows epic_branches");
+        assert_eq!(defaults[BATCHING], json!(true), "the product's batch (#411)");
         assert_eq!(defaults[AUTO_MERGE], json!(true));
         assert_eq!(
             (defaults[SHIP_TASKS].clone(), defaults[SHIP_DAYS].clone()),
@@ -385,12 +381,11 @@ mod tests {
             (json!(150), json!(100), json!(55)),
             "[agents]"
         );
-        let config = Config::parse(
-            "[orchestration]\nepic_branches = true\n[settings]\nauto_merge_into_batch = false\nship_after_tasks = 8\n",
-        )
-        .unwrap();
+        let config =
+            Config::parse("[settings]\nbatching = false\nauto_merge_into_batch = false\nship_after_tasks = 8\n")
+                .unwrap();
         let defaults = defaults_of(&config);
-        assert_eq!(defaults[BATCHING], json!(true));
+        assert_eq!(defaults[BATCHING], json!(false));
         assert_eq!(defaults[AUTO_MERGE], json!(false));
         assert_eq!(defaults[SHIP_TASKS], json!(8));
         let config = Config::parse("[settings]\nbatching = true\n").unwrap();

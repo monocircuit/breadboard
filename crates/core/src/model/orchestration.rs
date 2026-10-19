@@ -809,7 +809,7 @@ fn merge_requests_of(
                 .map(|at| merged_when(at, now))
                 .unwrap_or_default();
             let word = if crate::epic::is_in_epic(mr, part.issue.as_ref()) {
-                "in epic"
+                crate::epic::in_word(mr)
             } else {
                 "merged"
             };

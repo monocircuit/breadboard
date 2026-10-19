@@ -1,6 +1,7 @@
-//! The epic's head row of an orchestration's overview (#350): its branch,
-//! how far develop has gone on since it, how many tasks are in it and not
-//! yet in develop, its last pipeline, and its milestone MR into develop.
+//! The head row of an orchestration's overview on a batch (#411) or an epic
+//! of before (#350): its branch, how far develop has gone on since it, how
+//! many tasks are in it and not yet in develop, its last pipeline, and its
+//! MR into develop; an epic without one is offered to ship as a batch.
 
 use super::orchestration::OrchestrationLocal;
 #[cfg(test)]
@@ -42,8 +43,10 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
             part.mr.as_ref().is_some_and(|mr| is_in_epic(mr, part.issue.as_ref()))
         })
         .count();
+    let is_batch = crate::batch::is_batch(&epic.branch);
     if in_epic > 0 {
-        row.push(vec![Span::dim(format!("{in_epic} in epic"))]);
+        let word = if is_batch { "in batch" } else { "in epic" };
+        row.push(vec![Span::dim(format!("{in_epic} {word}"))]);
     }
     let Some(found) = remote.epic.as_ref() else {
         return Some(row);
@@ -66,12 +69,9 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
             }),
             pipeline_mark(mr.pipeline.as_ref()),
         ],
-        // With tasks in it, how to take them to develop at a milestone (#352).
-        None if in_epic > 0 => vec![Span::dim(format!(
-            "no MR into {develop} yet: pnpm wt:epic {} --mr",
-            local.name
-        ))],
-        None => vec![Span::dim(format!("no MR into {develop} yet"))],
+        None if is_batch => vec![Span::dim(format!("not shipped to {develop} yet"))],
+        // An epic of before goes to develop as a batch would (#411, #352's MR).
+        None => vec![Span::dim(format!("ship as batch: pnpm wt:epic {} --mr", local.name))],
     });
     Some(row)
 }
@@ -144,7 +144,7 @@ mod tests {
         }));
         assert_eq!(
             text_of_parts(&epic_row_of(&local(Some(0)), Some(&remote)).unwrap()),
-            "epic/15-b · has develop · 1 in epic · ✓ passed · no MR into develop yet: pnpm wt:epic b --mr"
+            "epic/15-b · has develop · 1 in epic · ✓ passed · ship as batch: pnpm wt:epic b --mr"
         );
         remote.epic.as_mut().unwrap().mr = Some(Mr {
             iid: 400,
@@ -154,6 +154,16 @@ mod tests {
         assert_eq!(
             text_of_parts(&epic_row_of(&local(None), Some(&remote)).unwrap()),
             "epic/15-b · 1 in epic · ✓ passed · !400 draft → develop no pipeline"
+        );
+        // On a batch: its tasks `in batch`, shipped by the user (#414).
+        let mut on_batch = local(Some(0));
+        on_batch.epic.as_mut().unwrap().branch = "batch/b-1".into();
+        let part = remote.of.get_mut("feature/7-x").unwrap();
+        part.mr.as_mut().unwrap().target = "batch/b-1".into();
+        remote.epic.as_mut().unwrap().mr = None;
+        assert_eq!(
+            text_of_parts(&epic_row_of(&on_batch, Some(&remote)).unwrap()),
+            "batch/b-1 · has develop · 1 in batch · ✓ passed · not shipped to develop yet"
         );
     }
 }

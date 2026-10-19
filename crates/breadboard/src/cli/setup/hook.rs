@@ -3,7 +3,8 @@
 //! to the branch of a merged or closed MR (#184) and one of a commit
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
 //! Same texts as the Node hook: an agent reads them and acts on them. It
-//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`).
+//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`),
+//! and moves a worktree off a batch that shipped onto the next (#411).
 
 use super::check::{self, Failure};
 use super::gitlab;
@@ -285,6 +286,14 @@ pub fn command(words: &[String]) -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &super::repo::cwd())
         .text()
         .to_string();
+    // A base that shipped gives way to the product's next batch before the gate reads it (#411).
+    if let Some((branch, _)) = refs
+        .first()
+        .filter(|(branch, _)| !breadboard_core::batch::is_batch(branch))
+        && let Some(line) = super::batch::follow_shipped(Path::new(&dir), branch)
+    {
+        errln!("{line}");
+    }
     let mut refusals = check_push(&refs);
     // git read this push's options before the hook ran: a change counts from the next push.
     match breadboard_core::ci::set_push_option(Path::new(&dir), now_ms()) {
