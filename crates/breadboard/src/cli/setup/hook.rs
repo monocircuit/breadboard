@@ -209,8 +209,16 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
     let tree_of = |rev: &str| text_of(&["rev-parse", "--verify", "--quiet", &format!("{rev}^{{tree}}")]);
     let mut refusals = Vec::new();
     // Empty against the worktree's base: the claim of a task off an epic is empty against the epic (#349).
-    let remote = breadboard_core::git::base_of(dir).remote;
+    let base = breadboard_core::git::base_of(dir).remote;
     for (branch, sha) in refs {
+        // A push onto a batch branch adds to the batch as origin has it (#414:
+        // a shipped batch's changelog line): that part is what is checked.
+        let onto = format!("origin/{branch}");
+        let remote = if breadboard_core::batch::is_batch(branch) && tree_of(&onto).is_some() {
+            onto
+        } else {
+            base.clone()
+        };
         let tree = tree_of(sha);
         let base = text_of(&["merge-base", &remote, sha]);
         let is_empty = base
