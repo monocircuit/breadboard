@@ -138,6 +138,7 @@ fn values(loaded: &Loaded) -> Vec<(&'static str, String)> {
     };
     let mut all = vec![
         ("run", run),
+        ("bb", loaded.bb().into()),
         ("branch", loaded.branch.clone()),
         ("repo", loaded.name()),
         ("space", loaded.space()),

@@ -20,7 +20,8 @@ pub fn brief_of(
     let (number, title, dir, branch) = (&issue.number, &issue.title, text(&issue.dir), &issue.branch);
     // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
     let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
-    let repo = breadboard_core::config::of(main).name();
+    let loaded = breadboard_core::config::of(main);
+    let (repo, bb) = (loaded.name(), loaded.bb());
     // A reused agent stands in its old worktree until it moves (#359).
     let stand = match before {
         Some(_) => format!(
@@ -40,7 +41,7 @@ pub fn brief_of(
         tail.push_str(&format!("\n## From the orchestrator\n\n{}\n", extra.trim()));
     }
     // Only what this agent can't look up (#429): the rules are in the skill
-    // (agent.md) or enforced, the state in `bb status`.
+    // (agent.md) or enforced, the state in `bb status` (#427).
     format!(
         r#"# #{number} {title}
 
@@ -48,8 +49,8 @@ Issue #{number} of {repo} (`glab issue view {number} --comments`), orchestration
 Branch `{branch}` in `{dir}`, pushed as the claim. {stand}
 Base `{base}`: your one MR goes into it and closes only #{number}.
 
-- Each step: commit it (staged by path), then `bb submit [<box>…]`: checks, pushes, ticks.
-- Where you are and what is next: `bb status`.
+- Each step: commit it (staged by path), then `{bb} submit [<box>…]`: checks, pushes, ticks.
+- Where you are and what is next: `{bb} status`.
 - How an orchestrated agent works (headless runs, waits, actions for the user): `.claude/skills/parallel-work/agent.md`. Read it before the first commit.
 - The orchestrator: {peer}.
 {tail}"#
@@ -89,8 +90,8 @@ Issue #12 of p (`glab issue view 12 --comments`), orchestration `o` (herdr space
 Branch `feature/12-a-title` in `/r/p-12-a-title`, pushed as the claim. You stand in it.
 Base `main`: your one MR goes into it and closes only #12.
 
-- Each step: commit it (staged by path), then `bb submit [<box>…]`: checks, pushes, ticks.
-- Where you are and what is next: `bb status`.
+- Each step: commit it (staged by path), then `breadboard submit [<box>…]`: checks, pushes, ticks.
+- Where you are and what is next: `breadboard status`.
 - How an orchestrated agent works (headless runs, waits, actions for the user): `.claude/skills/parallel-work/agent.md`. Read it before the first commit.
 - The orchestrator: the one in `/r/p` (`ListAgents`; it messages you first).
 "
@@ -122,9 +123,16 @@ Base `main`: your one MR goes into it and closes only #12.
     fn names_the_base_of_the_main_checkout_before_the_worktree_exists() {
         let main = std::env::temp_dir().join(format!("brief-base-{}", std::process::id()));
         std::fs::create_dir_all(main.join(".git")).unwrap();
-        std::fs::write(main.join("breadboard.toml"), "[repo]\ndefault_branch = \"develop\"\n").unwrap();
+        std::fs::write(
+            main.join("breadboard.toml"),
+            "[repo]\ndefault_branch = \"develop\"\nrun = \"pnpm\"\n",
+        )
+        .unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
         assert!(brief.contains("Base `develop`: your one MR goes into it"), "{brief}");
+        // Run through pnpm: `bb`, the monorepo's shim on every agent's PATH (#427).
+        assert!(brief.contains("then `bb submit [<box>…]`"), "{brief}");
+        assert!(brief.contains("`bb status`"), "{brief}");
         let record = breadboard_core::record::record_file(&main, "o");
         std::fs::create_dir_all(record.parent().unwrap()).unwrap();
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();
