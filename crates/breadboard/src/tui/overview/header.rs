@@ -209,6 +209,11 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
                 if !super::actor::view::button(scene, ctx, label, tone, Act::Auto) {
                     look::flow(scene, &[look::dim(says)]);
                 }
+                // The settings panel (#415): this switch and the others, `,` too.
+                if !ctx.is_once {
+                    scene.text("  ", theme::dim());
+                    scene.button("⚙ settings", Tone::Cyan, Act::Settings);
+                }
             });
         });
     }

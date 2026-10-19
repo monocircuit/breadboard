@@ -4,7 +4,7 @@
 
 use crate::actions::{actions_file, actions_of, answered_of, change_of};
 use crate::check::check_of;
-use crate::conversations::{bound_session, context_share_of, left_in, pending_of_file, read_claude, running_claudes};
+use crate::conversations::{bound_session, context_of, left_in, pending_of_file, read_claude, running_claudes};
 use crate::git::{
     self, Worktree, ahead_of_base, behind_base, branch_files, changed_count, feature_of, is_inside, own_commits,
     push_state, work_files,
@@ -474,6 +474,7 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     tree.actions = actions_of(&file);
     tree.answered = answered_of(&file);
     tree.checks = crate::try_check::checks_of(&dir);
+    tree.reviews = crate::review::reviews_of(&dir);
     tree.change = change_of(&file);
     tree.files = work_files(&dir);
     tree.on_base = git::on_base(&dir, &tree.files);
@@ -490,7 +491,12 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     let push = push_state(&dir, Some(&tree.branch));
     tree.pushed = push.pushed;
     tree.unpushed = push.unpushed;
+    tree.unpushed_own = push.unpushed_own;
+    tree.merged_base = push.merged_base;
     tree.unpushed_at = push.unpushed_at;
+    // About the HEAD it stands at: one of a HEAD before is over.
+    tree.pushing = crate::push::read(&dir)
+        .filter(|pushing| tree.unpushed > 0 && git::head_of(&dir).as_deref() == Some(pushing.head.as_str()));
     tree.has_remote_branch = push.has_remote_branch;
     tree.merge_head_at = git::merge_head_at(&dir);
     tree.sent = sent_of(&dir).into_iter().collect();
@@ -573,14 +579,14 @@ pub fn chat_state_of(
     ChatState::Busy
 }
 
-/// The free agents of a record with the share of their context used.
-pub fn free_agents(record: Option<&record::Record>) -> Vec<(record::Worker, f64)> {
+/// The free agents of a record with their context.
+pub fn free_agents(record: Option<&record::Record>) -> Vec<(record::Worker, crate::fresh::Context)> {
     record
         .map(|record| {
             record
                 .free_agents()
                 .into_iter()
-                .map(|worker| (worker.clone(), context_share_of(&worker.id).unwrap_or(0.0)))
+                .map(|worker| (worker.clone(), context_of(&worker.id).unwrap_or_default()))
                 .collect()
         })
         .unwrap_or_default()

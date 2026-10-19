@@ -37,6 +37,7 @@ mod merge_requests;
 mod next;
 mod overall;
 mod product;
+mod settings;
 mod work;
 mod worktree_view;
 mod worktrees;
@@ -308,6 +309,8 @@ pub enum Msg {
     Acted(actor::Effect),
     /// A build was installed over this binary: the overview goes on in it (#348).
     Replaced,
+    /// A product view's clock: time to look at its records (#447).
+    Look,
 }
 
 /// Where GitLab stands for the view.
@@ -344,6 +347,11 @@ pub struct Folds {
     pub is_every_issue_shown: bool,
     /// DONE: every entry's command under it, not only a failed one's.
     pub is_every_command_shown: bool,
+    /// The settings panel is open (#415): `,` or `⚙ settings`.
+    pub is_settings_open: bool,
+    /// BATCH's task MRs (#414), folded until opened.
+    #[serde(default)]
+    pub is_batch_shown: bool,
     /// The boxes opened under an MR's row and a worktree's node (#346).
     /// Not handed to a new build: it reads them from their file (`folds_file`).
     #[serde(skip)]
@@ -561,8 +569,9 @@ impl App for Overview {
                     next::empty(page, model);
                     return;
                 }
+                settings::build(page, model, &ctx);
                 next::build(page, model, &ctx);
-                epic::build(page, model);
+                epic::build(page, model, &ctx);
                 actions::build(page, model, &ctx);
                 work::build(page, model, &ctx);
                 agents::build(page, model, &ctx);
@@ -590,6 +599,7 @@ impl App for Overview {
                 self.is_replaced = true;
                 return;
             }
+            Msg::Look => return,
             Msg::Acted(effect) => {
                 effect(self);
                 // A full channel: a look is already due.

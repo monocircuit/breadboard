@@ -50,8 +50,7 @@ pub fn handoff_for(name: &str, item: &handover::Issue) -> Option<(std::path::Pat
     let found = record::record_of(&main, name)?;
     let paths = breadboard_core::gitlab::paths_of(&item.description);
     let (worker, shared) = breadboard_core::model::workers::handoff_of(&found.retired(), &paths)?;
-    let retired = worker.retired.as_ref()?;
-    let kept = main.join(retired.handoff.as_ref()?);
+    let kept = main.join(worker.handoff()?);
     if !kept.exists() {
         return None;
     }
@@ -71,14 +70,13 @@ pub fn handoff_text(worker: &record::Worker, shared: &[String]) -> String {
         let list: Vec<String> = worker.issues.iter().map(|number| format!("#{number}")).collect();
         format!(" ({})", list.join(", "))
     };
-    let context = worker
-        .retired
-        .as_ref()
-        .and_then(|retired| retired.context)
-        .map(|share| format!(" at {} % of its context", (share * 100.0).round() as i64))
-        .unwrap_or_default();
+    // A free one's (#445) was written at its last run: it starts fresh, not retired.
+    let left = match &worker.retired {
+        Some(retired) => format!("retired{}", retired.context_text()),
+        None => "left it for a fresh agent".into(),
+    };
     format!(
-        "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and retired{context}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
+        "`.claude/handoff.md` is the handoff of {name}, who worked on {} before{issues} and {left}. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win.",
         shared.join(", ")
     )
 }
@@ -145,6 +143,7 @@ fn start_headless(main: &Path, dir: &Path, feature: &str, id: String) -> Agent {
         line: BRIEF_PROMPT.to_string(),
         at: now_ms(),
         allowed: Vec::new(),
+        is_notice: false,
     };
     let is_started = is_bound && runs::enqueue(main, event).is_ok();
     if is_started {
@@ -202,13 +201,14 @@ mod tests {
             issues: vec![340, 352],
             retired: Some(Retired {
                 context: Some(0.468),
+                tokens: Some(162_000),
                 ..Default::default()
             }),
             ..Default::default()
         };
         assert_eq!(
             handoff_text(&worker, &["a.rs".into(), "b.rs".into()]),
-            "`.claude/handoff.md` is the handoff of Mira Albrecht, who worked on a.rs, b.rs before (#340, #352) and retired at 47 % of its context. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win."
+            "`.claude/handoff.md` is the handoff of Mira Albrecht, who worked on a.rs, b.rs before (#340, #352) and retired at 162 k tokens of context. Read it before you start: what it learned about those files. It is a note from before: where it and the code or the issue differ, the code and the issue win."
         );
     }
 

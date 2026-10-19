@@ -3,11 +3,14 @@
 //! from a copy outside the repo; without it `xdg-open` opens the url.
 //! `pnpm browser` puts the copy in place and says how to load it.
 
-use super::proc::outln;
+use super::proc::{Shape, outln};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::OnceLock;
+
+/// What `browser` takes: nothing.
+pub const SHAPE: Shape = Shape::new(&[], &[], Some(0), "usage: pnpm browser");
 
 /// Fixed by the `key` of packages/breadboard/chromium/manifest.json.
 pub const EXTENSION_ID: &str = "aikcnbeljldocaafkokjbngkboecmoli";

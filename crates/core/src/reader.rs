@@ -339,6 +339,7 @@ impl LocalReader {
             "overview-sent.json",
             "note.json",
             "try-checks.json",
+            "reviews.json",
         ]
         .iter()
         .map(|name| claude.join(name))
@@ -632,7 +633,7 @@ impl LocalReader {
             record_file: record::record_file(&self.main, name),
             free: free_agents(record.as_ref()),
             free_memory: free_memory(),
-            context_limit: Some(crate::config::of_main(&self.main).config.agents.limit()),
+            fresh_rule: Some(crate::settings::of(&self.main, name).agent_fresh),
             agents: agents_of(&self.main, &panes),
             chat,
             setups: live_setups_of(&self.main, name),
@@ -646,7 +647,13 @@ impl LocalReader {
                 .and_then(|record| record.chat.as_ref())
                 .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
-            fresh: crate::config::of_main(&self.main).config.orchestrator.clone(),
+            settings: crate::settings::rows_of(&self.main, name),
+            merges_on_check: !crate::config::of_main(&self.main).config.merge.needs_pipeline,
+            fresh: crate::config::Orchestrator {
+                // A setting (#415): the panel's, else `[orchestrator] auto_fresh`.
+                auto_fresh: crate::settings::of(&self.main, name).auto_fresh,
+                ..crate::config::of_main(&self.main).config.orchestrator.clone()
+            },
             spent: crate::spend::spent_of(&self.main, name, record.as_ref(), now),
             paused: crate::runs::paused_now(&self.main),
             record,
@@ -866,7 +873,16 @@ impl LocalReader {
                     epic: local
                         .record
                         .as_ref()
-                        .and_then(|record| crate::epic::epic_of(&record.raw)),
+                        .and_then(|record| crate::batch::branch_of_record(&self.main, record)),
+                    shipping: local
+                        .record
+                        .as_ref()
+                        .and_then(|record| record.product.as_deref())
+                        .map(|product| crate::batch::shipping_of(&self.main, product))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|entry| entry.branch)
+                        .collect(),
                 })
             }
             Local::Worktree(local) => RemoteAsk::Worktree {
@@ -1004,10 +1020,11 @@ fn agents_of(main: &Path, panes: &[herdr::Pane]) -> HashMap<String, herdr::Agent
     agents
 }
 
-/// The epic branch of an orchestration's record and how far develop has gone
-/// on since it (#350), from what origin was last fetched.
+/// The epic branch of an orchestration's record (#350), else its product's
+/// batch (#411), and how far develop has gone on since it, from what origin
+/// was last fetched.
 fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::model::epic_row::EpicLocal> {
-    let branch = crate::epic::epic_of(&record?.raw)?;
+    let branch = crate::batch::branch_of_record(main, record?)?;
     let behind = git::git(
         main,
         &[

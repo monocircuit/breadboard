@@ -345,6 +345,14 @@ fn work(scene: &mut Scene<Act>, model: &WorktreeModel, tree: &Tree, ctx: &Ctx, s
         row(scene, "tests", None, |scene| {
             look::flow(scene, &look::spans(&[fact]));
             match &tree.checked {
+                CheckState::Failed { refused: Some(_), .. } => {
+                    scene.atom_gap(
+                        vec![look::dim(breadboard_core::config::in_repo(
+                            "a test that catches it, or pnpm wt:check --no-test \"<reason>\"",
+                        ))],
+                        2,
+                    );
+                }
                 CheckState::Failed { .. } | CheckState::Untested { .. } => {
                     scene.atom_gap(
                         vec![look::dim(breadboard_core::config::in_repo(

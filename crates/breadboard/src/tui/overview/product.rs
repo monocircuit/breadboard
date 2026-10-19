@@ -87,10 +87,21 @@ pub fn main(name: &str, args: &Args, main: &Path, cwd: &Path) -> ExitCode {
         forward(
             &runtime.handle().clone(),
             String::new(),
-            sender,
+            sender.clone(),
             Arc::new(AtomicBool::new(true)),
         ),
     ));
+    // The records are looked at on a clock of their own: with no part left,
+    // no model comes that would make them (#447).
+    runtime.spawn(async move {
+        let mut look = tokio::time::interval(LOOK_EVERY);
+        loop {
+            look.tick().await;
+            if sender.send((String::new(), Msg::Look)).is_err() {
+                return;
+            }
+        }
+    });
     let code = crate::tui::serve(runtime, &mut app, models);
     if app.is_replaced {
         let _ = std::env::set_current_dir(cwd);
@@ -159,15 +170,24 @@ impl Product {
     }
 
     /// The parts as the records say: a new orchestration of the product
-    /// joins, one whose record went leaves (not while it is busy).
+    /// joins, one whose record went or names another product leaves (not
+    /// while it is busy). A breadboard.toml without the product (caught
+    /// mid-write on a pull, #447), no records folder (the checkout not
+    /// there yet after a reboot) or a record mid-write keeps the parts.
     fn follow_records(&mut self) {
         if self.live.is_none() || self.looked_at.elapsed() < LOOK_EVERY {
             return;
         }
         self.looked_at = Instant::now();
+        if !record::is_product(&self.main, &self.name) || !record::records_dir(&self.main).is_dir() {
+            return;
+        }
         let names = record::orchestrations_of_product(&self.main, &self.name);
+        let (main, product) = (&self.main, &self.name);
         self.parts.retain(|part| {
-            let is_kept = names.contains(&part.name) || part.overview.actor.is_busy();
+            let is_kept = names.contains(&part.name)
+                || !record::has_left_product(main, &part.name, product)
+                || part.overview.actor.is_busy();
             if !is_kept {
                 part.is_alive.store(false, Ordering::Relaxed);
             }
@@ -255,6 +275,7 @@ impl App for Product {
                     part.overview.update(Msg::Replaced);
                 }
             }
+            self.follow_records();
             return;
         }
         if let Some(overview) = self.part_mut(&name) {
