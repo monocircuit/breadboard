@@ -469,6 +469,8 @@ pub fn with_orchestration_facts(mut tree: Tree, claudes: &[crate::conversations:
     let dir = tree.dir.clone();
     let file = actions_file(&dir);
     tree.claude = read_claude(&dir);
+    tree.is_bound = bound_session(&dir).is_some();
+    tree.is_left = crate::conversations::left_file(&dir).exists();
     tree.note = crate::said::note_of(&dir);
     tree.left = left_in(&dir, claudes, bound_session(&dir).as_deref());
     tree.actions = actions_of(&file);

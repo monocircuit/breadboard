@@ -2,7 +2,8 @@
 //! product's batch once enough is in it: `ship after tasks` task MRs (the
 //! settings, #415), a hotfix or an issue labelled `ship` among them, or its
 //! oldest task waiting `ship after days`. A click runs `wt:batch <product>
-//! --ship`, as the band's `ship batch` button does.
+//! --ship`, as the band's `ship batch` button does. Held while a batch
+//! shipped before is red (#413): the row says so instead.
 
 use super::orchestration::OrchestrationLocal;
 use super::order::{Go, Item};
@@ -46,12 +47,37 @@ fn reason_of(tasks: &[BatchTask], after_tasks: i64, after_days: i64, now: i64) -
 }
 
 /// The row suggesting to ship the batch the orchestration works on, while
-/// it has tasks and no MR into develop. None before GitLab answered.
+/// it has tasks and no MR into develop; while a batch shipped before is red,
+/// the row of that instead (#413). None before GitLab answered.
 pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) -> Option<Item> {
     let epic = local.epic.as_ref()?;
     let (product, _) = crate::batch::parse(&epic.branch)?;
     let found = remote?.epic.as_ref()?;
-    if found.mr.is_some() || found.tasks.is_empty() {
+    let could_ship = found.mr.is_none() && !found.tasks.is_empty();
+    // A batch shipped before is red (#413): held, the row says why and files the fix.
+    if let Some(red) = super::red_batch::red_of(local, remote) {
+        let held = red.held();
+        let said = if could_ship {
+            held.as_str()
+        } else {
+            held.strip_prefix("ship held: ").unwrap_or(&held)
+        };
+        return Some(Item {
+            key: format!("batch-red:{}:{}", red.branch, red.mr),
+            kind: "batch red".into(),
+            text: format!("{said}: {}", red.fixing()),
+            who: format!("{ORCHESTRATOR} orchestrator"),
+            is_auto: true,
+            rank: -1,
+            number: red.fix,
+            go: match red.fix {
+                Some(_) => Go::Nothing,
+                None => Go::FixBatch(product.to_string()),
+            },
+            ..Default::default()
+        });
+    }
+    if !could_ship {
         return None;
     }
     let settings = crate::settings::settings_of(&local.settings);
@@ -98,6 +124,7 @@ mod tests {
             epic: Some(EpicLocal {
                 branch: branch.into(),
                 behind: Some(0),
+                ..EpicLocal::default()
             }),
             ..OrchestrationLocal::default()
         }
@@ -146,6 +173,26 @@ mod tests {
         let mut open = remote(vec![task(1, 0, &["hotfix"])]);
         open.epic.as_mut().unwrap().mr = Some(Mr::default());
         assert_eq!(ship_of(&local("batch/breadboard-3"), Some(&open), NOW), None, "shipped");
+        // A batch shipped before is red: held, and why.
+        let (red_local, mut red_remote) = crate::model::red_batch::tests::red_world();
+        red_remote.epic.as_mut().unwrap().tasks = (1..=5).map(|iid| task(iid, 0, &[])).collect();
+        let held = ship_of(&red_local, Some(&red_remote), NOW).unwrap();
+        assert_eq!(held.kind, "batch red");
+        assert_eq!(held.go, Go::FixBatch("b".into()));
+        assert_eq!(
+            held.text,
+            "ship held: batch/b-2 is red (check:vita): a click files its fix"
+        );
+        // Nothing to ship yet: red all the same.
+        red_remote.epic.as_mut().unwrap().tasks.clear();
+        let red = ship_of(&red_local, Some(&red_remote), NOW).unwrap();
+        assert_eq!(red.text, "batch/b-2 is red (check:vita): a click files its fix");
+        // Filed: the row names it, the click is done.
+        let mut fixed = red_local.clone();
+        fixed.epic.as_mut().unwrap().fixes = vec![(460, "batch/b-2".into())];
+        let held = ship_of(&fixed, Some(&red_remote), NOW).unwrap();
+        assert_eq!((held.go, held.number), (Go::Nothing, Some(460)));
+        assert_eq!(held.text, "batch/b-2 is red (check:vita): #460 fixes it");
         let hotfix = remote(vec![task(1, 0, &["hotfix"])]);
         assert_eq!(
             ship_of(&local("epic/15-b"), Some(&hotfix), NOW),

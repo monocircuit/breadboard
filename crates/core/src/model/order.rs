@@ -99,6 +99,8 @@ pub enum Go {
     EpicMr,
     /// `wt:batch <product> --ship`: the product's batch → develop (#414).
     ShipBatch(String),
+    /// `wt:batch <product> --fix`: the fix issue of its red shipped batch, queued (#413).
+    FixBatch(String),
     /// The claude open in the tab of the worktree's agent ended once it idles:
     /// its lines run headless again (#386).
     EndHeld(PathBuf),

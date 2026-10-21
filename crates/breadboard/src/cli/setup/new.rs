@@ -5,7 +5,7 @@
 //! empty branch pushed as the claim on its issue, installed, its own stack,
 //! its herdr space; the agent that ran it moves along.
 
-use super::conversations::{self, session_file};
+use super::conversations;
 use super::epic::{self, Epic};
 use super::herdr::{self, field};
 use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, step};
@@ -56,7 +56,8 @@ fn leaving_worktree() -> Option<Worktree> {
 /// is done (merged and gone from origin, nothing uncommitted) the worktree
 /// goes too. A line for the summary.
 fn hand_over(previous: &Worktree) -> String {
-    let _ = fs::remove_file(session_file(&previous.dir));
+    let gone = conversations::bound_session(&previous.dir);
+    breadboard_core::conversations::unbind_leaving(&previous.dir, gone.as_deref());
     let feature = repo::feature_of(&previous.dir);
     let is_clean = proc::git(&["status", "--porcelain"], &previous.dir).text().is_empty();
     let main = repo::main_dir();

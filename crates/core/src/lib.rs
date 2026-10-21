@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod batch;
+pub mod batch_red;
 pub mod check;
 pub mod ci;
 pub mod ci_fix;

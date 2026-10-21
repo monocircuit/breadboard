@@ -3,7 +3,8 @@
 //! far develop has gone on since it, the tasks in it, its last pipeline and
 //! its MR into develop. A batch's (#414): `ship batch` beside it while
 //! tasks are in it and it has no MR into develop, and the task MRs merged
-//! into it in a fold.
+//! into it in a fold. A red batch shipped before (#413): `ship batch` held
+//! and why, the tasks merged into it the likeliest first.
 
 use super::{Act, Ctx, Fold, look, work};
 use crate::tui::Page;
@@ -25,6 +26,24 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         if batch.can_ship {
             scene.atom(vec![look::dim(" ·")]);
             scene.button("ship batch", Tone::Green, Act::Go(Go::ShipBatch(batch.product.clone())));
+        } else if let Some(held) = &batch.held {
+            scene.atom(vec![look::dim(format!(" · {held}"))]);
+        }
+        if batch.can_fix {
+            scene.atom(vec![look::dim(" ·")]);
+            scene.button("fix batch", Tone::Red, Act::Go(Go::FixBatch(batch.product.clone())));
+        } else if let Some(number) = batch.fix {
+            scene.atom(vec![look::dim(format!(" · #{number} fixes it"))]);
+        }
+        // A red batch's suspects (#413), always shown: the likeliest first.
+        if !batch.suspects.is_empty() {
+            scene.end_line();
+            scene.atom(vec![look::dim("suspects, the likeliest first:")]);
+            for line in &batch.suspects {
+                scene.end_line();
+                scene.atom(vec![look::dim("  ")]);
+                look::flow(scene, &look::spans(line));
+            }
         }
         if batch.tasks.is_empty() {
             return;

@@ -357,6 +357,7 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::End => end(app),
         Go::EpicMr => epic_mr(app),
         Go::ShipBatch(product) => ship_batch(app, &product),
+        Go::FixBatch(product) => fix_batch(app, &product),
     }
 }
 
@@ -399,6 +400,28 @@ fn ship_batch(app: &mut Overview, product: &str) {
             key: "ship",
             what: "batch MR",
             args: vec!["wt:batch".into(), product.to_string(), "--ship".into()],
+        },
+    );
+}
+
+/// A click on `fix batch` or the held ship row (#413): `wt:batch <product> --fix`,
+/// the issue queued in this orchestration.
+fn fix_batch(app: &mut Overview, product: &str) {
+    let Some(name) = app.orchestration_name() else { return };
+    let args = vec![
+        "wt:batch".into(),
+        product.to_string(),
+        "--fix".into(),
+        "--orchestration".into(),
+        name.to_string(),
+    ];
+    open_mr(
+        app,
+        Opening {
+            slot: |actor| &mut actor.fix,
+            key: "fix",
+            what: "fix issue",
+            args,
         },
     );
 }

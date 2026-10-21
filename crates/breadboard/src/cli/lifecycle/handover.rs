@@ -17,7 +17,7 @@ use super::herdr;
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
-use breadboard_core::conversations::{context_of, interactive_pids_of};
+use breadboard_core::conversations::{self, context_of, interactive_pids_of};
 use breadboard_core::fresh::Fresh;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
@@ -1066,6 +1066,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let context = context_of(&worker.id);
     let share = context_share_of(&worker.id);
     let fresh = context.and_then(|context| rule.why(&context, now_ms()));
+    let is_full = fresh.is_some();
     let refusal = refusal_of(pane.as_ref(), worker.is_free, fresh);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
@@ -1077,7 +1078,19 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         fail(format!("{} gets no next issue: {reason}", worker.name))
     };
     if let Some(refusal) = refusal {
-        return failed(&refusal);
+        if !is_full {
+            return failed(&refusal);
+        }
+        // Too full to take it (#445): a fresh agent instead, in its worktree
+        // should that be there without one (#455).
+        if !request.is_dry {
+            record_failure(repo, name, &worker.id, number, &refusal);
+        }
+        return fail(format!(
+            "{} gets no next issue: {refusal}; a fresh agent instead: {} wt:orchestrate {name} {number}",
+            worker.name,
+            breadboard_core::config::run_word()
+        ));
     }
     // Once nothing refused it: a refusal costs no extra herdr call (#230).
     if !request.is_dry {
@@ -1261,16 +1274,17 @@ fn alarm(repo: &Repo, name: &str, text: &str) {
 fn unbind(worker: &Worker, issue: &Issue) {
     let _ = fs::remove_file(session_file(&issue.dir));
     if !worker.is_free {
-        let _ = fs::write(session_file(&worker.dir), format!("{}\n", worker.id));
+        let _ = conversations::bind(&worker.dir, &worker.id);
     }
 }
 
 /// The binding follows the conversation: a restart resumes it in its new
 /// worktree; a free agent's checkout is the orchestration's, no binding of its own there.
 fn bind(worker: &Worker, issue: &Issue) {
-    let _ = fs::write(session_file(&issue.dir), format!("{}\n", worker.id));
+    let _ = conversations::bind(&issue.dir, &worker.id);
     if !worker.is_free {
-        let _ = fs::remove_file(session_file(&worker.dir));
+        // Its MR merged, its worktree goes; unmerged, a fresh agent takes it on (#455).
+        conversations::unbind_leaving(&worker.dir, Some(&worker.id));
     }
 }
 
