@@ -41,7 +41,9 @@ What it does, in this order:
    worktree already are skipped and listed; nothing to start stops here. A
    worktree of the orchestration whose agent is gone (none bound, its MR not
    merged) gets a fresh agent in it instead (#455), its brief saying it takes
-   over; the overview does the same for such a worktree in the work order.
+   over; the overview does the same for such a worktree in the work order
+   once its agent left it marked (`.claude/agent-left`: a `wt:new` from
+   inside it, a handover).
 2. Opens the space `⇶ <name>`, or its product's (`<product>`), (`root`, `overview`, `orchestrator`,
    `changelog` and `changes`, see The changelog) and
    moves the tab it runs in there: the orchestrator's own tab. That happens only
