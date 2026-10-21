@@ -160,8 +160,10 @@ has_cargo() {
   command -v cargo >/dev/null 2>&1
 }
 
-# The repo's store, or nothing outside a git checkout.
+# The repo's store, or nothing outside a git checkout. BREADBOARD_STORE
+# moves it (#456: CI keeps it in a cache, by key across pipelines).
 store() {
+  [ -n "${BREADBOARD_STORE-}" ] && printf '%s\n' "$BREADBOARD_STORE" && return 0
   common=$(git -C "$package" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   [ -n "$common" ] && printf '%s/breadboard\n' "$common"
 }
