@@ -99,6 +99,19 @@ days` (2). Both run `{{run}} wt:batch <product> --ship`:
   it takes `{{branch}}` in only on a conflict;
 - after the merge, breadboard closes the issues GitLab left open.
 
+## A red batch
+
+When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH says
+`batch red: <job>` and lists the task MRs merged into that batch, the likeliest
+first: those whose files a failed job covers (its `rules: changes:`). `ship
+batch` is held meanwhile (`ship held: batch/<product>-<n> is red (<job>)`, also
+in UP NEXT and from `{{run}} wt:batch <product> --ship`). **`fix batch`** (or the
+held row) runs `{{run}} wt:batch <product> --fix`: it files the fix issue with
+the failed jobs and the suspects with their files, and queues it in the
+orchestration. The overview hands it to the free agent that knows those
+files, else to a fresh one. Its worktree branches off the red batch, and its
+MR goes into it, so the batch MR's pipeline runs again with the fix.
+
 ## Hotfixes
 
 `{{run}} wt:new <n>-<feature> --fix` of an issue labelled `hotfix`, or `--base main`,

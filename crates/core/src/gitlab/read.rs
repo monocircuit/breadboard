@@ -887,6 +887,16 @@ pub async fn read_orchestration(
                 .map(|node| mr_of(node).0)
                 .filter(|mr| mr.branch != *branch && ask.shipping.contains(&mr.branch))
                 .collect(),
+            failed_jobs: nodes(&project, "epicMrs")
+                .iter()
+                .filter_map(|node| {
+                    let pipeline = node.get("headPipeline")?;
+                    (lower(str_at(pipeline, "status")) == "failed").then(|| {
+                        let jobs = jobs_of(pipeline, &web).into_iter().filter(|job| job.status == "failed");
+                        (id_of(node.get("iid")), jobs.collect())
+                    })
+                })
+                .collect(),
         })
     });
     let develop = last_finished("develop").map(|pipeline| pipeline_remote(&pipeline, &web));
