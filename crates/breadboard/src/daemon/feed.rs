@@ -1,7 +1,9 @@
 //! A view's GitLab feed in the daemon: one `read_gitlab` per view, its lines
 //! sent to every overview that follows it, the last answer first to one that
-//! comes later. It reads while one follows it: the last to leave ends it
-//! (`serve` keeps its last answer for GRACE, for an overview opened again).
+//! comes later: after a failed read the last one with data, then the failure
+//! (#454: an overview opened while GitLab refuses still shows its MRs). It
+//! reads while one follows it: the last to leave ends it (`serve` keeps its
+//! last answer for GRACE, for an overview opened again).
 
 use super::gitlab::{Feed as Said, read_gitlab};
 use breadboard_core::reader::RemoteAsk;
@@ -15,7 +17,7 @@ const BACKLOG: usize = 64;
 
 pub struct Feed {
     lines: broadcast::Sender<Arc<str>>,
-    /// The last answer, sent first to a new follower.
+    /// The last answer, sent first to a new follower: one line, or the last with data and a failure after it.
     last: Arc<Mutex<Option<Arc<str>>>>,
     /// Dropped with the feed: its reads end.
     refresh: mpsc::UnboundedSender<()>,
@@ -31,11 +33,18 @@ impl Feed {
         let (out, mut said) = mpsc::unbounded_channel::<Said>();
         let (refresh, refreshes) = mpsc::unbounded_channel();
         let (lines, _) = broadcast::channel(BACKLOG);
-        let last = Arc::new(Mutex::new(kept));
+        let last = Arc::new(Mutex::new(kept.clone()));
         let (asks, asked) = watch::channel(Some(ask));
         tokio::spawn(read_gitlab(main, asked, refreshes, out));
         tokio::spawn({
             let (lines, last) = (lines.clone(), last.clone());
+            // The last line with data: from the feed before when it had some.
+            let mut answered = kept.and_then(|kept| {
+                kept.lines()
+                    .next()
+                    .filter(|line| has_data(line))
+                    .map(|line| Arc::<str>::from(format!("{line}\n")))
+            });
             async move {
                 while let Some(message) = said.recv().await {
                     let Ok(mut line) = serde_json::to_string(&message) else {
@@ -43,8 +52,16 @@ impl Feed {
                     };
                     line.push('\n');
                     let line: Arc<str> = line.into();
-                    if matches!(message, Said::Remote { .. }) {
-                        *last.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
+                    match &message {
+                        Said::Remote { result: Ok(_), .. } => {
+                            answered = Some(line.clone());
+                            *last.lock().unwrap_or_else(|e| e.into_inner()) = Some(line.clone());
+                        }
+                        Said::Remote { result: Err(_), .. } => {
+                            let both = format!("{}{line}", answered.as_deref().unwrap_or_default());
+                            *last.lock().unwrap_or_else(|e| e.into_inner()) = Some(both.into());
+                        }
+                        Said::Progress(_) => {}
                     }
                     let _ = lines.send(line);
                 }
@@ -92,4 +109,9 @@ impl Feed {
     pub fn refresh(&self) {
         let _ = self.refresh.send(());
     }
+}
+
+/// Whether a feed's line is an answer with data.
+fn has_data(line: &str) -> bool {
+    matches!(serde_json::from_str(line), Ok(Said::Remote { result: Ok(_), .. }))
 }
