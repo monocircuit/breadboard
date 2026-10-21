@@ -423,6 +423,30 @@ breadboard decides which pipelines exist at all:
   `CI 3/4 slots · 2 queued`. The queue's state is
   `.claude/ci/queue.json`.
 
+## The bench
+
+What breadboard's instructions save (#430): the same small issues, each
+run by one headless agent in a probe of its own (a throwaway clone with the
+gauntlet's fake GitLab, nothing reaching the real one), with the long brief
+and AGENTS.md (`full`), the pointer, skill and lean brief of #426–#429
+(`lean`), or no breadboard instructions at all (`none`: hooks, lint and the
+pre-push check stay, they are not instructions).
+`packages/breadboard-gauntlet/src/bench/` holds it.
+
+```sh
+pnpm --filter @monocircuit/breadboard-gauntlet bench           # every task × full and none
+pnpm --filter @monocircuit/breadboard-gauntlet bench --fake    # the harness alone, no spend
+pnpm --filter @monocircuit/breadboard-gauntlet bench --table   # this table from bench/results/
+```
+
+A real run needs Claude's login in the environment
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`): a probe has no
+`~/.claude`.
+
+<!-- BEGIN:bench -->
+No results yet: `pnpm --filter @monocircuit/breadboard-gauntlet bench`.
+<!-- END:bench -->
+
 ## Checks
 
 ```sh
