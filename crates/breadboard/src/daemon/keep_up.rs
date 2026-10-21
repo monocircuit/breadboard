@@ -543,12 +543,23 @@ mod tests {
         // The batch shipped (develop took it in, resolved): the next opens.
         git(&other, &["fetch", "--quiet", "origin"]);
         git(&other, &["checkout", "--quiet", "-B", "develop", "origin/develop"]);
+        // With the test's identity: on a runner without one git refuses the
+        // merge before it starts, and the commit below is no merge.
         let merged = Command::new("git")
             .args(["merge", "--quiet", "--no-edit", "origin/batch/breadboard-1"])
             .current_dir(&other)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
             .output()
             .unwrap();
         assert!(!merged.status.success(), "it conflicts");
+        assert!(
+            other.join(".git/MERGE_HEAD").exists(),
+            "{}",
+            String::from_utf8_lossy(&merged.stderr)
+        );
         std::fs::write(other.join("README.md"), "both\n").unwrap();
         git(&other, &["commit", "--quiet", "-am", "Merge the batch"]);
         git(&other, &["push", "--quiet", "origin", "develop"]);
