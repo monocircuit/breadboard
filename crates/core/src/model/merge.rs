@@ -23,11 +23,43 @@ pub const ON_WT_CHECK: &str = "merges on wt:check (no MR pipeline)";
 /// What GitLab needs changed while it holds such an MR for a pipeline (#443): the user's step.
 pub const PIPELINE_SETTING: &str = "GitLab wants a pipeline: Settings → Merge requests → Merge checks, turn on \"Skipped pipelines are considered successful\"";
 
+/// Which MRs merge on `wt:check` at their pushed head, without a pipeline of
+/// their own: into the default branch while `[merge] needs_pipeline = false`
+/// (#443, temporary), a task's into its batch while `[merge]
+/// batch_needs_pipeline = false` (#461). A batch's own MR never does.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct OnCheck {
+    pub into_default: bool,
+    pub into_batch: bool,
+}
+
+impl OnCheck {
+    pub fn of(merge: &crate::config::Merge) -> OnCheck {
+        OnCheck {
+            into_default: !merge.needs_pipeline,
+            into_batch: !merge.batch_needs_pipeline,
+        }
+    }
+
+    /// Of the repo at `main`.
+    pub fn of_main(main: &std::path::Path) -> OnCheck {
+        OnCheck::of(&crate::config::of_main(main).config.merge)
+    }
+
+    /// Whether an MR from `source` into `target` merges on `wt:check`.
+    pub fn covers(&self, source: &str, target: &str) -> bool {
+        if crate::batch::is_batch(source) {
+            return false;
+        }
+        (self.into_default && target == crate::git::default_branch())
+            || (self.into_batch && crate::batch::is_batch(target))
+    }
+}
+
 /// Whether `mr` needs a passed pipeline of its own before its merge: always,
-/// but into the default branch while `[merge] needs_pipeline = false`
-/// (`merges_on_check`, #443, temporary): there `wt:check` at its pushed head is enough.
-pub fn needs_pipeline(mr: &Mr, merges_on_check: bool) -> bool {
-    !merges_on_check || mr.target() != crate::git::default_branch()
+/// but where `on_check` covers it: there `wt:check` at its pushed head is enough.
+pub fn needs_pipeline(mr: &Mr, on_check: OnCheck) -> bool {
+    !on_check.covers(&mr.branch, mr.target())
 }
 
 /// Whether the commits `a` and `b` are one, either maybe abbreviated.
@@ -549,15 +581,49 @@ mod tests {
             ..with("skipped", "abc123")
         };
         assert_eq!(off(&held), [PIPELINE_SETTING]);
+        let into_default = OnCheck {
+            into_default: true,
+            into_batch: false,
+        };
         assert!(needs_pipeline(
             &Mr {
                 target: "epic/15-x".into(),
                 ..ready()
             },
-            true
+            into_default
         ));
-        assert!(!needs_pipeline(&ready(), true));
-        assert!(needs_pipeline(&ready(), false));
+        assert!(!needs_pipeline(&ready(), into_default));
+        assert!(needs_pipeline(&ready(), OnCheck::default()));
+    }
+
+    #[test]
+    fn a_task_into_its_batch_merges_on_wt_check_and_the_batch_never() {
+        // #461: `[merge] batch_needs_pipeline = false`.
+        let into_batch = OnCheck {
+            into_default: false,
+            into_batch: true,
+        };
+        let task = Mr {
+            branch: "feature/461-x".into(),
+            target: "batch/breadboard-2".into(),
+            ..ready()
+        };
+        assert!(!needs_pipeline(&task, into_batch));
+        assert!(needs_pipeline(&task, OnCheck::default()));
+        // Into develop, an epic, or the batch's own MR: its pipeline, as before.
+        assert!(needs_pipeline(&ready(), into_batch));
+        let shipped = Mr {
+            branch: "batch/breadboard-2".into(),
+            ..ready()
+        };
+        assert!(needs_pipeline(&shipped, into_batch));
+        assert!(needs_pipeline(
+            &shipped,
+            OnCheck {
+                into_default: true,
+                into_batch: true
+            }
+        ));
     }
 
     #[test]

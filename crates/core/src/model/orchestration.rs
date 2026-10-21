@@ -9,7 +9,7 @@ use super::boxes::{BoxSection, all_sections_of, open_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
-use super::merge::{blockers_of, needs_pipeline, to_check_of};
+use super::merge::{OnCheck, blockers_of, needs_pipeline, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, files_text, progress_of, row_blockers_of};
@@ -105,9 +105,9 @@ pub struct OrchestrationLocal {
     pub journal: Vec<String>,
     /// Its settings as they hold now (#415), the panel's rows.
     pub settings: Vec<crate::settings::Row>,
-    /// `[merge] needs_pipeline = false` (#443, temporary): an MR into the
-    /// default branch merges on wt:check at its pushed head, no pipeline of its own.
-    pub merges_on_check: bool,
+    /// Which MRs merge on wt:check at their pushed head, no pipeline of their
+    /// own (`[merge] needs_pipeline`, #443; `batch_needs_pipeline`, #461).
+    pub merges_on_check: OnCheck,
     /// When the orchestrator gets a fresh start (`[orchestrator]`).
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
@@ -417,7 +417,7 @@ fn turns_of(
     remote: Option<&Remote>,
     order: &MergeOrder,
     done: &HashSet<i64>,
-    merges_on_check: bool,
+    merges_on_check: OnCheck,
 ) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
     let after_of: HashMap<i64, &[super::merge_order::After]> =
@@ -452,7 +452,13 @@ fn turns_of(
 }
 
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, merges_on_check: bool) -> MergeOffer {
+fn merge_offer(
+    mr: &Mr,
+    part: &BranchRemote,
+    issue: &Entry,
+    can_mark_ready: bool,
+    merges_on_check: OnCheck,
+) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
