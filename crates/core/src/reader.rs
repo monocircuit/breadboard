@@ -1046,6 +1046,11 @@ fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::mod
         behind: (behind.status == 0)
             .then(|| behind.stdout.trim().parse().ok())
             .flatten(),
+        fixes: record?
+            .product
+            .as_deref()
+            .map(|product| crate::batch::fixes_of(main, product))
+            .unwrap_or_default(),
         branch,
         shipped,
     })

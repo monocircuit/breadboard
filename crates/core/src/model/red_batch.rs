@@ -25,6 +25,8 @@ pub struct Red {
     pub suspects: Vec<Suspect>,
     /// The files each job covers at its head.
     pub globs: Vec<Option<Vec<String>>>,
+    /// Its fix issue, once `wt:batch --fix` filed it.
+    pub fix: Option<i64>,
 }
 
 impl Red {
@@ -41,6 +43,14 @@ impl Red {
     pub fn held(&self) -> String {
         let first = self.jobs.first().map_or("its pipeline", |(job, _)| job.as_str());
         format!("ship held: {} is red ({first})", self.branch)
+    }
+
+    /// What is done about it: `#460 fixes it`, or the click that files the fix.
+    pub fn fixing(&self) -> String {
+        match self.fix {
+            Some(number) => format!("#{number} fixes it"),
+            None => "a click files its fix".into(),
+        }
     }
 
     /// The part of the BATCH row, linked to the failed job.
@@ -135,7 +145,13 @@ pub fn red_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Red
         let given: Vec<&[String]> = globs.iter().flatten().map(Vec::as_slice).collect();
         suspects(&shipped.tasks, &given)
     });
+    let fix = epic
+        .fixes
+        .iter()
+        .find(|(_, branch)| *branch == mr.branch)
+        .map(|(number, _)| *number);
     Some(Red {
+        fix,
         branch: mr.branch.clone(),
         mr: mr.iid,
         mr_url: mr.url.clone(),
@@ -181,6 +197,7 @@ pub(crate) mod tests {
                 branch: "batch/b-3".into(),
                 behind: Some(0),
                 shipped: vec![shipped],
+                fixes: Vec::new(),
             }),
             ..OrchestrationLocal::default()
         };

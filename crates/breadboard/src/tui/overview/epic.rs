@@ -29,6 +29,12 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         } else if let Some(held) = &batch.held {
             scene.atom(vec![look::dim(format!(" · {held}"))]);
         }
+        if batch.can_fix {
+            scene.atom(vec![look::dim(" ·")]);
+            scene.button("fix batch", Tone::Red, Act::Go(Go::FixBatch(batch.product.clone())));
+        } else if let Some(number) = batch.fix {
+            scene.atom(vec![look::dim(format!(" · #{number} fixes it"))]);
+        }
         // A red batch's suspects (#413), always shown: the likeliest first.
         if !batch.suspects.is_empty() {
             scene.end_line();

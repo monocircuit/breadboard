@@ -6,6 +6,8 @@
 //! off it at once and the MRs still on their way into it go into the next.
 //! Held while a batch shipped before is red (#413).
 
+mod fix;
+
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::epic::{mrs_of, query};
 use super::glab;
@@ -16,16 +18,20 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::ExitCode;
 
-const ABOUT: &str = "pnpm wt:batch: the batch of a product into develop (#414)";
+const ABOUT: &str = "pnpm wt:batch: the batch of a product into develop (#414), the fix of a red one (#413)";
 const USAGE: &str = "usage: pnpm wt:batch <product> --ship [--dry-run]
+       pnpm wt:batch <product> --fix [--orchestration <name>] [--dry-run]
 
   --ship      open the MR batch → develop, or bring its description up to date:
               it lists every task MR merged into the batch and closes their
               issues; the next batch opens off it and takes the MRs still open
-  --dry-run   show the MR, send nothing";
+  --fix       file the fix of a red shipped batch (#413): the issue names its
+              failed jobs and the tasks in it, the likeliest first; queued in
+              the product's orchestration (or <name>), off the red batch
+  --dry-run   show the MR or the issue, send nothing";
 const TAKES: Takes = Takes {
-    valued: &[],
-    switches: &["--ship", "--dry-run"],
+    valued: &["--orchestration"],
+    switches: &["--ship", "--fix", "--dry-run"],
     words: Some(1),
     usage: USAGE,
     command: "wt:batch",
@@ -184,8 +190,10 @@ pub fn run(argv: &Argv) -> Outcome {
     let Some(product) = argv.first() else {
         return Err(USAGE.into());
     };
-    if !argv.has("--ship") {
-        return Err(format!("say what to do with the batch of {product}: --ship\n{USAGE}"));
+    if !argv.has("--ship") && !argv.has("--fix") {
+        return Err(format!(
+            "say what to do with the batch of {product}: --ship or --fix\n{USAGE}"
+        ));
     }
     let here = Here::find();
     let Some(main) = here.main.as_deref() else {
@@ -198,6 +206,15 @@ pub fn run(argv: &Argv) -> Outcome {
         ));
     }
     let develop = loaded.branch.clone();
+    if argv.has("--fix") {
+        return fix::run(
+            main,
+            product,
+            &develop,
+            argv.given("--orchestration"),
+            argv.has("--dry-run"),
+        );
+    }
     let _ = git(main, &["fetch", "--quiet", "origin"]);
     let Some(current) = batch::current_of(main, product) else {
         return Err(format!("{product} has no batch yet: its first task opens one"));

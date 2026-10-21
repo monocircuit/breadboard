@@ -82,6 +82,7 @@ fn word_of(
         Go::End => end_said(actor.end.as_ref()?, name),
         Go::EpicMr => epic_mr_said(actor.epic_mr.as_ref()?, &item.text, "milestone MR"),
         Go::ShipBatch(_) => epic_mr_said(actor.ship.as_ref()?, &item.text, "batch MR"),
+        Go::FixBatch(_) => epic_mr_said(actor.fix.as_ref()?, &item.text, "fix issue"),
         _ => None,
     }
 }

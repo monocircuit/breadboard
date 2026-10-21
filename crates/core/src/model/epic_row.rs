@@ -23,6 +23,8 @@ pub struct EpicLocal {
     /// The product's batches shipped before it, as git has them (#413):
     /// a red one's suspects.
     pub shipped: Vec<crate::batch_red::Shipped>,
+    /// The fix issues filed for red shipped batches (#413): (issue, batch).
+    pub fixes: Vec<(i64, String)>,
 }
 
 /// What a batch's row has besides its parts (#414): the button that ships
@@ -37,6 +39,10 @@ pub struct BatchFold {
     pub held: Option<String>,
     /// The red batch's suspects, the likeliest first (#413).
     pub suspects: Vec<Vec<Span>>,
+    /// A red batch without its fix issue yet: `fix batch` files it (#413).
+    pub can_fix: bool,
+    /// The fix issue filed for the red batch: `#460 fixes it`.
+    pub fix: Option<i64>,
     /// `!431 #411 feat(breadboard): …`, one line per task MR, oldest first.
     pub tasks: Vec<Vec<Span>>,
 }
@@ -184,6 +190,8 @@ pub fn batch_fold_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Opt
         can_ship: could_ship && red.is_none(),
         held: red.as_ref().filter(|_| could_ship).map(super::red_batch::Red::held),
         suspects: red.as_ref().map(super::red_batch::Red::lines).unwrap_or_default(),
+        can_fix: red.as_ref().is_some_and(|red| red.fix.is_none()),
+        fix: red.as_ref().and_then(|red| red.fix),
         tasks,
     })
 }
@@ -342,10 +350,17 @@ mod tests {
         let fold = batch_fold_of(&local, Some(&remote)).unwrap();
         assert!(!fold.can_ship);
         assert_eq!(fold.held.as_deref(), Some("ship held: batch/b-2 is red (check:vita)"));
+        assert!(fold.can_fix && fold.fix.is_none());
         assert_eq!(
             text_of(&fold.suspects[0]),
             "!431 #411 feat: vita's page · its files run in check:vita"
         );
+        // Its fix filed: named, no second click.
+        let mut fixed = local.clone();
+        fixed.epic.as_mut().unwrap().fixes = vec![(460, "batch/b-2".into())];
+        let fold = batch_fold_of(&fixed, Some(&remote)).unwrap();
+        assert!(!fold.can_fix);
+        assert_eq!(fold.fix, Some(460));
         // Green again: shipped as before.
         remote.epic.as_mut().unwrap().shipping[0]
             .pipeline
@@ -353,6 +368,6 @@ mod tests {
             .unwrap()
             .status = "success".into();
         let fold = batch_fold_of(&local, Some(&remote)).unwrap();
-        assert!(fold.can_ship && fold.held.is_none() && fold.suspects.is_empty());
+        assert!(fold.can_ship && fold.held.is_none() && fold.suspects.is_empty() && !fold.can_fix);
     }
 }
