@@ -285,6 +285,32 @@ pub fn queue_order<'a>(queued: Vec<&'a Entry>, work: &[i64]) -> Vec<&'a Entry> {
     queued
 }
 
+/// The issues of the work order whose worktree is there without an agent
+/// (#455), in that order: no conversation bound to it and no claude standing
+/// in it, its issue open and its MR not merged (GitLab answered). Its agent
+/// moved on (a hotfix's `wt:new`, a handover): it gets a fresh one in place.
+pub fn orphans_of(issues: &[Entry], remote: Option<&Remote>, work: &[i64]) -> Vec<i64> {
+    let Some(remote) = remote else { return Vec::new() };
+    work.iter()
+        .copied()
+        .filter(|number| {
+            issues.iter().any(|issue| {
+                let part = remote.of(&issue.branch);
+                issue.number == Some(*number)
+                    && !issue.is_queued
+                    && issue.merged_at.is_none()
+                    && issue.removed_at.is_none()
+                    && issue
+                        .tree
+                        .as_ref()
+                        .is_some_and(|tree| !tree.is_main && !tree.is_bound && tree.left.is_empty())
+                    && part.issue.as_ref().is_some_and(|found| found.state == "opened")
+                    && part.mr.as_ref().is_none_or(|mr| !mr.is_merged())
+            })
+        })
+        .collect()
+}
+
 /// How long a failed announced handover waits before it is tried again.
 pub const RETRY_MS: i64 = 60_000;
 
@@ -473,6 +499,29 @@ pub fn worker_actions_of(
     if facts.should_hand_out {
         orders.extend(starts.iter().map(|number| Go::StartFresh(*number)));
     }
+    // A worktree of the work order its agent left (#455): a fresh agent in
+    // it, none while a start or a handover moves an agent in or out.
+    let orphans: Vec<i64> = orphans_of(issues, remote, facts.work)
+        .into_iter()
+        .filter(|number| {
+            let dir = issues
+                .iter()
+                .find(|issue| issue.number == Some(*number))
+                .and_then(|issue| issue.tree.as_ref())
+                .map(|tree| &tree.dir);
+            !facts.announced.iter().any(|handover| handover.number == *number)
+                && !(setting_up.contains(number) && run_of(Some(*number)).is_none())
+                && dir.is_none_or(|dir| !promised.contains(dir))
+        })
+        .collect();
+    if facts.should_hand_out {
+        orders.extend(
+            orphans
+                .iter()
+                .filter(|number| run_of(Some(**number)).is_none())
+                .map(|number| Go::StartFresh(*number)),
+        );
+    }
     let entry_of = |number: i64| issues.iter().find(|issue| issue.number == Some(number));
     // Rows name an agent as the overview shows it (#292); keys and orders keep the name it goes by.
     let names = names_of(issues, known);
@@ -655,6 +704,26 @@ pub fn worker_actions_of(
                 to: name.clone(),
                 dir: found.worker.dir.clone(),
             },
+        ));
+    }
+    for number in &orphans {
+        let run = run_of(Some(*number));
+        let text = match run {
+            Some(run) if run.is_running => format!("#{number}: starting a fresh agent in its worktree …"),
+            Some(StartRun { error: Some(error), .. }) => {
+                format!("#{number}: its fresh agent failed: {error}{TRIES_AGAIN}")
+            }
+            _ => format!("#{number}: its worktree has no agent, a fresh one starts in it"),
+        };
+        let feature = entry_of(*number).map(|issue| issue.feature.clone()).unwrap_or_default();
+        actions.push(item(
+            format!("start:#{number}"),
+            &feature,
+            *number,
+            text,
+            run.is_some_and(|run| run.is_running),
+            String::new(),
+            Go::StartFresh(*number),
         ));
     }
     // Why the clean-up of each held worktree waits: only while its agent moves out.
@@ -1090,6 +1159,71 @@ mod tests {
         let remote = remote_of(vec![("30-done", merged(), vec![]), ("31-new", None, vec!["other.rs"])]);
         let found = worker_actions_of(&issues, Some(&remote), &idle("c1", "idle"), &[], &facts);
         assert!(found.orders.is_empty() && found.suggested.is_empty());
+    }
+
+    #[test]
+    fn starts_a_fresh_agent_in_a_worktree_of_the_work_order_its_agent_left() {
+        let tree = |feature: &str, is_bound: bool| Entry {
+            number: feature.split('-').next().and_then(|n| n.parse().ok()),
+            feature: feature.into(),
+            branch: format!("feature/{feature}"),
+            tree: Some(Tree {
+                dir: format!("/nonexistent/platform-{feature}").into(),
+                name: feature.into(),
+                is_bound,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let issues = [
+            tree("428-left", false),
+            tree("429-bound", true),
+            tree("430-unplanned", false),
+        ];
+        let open = |mr: Option<Mr>| BranchRemote {
+            mr,
+            issue: Some(Issue {
+                state: "opened".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut remote = Remote::default();
+        for feature in ["428-left", "429-bound", "430-unplanned"] {
+            remote.of.insert(format!("feature/{feature}"), open(None));
+        }
+        let work = [428, 429, 430];
+        let facts = WorkerFacts {
+            should_hand_out: true,
+            work: &work[..2],
+            ..Default::default()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &HashMap::new(), &[], &facts);
+        assert_eq!(found.orders, [Go::StartFresh(428)]);
+        assert_eq!(
+            found.actions.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(),
+            ["#428: its worktree has no agent, a fresh one starts in it"]
+        );
+        // Started already: no second start, its row says so.
+        let runs = HashMap::from([(
+            428,
+            StartRun {
+                is_running: true,
+                is_fresh: true,
+                ..Default::default()
+            },
+        )]);
+        let running = WorkerFacts {
+            runs: Some(&runs),
+            ..facts.clone()
+        };
+        let found = worker_actions_of(&issues, Some(&remote), &HashMap::new(), &[], &running);
+        assert!(found.orders.is_empty());
+        assert!(found.actions[0].is_running);
+        // Its MR merged, or GitLab not answered yet: it only waits for its removal.
+        remote.of.insert("feature/428-left".into(), open(merged()));
+        assert!(orphans_of(&issues, Some(&remote), &work[..2]).is_empty());
+        assert!(orphans_of(&issues, None, &work).is_empty());
     }
 
     #[test]

@@ -1063,6 +1063,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let context = context_of(&worker.id);
     let share = context_share_of(&worker.id);
     let fresh = context.and_then(|context| rule.why(&context, now_ms()));
+    let is_full = fresh.is_some();
     let refusal = refusal_of(pane.as_ref(), worker.is_free, fresh);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
@@ -1074,7 +1075,19 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         fail(format!("{} gets no next issue: {reason}", worker.name))
     };
     if let Some(refusal) = refusal {
-        return failed(&refusal);
+        if !is_full {
+            return failed(&refusal);
+        }
+        // Too full to take it (#445): a fresh agent instead, in its worktree
+        // should that be there without one (#455).
+        if !request.is_dry {
+            record_failure(repo, name, &worker.id, number, &refusal);
+        }
+        return fail(format!(
+            "{} gets no next issue: {refusal}; a fresh agent instead: {} wt:orchestrate {name} {number}",
+            worker.name,
+            breadboard_core::config::run_word()
+        ));
     }
     // Once nothing refused it: a refusal costs no extra herdr call (#230).
     if !request.is_dry {

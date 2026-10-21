@@ -40,6 +40,8 @@ pub struct Brief<'a> {
     pub before: Option<String>,
     /// A fresh agent's `## Handoff`: the retired agent's note it reads (#381).
     pub handoff: Option<String>,
+    /// Its worktree was there without an agent (#455): it goes on from another's work.
+    pub is_taken_over: bool,
 }
 
 /// The handoff a fresh agent on `item` reads (#381): the retired agent of
@@ -100,6 +102,10 @@ pub fn brief_of(brief: &Brief) -> String {
         brief.before.as_deref(),
         &main,
     );
+    if brief.is_taken_over {
+        let bb = breadboard_core::config::of(&main).bb();
+        text.push_str(&format!("\n## Taken over\n\n{}\n", super::orphan::taken_over_text(bb)));
+    }
     if let Some(handoff) = &brief.handoff {
         text.push_str(&format!("\n## Handoff\n\n{handoff}\n"));
     }

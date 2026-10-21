@@ -186,6 +186,9 @@ pub struct Tree {
     // What an orchestration's read adds (view.mjs `readView`).
     /// The conversation bound to its space.
     pub claude: Option<Claude>,
+    /// A conversation is bound to it (`.claude/herdr-session`), its
+    /// transcript written or not yet (a fresh agent's first run still queued).
+    pub is_bound: bool,
     /// What its agent said it does (`pnpm wt:action note`, #341).
     pub note: Option<crate::said::Note>,
     /// claudes that stand in it without being its agent (#252).

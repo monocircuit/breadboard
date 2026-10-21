@@ -8,6 +8,7 @@ mod end;
 mod fresh;
 mod heal;
 mod issue;
+mod orphan;
 mod product;
 pub mod setups;
 mod space;
@@ -271,6 +272,11 @@ pub fn command(args: &Args) -> ExitCode {
     }
 
     let mut plan: Vec<Item> = wanted.iter().map(|arg| read_or_fail(arg)).collect();
+    // A worktree its agent left (#455): a fresh agent in it, no refusal.
+    let orphans: Vec<bool> = plan.iter().map(|item| orphan::is_orphan(&name, item)).collect();
+    for (item, _) in plan.iter_mut().zip(&orphans).filter(|(_, is_orphan)| **is_orphan) {
+        item.why = None;
+    }
     let slot = herdr::slot_of(&name);
     let label = match &title {
         Some(title) => format!("{ORCHESTRATOR} {title}"),
@@ -296,7 +302,10 @@ pub fn command(args: &Args) -> ExitCode {
     }
     let is_queued = args.has("--queue");
     let is_now = args.has("--now");
-    let to_start: Vec<usize> = (0..plan.len()).filter(|at| plan[*at].why.is_none()).collect();
+    // An orphan's worktree is there: no idle agent is moved into it, a fresh one starts there.
+    let mut to_start: Vec<usize> = (0..plan.len())
+        .filter(|at| plan[*at].why.is_none() && !orphans[*at])
+        .collect();
     let idle = if is_queued || is_now || !herdr::is_in_herdr() {
         Vec::new()
     } else {
@@ -306,11 +315,19 @@ pub fn command(args: &Args) -> ExitCode {
         .iter()
         .map(|at| (plan[*at].number.to_string(), plan[*at].description.clone()))
         .collect();
-    let starts = workers::starts_of(&items, &idle, args.has("--shared"), workers::free_memory());
+    let mut starts = workers::starts_of(&items, &idle, args.has("--shared"), workers::free_memory());
+    for at in (0..plan.len()).filter(|at| orphans[*at]) {
+        to_start.push(at);
+        starts.push(Start::Fresh {
+            is_shared: false,
+            why: None,
+        });
+    }
     if !is_queued {
         for (at, start) in to_start.iter().zip(&starts) {
             let item = &plan[*at];
             let line = match start {
+                _ if orphans[*at] => "→ a fresh agent in its worktree: no agent is bound to it".into(),
                 Start::Worker { worker, shared } => {
                     let shares = if shared.is_empty() {
                         String::new()
@@ -359,7 +376,8 @@ pub fn command(args: &Args) -> ExitCode {
         }
     }
     if is_dry {
-        let first = plan.iter().find(|item| item.why.is_none()).unwrap_or(&plan[0]);
+        let first_at = plan.iter().position(|item| item.why.is_none()).unwrap_or(0);
+        let first = &plan[first_at];
         outln!(
             "\n▸ nothing was done (--dry-run). The brief of {} (.claude/brief.md), started with\n  claude --session-id <new id> --name {} {}\n",
             first.feature,
@@ -376,6 +394,7 @@ pub fn command(args: &Args) -> ExitCode {
                 extra: &extra,
                 before: None,
                 handoff: issue::handoff_for(&name, first).map(|(_, text)| text),
+                is_taken_over: orphans[first_at],
             })
         );
         // Which brief each issue gets (#247): only this run's --brief.
@@ -517,14 +536,23 @@ pub fn command(args: &Args) -> ExitCode {
                         }
                     };
                     let before = known_of(number);
-                    step(&format!(
-                        "{run} wt:new {} --origin {name}{}",
-                        item.feature,
-                        if *is_shared { " --shared" } else { "" },
-                        run = breadboard_core::config::run_word()
-                    ));
-                    let made = make_worktree(item, &name, *is_shared);
-                    if !made.is_there || made.failed.is_some() {
+                    let is_orphan = orphans[*at];
+                    let made = if is_orphan {
+                        step(&format!(
+                            "{} is there without an agent: a fresh one starts in it",
+                            repo::feature_of(&item.dir)
+                        ));
+                        None
+                    } else {
+                        step(&format!(
+                            "{run} wt:new {} --origin {name}{}",
+                            item.feature,
+                            if *is_shared { " --shared" } else { "" },
+                            run = breadboard_core::config::run_word()
+                        ));
+                        Some(make_worktree(item, &name, *is_shared))
+                    };
+                    if let Some(made) = made.as_ref().filter(|made| !made.is_there || made.failed.is_some()) {
                         let failed = made.failed.clone().unwrap_or_else(|| "no worktree".into());
                         results.push(format!("✗ #{} {}: {failed}", item.number, item.feature));
                         if !made.is_there || is_now {
@@ -540,13 +568,17 @@ pub fn command(args: &Args) -> ExitCode {
                         continue;
                     }
                     let extra = extra_for(&name, number, given.as_deref());
-                    // A retired agent's note on its files (#381), in its worktree before the brief names it.
-                    let handoff = issue::handoff_for(&name, item).and_then(|(kept, text)| {
-                        let is_given = issue::give_handoff(&kept, &item.dir);
-                        if is_given {
-                            step("a retired agent's handoff on its files: .claude/handoff.md");
-                        }
-                        is_given.then_some(text)
+                    // The note its gone agent left in it (#455), else a retired
+                    // agent's on its files (#381), in its worktree before the brief names it.
+                    let left_note = is_orphan.then(|| orphan::left_handoff(&item.dir)).flatten();
+                    let handoff = left_note.or_else(|| {
+                        issue::handoff_for(&name, item).and_then(|(kept, text)| {
+                            let is_given = issue::give_handoff(&kept, &item.dir);
+                            if is_given {
+                                step("a retired agent's handoff on its files: .claude/handoff.md");
+                            }
+                            is_given.then_some(text)
+                        })
                     });
                     let brief = brief_of(&Brief {
                         item,
@@ -555,8 +587,22 @@ pub fn command(args: &Args) -> ExitCode {
                         extra: &extra,
                         before: None,
                         handoff,
+                        is_taken_over: is_orphan,
                     });
                     let agent = issue::start_agent(&item.dir, &brief);
+                    if !agent.is_started && is_now && is_orphan {
+                        // Its work stays: unbound again, the issue back where it was.
+                        let _ = fs::remove_file(crate::cli::setup::conversations::session_file(&item.dir));
+                        let why = "its claude did not start";
+                        let _ =
+                            record::write_record(&main, &name, &[issue::start_entry(item, before.as_ref(), Some(why))]);
+                        claim.release();
+                        results.push(format!(
+                            "✗ #{} {}: {why}, its worktree stays",
+                            item.number, item.feature
+                        ));
+                        continue;
+                    }
                     if !agent.is_started && is_now {
                         issue::undo_start(
                             &name,
@@ -583,7 +629,7 @@ pub fn command(args: &Args) -> ExitCode {
                             object(json!({ "name": item.feature })),
                         );
                     }
-                    let note = if made.status == Some(0) {
+                    let note = if made.as_ref().is_none_or(|made| made.status == Some(0)) {
                         ""
                     } else {
                         " (wt:new failed after the setup, see above)"

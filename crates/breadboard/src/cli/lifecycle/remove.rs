@@ -178,7 +178,7 @@ pub fn fetch(repo: &Repo) {
 /// Every MR of `branch`, None when GitLab does not answer: one read for
 /// both questions of a removal, an open MR on its claim and when it was
 /// merged (Node asked twice, #305).
-fn mrs_of(repo: &Repo, branch: &str, limit: Duration) -> Option<Vec<Value>> {
+pub fn mrs_of(repo: &Repo, branch: &str, limit: Duration) -> Option<Vec<Value>> {
     let endpoint = format!(
         "projects/:fullpath/merge_requests?state=all&per_page=100&source_branch={}",
         gitlab::encode(branch)
