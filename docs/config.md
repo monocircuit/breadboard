@@ -247,6 +247,7 @@ while they worked on it and its worktree's try checkers' (#387). A limit is toke
 | `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
 | `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
 | `max_runs` | `4` | how many headless runs may be in flight at once (#445). After a crash, an OOM kill or a reboot the run engine picks every cut-off run up by itself, a few at a time: a small session is resumed with one line, one past the fresh-start rule is not resumed but taken over by a fresh session in its worktree, with a handoff breadboard writes from the disk (`.claude/handoff-cut.md`: its last prompt and answer, uncommitted and unpushed work) |
+| `docs_labels` | `["documentation"]` | the issue labels that make its agent a `docs` one (`[agents.models]`) |
 
 ```toml
 [agents]
@@ -255,6 +256,32 @@ orchestration_budget = "200 M"
 fresh_above = 150_000
 idle_fresh_above = 100_000
 idle_minutes = 55
+```
+
+### `[agents.models]`
+
+A model per kind of work (#373): every claude breadboard starts gets
+`--model` of its stage. A task agent's stage comes from its issue's labels
+when it starts (`docs` with a `docs_labels` one, else `build`) and is kept in
+its worktree (`.claude/stage`); a run whose every line is its MR's failed
+pipeline is `ci_fix`. The try checker is `review`, the orchestrator's chat
+`orchestrator` (its tab's `claude`, a resume, a fresh start). The overview
+shows the model each agent last answered with next to its name.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `default` | none | the model of every stage without its own; none at all: claude's own default, no `--model` |
+| `build` | `default` | a feature or fix agent |
+| `docs` | `default` | an agent of an issue with a `docs_labels` label |
+| `ci_fix` | `default` | a run that only gets a failed pipeline of its MR |
+| `review` | `[tries] checker` | the try checker (not `default`: a small model unless set) |
+| `orchestrator` | `default` | the orchestrator's chat |
+
+```toml
+[agents.models]
+default = "opus"
+docs = "sonnet"
+ci_fix = "sonnet"
 ```
 
 ## `[tries]`
@@ -269,7 +296,7 @@ opens its path there.
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
 | `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
-| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree |
+| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree; `[agents.models] review` wins over it |
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).

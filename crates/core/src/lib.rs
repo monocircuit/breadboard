@@ -37,6 +37,7 @@ pub mod setups;
 pub mod snapshot;
 pub mod spend;
 pub mod stack;
+pub mod stage;
 pub mod time;
 pub mod try_check;
 pub mod wait;

@@ -589,7 +589,7 @@ pub fn command(args: &Args) -> ExitCode {
                         handoff,
                         is_taken_over: is_orphan,
                     });
-                    let agent = issue::start_agent(&item.dir, &brief);
+                    let agent = issue::start_agent(&item.dir, &brief, item.stage);
                     if !agent.is_started && is_now && is_orphan {
                         // Its work stays: unbound again, the issue back where it was.
                         let _ = fs::remove_file(crate::cli::setup::conversations::session_file(&item.dir));

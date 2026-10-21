@@ -1260,7 +1260,7 @@ pub fn orchestration_of(
         chat: local.chat.clone(),
         is_auto: record.is_some_and(|record| record.is_auto),
         settings: local.settings.clone(),
-        checker: crate::config::here().config.tries.checker.clone(),
+        checker: crate::stage::model_of(&crate::config::here().config, crate::stage::Stage::Review).unwrap_or_default(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
         next: Err(String::new()),

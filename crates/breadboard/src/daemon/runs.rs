@@ -21,6 +21,7 @@ use breadboard_core::runs::{
     self, Event, Queue, Run, STARTING_MS, State, Table, Usage, Waiting, allowed_of, args_of, change_queue,
     change_usage, prompt_of, read_or_default, room_for, status_file, write_whole,
 };
+use breadboard_core::stage;
 use breadboard_core::time::now_ms;
 use breadboard_core::wake;
 use std::collections::{HashMap, HashSet};
@@ -348,17 +349,18 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
     }
     // A wake of a run before is overtaken by this one (#417).
     wake::clear_wake(&dir);
-    let mut command = run_command(
-        &dir,
-        args_of(
-            &session,
-            &name,
-            &prompt,
-            is_known,
-            &allowed_of(&events),
-            &runs::lean_flags_of(&main),
-        ),
+    let mut args = args_of(
+        &session,
+        &name,
+        &prompt,
+        is_known,
+        &allowed_of(&events),
+        &runs::lean_flags_of(&main),
     );
+    // The model of its kind of work (#373): a run of failed pipelines only is a CI fix.
+    let stage = stage::of_run(&dir, events.iter().map(|event| event.line.as_str()));
+    args.extend(stage::model_args(&breadboard_core::config::of(&main).config, stage));
+    let mut command = run_command(&dir, args);
     // What it leaves running is found by this (`wake::leftover_of`).
     command.env(wake::RUN_ENV, &session);
     let spawned = command.spawn();

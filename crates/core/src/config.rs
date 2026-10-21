@@ -442,9 +442,27 @@ pub struct Agents {
     /// run loads (#445); none by default: every server's tools are in
     /// each call's context.
     pub mcp_configs: Vec<String>,
+    /// The model of each kind of work (#373, `stage.rs`).
+    pub models: Models,
+    /// The labels that make an issue's agent a `docs` one (#373).
+    pub docs_labels: Vec<String>,
     /// How many runs may be in flight at once (#445): after a crash every
     /// cut-off agent is picked up, a few at a time, never all together.
     pub max_runs: usize,
+}
+
+/// `[agents.models]` (#373): a model per stage, `default` for the ones
+/// without; none at all leaves claude's own default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Models {
+    pub default: Option<String>,
+    pub build: Option<String>,
+    pub docs: Option<String>,
+    /// The try checker's; None: `[tries] checker`.
+    pub review: Option<String>,
+    pub ci_fix: Option<String>,
+    pub orchestrator: Option<String>,
 }
 
 impl Default for Agents {
@@ -456,6 +474,8 @@ impl Default for Agents {
             idle_fresh_above: 100_000,
             idle_minutes: 55,
             mcp_configs: Vec::new(),
+            models: Models::default(),
+            docs_labels: vec!["documentation".into()],
             max_runs: 4,
         }
     }

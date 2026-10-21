@@ -10,6 +10,7 @@ use breadboard_core::herdr::{Pane, Tab, all_panes, is_idle, panes_of, spaces, ta
 use breadboard_core::local::ORCHESTRATOR_TAB;
 use breadboard_core::model::Paint;
 use breadboard_core::record::{is_session_id, record_of, space_label_of, write_chat};
+use breadboard_core::stage::orchestrator_model;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -122,14 +123,16 @@ fn chat_command(main: &Path, chat: Option<&(String, PathBuf)>) -> String {
     use crate::cli::lifecycle::layout::nvim::ide_flag;
     match chat {
         Some((id, cwd)) => format!(
-            "cd {} && claude --resume {id}{}",
+            "cd {} && claude --resume {id}{}{}",
             herdr::quote(&cwd.to_string_lossy()),
-            ide_flag(cwd)
+            ide_flag(cwd),
+            orchestrator_model(main)
         ),
         None => format!(
-            "cd {} && claude{}",
+            "cd {} && claude{}{}",
             herdr::quote(&main.to_string_lossy()),
-            ide_flag(main)
+            ide_flag(main),
+            orchestrator_model(main)
         ),
     }
 }
