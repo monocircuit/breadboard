@@ -104,7 +104,15 @@ from: a few ms), else makes it first:
   on stderr, kept in the store for the others (the newest 8).
 
 Uncommitted changes to the crates build there too, but stay out of the
-store's `bin/`. So a `git pull` never leaves the code from before running and
+store's `bin/`. **One build per tree** (#451): a build is keyed by the
+sources as they are on disk, uncommitted and untracked ones too (the
+checkout's index copied, the package added to it, its tree listed), so the
+build of a change before its commit carries the key the commit has.
+`breadboard.sh --tree` (`pnpm build:rs`, and the gauntlet before it runs)
+builds the tree when it isn't built; the scripts keep running that binary
+until HEAD's sources move, and once the change is committed as it was built
+it is HEAD's binary: `wt:check` builds nothing, and the first launch after
+the commit puts it into the store. So a `git pull` never leaves the code from before running and
 `wt:new` needs no `pnpm install`. Without cargo (https://rustup.rs) and
 without a build of those sources, the binary from before runs and says so.
 
@@ -136,7 +144,7 @@ binary (or clippy's verdict, the test binaries) is the other one's. So
 `cargo.sh` holds a `flock` on the target for the whole
 run and, when another checkout used it last (`.breadboard-from`), cleans the
 workspace's own crates first: switching worktrees recompiles breadboard and
-core, never the dependencies. The launcher reads the sources' key right
+core, never the dependencies. The launcher reads the sources' key (of the tree, #451) right
 before the build, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
 binary carries it (`breadboard --source-key`). It stores a build only when
 the sources were committed and unchanged across it and the file carries the
@@ -464,7 +472,7 @@ pnpm --filter @monocircuit/breadboard lint      # ESLint of the JavaScript left
 pnpm --filter @monocircuit/breadboard lint:rs   # cargo fmt, clippy -D warnings
 pnpm --filter @monocircuit/breadboard test      # nvim's Lua in a headless nvim
 pnpm --filter @monocircuit/breadboard test:rs   # cargo test (tests next to the code)
-pnpm --filter @monocircuit/breadboard build:rs  # the binary of HEAD, through the launcher
+pnpm --filter @monocircuit/breadboard build:rs  # the binary of the tree (uncommitted changes too), through the launcher
 pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite against this checkout's binary
 ```
 
