@@ -300,10 +300,9 @@ pub fn orphans_of(issues: &[Entry], remote: Option<&Remote>, work: &[i64]) -> Ve
                     && !issue.is_queued
                     && issue.merged_at.is_none()
                     && issue.removed_at.is_none()
-                    && issue
-                        .tree
-                        .as_ref()
-                        .is_some_and(|tree| !tree.is_main && !tree.is_bound && tree.left.is_empty())
+                    && issue.tree.as_ref().is_some_and(|tree| {
+                        !tree.is_main && !tree.is_bound && tree.claude.is_none() && tree.left.is_empty()
+                    })
                     && part.issue.as_ref().is_some_and(|found| found.state == "opened")
                     && part.mr.as_ref().is_none_or(|mr| !mr.is_merged())
             })
