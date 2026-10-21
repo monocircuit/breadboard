@@ -68,13 +68,13 @@ What it does, in this order:
    starts on the shared stack anyway, and the command says so.
 4. For a fresh agent `{{run}} wt:new <feature> --origin <name>`, **one after the other**
    (two at once would pick the same free ports). The worktree is one of the
-   main checkout like any other, its space in the same group; `wt:list`, the
+   main checkout like any other, with no space of its own (#409); `wt:list`, the
    overview, `wt:remove` and `wt:prune` know it. The origin is recorded in `.claude/origin` of the
-   worktree; its space opens unfocused, with the usual tabs.
+   worktree; a click on its row in the overview shows it in the detail pane.
 5. Per worktree a new session id, bound to it (`.claude/herdr-session`), and
    its first run queued: `.claude/brief.md` of the worktree as the prompt.
-   No tab: the worktree's space has `root`, `overview`, `nvim` and its stack
-   tabs, no claude.
+   No tab and no space: the worktree is a row in the overview, its agent runs
+   headless and opens in the detail pane (`a`).
 
 A worktree counts as made when it exists: `wt:new` may still fail in its
 summary (#130), and the next issue still starts.
@@ -147,7 +147,7 @@ second time in a row); until then its node says `waits on itself since
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
 runs `cd <worktree> && claude --resume <id> --name <feature>` in the
-`<feature>` tab of its space, once no run is in flight (it waits for one up
+overview's detail pane (#406), once no run is in flight (it waits for one up
 to 15 min); a claude that already runs the conversation is put in front
 instead. While that claude runs, the agent's queue waits; when it ends, the
 queue goes on headless. Type there for anything the overview has no button
@@ -316,7 +316,7 @@ a merge and never once the plan is stale. ACTIONS holds only what needs the user
 see Merging; gone once merged; each agent posts its own), `try`
 (what only the human can check, and the click that opens its spot:
 `--run <command>` the overview's detail pane running it in the
-worktree, `--url <page>` the page on the worktree's app in its tab group, a
+worktree, `--url <page>` the page on the worktree's app in the browser, a
 path `/atlas/…` on the worktree's port, its stack and app started
 first when the app is down; the row shows the command or page before;
 `browser-check --url` is its old name; `--on test --url <path>` the path on
@@ -328,7 +328,7 @@ that isn't ready is grey, its buttons don't answer, NEXT skips it, and the
 overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
-`look` (go to the agent's space) — and the automatic `permission` (what auto
+`look` (its worktree in the detail pane) — and the automatic `permission` (what auto
 mode would have asked in a run, see Permissions) and `merge` (a ready, green MR without its agent's, none while a
 change is requested). Commits an agent left unpushed get no row:
 breadboard checks and pushes them itself (README, "Headless agents").
@@ -396,8 +396,8 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   shows only what it has.
 
 An issue that got no worktree says why; an MR without a worktree gets a
-block of the same shape. A click on a block goes to its worktree's space
-(without one to its MR, else its issue), on `!M` to the MR, on the mark to
+block of the same shape. A click on a block shows its worktree in the detail pane
+(without one it goes to its MR, else its issue), on `!M` to the MR, on the mark to
 its pipeline; hover lights the whole block. Look here before asking an
 agent where it stands.
 
@@ -546,7 +546,7 @@ that names what the agent had before and moves the binding
 again in its worktree <dir>, read .claude/brief.md`. Nothing ends, no tab
 moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
-<old>` for a day). The old worktree keeps its space until its clean-up.
+<old>` for a day).
 `--to` takes the old name too. Refused while a run of the agent is in
 flight or it waits for an answer, or when it starts fresh (below). An issue no free
 agent shares a file with goes to a fresh agent: another issue's context
@@ -655,7 +655,7 @@ conversation id: `history` (each issue, how it came: `fresh`, `handover`,
 
 ## In the sidebar
 
-The space `⇶ <name>` and the spaces of its worktrees, all under
+The space `⇶ <name>`, under
 `{{space}}`, show `⇶ <name>` (`⇶ <title>` with `--title`) in
 front of the branch, in the orchestration's colour (a slot of three: blue,
 teal, mauve of the theme; a fourth orchestration shares one). The rows come

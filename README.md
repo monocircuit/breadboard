@@ -77,8 +77,8 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | [`herdr/`](herdr/README.md) | the herdr plugin of the repo breadboard is developed in (`herdr-plugin.toml`, its id `[herdr] plugin`; `breadboard init` writes another repo's) and `breadboard.sh`, the launcher everything starts the binary through (below) |
 | `hooks/` | the shims of the git pre-push hook (`wt:new` and `wt:mr` install it) and of Claude Code's Stop hook (`.claude/settings.json`) |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
-| `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
-| `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
+| `nvim/changes.lua` | a worktree's nvim (the detail pane's `e`): neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
+| `nvim/colours.lua` | the colours nvim marks changes in (gitsigns' lines included), readable on any theme |
 | `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 
@@ -158,10 +158,10 @@ A task agent is a Claude Code session, not a process (#358, rollout
 #359–#362): every agent of an orchestration runs headless, and a worktree
 of your own keeps its claude in a tab (#361).
 
-- **A click opens one in a tab** (its node, an action that opens it, the
-  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
-  the tab `<feature>` of its worktree's space, once no run of it is in
-  flight; its queue waits until that claude ends.
+- **A click opens one in the detail pane** (its node, an action that opens
+  it, the worktree view's `resume` row, `a`): `claude --resume <id> --name
+  <feature>` beside the overview, once no run of it is in flight; its queue
+  waits until that claude ends.
 - **The tab bar reads the status table**: "N need you" counts its `asks`;
   what an agent waits for is its row in the overview (a worktree has no
   space of its own, #409).
@@ -287,7 +287,7 @@ closed is forgotten.
 
 ## The nvim tab
 
-A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)
+A worktree's nvim (the detail pane's `e`, or one you start yourself) is your own nvim (LazyVim with neo-tree and gitsigns)
 looking at the branch: everything it changed since it left develop
 (`git merge-base HEAD origin/develop`), committed, uncommitted or untracked,
 what the MR will hold. `nvim/changes.lua` sets the base and the layout,
@@ -339,7 +339,7 @@ own, so every worktree's claude connects to its own nvim. With that
 - claude sees the open file and the selection: select lines, then ask about
   "this" in claude's tab; `<leader>as` sends the selection as a reference.
 
-The first nvim tab clones the plugin, pinned by tag and commit (`PLUGIN_TAG` in
+The first nvim clones the plugin, pinned by tag and commit (`PLUGIN_TAG` in
 `crates/breadboard/src/cli/lifecycle/layout/nvim.rs`), into `.claude/nvim/` of the main checkout; git
 ignores it. Your nvim and claude config stay as they are; while it runs, the
 plugin writes its lock file into `~/.claude/ide/` like any IDE.
@@ -351,7 +351,7 @@ git config breadboard.ide false   # off
 git config --unset breadboard.ide # on again (the default)
 ```
 
-The next nvim tab and the next claude breadboard starts follow it; quit the
+The next nvim and the next claude breadboard starts follow it; quit the
 nvim of a running tab (`:qa`), the next layout starts it again. claude looks
 for its nvim for 30 s after it starts: one started earlier, or a claude that
 came into the worktree with EnterWorktree, connects with `/ide`.

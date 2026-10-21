@@ -39,7 +39,7 @@ How the repo shows in herdr, one plugin per repo.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `plugin` | `breadboard.<main checkout's folder>` | the plugin's id: its manifest's, the sidebar tokens' source, the marker of its block in herdr's configs |
-| `space` | `[repo] name`, else the main checkout's folder | the label of the main checkout's space; a worktree's space is its feature, an orchestration's `⇶ <title>` |
+| `space` | `[repo] name`, else the main checkout's folder | the label of the main checkout's space; a product's is its name, an orchestration of no product `⇶ <title>`; a worktree has none (#409) |
 
 ## `[[worktrees.setup]]`
 
