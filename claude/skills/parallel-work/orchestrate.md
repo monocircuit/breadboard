@@ -422,7 +422,9 @@ no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
 for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
 starts none for it (a click on its row still runs one). develop's pipeline
 after each merge is the safety net: while it is red, no merge into develop
-is offered. Into an epic nothing changes.
+is offered. Into an epic nothing changes, and a batch's MR into develop
+always runs its pipeline; a task MR into its batch follows `[merge]
+batch_needs_pipeline` ([batches.md](batches.md), #461).
 
 No agent marks an MR ready (#399): `breadboard serve` does it once its bar
 is full, every box of its issue ticked (after-deploy ones excepted) and no

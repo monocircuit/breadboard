@@ -186,6 +186,7 @@ urls = ["DATABASE_URL"]
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
+| `batch_needs_pipeline` | `true` | a task MR into its batch (`batch/<product>-<n>`) is offered, and merged by itself (`auto_merge_into_batch`), only once its own pipeline passed. `false` (#461): every box, every try `looks good`, `wt:check` passed at its pushed head, no conflicts and its turn are enough; its row says `merges on wt:check (no MR pipeline)` and the CI queue starts no pipeline for it by itself (a click still asks for one; this repo's `.gitlab-ci.yml` skips MR pipelines into `batch/*`). The batch's own MR into the default branch always runs the full pipeline, whatever `needs_pipeline` says, and `ship batch` waits for it green. `needs_pipeline` is for the other MRs into the default branch (a hotfix) |
 
 ## `[products.<name>]`
 
