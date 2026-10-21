@@ -285,10 +285,12 @@ pub fn queue_order<'a>(queued: Vec<&'a Entry>, work: &[i64]) -> Vec<&'a Entry> {
     queued
 }
 
-/// The issues of the work order whose worktree is there without an agent
-/// (#455), in that order: no conversation bound to it and no claude standing
-/// in it, its issue open and its MR not merged (GitLab answered). Its agent
-/// moved on (a hotfix's `wt:new`, a handover): it gets a fresh one in place.
+/// The issues of the work order whose worktree its agent left (#455), in
+/// that order: it moved on (a hotfix's `wt:new`, a handover, its
+/// `agent-left`), no conversation is bound to it now and no claude stands in
+/// it, its issue is open and its MR not merged (GitLab answered). It gets a
+/// fresh agent in place. A worktree without that mark gets none: no
+/// binding alone may only mean breadboard never wrote one.
 pub fn orphans_of(issues: &[Entry], remote: Option<&Remote>, work: &[i64]) -> Vec<i64> {
     let Some(remote) = remote else { return Vec::new() };
     work.iter()
@@ -301,7 +303,7 @@ pub fn orphans_of(issues: &[Entry], remote: Option<&Remote>, work: &[i64]) -> Ve
                     && issue.merged_at.is_none()
                     && issue.removed_at.is_none()
                     && issue.tree.as_ref().is_some_and(|tree| {
-                        !tree.is_main && !tree.is_bound && tree.claude.is_none() && tree.left.is_empty()
+                        tree.is_left && !tree.is_main && !tree.is_bound && tree.claude.is_none() && tree.left.is_empty()
                     })
                     && part.issue.as_ref().is_some_and(|found| found.state == "opened")
                     && part.mr.as_ref().is_none_or(|mr| !mr.is_merged())
@@ -1162,22 +1164,23 @@ mod tests {
 
     #[test]
     fn starts_a_fresh_agent_in_a_worktree_of_the_work_order_its_agent_left() {
-        let tree = |feature: &str, is_bound: bool| Entry {
+        let tree = |feature: &str, is_left: bool| Entry {
             number: feature.split('-').next().and_then(|n| n.parse().ok()),
             feature: feature.into(),
             branch: format!("feature/{feature}"),
             tree: Some(Tree {
                 dir: format!("/nonexistent/platform-{feature}").into(),
                 name: feature.into(),
-                is_bound,
+                is_left,
+                is_bound: !is_left,
                 ..Default::default()
             }),
             ..Default::default()
         };
         let issues = [
-            tree("428-left", false),
-            tree("429-bound", true),
-            tree("430-unplanned", false),
+            tree("428-left", true),
+            tree("429-bound", false),
+            tree("430-unplanned", true),
         ];
         let open = |mr: Option<Mr>| BranchRemote {
             mr,
@@ -1219,6 +1222,11 @@ mod tests {
         let found = worker_actions_of(&issues, Some(&remote), &HashMap::new(), &[], &running);
         assert!(found.orders.is_empty());
         assert!(found.actions[0].is_running);
+        // Unbound without the mark: breadboard may never have bound one, no start.
+        let mut unknown = issues.clone();
+        unknown[0].tree.as_mut().unwrap().is_left = false;
+        unknown[0].tree.as_mut().unwrap().is_bound = false;
+        assert!(orphans_of(&unknown, Some(&remote), &work[..2]).is_empty());
         // Its MR merged, or GitLab not answered yet: it only waits for its removal.
         remote.of.insert("feature/428-left".into(), open(merged()));
         assert!(orphans_of(&issues, Some(&remote), &work[..2]).is_empty());

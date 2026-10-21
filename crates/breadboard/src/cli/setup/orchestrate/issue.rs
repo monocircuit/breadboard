@@ -3,7 +3,6 @@
 //! worktree made by `wt:new --origin` in a child and its claude started.
 
 use crate::cli::lifecycle::handover;
-use crate::cli::setup::conversations::session_file;
 use crate::cli::setup::proc::{self, quote};
 use crate::cli::setup::repo;
 use breadboard_core::time::now_ms;
@@ -141,7 +140,7 @@ pub fn start_agent(dir: &Path, brief: &str) -> Agent {
 /// A headless agent (#359): bound first, then its brief queued as the first
 /// run of a new session (`--session-id`, no transcript yet); no tab.
 fn start_headless(main: &Path, dir: &Path, feature: &str, id: String) -> Agent {
-    let is_bound = fs::write(session_file(dir), format!("{id}\n")).is_ok();
+    let is_bound = breadboard_core::conversations::bind(dir, &id).is_ok();
     let event = runs::Event {
         session: id.clone(),
         dir: dir.to_path_buf(),
