@@ -71,9 +71,9 @@ pub struct Auto {
     seq: u64,
     /// What the CI queue was last told of this orchestration (#357).
     published: Option<breadboard_core::ci::Published>,
-    /// MRs into an epic merged by themselves, by iid: the head each was
+    /// MRs into a batch or an epic merged by themselves, by iid: the head each was
     /// tried at. One that failed waits for a new push (#350).
-    epic_tried: HashMap<i64, String>,
+    auto_tried: HashMap<i64, String>,
     /// When the plan may be written again at the earliest (#376).
     plan_next: i64,
 }
@@ -159,7 +159,7 @@ pub fn after_read(app: &mut Overview, is_local: bool, is_remote: bool) {
             // An MR whose bar is full and pipeline green gets its review (#374).
             super::review::after_read(app, &local, &model, remote);
             deliver_waits(app, &local, remote);
-            is_changed |= merge_into_epic(app, &model, remote);
+            is_changed |= merge_into_batch(app, &model, remote);
         }
         for order in &model.orders {
             is_changed |= run_order(app, &name, order);
@@ -277,10 +277,11 @@ fn follow_merge_order(app: &mut Overview, name: &str, model: &OrchestrationModel
     }
 }
 
-/// A task's MR into its epic merges by itself once its turn offers it
-/// (#350): the second click's merge, one at a time, never twice at one head;
-/// into develop or main it stays the user's two clicks.
-fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
+/// A task's MR into its batch (or an epic of before) merges by itself once
+/// its turn offers it (#350, #411; the setting `auto-merge into batch`, #415): the second click's
+/// merge, one at a time, never twice at one head; into develop or main it
+/// stays the user's two clicks.
+fn merge_into_batch(app: &mut Overview, model: &OrchestrationModel, remote: &Remote) -> bool {
     // The setting `auto-merge into batch` (#415): off, the merge waits for the user's click.
     if !breadboard_core::settings::of(&app.actor.main, &model.name).auto_merge_into_batch {
         return false;
@@ -306,10 +307,11 @@ fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remo
             .find(|mr| mr.iid == iid)
             .and_then(|mr| mr.sha.clone())
     };
-    let tried = &app.actor.auto.epic_tried;
+    let tried = &app.actor.auto.auto_tried;
     let found = auto_merge_of(
         &items,
         |branch| remote.of(branch).mr.as_ref().map(|mr| mr.target().to_string()),
+        breadboard_core::batch::is_auto_target,
         |iid| tried.get(&iid).is_some_and(|sha| Some(sha) == head_of(iid).as_ref()),
     );
     let Some((Go::Merge { branch, action }, Some(offer))) = found.map(|item| (item.go.clone(), item.merge.clone()))
@@ -318,7 +320,7 @@ fn merge_into_epic(app: &mut Overview, model: &OrchestrationModel, remote: &Remo
     };
     app.actor
         .auto
-        .epic_tried
+        .auto_tried
         .insert(offer.iid, head_of(offer.iid).unwrap_or_default());
     let target = remote
         .of(&branch)

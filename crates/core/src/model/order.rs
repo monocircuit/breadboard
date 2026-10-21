@@ -97,6 +97,8 @@ pub enum Go {
     End,
     /// `wt:epic <name> --mr`: the milestone MR epic → develop (#402).
     EpicMr,
+    /// `wt:batch <product> --ship`: the product's batch → develop (#414).
+    ShipBatch(String),
     /// The claude open in the tab of the worktree's agent ended once it idles:
     /// its lines run headless again (#386).
     EndHeld(PathBuf),

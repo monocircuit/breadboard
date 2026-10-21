@@ -7,8 +7,8 @@
 use super::cache::Cache;
 use super::client::{Gitlab, GitlabError, Result};
 use super::{
-    BranchRemote, Deploy, DeployPipeline, DevelopPipeline, EpicRemote, Issue, Job, Mr, Pipeline, Remote, boxes_of,
-    number_of,
+    BatchTask, BranchRemote, Deploy, DeployPipeline, DevelopPipeline, EpicRemote, Issue, Job, Mr, Pipeline, Remote,
+    boxes_of, number_of,
 };
 use crate::time::now_ms;
 use regex::Regex;
@@ -88,10 +88,15 @@ fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool, 
         parts.push(format!(
             "epicPipelines: pipelines(ref: $epic, first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
         ));
+        // `$epics`: the epic or batch, then the product's batches shipped before it (#414).
         parts.push(format!(
-            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 1) {{ nodes {{ {} }} }}",
+            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 10) {{ nodes {{ {} }} }}",
             mr_fields()
         ));
+        decls.push("$epicTargets: [String!]");
+        parts.push(
+            "epicTasks: mergeRequests(targetBranches: $epicTargets, state: merged, first: 100, sort: MERGED_AT_DESC) { nodes { iid title webUrl sourceBranch mergedAt labels { nodes { title } } } }".into(),
+        );
     }
     if has_branches {
         decls.push("$branches: [String!]");
@@ -346,6 +351,23 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
     (mr, merge_sha)
 }
 
+/// A task MR merged into a batch, of GraphQL (#414).
+fn batch_task_of(value: &Value) -> BatchTask {
+    BatchTask {
+        iid: id_of(value.get("iid")),
+        title: DRAFT
+            .replace(str_at(value, "title").unwrap_or_default(), "")
+            .into_owned(),
+        url: str_at(value, "webUrl").unwrap_or_default().to_string(),
+        branch: str_at(value, "sourceBranch").unwrap_or_default().to_string(),
+        merged_at: str_at(value, "mergedAt").map(String::from),
+        labels: nodes(value, "labels")
+            .iter()
+            .filter_map(|label| str_at(label, "title").map(String::from))
+            .collect(),
+    }
+}
+
 pub(super) static DRAFT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Draft:\s*").unwrap());
 
 /// An issue of GraphQL, `blocked_by` the issues GitLab links as blocking it.
@@ -565,6 +587,9 @@ pub struct Ask {
     /// Its epic branch (#350): its pipeline and its MR into develop are read.
     #[serde(default)]
     pub epic: Option<String>,
+    /// Its product's batches shipped before the epic's (#414): their MRs into develop are read.
+    #[serde(default)]
+    pub shipping: Vec<String>,
 }
 
 /// The links GitLab has of the open issues `numbers`, in the shape real GitLab
@@ -672,7 +697,10 @@ pub async fn read_orchestration(
     let mut variables = json!({});
     if let Some(epic) = &ask.epic {
         variables["epic"] = json!(epic);
-        variables["epics"] = json!([epic]);
+        let mut epics = vec![epic.clone()];
+        epics.extend(ask.shipping.iter().filter(|branch| *branch != epic).cloned());
+        variables["epics"] = json!(epics);
+        variables["epicTargets"] = json!([epic]);
     }
     for (name, values) in [
         ("branches", &open_branches),
@@ -831,7 +859,16 @@ pub async fn read_orchestration(
         Box::new(EpicRemote {
             branch: branch.clone(),
             pipeline: last_finished("epicPipelines").map(|pipeline| pipeline_remote(&pipeline, &web)),
-            mr: nodes(&project, "epicMrs").first().map(|node| mr_of(node).0),
+            mr: nodes(&project, "epicMrs")
+                .iter()
+                .map(|node| mr_of(node).0)
+                .find(|mr| mr.branch == *branch),
+            tasks: nodes(&project, "epicTasks").iter().map(batch_task_of).collect(),
+            shipping: nodes(&project, "epicMrs")
+                .iter()
+                .map(|node| mr_of(node).0)
+                .filter(|mr| mr.branch != *branch && ask.shipping.contains(&mr.branch))
+                .collect(),
         })
     });
     let develop = last_finished("develop").map(|pipeline| pipeline_remote(&pipeline, &web));

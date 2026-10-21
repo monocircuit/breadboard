@@ -50,9 +50,9 @@ What it does, in this order:
    of the main checkout, with the orchestrator's conversation
    (`orchestrator: { sessionId, cwd }`, see The orchestrator's chat). A
    second run with the same name adds to it. The
-   space `⇶ <name>` stands on the orchestration's epic branch
-   `epic/<N>-<name>` (made from `origin/{{branch}}` at the first run, the base
-   of every task{{#epics}}, [epics.md](epics.md){{/epics}}) in `.claude/orchestrations/<name>/`,
+   space `⇶ <name>` stands on its product's batch
+   `batch/<product>-<n>` (opened from `origin/{{branch}}` when the product has none, the base
+   of every task{{#batches}}, [batches.md](batches.md){{/batches}}) in `.claude/orchestrations/<name>/`,
    so herdr hangs it under `{{space}}` like a worktree's.
 3. Per issue, **at once** whatever the number at work: to a free or idle
    agent whose worktrees share the most files with the paths the issue
@@ -189,6 +189,13 @@ pipeline runs, a rule for later) goes with `runs tell --notice <dir>
 (#445). Every run resumes the agent's whole history, so a notice of its own
 costs a full read, and past the cache's hour a full write too. The
 overview's own `!N merged` is such a notice.
+
+**After a crash, an OOM kill or a reboot** the run engine picks up every
+run that was cut off by itself, once and a few at a time (`[agents]
+max_runs`): don't wake the agents by hand. A small session is resumed with
+one line; one past the fresh-start rule is taken over by a fresh session in
+its worktree with a handoff from the disk (`.claude/handoff-cut.md`), never
+resumed with its whole history (#445).
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
@@ -419,7 +426,7 @@ automatically` in the orchestration's journal. Its row says `ready (bar
 full) → breadboard` until then. A box unticked again puts an MR it marked
 ready back to draft; a person who sets it back to draft is respected until
 the next push (`draft by hand: ready after the next push → you`). Into
-develop and into an epic alike, for a repo GitLab serves.
+develop and into a batch alike, for a repo GitLab serves.
 
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
@@ -435,12 +442,12 @@ an MR that merges cleanly keeps its green pipeline and stays offered;
 `clean up` offers the worktree. Agents still never run `glab mr merge`: the
 click is the user's (`core/src/model/merge.rs`).
 
-**Into an epic the merge needs no click.** A task MR whose target is its
-orchestration's epic branch merges by itself under the same rule (bar full,
-pipeline green, no conflicts, its turn), without a posted `merge`: the
-overview marks a draft ready and merges it; the row says `in epic` until the
-epic reaches `{{branch}}`. The two clicks stay for the milestone MR epic →
-`{{branch}}` and for anything into `{{branch}}` or `main`{{#epics}} ([epics.md](epics.md)){{/epics}}.
+**Into a batch the merge needs no click.** A task MR whose target is its
+product's batch (or an epic branch of before) merges by itself under the same rule (bar full,
+fast checks green, no conflicts, its turn), without a posted `merge`: the
+overview marks a draft ready and merges it with a merge commit, never squashed; the row says `in batch` until the
+batch reaches `{{branch}}`. The two clicks stay for shipping the batch to
+`{{branch}}` and for anything into `{{branch}}` or `main`{{#batches}} ([batches.md](batches.md)){{/batches}}.
 
 ## Change requests
 

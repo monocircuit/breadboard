@@ -111,6 +111,8 @@ pub struct Issue {
     pub description: String,
     pub feature: String,
     pub is_fix: bool,
+    /// Labelled `hotfix` (#411): a fix of it bypasses the batch.
+    pub is_hotfix: bool,
     pub dir: PathBuf,
     /// Why it can't get a worktree: closed, there already, claimed on origin.
     pub why: Option<String>,
@@ -283,6 +285,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
         .unwrap_or_default();
     let is_fix = labels.iter().any(|label| label == "bug");
+    let is_hotfix = labels.iter().any(|label| label == "hotfix");
     let dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
     let why = if state != "opened" {
@@ -306,6 +309,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
         feature,
         is_fix,
+        is_hotfix,
         dir,
         why,
         milestone: found
@@ -1449,6 +1453,7 @@ mod tests {
             description: String::new(),
             feature: "5-t".into(),
             is_fix: false,
+            is_hotfix: false,
             dir: PathBuf::from("/r/p-5-t"),
             why: None,
             branch: "feature/5-t".into(),
@@ -1472,6 +1477,7 @@ mod tests {
             description: String::new(),
             feature: "247-t".into(),
             is_fix: true,
+            is_hotfix: false,
             dir: PathBuf::from("/r/p-247-t"),
             why: None,
             branch: "fix/247-t".into(),
