@@ -4,6 +4,7 @@
 //! it merges with the merge commits of the tasks (no squash), by the user's
 //! two clicks. The batch carries its changelog line, the next batch opens
 //! off it at once and the MRs still on their way into it go into the next.
+//! Held while a batch shipped before is red (#413).
 
 use super::common::{Argv, Here, Outcome, Takes, help, say};
 use super::epic::{mrs_of, query};
@@ -152,6 +153,30 @@ fn retarget_open(main: &Path, from: &str, to: &str) -> (Vec<i64>, Vec<String>) {
     (moved, failed)
 }
 
+/// Why shipping waits: a batch of `product` shipped before `current` whose
+/// MR into develop failed its last pipeline; None while none did.
+fn red_before(main: &Path, product: &str, current: &str) -> Option<String> {
+    batch::shipping_of(main, product)
+        .iter()
+        .filter(|entry| entry.branch != current)
+        .find_map(|entry| {
+            let mr = glab::api(main, &format!("projects/:fullpath/merge_requests/{}", entry.mr)).json()?;
+            let status = mr
+                .get("head_pipeline")
+                .map(|pipeline| glab::text_of(pipeline, "status"));
+            held_by(&entry.branch, entry.mr, status)
+        })
+}
+
+/// The line that holds the ship while `branch`'s MR `iid` failed its pipeline.
+fn held_by(branch: &str, iid: i64, status: Option<&str>) -> Option<String> {
+    (status == Some("failed")).then(|| {
+        format!(
+            "ship held: {branch} is red (!{iid}'s pipeline failed): its fix goes in first, the overview names the suspects"
+        )
+    })
+}
+
 pub fn run(argv: &Argv) -> Outcome {
     if argv.check(&TAKES)? {
         return help(ABOUT, USAGE);
@@ -203,6 +228,10 @@ pub fn run(argv: &Argv) -> Outcome {
             query(&develop)
         ),
     )?;
+    // Held while a batch shipped before is red (#413): its fix goes first.
+    if let Some(why) = red_before(main, product, &current.branch) {
+        return Err(why);
+    }
     let next_name = batch::branch_of(product, current.number + 1);
     if argv.has("--dry-run") {
         say(&format!(
@@ -308,6 +337,18 @@ mod tests {
             number: 3,
             from: None,
         }
+    }
+
+    #[test]
+    fn a_red_batch_shipped_before_holds_the_ship() {
+        assert_eq!(
+            held_by("batch/breadboard-2", 500, Some("failed")).as_deref(),
+            Some(
+                "ship held: batch/breadboard-2 is red (!500's pipeline failed): its fix goes in first, the overview names the suspects"
+            )
+        );
+        assert_eq!(held_by("batch/breadboard-2", 500, Some("running")), None);
+        assert_eq!(held_by("batch/breadboard-2", 500, None), None);
     }
 
     #[test]

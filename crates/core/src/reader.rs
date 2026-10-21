@@ -1033,11 +1033,21 @@ fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::mod
             &format!("origin/{branch}..{}", git::Base::of(&git::branch(main)).remote),
         ],
     );
+    let develop = git::default_branch();
+    let shipped = record?
+        .product
+        .as_deref()
+        .map(|product| crate::batch::shipping_of(main, product))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| crate::batch_red::shipped_of(main, &entry.branch, develop))
+        .collect();
     Some(crate::model::epic_row::EpicLocal {
         behind: (behind.status == 0)
             .then(|| behind.stdout.trim().parse().ok())
             .flatten(),
         branch,
+        shipped,
     })
 }
 

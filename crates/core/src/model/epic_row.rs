@@ -20,6 +20,9 @@ use crate::gitlab::{Pipeline, Remote};
 pub struct EpicLocal {
     pub branch: String,
     pub behind: Option<u64>,
+    /// The product's batches shipped before it, as git has them (#413):
+    /// a red one's suspects.
+    pub shipped: Vec<crate::batch_red::Shipped>,
 }
 
 /// What a batch's row has besides its parts (#414): the button that ships
@@ -30,6 +33,10 @@ pub struct BatchFold {
     pub product: String,
     /// Tasks are in it and it has no MR into develop yet: `ship batch` is offered.
     pub can_ship: bool,
+    /// Why `ship batch` isn't offered though it could be (#413): a batch shipped before is red.
+    pub held: Option<String>,
+    /// The red batch's suspects, the likeliest first (#413).
+    pub suspects: Vec<Vec<Span>>,
     /// `!431 #411 feat(breadboard): …`, one line per task MR, oldest first.
     pub tasks: Vec<Vec<Span>>,
 }
@@ -39,7 +46,8 @@ pub struct BatchFold {
 pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Vec<Vec<Span>>> {
     let epic = local.epic.as_ref()?;
     if crate::batch::is_batch(&epic.branch) {
-        return Some(batch_row_of(&epic.branch, remote));
+        let red = super::red_batch::red_of(local, remote);
+        return Some(batch_row_of(&epic.branch, remote, red.as_ref()));
     }
     let mut row = vec![vec![Span::new(epic.branch.clone(), Paint::Cyan)]];
     // The default branch the epic merges into (breadboard.toml).
@@ -96,7 +104,7 @@ pub fn epic_row_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Optio
 
 /// A batch's parts (#414): its branch, its tasks, its fast checks, its MR
 /// into develop when one is open, then each batch shipped before it with its MR.
-fn batch_row_of(branch: &str, remote: Option<&Remote>) -> Vec<Vec<Span>> {
+fn batch_row_of(branch: &str, remote: Option<&Remote>, red: Option<&super::red_batch::Red>) -> Vec<Vec<Span>> {
     let mut row = vec![vec![Span::new(branch.to_string(), Paint::Cyan)]];
     let develop = crate::git::default_branch();
     let Some(found) = remote.and_then(|remote| remote.epic.as_ref()) else {
@@ -127,6 +135,9 @@ fn batch_row_of(branch: &str, remote: Option<&Remote>) -> Vec<Vec<Span>> {
         let mut part = vec![Span::dim(format!("shipping {} ", mr.branch))];
         part.extend(mr_part(mr, develop));
         row.push(part);
+    }
+    if let Some(red) = red {
+        row.push(red.part());
     }
     row
 }
@@ -166,9 +177,13 @@ pub fn batch_fold_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Opt
             line
         })
         .collect::<Vec<_>>();
+    let could_ship = !tasks.is_empty() && found.mr.is_none();
+    let red = super::red_batch::red_of(local, remote);
     Some(BatchFold {
         product,
-        can_ship: !tasks.is_empty() && found.mr.is_none(),
+        can_ship: could_ship && red.is_none(),
+        held: red.as_ref().filter(|_| could_ship).map(super::red_batch::Red::held),
+        suspects: red.as_ref().map(super::red_batch::Red::lines).unwrap_or_default(),
         tasks,
     })
 }
@@ -191,6 +206,7 @@ mod tests {
             epic: Some(EpicLocal {
                 branch: "epic/15-b".into(),
                 behind,
+                ..EpicLocal::default()
             }),
             record: Some(Record {
                 issues: vec![IssueEntry {
@@ -310,5 +326,33 @@ mod tests {
             !batch_fold_of(&on_batch, Some(&remote)).unwrap().can_ship,
             "nothing in it"
         );
+    }
+
+    #[test]
+    fn a_red_batch_says_so_holds_ship_batch_and_lists_its_suspects() {
+        let (local, mut remote) = crate::model::red_batch::tests::red_world();
+        remote.epic.as_mut().unwrap().tasks = vec![BatchTask {
+            iid: 450,
+            ..BatchTask::default()
+        }];
+        assert_eq!(
+            text_of_parts(&epic_row_of(&local, Some(&remote)).unwrap()),
+            "batch/b-3 · 1 task · shipping batch/b-2 !500 → develop ✗ failed · batch red: check:vita +1"
+        );
+        let fold = batch_fold_of(&local, Some(&remote)).unwrap();
+        assert!(!fold.can_ship);
+        assert_eq!(fold.held.as_deref(), Some("ship held: batch/b-2 is red (check:vita)"));
+        assert_eq!(
+            text_of(&fold.suspects[0]),
+            "!431 #411 feat: vita's page · its files run in check:vita"
+        );
+        // Green again: shipped as before.
+        remote.epic.as_mut().unwrap().shipping[0]
+            .pipeline
+            .as_mut()
+            .unwrap()
+            .status = "success".into();
+        let fold = batch_fold_of(&local, Some(&remote)).unwrap();
+        assert!(fold.can_ship && fold.held.is_none() && fold.suspects.is_empty());
     }
 }

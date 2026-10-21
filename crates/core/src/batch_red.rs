@@ -1,13 +1,13 @@
-//! A red batch (#413): the full pipeline of a batch failed, and the tasks
-//! merged into it since its last green one are the suspects. For a test
-//! failure, the tasks whose files the failing job covers (its `rules:
-//! changes:` in `.gitlab-ci.yml`) come first.
+//! A red batch (#413): the full pipeline of a shipped batch's MR into
+//! develop failed, and the tasks merged into it are the suspects. Those
+//! whose files a failed job covers (its `rules: changes:` in
+//! `.gitlab-ci.yml`) come first.
 
 use crate::git::{git, issue_of_branch};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 /// Top-level keys of `.gitlab-ci.yml` that are no jobs.
 const GLOBAL: [&str; 5] = ["workflow", "default", "stages", "variables", "include"];
@@ -176,6 +176,8 @@ fn regex_of(glob: &str) -> String {
 pub struct Merged {
     pub sha: String,
     pub subject: String,
+    /// Its MR's title: the first line of GitLab's message after the subject.
+    pub title: String,
     /// Its task MR, from GitLab's `See merge request …!N`.
     pub mr: Option<i64>,
     pub issue: Option<u64>,
@@ -211,15 +213,66 @@ pub fn merged_since(dir: &Path, green: &str, red: &str) -> Vec<Merged> {
                 .lines()
                 .map(str::to_string)
                 .collect();
+            // A task's merge by GitLab; not develop merged in to keep up.
+            let mr = mr_of(body)?;
             Some(Merged {
-                mr: mr_of(body),
+                mr: Some(mr),
                 issue: branch_of(&subject).and_then(issue_of_branch),
+                title: title_of(body),
                 sha,
                 subject,
                 files,
             })
         })
         .collect()
+}
+
+/// A batch shipped to develop as git has it (#413): the tasks merged into
+/// it, the files each CI job covers at its head.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Shipped {
+    pub branch: String,
+    /// Newest first.
+    pub tasks: Vec<Merged>,
+    pub jobs: BTreeMap<String, Vec<String>>,
+}
+
+/// The shipped batch `branch` on origin, the tasks it has that develop
+/// hasn't; read once per head of it. None while origin has no such branch.
+pub fn shipped_of(main: &Path, branch: &str, develop: &str) -> Option<Shipped> {
+    static READ: LazyLock<Mutex<HashMap<(String, String), Shipped>>> = LazyLock::new(Mutex::default);
+    let remote = format!("origin/{branch}");
+    let head = git(main, &["rev-parse", "--verify", "--quiet", &remote]);
+    if !head.is_ok {
+        return None;
+    }
+    let key = (branch.to_string(), head.out().to_string());
+    if let Some(found) = READ.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(found.clone());
+    }
+    let ci = git(main, &["show", &format!("{remote}:.gitlab-ci.yml")]);
+    let shipped = Shipped {
+        branch: branch.to_string(),
+        tasks: merged_since(main, &format!("origin/{develop}"), &remote),
+        jobs: if ci.is_ok {
+            job_files(&ci.stdout)
+        } else {
+            BTreeMap::new()
+        },
+    };
+    READ.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, shipped.clone());
+    Some(shipped)
+}
+
+/// The MR's title in GitLab's merge message: its first line that names no issue or MR.
+fn title_of(body: &str) -> String {
+    body.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("Closes ") && !line.starts_with("See merge request "))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// `See merge request group/project!412` → 412.
@@ -243,21 +296,20 @@ pub struct Suspect {
     pub is_covered: bool,
 }
 
-/// The suspects of a red batch, newest first; for a test failure (the job's
-/// script failed, no runner or timeout), those whose files `globs` cover
-/// ahead of the others. Without globs the job runs for any change, and
-/// covers every task.
-pub fn suspects(merged: Vec<Merged>, globs: Option<&[String]>, is_test_failure: bool) -> Vec<Suspect> {
-    let mut suspects: Vec<Suspect> = merged
-        .into_iter()
+/// The suspects of a red batch, newest first, those with a file one of the
+/// failed jobs covers ahead of the others. `jobs`: the globs of the failed
+/// jobs that name files; one that runs on any change ranks no task.
+pub fn suspects(tasks: &[Merged], jobs: &[&[String]]) -> Vec<Suspect> {
+    let mut suspects: Vec<Suspect> = tasks
+        .iter()
         .map(|merged| Suspect {
-            is_covered: globs.is_none_or(|globs| merged.files.iter().any(|file| covers(globs, file))),
-            merged,
+            is_covered: jobs
+                .iter()
+                .any(|globs| merged.files.iter().any(|file| covers(globs, file))),
+            merged: merged.clone(),
         })
         .collect();
-    if is_test_failure {
-        suspects.sort_by_key(|suspect| !suspect.is_covered);
-    }
+    suspects.sort_by_key(|suspect| !suspect.is_covered);
     suspects
 }
 
@@ -372,6 +424,7 @@ build:breadboard:
         Merged {
             sha: sha.into(),
             subject: String::new(),
+            title: String::new(),
             mr: None,
             issue: None,
             files: files.iter().map(|file| file.to_string()).collect(),
@@ -379,56 +432,97 @@ build:breadboard:
     }
 
     #[test]
-    fn puts_the_tasks_the_failing_test_covers_first() {
-        let globs = vec!["packages/breadboard/**/*".to_string()];
-        let tasks = || {
-            vec![
-                merged("c", &["products/vita/a.ts"]),
-                merged("b", &["packages/breadboard/x.rs"]),
-                merged("a", &["README.md"]),
-            ]
-        };
+    fn puts_the_tasks_a_failed_job_covers_first() {
+        let rs = vec!["packages/breadboard/**/*".to_string()];
+        let readme = vec!["README.md".to_string()];
+        let tasks = vec![
+            merged("c", &["products/vita/a.ts"]),
+            merged("b", &["packages/breadboard/x.rs"]),
+            merged("a", &["README.md"]),
+        ];
         let order = |suspects: Vec<Suspect>| suspects.iter().map(|one| one.merged.sha.clone()).collect::<Vec<_>>();
-        assert_eq!(order(suspects(tasks(), Some(&globs), true)), ["b", "c", "a"]);
-        // The runner failed: no task is more likely than another, newest first.
-        let kept = suspects(tasks(), Some(&globs), false);
-        assert_eq!(order(kept.clone()), ["c", "b", "a"]);
-        assert!(kept[1].is_covered && !kept[0].is_covered);
-        // A job for any change covers each.
-        assert!(suspects(tasks(), None, true).iter().all(|one| one.is_covered));
+        let found = suspects(&tasks, &[&rs]);
+        assert_eq!(order(found.clone()), ["b", "c", "a"]);
+        assert!(found[0].is_covered && !found[1].is_covered);
+        // Two failed jobs: what either covers, newest first.
+        assert_eq!(order(suspects(&tasks, &[&rs, &readme])), ["b", "a", "c"]);
+        // Only jobs of any change: newest first, none likelier.
+        let found = suspects(&tasks, &[]);
+        assert_eq!(order(found.clone()), ["c", "b", "a"]);
+        assert!(found.iter().all(|one| !one.is_covered));
     }
 
     #[test]
-    fn lists_the_tasks_merged_since_the_last_green_pipeline() {
+    fn reads_a_shipped_batch_s_tasks_and_its_ci_jobs_from_origin() {
         let scratch = Scratch::new();
         let main = repo(&scratch);
         run(&main, &["checkout", "--quiet", "-b", "batch/breadboard-1"]);
-        let green = run(&main, &["rev-parse", "HEAD"]);
-        for (number, file) in [(411, "packages/breadboard/a.rs"), (412, ".gitlab-ci.yml")] {
+        let start = run(&main, &["rev-parse", "HEAD"]);
+        let ci = "check:rs:\n  rules:\n    - changes:\n        - packages/breadboard/**/*\n";
+        let merge = |number: i64, file: &str, text: &str| {
             let branch = format!("feature/{number}-task");
-            run(&main, &["checkout", "--quiet", "-b", &branch, &green]);
+            run(&main, &["checkout", "--quiet", "-b", &branch, &start]);
             std::fs::create_dir_all(main.join(file).parent().unwrap()).unwrap();
-            std::fs::write(main.join(file), "x\n").unwrap();
+            std::fs::write(main.join(file), text).unwrap();
             run(&main, &["add", "."]);
             run(&main, &["commit", "--quiet", "-m", "feat: task"]);
             run(&main, &["checkout", "--quiet", "batch/breadboard-1"]);
             let subject = format!("Merge branch '{branch}' into 'batch/breadboard-1'");
-            let body = format!("See merge request group/project!{}", number - 20);
+            let body = format!(
+                "feat: task {number}\n\nCloses #{number}\n\nSee merge request group/project!{}",
+                number - 20
+            );
             run(
                 &main,
                 &["merge", "--quiet", "--no-ff", "-m", &subject, "-m", &body, &branch],
             );
-        }
-        let red = run(&main, &["rev-parse", "HEAD"]);
-        let tasks = merged_since(&main, &green, &red);
-        let found: Vec<_> = tasks.iter().map(|one| (one.issue, one.mr, one.files.clone())).collect();
+        };
+        merge(411, "packages/breadboard/a.rs", "x\n");
+        // develop merged in to keep up: no task.
+        run(&main, &["checkout", "--quiet", "develop"]);
+        std::fs::write(main.join("README.md"), "# hotfix\n").unwrap();
+        run(&main, &["commit", "--quiet", "-am", "fix: hotfix"]);
+        run(&main, &["push", "--quiet", "origin", "develop"]);
+        run(&main, &["checkout", "--quiet", "batch/breadboard-1"]);
+        run(
+            &main,
+            &[
+                "merge",
+                "--quiet",
+                "--no-ff",
+                "-m",
+                "Merge branch 'develop' into 'batch/breadboard-1'",
+                "develop",
+            ],
+        );
+        merge(412, ".gitlab-ci.yml", ci);
+        run(&main, &["push", "--quiet", "origin", "batch/breadboard-1"]);
+        run(&main, &["fetch", "--quiet", "origin"]);
+        let shipped = shipped_of(&main, "batch/breadboard-1", "develop").unwrap();
+        let found: Vec<_> = shipped
+            .tasks
+            .iter()
+            .map(|one| (one.issue, one.mr, one.title.as_str(), one.files.clone()))
+            .collect();
         assert_eq!(
             found,
             [
-                (Some(412), Some(392), vec![".gitlab-ci.yml".to_string()]),
-                (Some(411), Some(391), vec!["packages/breadboard/a.rs".to_string()]),
+                (
+                    Some(412),
+                    Some(392),
+                    "feat: task 412",
+                    vec![".gitlab-ci.yml".to_string()]
+                ),
+                (
+                    Some(411),
+                    Some(391),
+                    "feat: task 411",
+                    vec!["packages/breadboard/a.rs".to_string()]
+                ),
             ]
         );
-        assert!(merged_since(&main, &red, &red).is_empty());
+        assert_eq!(shipped.jobs["check:rs"], ["packages/breadboard/**/*"]);
+        assert_eq!(shipped_of(&main, "batch/breadboard-9", "develop"), None);
+        assert!(merged_since(&main, "origin/batch/breadboard-1", "origin/batch/breadboard-1").is_empty());
     }
 }

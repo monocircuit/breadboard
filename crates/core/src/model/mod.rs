@@ -29,6 +29,7 @@ pub mod numbering;
 pub mod orchestration;
 pub mod orchestrator;
 pub mod order;
+pub mod red_batch;
 pub mod resolve;
 pub mod ship;
 pub mod tree;

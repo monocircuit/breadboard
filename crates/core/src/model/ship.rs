@@ -2,7 +2,8 @@
 //! product's batch once enough is in it: `ship after tasks` task MRs (the
 //! settings, #415), a hotfix or an issue labelled `ship` among them, or its
 //! oldest task waiting `ship after days`. A click runs `wt:batch <product>
-//! --ship`, as the band's `ship batch` button does.
+//! --ship`, as the band's `ship batch` button does. Held while a batch
+//! shipped before is red (#413): the row says so instead.
 
 use super::orchestration::OrchestrationLocal;
 use super::order::{Go, Item};
@@ -54,6 +55,18 @@ pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) ->
     if found.mr.is_some() || found.tasks.is_empty() {
         return None;
     }
+    // A batch shipped before is red (#413): held, the row says why.
+    if let Some(red) = super::red_batch::red_of(local, remote) {
+        return Some(Item {
+            key: format!("batch-red:{}:{}", red.branch, red.mr),
+            kind: "batch red".into(),
+            text: red.held(),
+            who: format!("{ORCHESTRATOR} orchestrator"),
+            is_auto: true,
+            rank: -1,
+            ..Default::default()
+        });
+    }
     let settings = crate::settings::settings_of(&local.settings);
     let positive = |value: i64, default: i64| if value > 0 { value } else { default };
     let reason = reason_of(
@@ -98,6 +111,7 @@ mod tests {
             epic: Some(EpicLocal {
                 branch: branch.into(),
                 behind: Some(0),
+                ..EpicLocal::default()
             }),
             ..OrchestrationLocal::default()
         }
@@ -146,6 +160,13 @@ mod tests {
         let mut open = remote(vec![task(1, 0, &["hotfix"])]);
         open.epic.as_mut().unwrap().mr = Some(Mr::default());
         assert_eq!(ship_of(&local("batch/breadboard-3"), Some(&open), NOW), None, "shipped");
+        // A batch shipped before is red: held, and why.
+        let (red_local, mut red_remote) = crate::model::red_batch::tests::red_world();
+        red_remote.epic.as_mut().unwrap().tasks = (1..=5).map(|iid| task(iid, 0, &[])).collect();
+        let held = ship_of(&red_local, Some(&red_remote), NOW).unwrap();
+        assert_eq!(held.kind, "batch red");
+        assert_eq!(held.go, Go::Nothing);
+        assert_eq!(held.text, "ship held: batch/b-2 is red (check:vita)");
         let hotfix = remote(vec![task(1, 0, &["hotfix"])]);
         assert_eq!(
             ship_of(&local("epic/15-b"), Some(&hotfix), NOW),
