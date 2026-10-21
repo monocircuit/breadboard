@@ -47,6 +47,7 @@ fn main() -> ExitCode {
         // Claude Code's Stop hook; `hook pre-push` is the setup group's.
         "hook" if rest.first().map(String::as_str) == Some("stop-answers") => herdr::hook::stop_answers(&rest[1..]),
         "hook" if rest.first().map(String::as_str) == Some("pre-edit") => herdr::hook::pre_edit(&rest[1..]),
+        "hook" if rest.first().map(String::as_str) == Some("pre-bash") => herdr::hook::pre_bash(&rest[1..]),
         _ => cli::main(command, rest),
     }
 }

@@ -29,7 +29,7 @@ const TAKES: Takes = Takes {
 };
 
 /// A branch as a query parameter: `epic/15-x` → `epic%2F15-x`.
-fn query(branch: &str) -> String {
+pub(super) fn query(branch: &str) -> String {
     branch.replace('%', "%25").replace('/', "%2F").replace('&', "%26")
 }
 
@@ -60,7 +60,7 @@ fn body_of(epic: &str, issues: &[u64]) -> String {
 }
 
 /// The MRs of `endpoint`'s list, or why GitLab didn't answer.
-fn mrs_of(dir: &Path, endpoint: &str) -> Result<Vec<Value>, String> {
+pub(super) fn mrs_of(dir: &Path, endpoint: &str) -> Result<Vec<Value>, String> {
     let ran = glab::api(dir, endpoint);
     match ran.json() {
         Some(Value::Array(mrs)) if ran.is_ok => Ok(mrs),
@@ -92,7 +92,7 @@ pub fn run(argv: &Argv) -> Outcome {
     };
     let Some(epic) = epic_of(&record.raw) else {
         return Err(format!(
-            "{name} has no epic branch: its tasks go to develop one by one (pnpm wt:orchestrate {name} --epic <n>)"
+            "{name} has no epic branch: its tasks go through its product's batch (#411)"
         ));
     };
     let mrs = "projects/:fullpath/merge_requests";

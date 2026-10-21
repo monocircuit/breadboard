@@ -12,22 +12,32 @@
 #                                      background, the binary from before runs
 #   sh breadboard.sh --built           only build when needed: exit 0 when the
 #                                      binary is that of HEAD
+#   sh breadboard.sh --tree            the same for the sources as they are on
+#                                      disk, uncommitted changes too (pnpm
+#                                      build:rs, the gauntlet, #451)
 #
-# "Older than HEAD": target/release/breadboard.source holds what HEAD had in
-# its sources (`sources` below) when it was made here.
-# Only sh, git and cat until a build, date and find while it waits for one
-# (no dirname: herdr's PATH may be short).
+# "Older than HEAD": target/release/breadboard.source holds the sources
+# (`sources` below) the binary was made from, as the working tree had them,
+# and the key of HEAD's when it was made here. A binary made from the tree
+# stays HEAD's until HEAD's sources move: the uncommitted changes it was
+# built with are the checkout's own, and once they are committed as they
+# were, it is HEAD's binary without a second build (#451).
+# Only sh, git and cat until a build (no dirname: herdr's PATH may be short).
 #
 # Made, not always built: the repo's store, <git common dir>/breadboard, is
 # shared by every worktree of the clone. bin/<key>/breadboard keeps each
 # build by the key of its sources, so a worktree with sources built before
-# (wt:new's, a pull another checkout made) copies it, ~15 MB; target/ is
-# cargo's for all of them, so a build only compiles what changed.
+# (wt:new's, a pull another checkout made) copies it, ~15 MB. A build runs
+# in the checkout's own target/, never waiting for another's (#446); the
+# dependencies come from sccache's cache where it is installed.
 #
 # A stored copy is what its key says (#339): the build gets the key
 # (BREADBOARD_SOURCE_KEY) and the binary carries it; a copy is stored only
 # when the sources were committed and unchanged across the build and the
-# file carries the key, and used only when it carries it. A key read before
+# file carries the key, and used only when it carries it. The key is that of
+# the sources as built, uncommitted ones too (#451): the build of a change
+# before its commit carries the key the commit has, so the commit needs no
+# build of its own (a build with another key compiles the crate again). A key read before
 # the store's lock, or a target/ another build wrote, once put other sources'
 # binaries under a key: the overview ran code from before the fix.
 case $0 in
@@ -42,6 +52,7 @@ mode=run
 case "${1-}" in
   --no-wait) mode=no-wait && shift ;;
   --built) mode=built && shift ;;
+  --tree) mode=tree && shift ;;
 esac
 
 # The sources the binary is built from: the crates and what they embed
@@ -54,22 +65,81 @@ source_now() {
   git -C "$package" ls-tree HEAD -- $sources 2>/dev/null
 }
 
-# The stamp of a binary made from the sources $1. Its first line says it
-# was made by a launcher that checks keys (#339): a stamp from before is no
-# stamp, so every checkout makes its binary once more, from a checked copy.
-stamp_of() {
-  printf '#339\n%s\n' "$1"
+# What the working tree has of them, in source_now's lines (#451): the
+# checkout's index copied, the package's files added to it (untracked ones
+# too, not the ignored), its tree listed. The same lines as source_now's
+# once the sources are committed as they are. The copy keeps the index's
+# mtime: git hashes again what changed in the tick the index was written,
+# a fresh mtime would make it trust the stat of a file of the same size.
+source_tree() {
+  index=$(git -C "$package" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 1
+  mkdir -p "${binary%/*}" || return 1
+  copy="$binary.index.$$"
+  if [ -f "$index" ]; then
+    cp -p "$index" "$copy" || return 1
+  else
+    GIT_INDEX_FILE=$copy git -C "$package" read-tree HEAD 2>/dev/null || return 1
+  fi
+  tree=$(GIT_INDEX_FILE=$copy git -C "$package" add -A -- . 2>/dev/null &&
+    GIT_INDEX_FILE=$copy git -C "$package" write-tree 2>/dev/null)
+  rm -f "$copy"
+  [ -n "$tree" ] && git -C "$package" ls-tree "$tree" -- $sources 2>/dev/null
 }
 
-# Whether the binary is there and built from HEAD's sources. Without sources
-# (no Cargo.toml: a package that ships only the binary) or outside a checkout
-# the binary that is there is the one.
+# The stamp of a binary made from the sources $1 (source_tree's lines) on
+# HEAD's sources $2. Its first line says it was made by a launcher that
+# checks keys (#339): a stamp from before is no stamp, so every checkout
+# makes its binary once more, from a checked copy.
+stamp_of() {
+  printf '#339\n%s\n#on %s\n' "$1" "$(key_of "$2")"
+}
+
+# The stamp's parts: `made`, the sources the binary was made from, and `on`,
+# the key of HEAD's sources then (none in a stamp before #451). 1 without
+# a stamp of this launcher.
+read_stamp() {
+  [ -f "$stamp" ] || return 1
+  made=$(cat "$stamp")
+  case $made in
+    "#339
+"*) made=${made#"#339
+"} ;;
+    *) return 1 ;;
+  esac
+  on=
+  case $made in
+    *"
+#on "*)
+      on=${made##*"
+#on "}
+      made=${made%"
+#on "*}
+      ;;
+  esac
+  return 0
+}
+
+# Whether the binary is there and HEAD's: built from HEAD's sources, or from
+# the tree on top of them while HEAD's sources haven't moved since. Without
+# sources (no Cargo.toml: a package that ships only the binary) or outside a
+# checkout the binary that is there is the one.
 is_fresh() {
   [ -x "$binary" ] || return 1
   [ -f "$package/Cargo.toml" ] || return 0
   now=$(source_now)
   [ -n "$now" ] || return 0
-  [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$(stamp_of "$now")" ]
+  read_stamp || return 1
+  [ "$made" = "$now" ] && return 0
+  [ -n "$on" ] && [ "$on" = "$(key_of "$now")" ]
+}
+
+# Whether the binary is there and built from the sources on disk (--tree).
+is_fresh_tree() {
+  [ -x "$binary" ] || return 1
+  [ -f "$package/Cargo.toml" ] || return 0
+  tree_now=$(source_tree)
+  [ -n "$tree_now" ] || return 0
+  read_stamp && [ "$made" = "$tree_now" ]
 }
 
 # The store's key of the sources $1 (source_now's lines).
@@ -81,11 +151,6 @@ key_of() {
 # found without running it (an old binary may not know the question).
 has_key() {
   [ -n "$2" ] && grep -aqF "breadboard-source-key:$2" "$1" 2>/dev/null
-}
-
-# Whether the sources have no uncommitted changes.
-is_clean() {
-  [ -z "$(git -C "$package" status --porcelain -- $sources 2>/dev/null)" ]
 }
 
 # cargo on PATH, else rustup's: a herdr started from a desktop has no ~/.cargo/bin.
@@ -107,146 +172,25 @@ install() {
   mkdir -p "${binary%/*}" && cp "$1" "$binary.$$" && chmod +x "$binary.$$" && mv -f "$binary.$$" "$binary"
 }
 
-# The store's build lock, waited for: one cargo build of the repo at a time,
-# so the binary a build leaves in target/ is the one it built. The lock says
-# who holds it (pid, checkout, since, boot, what it does: #389), so a wait
-# shows who builds and for how long, and one nobody holds is cleared: no pid
-# (a kill between mkdir and its pid), a pid that is no breadboard.sh or
-# cargo (reused after a reboot), or a lock of another boot. A build without
-# progress (nothing new in the store's target/) for BREADBOARD_LOCK_STALL
-# seconds (15 min) is offered to be cleared on a terminal, else said how.
-lock_store() {
-  lock="$shared/build.lock"
-  stall=${BREADBOARD_LOCK_STALL:-900}
-  boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)
-  mark="$shared/build.watch.$$"
-  progressed=$(now_s)
-  is_said=
-  empty=0
-  ticks=0
-  while ! mkdir "$lock" 2>/dev/null; do
-    if [ -n "$boot" ] && [ -f "$lock/boot" ] && [ "$(cat "$lock/boot" 2>/dev/null)" != "$boot" ]; then
-      clear_lock "it is of another boot"
-      continue
-    fi
-    pid=$(cat "$lock/pid" 2>/dev/null)
-    if [ -z "$pid" ]; then
-      # mkdir and its pid are two steps: empty for 3 s, it is nobody's.
-      empty=$((empty + 1))
-      if [ "$empty" -ge 3 ]; then
-        clear_lock "it names no builder"
-        continue
-      fi
-    elif ! is_builder "$pid"; then
-      clear_lock "its builder ($pid) is gone"
-      continue
-    else
-      empty=0
-    fi
-    [ -f "$mark" ] || : >"$mark"
-    if [ -n "$(find "$shared/target" -maxdepth 3 -newer "$mark" -print 2>/dev/null | head -n 1)" ]; then
-      : >"$mark"
-      progressed=$(now_s)
-    fi
-    now=$(now_s)
-    still=
-    [ -n "$now" ] && [ -n "$progressed" ] && still=$((now - progressed))
-    if [ -t 2 ]; then
-      [ $((ticks % 2)) -eq 0 ] && printf '\r\033[K▸ another checkout builds breadboard, this one waits for it: %s' "$(holder "$still")" >&2
-    elif [ $((ticks % 60)) -eq 0 ]; then
-      echo "▸ another checkout builds breadboard, this one waits for it: $(holder "$still")" >&2
-    fi
-    is_said=1
-    if [ -n "$still" ] && [ "$still" -ge "$stall" ]; then
-      if offer_clear "$(minutes "$still")"; then
-        is_said=
-        clear_lock "as asked"
-        continue
-      fi
-      progressed=$(now_s)
-    fi
-    ticks=$((ticks + 1))
-    sleep 1
-  done
-  rm -f "$mark"
-  [ -n "$is_said" ] && [ -t 2 ] && echo >&2
-  echo "$$" >"$lock/pid"
-  printf '%s\n' "$package" >"$lock/checkout"
-  now_s >"$lock/since"
-  [ -n "$boot" ] && printf '%s\n' "$boot" >"$lock/boot"
-  trap 'rm -rf "$lock" "$mark"; exit 130' INT TERM HUP
+# The binary as the store's copy of the sources $1 under the key $2, when
+# they are HEAD's: what a commit has, other checkouts get. Its lines go to
+# $binary.kept, so a launch after that asks the store no more.
+keep() {
+  [ -n "$shared" ] && [ -n "$2" ] && [ "$1" = "$(source_now)" ] || return 0
+  kept="$shared/bin/$2/breadboard"
+  [ -e "$kept" ] || {
+    has_key "$binary" "$2" && mkdir -p "${kept%/*}" && cp "$binary" "$kept.$$" && mv -f "$kept.$$" "$kept" && prune
+  } || return 0
+  printf '%s\n' "$1" >"$binary.kept"
 }
 
-# Seconds since the epoch, or nothing without date (herdr's PATH may be short).
-now_s() {
-  date +%s 2>/dev/null
-}
-
-# Whether the pid $1 runs and is a build: breadboard.sh or cargo where /proc
-# tells, any process elsewhere.
-is_builder() {
-  kill -0 "$1" 2>/dev/null || return 1
-  [ -r "/proc/$1/cmdline" ] || return 0
-  grep -aqE 'breadboard\.sh|cargo' "/proc/$1/cmdline" 2>/dev/null
-}
-
-# The lock removed, and why ($1).
-clear_lock() {
-  rm -rf "$lock"
-  [ -n "$is_said" ] && [ -t 2 ] && echo >&2
-  echo "▸ the store's build lock was cleared: $1" >&2
-  is_said=
-  empty=0
-  ticks=0
-}
-
-# Who holds the lock: `checkout <name>, 3:12 min, compiling breadboard from
-# abc1234`, and how long nothing new came to target/ ($1, seconds) past a minute.
-holder() {
-  who=$(cat "$lock/checkout" 2>/dev/null)
-  who=${who%/packages/breadboard}
-  said="checkout ${who##*/}"
-  [ -n "$who" ] || said="pid $(cat "$lock/pid" 2>/dev/null)"
-  since=$(cat "$lock/since" 2>/dev/null)
-  now=$(now_s)
-  if [ -n "$since" ] && [ -n "$now" ]; then
-    took=$((now - since))
-    said="$said, $((took / 60)):$(printf '%02d' $((took % 60))) min"
-  fi
-  what=$(cat "$lock/what" 2>/dev/null)
-  said="$said, ${what:-starting}"
-  [ -n "$1" ] && [ "$1" -ge 60 ] && said="$said, nothing compiled for $(minutes "$1")"
-  printf '%s' "$said"
-}
-
-# $1 seconds in words: `4 min`, under one `40 s`.
-minutes() {
-  if [ "$1" -ge 60 ]; then
-    printf '%s min' $(($1 / 60))
-  else
-    printf '%s s' "$1"
-  fi
-}
-
-# A build without progress for $1 (minutes()): on a terminal the question whether
-# to clear its lock (0: yes), else the line that says how; the wait goes on.
-offer_clear() {
-  [ -t 2 ] && echo >&2
-  if [ -t 2 ] && [ -r /dev/tty ]; then
-    printf '▸ its build made no progress for %s (nothing new in %s): clear its lock and build here? [y/N] ' "$1" "$shared/target" >&2
-    read -r answer </dev/tty || answer=
-    case $answer in
-      y* | Y* | j* | J*) return 0 ;;
-    esac
-    return 1
-  fi
-  echo "! its build made no progress for $1 (nothing new in $shared/target): if nothing builds, rm -rf $lock clears it" >&2
-  return 1
-}
-
-unlock_store() {
-  rm -rf "$lock" "$mark"
-  trap - INT TERM HUP
+# A binary built from the tree before its commit (#451): HEAD's now, and
+# kept in the store for the others once, as the build would have.
+keep_fresh() {
+  [ -f "$package/Cargo.toml" ] && [ -n "${now-}" ] && [ "${made-}" = "$now" ] || return 0
+  [ "$(cat "$binary.kept" 2>/dev/null)" = "$now" ] && return 0
+  shared=$(store) || return 0
+  keep "$now" "$(key_of "$now")"
 }
 
 # The store keeps the newest 8 builds; a checkout keeps its own copy.
@@ -256,49 +200,35 @@ prune() {
   done
 }
 
-# What cargo left in this checkout's own target/ before every run used the
-# store's (#336: 1.9 GB per worktree): removed once, the binary, its stamps
-# and the build log stay. Not while a cargo holds it (its .cargo-lock), and
-# not without flock to tell; outside a clone there is no store to use instead.
-reclaim() {
-  own="$package/target"
-  [ -d "$own/debug" ] || [ -d "$own/release/deps" ] || return 0
-  store >/dev/null || return 0
-  command -v flock >/dev/null 2>&1 || return 0
-  for held in "$own"/*/.cargo-lock; do
-    [ -f "$held" ] || continue
-    # sh, not true: herdr's PATH may have no true.
-    flock -n "$held" sh -c : 2>/dev/null || return 0
-  done
-  rm -rf "$own/debug" "$own/release/deps" "$own/release/build" "$own/release/.fingerprint" \
-    "$own/release/incremental" "$own/release/examples" "$own/release/.cargo-lock" \
-    "$own/CACHEDIR.TAG" "$own/.rustc_info.json"
-  rm -f "$own"/release/*.d
-  echo "▸ removed this checkout's own cargo target/ (#336): every cargo run uses the store's" >&2
-}
-
 # The store's copy of the sources $1 when it has one that carries their key:
 # installed and stamped. One that doesn't carry it (stored before #339, or
 # poisoned) is removed.
 from_store() {
-  [ -n "$shared" ] && [ -n "$1" ] && is_clean || return 1
+  [ -n "$shared" ] && [ -n "$1" ] || return 1
   key=$(key_of "$1")
   kept="$shared/bin/$key/breadboard"
   [ -e "$kept" ] || return 1
   if [ -x "$kept" ] && has_key "$kept" "$key" && install "$kept"; then
     rm -f "$failed"
-    stamp_of "$1" >"$stamp"
+    stamp_of "$1" "$2" >"$stamp"
+    printf '%s\n' "$1" >"$binary.kept"
     return 0
   fi
   rm -rf "${kept%/*}"
   return 1
 }
 
-# The binary of HEAD's sources: the store's when it has one, else cargo
-# build --release in the store's target/; on success the stamp of what it is.
+# The binary of the sources on disk: the store's when it has one, else cargo
+# build --release in this checkout's own target/ (#446: no queue behind
+# another worktree's build; sccache, where installed, gives every target/ the
+# dependencies compiled once); on success the stamp of what it is.
 build() {
   shared=$(store) || shared=
-  from_store "$(source_now)" && return 0
+  # What is built is what is there now, under its own key (#451).
+  head=$(source_now)
+  now=$(source_tree) || now=
+  [ -n "$now" ] || now=$head
+  from_store "$now" "$head" && return 0
   if [ ! -f "$package/Cargo.toml" ]; then
     echo "✗ $binary isn't built, and $package has no Cargo.toml to build it from" >&2
     return 1
@@ -307,51 +237,29 @@ build() {
     echo "✗ $binary is missing or older than the checkout, and there is no cargo to build it (https://rustup.rs, then pnpm build:rs in $package)" >&2
     return 1
   fi
-  if [ -z "$shared" ]; then
-    built_in "$package/target"
-    return $?
-  fi
-  mkdir -p "$shared" && lock_store
-  built_in "$shared/target"
-  made=$?
-  unlock_store
-  return $made
-}
-
-# The build itself, in the target/ $1; the store's lock held when there is a
-# store. Every build in the store's target/ (#336), one of uncommitted
-# changes too: cargo compiles only what differs, never the dependencies again.
-built_in() {
-  # What is built is what is there now, not before the wait for the lock.
-  now=$(source_now)
-  from_store "$now" && return 0
   key=
-  is_clean && [ -n "$now" ] && key=$(key_of "$now")
+  [ -n "$now" ] && key=$(key_of "$now")
   short=$(git -C "$package" rev-parse --short HEAD 2>/dev/null)
-  [ -n "$shared" ] && [ -d "$lock" ] && echo "compiling breadboard from $short" >"$lock/what"
-  echo "▸ breadboard is built from $short (cargo build --release in $1)" >&2
-  if ! BREADBOARD_SOURCE_KEY="$key" CARGO_TARGET_DIR="$1" sh "$package/herdr/cargo.sh" build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
+  [ "$now" = "$head" ] || short="$short and its uncommitted changes"
+  echo "▸ breadboard is built from $short (cargo build --release in $package/target)" >&2
+  if ! BREADBOARD_SOURCE_KEY="$key" CARGO_TARGET_DIR="$package/target" sh "$package/herdr/cargo.sh" build --release --manifest-path "$package/Cargo.toml" </dev/null 1>&2; then
     mkdir -p "${binary%/*}"
-    printf '%s\n' "$now" >"$failed"
+    printf '%s\n' "$head" >"$failed"
     echo "✗ cargo build --release failed in $package" >&2
     return 1
   fi
-  made="$1/release/breadboard"
-  if [ -n "$key" ] && [ -n "$shared" ]; then
-    # A build of committed sources is these sources' or nothing: its key in
-    # the file, the sources unchanged across it. Only then is it stored.
-    if ! has_key "$made" "$key"; then
-      echo "✗ the binary in $1 isn't a build of $(git -C "$package" rev-parse --short HEAD 2>/dev/null)'s sources (another build wrote it?): not used, not stored" >&2
+  if [ -n "$key" ]; then
+    # A build is these sources' or nothing: its key in the file. Stored only
+    # when they are committed and unchanged across it.
+    if ! has_key "$binary" "$key"; then
+      echo "✗ the binary in $package/target isn't a build of $short's sources (another build wrote it?): not used, not stored" >&2
       return 1
     fi
-    if [ "$(source_now)" = "$now" ] && is_clean; then
-      kept="$shared/bin/$key/breadboard"
-      mkdir -p "${kept%/*}" && cp "$made" "$kept.$$" && mv -f "$kept.$$" "$kept" && prune
-    fi
+    rm -f "$binary.kept"
+    [ "$(source_tree)" = "$now" ] && keep "$now" "$key"
   fi
-  install "$made" || return 1
   rm -f "$failed"
-  [ -n "$now" ] && stamp_of "$now" >"$stamp"
+  [ -n "$now" ] && stamp_of "$now" "$head" >"$stamp"
   return 0
 }
 
@@ -379,8 +287,15 @@ build_behind() {
 
 case $mode in
   built)
-    reclaim
-    is_fresh && exit 0
+    if is_fresh; then
+      keep_fresh
+      exit 0
+    fi
+    build && [ -x "$binary" ]
+    exit $?
+    ;;
+  tree)
+    is_fresh_tree && exit 0
     build && [ -x "$binary" ]
     exit $?
     ;;
@@ -399,8 +314,9 @@ case $mode in
     fi
     ;;
   run)
-    reclaim
-    if ! is_fresh && ! build; then
+    if is_fresh; then
+      keep_fresh
+    elif ! build; then
       if [ ! -x "$binary" ]; then
         echo "✗ breadboard can't run until it is built: pnpm build:rs in $package" >&2
         exit 1

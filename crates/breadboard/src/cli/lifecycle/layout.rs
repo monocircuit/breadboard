@@ -57,7 +57,9 @@ pub fn command(args: &Args) -> Done {
         return Ok(());
     }
     if !herdr::is_in() {
-        return fail("this runs inside herdr (HERDR_ENV is not set)");
+        return fail(
+            "this runs inside herdr (HERDR_ENV is not set): start it with pnpm herdr, then run it in one of its panes",
+        );
     }
     let repo = Repo::here()?;
     // Said first: the layout takes seconds, today's was silent until its end;

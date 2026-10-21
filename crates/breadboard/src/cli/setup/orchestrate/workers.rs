@@ -2,10 +2,10 @@
 //! the next issue goes to an idle agent that knows its files, else to the one
 //! with the most room, else to a fresh one on a stack the memory allows.
 
-use crate::cli::lifecycle::handover::{self, Worker, context_limit, refusal_of, with_start};
+use crate::cli::lifecycle::handover::{self, Worker, fresh_rule, refusal_of, with_start};
 use crate::cli::setup::gitlab;
 use crate::cli::setup::repo;
-use breadboard_core::conversations::context_share_of;
+use breadboard_core::conversations::{context_of, context_share_of};
 use breadboard_core::gitlab::paths_of;
 use breadboard_core::model::workers::shared_of;
 use breadboard_core::record::{self, Record};
@@ -64,22 +64,24 @@ pub struct Idle {
     pub files: Vec<String>,
 }
 
-/// The agents of `name` free for a next issue now: idle, context below the limit, MR merged (or free).
+/// The agents of `name` free for a next issue now: idle, none that starts fresh (#445), MR merged (or free).
 pub fn idle_workers_now(name: &str, found: Option<&Record>) -> Vec<Idle> {
     let branches: Vec<(PathBuf, Option<String>)> = repo::worktrees()
         .into_iter()
         .map(|tree| (tree.dir, tree.branch))
         .collect();
-    let limit = context_limit(&repo::main_dir(), name);
+    let rule = fresh_rule(&repo::main_dir(), name);
+    let now = breadboard_core::time::now_ms();
     let candidates: Vec<(Worker, Option<f64>)> = workers_of(name)
         .into_iter()
         .map(|worker| {
             let share = context_share_of(&worker.id);
             (worker, share)
         })
-        .filter(|(worker, share)| {
+        .filter(|(worker, _)| {
             let pane = handover::pane_of_conversation(&worker.id).ok().flatten();
-            refusal_of(pane.as_ref(), worker.is_free, *share, limit).is_none()
+            let fresh = context_of(&worker.id).and_then(|context| rule.why(&context, now));
+            refusal_of(pane.as_ref(), worker.is_free, fresh).is_none()
         })
         .collect();
     let merged = gitlab::in_turns(&candidates, 12, |(worker, _)| {

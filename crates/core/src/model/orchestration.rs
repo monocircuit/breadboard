@@ -80,11 +80,11 @@ pub struct OrchestrationLocal {
     /// Its record, None without one.
     pub record: Option<Record>,
     pub record_file: PathBuf,
-    /// Its free agents (#289) with the share of their context used.
-    pub free: Vec<(Worker, f64)>,
+    /// Its free agents (#289) with their context.
+    pub free: Vec<(Worker, crate::fresh::Context)>,
     pub free_memory: Option<u64>,
-    /// breadboard.toml's `[agents] fresh_above` as a share (#381); None: the default.
-    pub context_limit: Option<f64>,
+    /// When its agents start fresh (#445, the settings'); None: breadboard.toml's defaults.
+    pub fresh_rule: Option<crate::fresh::Fresh>,
     /// What herdr says each agent does, by conversation; empty outside herdr.
     pub agents: HashMap<String, Agent>,
     pub chat: Option<Chat>,
@@ -272,6 +272,8 @@ pub struct OrchestrationModel {
     pub turn_records: Vec<(PathBuf, TurnRecord)>,
     /// The epic's head row (#350), None for one that works on develop.
     pub epic: Option<Vec<Vec<Span>>>,
+    /// A batch's `ship batch` button and its task MRs (#414).
+    pub batch: Option<super::epic_row::BatchFold>,
     /// The orchestrator's context, quiet point and journal (#382).
     pub orchestrator: Orchestrator,
 }
@@ -679,6 +681,7 @@ fn actions_of(
     }
     items.extend(workers.actions.iter().cloned());
     items.extend(super::milestone::milestone_of(local, remote));
+    items.extend(super::ship::ship_of(local, remote, crate::time::now_ms()));
     // The end: once all is merged and no worktree is left.
     let has_next_merge = next_merge(issues, remote, order, turns).is_some();
     if remote.is_some() && local.trees.is_empty() && !issues.iter().any(|issue| issue.is_queued) && !has_next_merge {
@@ -809,7 +812,7 @@ fn merge_requests_of(
                 .map(|at| merged_when(at, now))
                 .unwrap_or_default();
             let word = if crate::epic::is_in_epic(mr, part.issue.as_ref()) {
-                "in epic"
+                crate::epic::in_word(mr)
             } else {
                 "merged"
             };
@@ -1274,6 +1277,7 @@ pub fn orchestration_of(
         ci_published: None,
         turn_records: Vec::new(),
         epic: super::epic_row::epic_row_of(local, remote),
+        batch: super::epic_row::batch_fold_of(local, remote),
         orchestrator: orchestrator_of(local, &[]),
     };
     if issues.is_empty() {
@@ -1356,7 +1360,7 @@ pub fn orchestration_of(
                 free: &local.free,
                 runs: Some(&state.runs),
                 now,
-                limit: local.context_limit,
+                fresh: local.fresh_rule,
             },
         )
     })
@@ -1459,7 +1463,7 @@ pub fn orchestration_of(
                 turns: Some(&turns),
                 setups: &local.setups,
                 now,
-                limit: local.context_limit,
+                fresh_rule: local.fresh_rule,
             },
             local.free_memory,
         )

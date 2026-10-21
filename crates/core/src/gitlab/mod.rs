@@ -7,13 +7,14 @@
 
 pub mod cache;
 pub mod client;
+pub mod complexity;
 pub mod read;
 pub mod recheck;
 mod rest;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 /// A pipeline as GitLab's REST lists it, the fields the views read: the
@@ -214,6 +215,26 @@ pub struct EpicRemote {
     pub branch: String,
     pub pipeline: Option<DevelopPipeline>,
     pub mr: Option<Mr>,
+    /// The task MRs merged into it, newest first (#414): what a batch ships.
+    pub tasks: Vec<BatchTask>,
+    /// The open MRs into develop of the product's batches shipped before it (#414).
+    pub shipping: Vec<Mr>,
+    /// The failed jobs of each of those MRs (its own, the shipping ones') whose
+    /// pipeline failed, by iid (#413): what turned the batch red.
+    pub failed_jobs: BTreeMap<i64, Vec<Job>>,
+}
+
+/// A task MR merged into a batch (#414): the fold under BATCH, the ship suggestion.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BatchTask {
+    pub iid: i64,
+    /// Without `Draft:`.
+    pub title: String,
+    pub url: String,
+    pub branch: String,
+    pub merged_at: Option<String>,
+    pub labels: Vec<String>,
 }
 
 impl Remote {

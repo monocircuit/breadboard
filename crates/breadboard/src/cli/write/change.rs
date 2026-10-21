@@ -43,7 +43,7 @@ pub fn run(argv: &Argv, here: &Here, text: &str) -> Outcome {
         };
         // glab failing is no "no MR": the change would block nothing (rule 6).
         let Some(mr) = glab::view_within(&main, "mr", iid, LIMIT)? else {
-            return Err(format!("GitLab knows no MR !{iid}"));
+            return Err(format!("GitLab knows no MR !{iid}: glab mr list shows the open ones"));
         };
         let source = glab::text_of(&mr, "source_branch");
         let dir = worktrees(&main)

@@ -159,12 +159,18 @@ impl Session {
     }
 
     /// The environment of the session's server, and so of every pane in it:
-    /// the pinned herdr first on PATH, the repo's config, nothing of a herdr
-    /// or an agent this was started from.
+    /// the pinned herdr first on PATH, then `bb` (#427), the repo's config,
+    /// nothing of a herdr or an agent this was started from.
     pub fn session_env(&self) -> Vec<(OsString, OsString)> {
         let mut env: Vec<(OsString, OsString)> = clean_env().into_iter().filter(|(key, _)| key != "PATH").collect();
         let path = std::env::var_os("PATH").unwrap_or_default();
         let mut dirs = vec![self.bin.parent().map(Path::to_path_buf).unwrap_or_default()];
+        dirs.extend(
+            self.plugin_dir
+                .parent()
+                .map(|package| package.join("bin"))
+                .filter(|bin| bin.join("bb").is_file()),
+        );
         dirs.extend(std::env::split_paths(&path));
         env.push(("PATH".into(), std::env::join_paths(dirs).unwrap_or(path)));
         env.push(("HERDR_CONFIG_PATH".into(), self.config_file.clone().into_os_string()));
@@ -351,6 +357,18 @@ mod tests {
                 root.join("herdr/breadboard.sh").display()
             )
         );
+        // Its panes find `bb` (#427), the package's bin/ after the pinned herdr.
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/bb"), "").unwrap();
+        let path_of = |env: Vec<(OsString, OsString)>| {
+            env.into_iter()
+                .find(|(key, _)| key == "PATH")
+                .map(|(_, value)| value.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let bin = root.join("bin").display().to_string();
+        assert!(path_of(developed.session_env()).starts_with(&format!("/r/platform/.herdr/bin:{bin}:")));
+        assert!(!path_of(session.session_env()).contains("/bin/bb"));
         let _ = std::fs::remove_dir_all(&root);
         let env = session.session_env();
         assert!(

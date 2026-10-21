@@ -10,7 +10,7 @@
     "lint:rs": "sh herdr/cargo.sh fmt --check && sh herdr/cargo.sh clippy --all-targets --quiet -- -D warnings",
     "test": "node --test",
     "test:rs": "sh herdr/cargo.sh test --quiet",
-    "build:rs": "sh herdr/breadboard.sh --built"
+    "build:rs": "sh herdr/breadboard.sh --tree"
   },
   "devDependencies": {
     "@monocircuit/eslint-config": "workspace:*",
