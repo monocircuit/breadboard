@@ -55,11 +55,19 @@ pub struct Merge {
     /// enough, the CI queue starts none, and the default branch's pipeline
     /// after the merge is the safety net.
     pub needs_pipeline: bool,
+    /// A task MR into a batch (#461) must pass its own pipeline before the
+    /// overview merges it. Off: `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the batch MR's full pipeline
+    /// into the default branch is the test.
+    pub batch_needs_pipeline: bool,
 }
 
 impl Default for Merge {
     fn default() -> Self {
-        Merge { needs_pipeline: true }
+        Merge {
+            needs_pipeline: true,
+            batch_needs_pipeline: true,
+        }
     }
 }
 
