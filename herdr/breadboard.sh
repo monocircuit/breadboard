@@ -68,13 +68,15 @@ source_now() {
 # What the working tree has of them, in source_now's lines (#451): the
 # checkout's index copied, the package's files added to it (untracked ones
 # too, not the ignored), its tree listed. The same lines as source_now's
-# once the sources are committed as they are.
+# once the sources are committed as they are. The copy keeps the index's
+# mtime: git hashes again what changed in the tick the index was written,
+# a fresh mtime would make it trust the stat of a file of the same size.
 source_tree() {
   index=$(git -C "$package" rev-parse --path-format=absolute --git-path index 2>/dev/null) || return 1
   mkdir -p "${binary%/*}" || return 1
   copy="$binary.index.$$"
   if [ -f "$index" ]; then
-    cp "$index" "$copy" || return 1
+    cp -p "$index" "$copy" || return 1
   else
     GIT_INDEX_FILE=$copy git -C "$package" read-tree HEAD 2>/dev/null || return 1
   fi
