@@ -434,6 +434,9 @@ pub struct Agents {
     /// run loads (#445); none by default: every server's tools are in
     /// each call's context.
     pub mcp_configs: Vec<String>,
+    /// How many runs may be in flight at once (#445): after a crash every
+    /// cut-off agent is picked up, a few at a time, never all together.
+    pub max_runs: usize,
 }
 
 impl Default for Agents {
@@ -445,6 +448,7 @@ impl Default for Agents {
             idle_fresh_above: 100_000,
             idle_minutes: 55,
             mcp_configs: Vec::new(),
+            max_runs: 4,
         }
     }
 }
@@ -732,6 +736,9 @@ impl Config {
                 "fresh_above and idle_fresh_above are tokens of context now (#445), at least 10_000, e.g. 150_000",
             );
         }
+        if agents.max_runs == 0 {
+            return bad("agents.max_runs", "must be at least 1");
+        }
         if agents.idle_minutes == 0 {
             return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");
         }
@@ -936,6 +943,17 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// How an agent of this repo types `bb status` / `bb submit`: `bb`, the
+    /// monorepo's shim (#427), where breadboard runs through pnpm, else
+    /// `breadboard` (as `in_repo` says it).
+    pub fn bb(&self) -> &'static str {
+        if self.config.repo.run.as_deref() == Some("pnpm") {
+            "bb"
+        } else {
+            "breadboard"
+        }
+    }
+
     /// `origin/<branch>`.
     pub fn base(&self) -> String {
         format!("origin/{}", self.branch)

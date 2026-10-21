@@ -245,6 +245,7 @@ while they worked on it and its worktree's try checkers' (#387). A limit is toke
 | `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
 | `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
 | `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
+| `max_runs` | `4` | how many headless runs may be in flight at once (#445). After a crash, an OOM kill or a reboot the run engine picks every cut-off run up by itself, a few at a time: a small session is resumed with one line, one past the fresh-start rule is not resumed but taken over by a fresh session in its worktree, with a handoff breadboard writes from the disk (`.claude/handoff-cut.md`: its last prompt and answer, uncommitted and unpushed work) |
 
 ```toml
 [agents]

@@ -3,8 +3,9 @@
 //! overview without its MRs. Measured against gitlab.com's `queryComplexity`
 //! (2026-10-19): a field costs 1 and its fields; a connection (a field with
 //! `nodes`) `(fields + 2) × (1 + first/100)`, `first` at most and by default
-//! 100, rounded down; a few fields cost more (COSTLY). An estimate a little
-//! above GitLab's, never below.
+//! 100, rounded down, five times `first/100` when it is asked by `iids` (the
+//! values count: a variable without one costs less), 2 more by `sha`; a few
+//! fields cost more (COSTLY). An estimate a little above GitLab's, never below.
 
 /// gitlab.com's limit for a signed-in user.
 pub const LIMIT: u32 = 250;
@@ -72,6 +73,8 @@ fn selection(tokens: &[String], at: &mut usize) -> (u32, Vec<String>) {
             *at += 2;
         }
         let mut first = None;
+        let mut is_by_iids = false;
+        let mut is_by_sha = false;
         if tokens.get(*at).is_some_and(|next| next == "(") {
             let mut depth = 0;
             while let Some(token) = tokens.get(*at) {
@@ -85,6 +88,8 @@ fn selection(tokens: &[String], at: &mut usize) -> (u32, Vec<String>) {
                         }
                     }
                     "first" if depth == 1 => first = tokens.get(*at + 1).and_then(|value| value.parse().ok()),
+                    "iids" if depth == 1 => is_by_iids = true,
+                    "sha" if depth == 1 => is_by_sha = true,
                     _ => {}
                 }
             }
@@ -93,13 +98,15 @@ fn selection(tokens: &[String], at: &mut usize) -> (u32, Vec<String>) {
             *at += 1;
             selection(tokens, at)
         });
-        total += cost(&name, first, children);
+        let base = if is_by_sha { 4 } else { 2 };
+        total += cost(&name, first, base, is_by_iids, children);
         names.push(name);
     }
     (total, names)
 }
 
-fn cost(name: &str, first: Option<u32>, children: Option<(u32, Vec<String>)>) -> u32 {
+/// `base`: what a connection costs beyond its fields per item.
+fn cost(name: &str, first: Option<u32>, base: u32, is_by_iids: bool, children: Option<(u32, Vec<String>)>) -> u32 {
     let Some((inner, names)) = children else {
         return COSTLY
             .iter()
@@ -110,7 +117,8 @@ fn cost(name: &str, first: Option<u32>, children: Option<(u32, Vec<String>)>) ->
         return 1 + inner;
     }
     let first = first.unwrap_or(100).min(100);
-    (inner + 2) * (100 + first) / 100
+    let per_item = if is_by_iids { 5 } else { 1 };
+    (inner + base) * (100 + per_item * first) / 100
 }
 
 #[cfg(test)]
@@ -141,6 +149,22 @@ mod tests {
             (
                 "{ project(fullPath: $p) { mergeRequests(first: 100) { nodes { iid detailedMergeStatus } } } }",
                 13,
+            ),
+            (
+                "{ project(fullPath: $p) { issues(iids: [\"1\"], first: 10) { nodes { iid title } } } }",
+                8,
+            ),
+            (
+                "{ project(fullPath: $p) { pipelines(first: 1, sha: $sha) { nodes { id } } } }",
+                7,
+            ),
+            (
+                "{ project(fullPath: $p) { issues(iids: [\"1\"], first: 50) { nodes { iid title } } } }",
+                18,
+            ),
+            (
+                "{ project(fullPath: $p) { issues(iids: $iids, first: 100) { nodes { iid title description state webUrl } } } }",
+                49,
             ),
         ] {
             assert_eq!(complexity(query), gitlab, "{query}");

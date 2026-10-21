@@ -215,6 +215,23 @@ pub struct EpicRemote {
     pub branch: String,
     pub pipeline: Option<DevelopPipeline>,
     pub mr: Option<Mr>,
+    /// The task MRs merged into it, newest first (#414): what a batch ships.
+    pub tasks: Vec<BatchTask>,
+    /// The open MRs into develop of the product's batches shipped before it (#414).
+    pub shipping: Vec<Mr>,
+}
+
+/// A task MR merged into a batch (#414): the fold under BATCH, the ship suggestion.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BatchTask {
+    pub iid: i64,
+    /// Without `Draft:`.
+    pub title: String,
+    pub url: String,
+    pub branch: String,
+    pub merged_at: Option<String>,
+    pub labels: Vec<String>,
 }
 
 impl Remote {

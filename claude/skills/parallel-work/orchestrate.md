@@ -190,6 +190,13 @@ pipeline runs, a rule for later) goes with `runs tell --notice <dir>
 costs a full read, and past the cache's hour a full write too. The
 overview's own `!N merged` is such a notice.
 
+**After a crash, an OOM kill or a reboot** the run engine picks up every
+run that was cut off by itself, once and a few at a time (`[agents]
+max_runs`): don't wake the agents by hand. A small session is resumed with
+one line; one past the fresh-start rule is taken over by a fresh session in
+its worktree with a handoff from the disk (`.claude/handoff-cut.md`), never
+resumed with its whole history (#445).
+
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
 An agent reports nothing to the chat: its block in WORK shows its state

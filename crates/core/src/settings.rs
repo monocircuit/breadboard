@@ -269,7 +269,8 @@ pub fn of(main: &Path, name: &str) -> Settings {
     settings_of(&rows_of(main, name))
 }
 
-fn settings_of(rows: &[Row]) -> Settings {
+/// The settings `rows` hold (an orchestration's panel rows, `OrchestrationLocal::settings`).
+pub fn settings_of(rows: &[Row]) -> Settings {
     let value = |key: &str| rows.iter().find(|row| row.def.key == key).map(|row| row.value.clone());
     let switch = |key: &str| value(key).and_then(|value| value.as_bool()).unwrap_or(false);
     let count = |key: &str| value(key).and_then(|value| value.as_i64()).unwrap_or(0);
