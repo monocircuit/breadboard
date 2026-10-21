@@ -142,7 +142,7 @@ second time in a row); until then its node says `waits on itself since
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
 runs `cd <worktree> && claude --resume <id> --name <feature>` in the
-`<feature>` tab of its space, once no run is in flight (it waits for one up
+overview's detail pane (#406), once no run is in flight (it waits for one up
 to 15 min); a claude that already runs the conversation is put in front
 instead. While that claude runs, the agent's queue waits; when it ends, the
 queue goes on headless. Type there for anything the overview has no button
@@ -311,7 +311,7 @@ that isn't ready is grey, its buttons don't answer, NEXT skips it, and the
 overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
-`look` (go to the agent's space) — and the automatic `permission` (what auto
+`look` (its worktree in the detail pane) — and the automatic `permission` (what auto
 mode would have asked in a run, see Permissions), `push` (commits a worktree
 holds unpushed for over 10 minutes; the click queues the order for its
 agent) and `merge` (a ready, green MR without its agent's, none while a
@@ -528,7 +528,7 @@ that names what the agent had before and moves the binding
 again in its worktree <dir>, read .claude/brief.md`. Nothing ends, no tab
 moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
-<old>` for a day). The old worktree keeps its space until its clean-up.
+<old>` for a day).
 `--to` takes the old name too. Refused while a run of the agent is in
 flight or it waits for an answer, or above `--limit` (`[agents]
 fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
@@ -631,7 +631,7 @@ conversation id: `history` (each issue, how it came: `fresh`, `handover`,
 
 ## In the sidebar
 
-The space `⇶ <name>` and the spaces of its worktrees, all under
+The space `⇶ <name>`, under
 `{{space}}`, show `⇶ <name>` (`⇶ <title>` with `--title`) in
 front of the branch, in the orchestration's colour (a slot of three: blue,
 teal, mauve of the theme; a fourth orchestration shares one). The rows come

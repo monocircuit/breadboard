@@ -73,7 +73,7 @@ repo is to it comes from its `breadboard.toml`):
 | `{{run}} wt:tick [<issue>] [<box>…]` | the boxes of the issue (default: the worktree's), numbered under their headings; with box numbers, ticks them in the description and reads them back. `wt:mr` ends with how many are ticked |
 | `{{run}} wt:issues` | **after merges**: the issues of merged MRs that are open or have a box left open and got no comment since the merge, with ticked/total — catch them up with `wt:tick` and `wt:note` |
 | `{{run}} wt:list` | **the overview**: per worktree the branch, its url with `●` when something answers there, {{#stack}}the stack with its {{stack.first}} port and how many containers run, {{/stack}}and `→` for the one you are standing in |
-| `{{run}} overview` | **live**, for the human: every worktree with its app, stack, MR and pipeline, the open MRs and issues; a click opens a herdr space or a browser tab ([herdr.md](herdr.md)). `--once` prints it once, `--worktree <dir>` shows one, with how far it is from {{branch}} and which files collide with {{branch}} or another worktree |
+| `{{run}} overview` | **live**, for the human: every worktree with its app, stack, MR and pipeline, the open MRs and issues; a click on a worktree or an MR opens the detail pane beside it (nvim, try, logs, agent), on a link a browser tab ([herdr.md](herdr.md)). `--once` prints it once, `--worktree <dir>` shows one, with how far it is from {{branch}} and which files collide with {{branch}} or another worktree |
 | `{{run}} wt:remove <feature>` | own stack (`down -v`), worktree and branch away |
 {{#stack}}
 | `{{run}} stack:up\|down\|reset\|ps --port <port>` | from **any** checkout: the stack of the worktree that serves `<port>` — the app port `wt:list` and the worktree's overview show, or a port of its services ({{stack.first}} `{{stack.first_port}}+n`). `<feature>` instead of `--port` works too, nothing at all means the checkout you are in. A worktree on the shared stack acts on the main checkout's, and says so |
@@ -102,9 +102,9 @@ they apply in the new worktree. Work in that directory for the whole task.
 
 Inside herdr (`HERDR_ENV=1`) the scripts arrange spaces and tabs themselves:
 an agent never calls `herdr` by hand and never runs `{{run}} herdr`. When an
-agent runs `wt:new`, its own tab moves into the space of the worktree; it
-follows with `EnterWorktree`. `wt:remove` closes the space, idle agents too,
-but never an agent at work or a running server. The spaces, the stack's processes, the
+agent runs `wt:new`, its tab stays where it is (a worktree has no space of
+its own, #409); it follows with `EnterWorktree`. `wt:remove` closes the
+worktree's leftover tabs, idle agents too, but never an agent at work or a running server. The spaces, the stack's processes, the
 restore after a restart and the plugin: [herdr.md](herdr.md).
 
 {{#stack}}
