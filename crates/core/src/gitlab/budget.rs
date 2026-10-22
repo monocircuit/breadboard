@@ -46,7 +46,7 @@ impl Pause {
 
 /// The runtime dir: every process of the user sees it, a gauntlet world has its own.
 /// `$BREADBOARD_BUDGET_DIR` instead (the unit tests': none to be had).
-fn dir() -> PathBuf {
+pub fn dir() -> PathBuf {
     match std::env::var_os("BREADBOARD_BUDGET_DIR").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => crate::local::runtime_dir(),

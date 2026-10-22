@@ -27,13 +27,13 @@ pub struct Feed {
 impl Feed {
     /// The feed of `ask` in the repo `main`, its first read started; `kept`:
     /// the last answer of the feed of the view before, sent until it reads.
-    pub fn start(main: PathBuf, ask: RemoteAsk, kept: Option<Arc<str>>) -> Arc<Feed> {
+    pub fn start(main: PathBuf, view: String, ask: RemoteAsk, kept: Option<Arc<str>>) -> Arc<Feed> {
         let (out, mut said) = mpsc::unbounded_channel::<Said>();
         let (refresh, refreshes) = mpsc::unbounded_channel();
         let (lines, _) = broadcast::channel(BACKLOG);
         let last = Arc::new(Mutex::new(kept));
         let (asks, asked) = watch::channel(Some(ask));
-        tokio::spawn(read_gitlab(main, asked, refreshes, out));
+        tokio::spawn(read_gitlab(main, view, asked, refreshes, out));
         tokio::spawn({
             let (lines, last) = (lines.clone(), last.clone());
             async move {

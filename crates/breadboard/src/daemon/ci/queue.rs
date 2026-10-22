@@ -46,8 +46,15 @@ pub async fn schedule(main: PathBuf) {
         }
         // Read anew each tick: what a daemon before asked for counts.
         let mut asked: Asked = ci::read_or_default(&ci::asked_file(&main));
-        let Ok(project) = super::open_mrs_project(&gitlab, &main).await else {
-            continue;
+        let project = match super::open_mrs_project(&gitlab, &main).await {
+            Ok(project) => project,
+            // GitLab paused after a 429 (#462): the queue still runs, its heartbeat stays fresh,
+            // or every push would drop `ci.skip` and start a pipeline of its own meanwhile.
+            Err(error) if error.status == Some(429) => {
+                beat(&main);
+                continue;
+            }
+            Err(_) => continue,
         };
         let mrs = open_mrs_of(&project);
         let main_now = main.clone();
@@ -180,4 +187,15 @@ pub async fn schedule(main: PathBuf) {
         };
         let _ = ci::write_whole(&ci::queue_file(&main), &queue);
     }
+}
+
+/// The queue's heartbeat (`at` of queue.json) renewed, the rest as it was.
+fn beat(main: &std::path::Path) {
+    let file = ci::queue_file(main);
+    let mut queue = breadboard_core::json::read_object(&file);
+    if queue.is_empty() {
+        return;
+    }
+    queue.insert("at".into(), now_ms().into());
+    let _ = breadboard_core::json::write_pretty(&file, &serde_json::Value::Object(queue));
 }
