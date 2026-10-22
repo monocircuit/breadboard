@@ -6,15 +6,17 @@ use super::preempt::{self, Preempter};
 use super::{clicks, every, fix, is_queued, start};
 use breadboard_core::ci::{self, Asked, Decision, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
-use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
+use breadboard_core::gitlab::read::open_mrs_of;
 use breadboard_core::time::now_ms;
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// The queue in the request log (#462).
+const TASK: &str = "ci queue";
+
 /// The queue of `main`, as long as the daemon runs.
 pub async fn schedule(main: PathBuf) {
-    let gitlab = Gitlab::new(&main);
+    let gitlab = Gitlab::new(&main).for_task(TASK);
     let mut preempter = Preempter::default();
     let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
@@ -44,7 +46,7 @@ pub async fn schedule(main: PathBuf) {
         }
         // Read anew each tick: what a daemon before asked for counts.
         let mut asked: Asked = ci::read_or_default(&ci::asked_file(&main));
-        let Ok(project) = gitlab.graphql(CI_QUERY, json!({})).await else {
+        let Ok(project) = super::open_mrs_project(&gitlab, &main).await else {
             continue;
         };
         let mrs = open_mrs_of(&project);

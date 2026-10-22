@@ -2,9 +2,11 @@
 //! connection, never a glab process per call. The host and project come from
 //! origin, the API's base from `$BREADBOARD_GITLAB_URL` (the gauntlet's fake),
 //! else the host; the token from `GITLAB_TOKEN` or `glab config get token`.
-//! A call that fails for a reason that passes (a 429, a 5xx, a timeout, the
+//! A call that fails for a reason that passes (a 5xx, a timeout, the
 //! network) is tried again after a pause; what still fails is an error whose
-//! reason says why in a few words, for the view to draw.
+//! reason says why in a few words, for the view to draw. A 429 is never
+//! tried again: it pauses every caller of the user until its `retry-after`
+//! (budget.rs, #462), and nothing is asked during a pause.
 
 use regex::Regex;
 use serde_json::{Value, json};
@@ -90,6 +92,8 @@ struct Shared {
 #[derive(Debug, Clone)]
 pub struct Gitlab {
     main: PathBuf,
+    /// Who asks, in the request log: `feed …`, `ci queue`.
+    task: Arc<str>,
     http: reqwest::Client,
     shared: Arc<Shared>,
 }
@@ -99,8 +103,17 @@ impl Gitlab {
         let http = reqwest::Client::builder().timeout(TIMEOUT).build().unwrap_or_default();
         Gitlab {
             main: main.to_path_buf(),
+            task: "gitlab".into(),
             http,
             shared: Arc::new(Shared::default()),
+        }
+    }
+
+    /// The same client (its connection, rate and calls shared), its requests logged as `task`'s.
+    pub fn for_task(&self, task: &str) -> Gitlab {
+        Gitlab {
+            task: task.into(),
+            ..self.clone()
         }
     }
 
@@ -201,11 +214,31 @@ impl Gitlab {
             if attempt > 0 {
                 tokio::time::sleep(BACKOFF[attempt - 1]).await;
             }
+            if let Some(pause) = super::budget::paused() {
+                return Err(GitlabError {
+                    reason: pause.text(),
+                    status: Some(429),
+                });
+            }
             self.shared.calls.fetch_add(1, Ordering::Relaxed);
             match build(&token).send().await {
                 Ok(response) => {
                     self.note_rate(response.headers());
                     let status = response.status();
+                    super::budget::note(&self.task, what, Some(status.as_u16()));
+                    if status.as_u16() == 429 {
+                        let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok());
+                        let wait = super::budget::wait_of(
+                            header("retry-after"),
+                            header("ratelimit-reset"),
+                            crate::time::now_ms(),
+                        );
+                        let pause = super::budget::pause(wait, header("ratelimit-name").unwrap_or("HTTP 429"));
+                        return Err(GitlabError {
+                            reason: pause.text(),
+                            status: Some(429),
+                        });
+                    }
                     if status.is_success() {
                         return response
                             .text()
@@ -220,20 +253,16 @@ impl Gitlab {
                             continue;
                         }
                     }
-                    let reason = if status.as_u16() == 429 {
-                        "HTTP 429, rate limit".to_string()
-                    } else {
-                        format!("HTTP {}", status.as_u16())
-                    };
                     last = GitlabError {
-                        reason: format!("{reason} ({what})"),
+                        reason: format!("HTTP {} ({what})", status.as_u16()),
                         status: Some(status.as_u16()),
                     };
-                    if !(status.as_u16() == 429 || status.is_server_error()) {
+                    if !status.is_server_error() {
                         break;
                     }
                 }
                 Err(error) => {
+                    super::budget::note(&self.task, what, None);
                     let reason = if error.is_timeout() {
                         "timeout".to_string()
                     } else {

@@ -5,6 +5,7 @@
 //! (read.mjs `mrOf`, `issueOf`, gitlab.mjs `jobsOf`): the cache file is
 //! shared with it while both run (rewrite rule 5).
 
+pub mod budget;
 pub mod cache;
 pub mod client;
 pub mod read;
@@ -265,11 +266,13 @@ pub fn error_text(reason: &str, at: Option<i64>, data_at: Option<i64>, will_retr
     let kept = data_at
         .map(|at| format!(", data from {}", crate::time::hm(at)))
         .unwrap_or_default();
+    let reason = reason.lines().next().unwrap_or("");
+    // A pause after a 429 says itself (#462): GitLab isn't asked, so nothing is tried again before it ends.
+    if let Some(pause) = reason.find("GitLab's rate limit") {
+        return format!("{}{kept}", &reason[pause..]);
+    }
     let again = if will_retry { ", tried again" } else { "" };
-    format!(
-        "GitLab didn't answer{when} ({}){kept}{again}",
-        reason.lines().next().unwrap_or("")
-    )
+    format!("GitLab didn't answer{when} ({reason}){kept}{again}")
 }
 
 /// The age of the data and GitLab's minute, all clients of the user: `GitLab 14:57 · 122/2000 a minute`.

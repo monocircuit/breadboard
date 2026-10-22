@@ -8,6 +8,7 @@
 //! never happened, and wt:mr open a second MR (rule 6).
 
 use super::common::temp_dir;
+use breadboard_core::gitlab::budget;
 use regex::Regex;
 use serde_json::Value;
 use std::path::Path;
@@ -30,12 +31,21 @@ pub struct Ran {
 impl Ran {
     fn of(output: std::io::Result<Output>) -> Ran {
         match output {
-            Ok(output) => Ran {
-                is_ok: output.status.success(),
-                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                is_unstarted: false,
-            },
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                Ran {
+                    is_ok: output.status.success(),
+                    stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                    // A 429 pauses every caller (#462): the pause's line in its place.
+                    stderr: match output.status.success() {
+                        true => stderr,
+                        false => budget::glab_failed(&stderr).unwrap_or(stderr),
+                    },
+                    is_unstarted: false,
+                }
+            }
+            // GitLab is paused after a 429: glab never ran.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ran::unstarted(error.to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 Ran::unstarted("glab is not installed or not on PATH".into())
             }
@@ -184,6 +194,14 @@ static UNREACHABLE: LazyLock<Regex> = LazyLock::new(|| {
 /// glab's words for a branch without an MR (`no open merge request available for "x"`).
 static NO_MR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bno (open )?merge requests?\b").unwrap());
 
+/// `glab <args>` may run now: Err with the pause's line while GitLab is paused after a 429 (#462).
+fn may(args: &[&str]) -> std::io::Result<()> {
+    match budget::glab_may("glab", args) {
+        Some(pause) => Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, pause)),
+        None => Ok(()),
+    }
+}
+
 fn command(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("glab");
     command
@@ -197,11 +215,12 @@ fn command(dir: &Path, args: &[&str]) -> Command {
 
 /// `glab <args>` in `dir`.
 pub fn glab(dir: &Path, args: &[&str]) -> Ran {
-    Ran::of(command(dir, args).output())
+    Ran::of(may(args).and_then(|()| command(dir, args).output()))
 }
 
 /// `glab <args>` started, to be waited for with [`finish`]: calls side by side.
 pub fn start(dir: &Path, args: &[&str]) -> std::io::Result<Child> {
+    may(args)?;
     command(dir, args).spawn()
 }
 
@@ -217,7 +236,10 @@ const UNANSWERED: &str = "GitLab did not answer";
 /// change without end. Past the limit, a failure saying so.
 pub fn glab_within(dir: &Path, args: &[&str], what: &str, limit: Duration) -> Ran {
     let wait = Wait::new(format!("GitLab ({what})"), limit);
-    match command(dir, args).spawn().and_then(|child| wait_within(child, &wait)) {
+    match may(args)
+        .and_then(|()| command(dir, args).spawn())
+        .and_then(|child| wait_within(child, &wait))
+    {
         Ok(Some(output)) => Ran::of(Ok(output)),
         Ok(None) => Ran {
             stderr: format!("{UNANSWERED} in {} s", limit.as_secs()),

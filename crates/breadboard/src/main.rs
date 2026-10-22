@@ -29,6 +29,8 @@ fn main() -> ExitCode {
     let Some((command, rest)) = args.split_first() else {
         return cli::bare();
     };
+    // Who asks GitLab, in its request log (#462): `serve`, `overview`, `wt:wait`, `hook`.
+    breadboard_core::gitlab::budget::name_process(command);
     match command.as_str() {
         "--source-key" => {
             println!("{}", source_key());

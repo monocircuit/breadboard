@@ -131,13 +131,42 @@ pub fn pre_bash(args: &[String]) -> ExitCode {
     else {
         return ExitCode::SUCCESS;
     };
-    match bash_refusal(command) {
+    let refusal = bash_refusal(command).or_else(|| glab_refusal(command, breadboard_core::gitlab::budget::paused()));
+    match refusal {
         Some(why) => {
             let _ = writeln!(std::io::stderr(), "{}", breadboard_core::config::in_repo(&why));
             ExitCode::from(2)
         }
         None => ExitCode::SUCCESS,
     }
+}
+
+/// An agent's glab while GitLab is paused after a 429 (#462): refused with
+/// the pause's end, no caller asks before it. Else it is logged as the
+/// agent's request (its glab writes no log of its own).
+fn glab_refusal(command: &str, pause: Option<breadboard_core::gitlab::budget::Pause>) -> Option<String> {
+    let glabs: Vec<Vec<String>> = simple_commands(command)
+        .into_iter()
+        .filter_map(|words| {
+            let start = words.iter().position(|word| {
+                !word.contains('=') && !matches!(word.as_str(), "env" | "command" | "exec" | "time" | "nice")
+            })?;
+            (words[start].rsplit('/').next() == Some("glab")).then(|| words[start + 1..].to_vec())
+        })
+        .collect();
+    if glabs.is_empty() {
+        return None;
+    }
+    if let Some(pause) = pause {
+        return Some(format!(
+            "Blocked: {}.\nAsking before then only makes GitLab lock the token longer; go on with what needs no GitLab, or stop and say what waits for it.",
+            pause.text()
+        ));
+    }
+    for args in glabs {
+        breadboard_core::gitlab::budget::note_by("agent", "glab", &format!("glab {}", args.join(" ")), None);
+    }
+    None
 }
 
 /// Why a shell command is blocked, with what to run instead, or None.
@@ -322,6 +351,22 @@ fn reply_of(answers: &[Action]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_an_agents_glab_while_gitlab_is_paused() {
+        let pause = breadboard_core::gitlab::budget::Pause {
+            until: breadboard_core::time::now_ms() + 60_000,
+            at: 0,
+            why: "sustained_traffic_per_user_free_plan".into(),
+        };
+        let why = glab_refusal("cd x && GITLAB_HOST=g glab ci view 4 | head", Some(pause.clone())).unwrap();
+        assert!(
+            why.contains("GitLab's rate limit (sustained_traffic_per_user_free_plan)"),
+            "{why}"
+        );
+        assert_eq!(glab_refusal("git log --grep glab", Some(pause.clone())), None);
+        assert_eq!(glab_refusal("echo glab", Some(pause)), None);
+    }
 
     #[test]
     fn blocks_what_only_a_person_decides_and_names_what_to_run() {

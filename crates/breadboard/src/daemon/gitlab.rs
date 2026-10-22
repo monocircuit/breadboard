@@ -57,6 +57,7 @@ pub async fn read_gitlab(
         if !main.is_dir() {
             return;
         }
+        reader.gitlab = reader.gitlab.for_task(task_of(&ask));
         let gitlab = reader.gitlab.clone();
         let result = {
             let read = reader.read(&ask, is_full);
@@ -99,8 +100,13 @@ pub async fn read_gitlab(
         if out.send(message).is_err() {
             return;
         }
+        // GitLab paused after a 429 (#462): the next read once the pause ended, not one before.
+        let wait = match breadboard_core::gitlab::budget::paused() {
+            Some(pause) => Duration::from_millis(u64::try_from(pause.until - now_ms()).unwrap_or(0)).max(REMOTE_EVERY),
+            None => REMOTE_EVERY,
+        };
         tokio::select! {
-            _ = tokio::time::sleep(REMOTE_EVERY) => {}
+            _ = tokio::time::sleep(wait) => {}
             asked = refreshes.recv() => match asked {
                 Some(()) => is_full = true,
                 None => return,
@@ -108,6 +114,15 @@ pub async fn read_gitlab(
         }
         // Asks that came in meanwhile count as one.
         while refreshes.try_recv().is_ok() {}
+    }
+}
+
+/// Who asks in the request log (#462): the feed of which kind of view.
+fn task_of(ask: &RemoteAsk) -> &'static str {
+    match ask {
+        RemoteAsk::Orchestration(_) => "feed orchestration",
+        RemoteAsk::Worktree { .. } => "feed worktree",
+        RemoteAsk::Everything => "feed everything",
     }
 }
 

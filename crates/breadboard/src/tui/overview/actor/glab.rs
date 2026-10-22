@@ -5,6 +5,7 @@
 //! merge itself, an MR's diffs after it. The writes are exactly Node's
 //! (rewrite rule 6): the title of a draft made ready or put back, the merge.
 
+use breadboard_core::gitlab::budget;
 use serde_json::Value;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -13,6 +14,10 @@ use std::process::{Command, Stdio};
 pub type Failed = String;
 
 fn glab(main: &Path, args: &[&str]) -> Result<String, Failed> {
+    // A 429 paused GitLab for every caller (#462): nothing is asked before it ends.
+    if let Some(pause) = budget::glab_may("overview glab", args) {
+        return Err(pause);
+    }
     let output = Command::new("glab")
         .args(args)
         .current_dir(main)
@@ -24,11 +29,12 @@ fn glab(main: &Path, args: &[&str]) -> Result<String, Failed> {
         Ok(stdout)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
+        let said = if stderr.is_empty() {
             stdout.trim().to_string()
         } else {
             stderr
-        })
+        };
+        Err(budget::glab_failed(&said).unwrap_or(said))
     }
 }
 
