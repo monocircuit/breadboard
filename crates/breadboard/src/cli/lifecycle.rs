@@ -12,7 +12,7 @@
 mod args;
 mod changelog;
 pub mod claude;
-mod gitlab;
+pub(crate) mod gitlab;
 pub mod handover;
 pub mod herdr;
 pub mod layout;
