@@ -326,6 +326,32 @@ chmod +x "$target/release/breadboard"
         assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
     }
 
+    // #456: CI's store is a cache outside the git dir (BREADBOARD_STORE): a
+    // pipeline whose sources an earlier one built copies the binary from it,
+    // a target/ without the binary (the dependencies' cache) builds nothing.
+    #[test]
+    fn a_store_named_by_breadboard_store_is_used_instead_of_the_git_dirs() {
+        let checkout = Checkout::new("ci-store");
+        let store = checkout.root.join("cache/store");
+        let env = [("BREADBOARD_STORE", store.to_str().unwrap())];
+        assert!(checkout.run(&["--built"], true, &env).status.success());
+        assert_eq!(checkout.builds(), 1);
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 1);
+        assert!(!checkout.root.join("repo/.git/breadboard/bin").exists());
+        // The next pipeline: a fresh target/, the cached store.
+        fs::remove_dir_all(checkout.package.join("target")).unwrap();
+        let copied = checkout.run(&["--built"], true, &env);
+        assert!(copied.status.success(), "{}", err(&copied));
+        assert_eq!(err(&copied), "");
+        assert_eq!(checkout.builds(), 1);
+        assert_eq!(out(&checkout.run(&["x"], true, &env)), "ran x");
+        // Other sources: built, and kept beside the first.
+        checkout.change("crates/core/lib.rs");
+        assert!(checkout.run(&["--built"], true, &env).status.success());
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
+    }
+
     /// `sh herdr/cargo.sh <args>` of the package at `package`, as pnpm lint:rs runs it.
     fn cargo_in(checkout: &Checkout, package: &Path, args: &[&str]) -> Output {
         cargo_with(checkout, package, args, &[])

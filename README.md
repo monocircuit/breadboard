@@ -103,6 +103,11 @@ from: a few ms), else makes it first:
 - else `cargo build --release` in the checkout's own `target/`, its progress
   on stderr, kept in the store for the others (the newest 8).
 
+`BREADBOARD_STORE` moves the store (#456): CI's `build:breadboard` keeps it
+in a cache, so a pipeline whose sources an earlier one built copies the
+binary instead of compiling it; a build there takes the dependencies from a
+second cache, by `Cargo.lock`.
+
 Uncommitted changes to the crates build there too, but stay out of the
 store's `bin/`. **One build per tree** (#451): a build is keyed by the
 sources as they are on disk, uncommitted and untracked ones too (the
