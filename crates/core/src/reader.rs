@@ -548,6 +548,11 @@ impl LocalReader {
         if let View::Orchestration(name) = &self.view {
             files.push(record::record_file(&self.main, name));
             files.push(crate::journal::journal_file(&self.main, name));
+            // The band's pause and usage limit and the lines waiting (#397,
+            // #393): a click on `pause agents` shows at the next look (#460).
+            files.push(crate::runs::pause_file(&self.main));
+            files.push(crate::runs::usage_file(&self.main));
+            files.push(crate::runs::queue_file(&self.main));
         }
         let known: Vec<(PathBuf, String)> = self
             .known
