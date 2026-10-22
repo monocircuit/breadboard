@@ -339,6 +339,16 @@ pub fn go_to(app: &mut Overview, go: Go) {
                 Err(why) => app.actor.log(Paint::Red, why),
             }))
         }),
+        // ACTIONS' `old wait` row (#421): the wait goes, its line is never sent.
+        Go::DropWait(dir) => {
+            breadboard_core::wait::clear_wait(&dir);
+            let who = breadboard_core::git::feature_of(&main, &dir);
+            app.actor.log(Paint::Green, format!("dropped the wait of {who}"));
+            // Read again now: the row goes without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
+        }
         Go::FocusAgent(dir) => {
             let tab = app.agent_tab_of(&dir);
             app.actor.queue(move || {

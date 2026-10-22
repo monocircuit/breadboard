@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_HOURS: f64 = 8.0;
 /// How long an awaited MR may have conflicts with develop before the wait ends.
 pub const CONFLICT_MS: i64 = 30 * 60_000;
+/// How long a wait may stand before the overview offers to drop it (#421).
+pub const STALE_MS: i64 = 24 * 3_600_000;
 
 /// A wait: `{ mrs, then, hours, since, until, pid }`; `raw` as stored.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -67,6 +69,21 @@ pub fn clear_wait(dir: &Path) {
 /// Whether the command of `wait` still runs.
 pub fn is_waiting(wait: &Wait) -> bool {
     wait.pid.is_some_and(is_alive)
+}
+
+/// Whether `wait` has stood for `STALE_MS` at `now` (#421); one without `since` never has.
+pub fn is_stale(wait: &Wait, now: i64) -> bool {
+    wait.since
+        .as_deref()
+        .and_then(parse_iso)
+        .is_some_and(|since| now - since >= STALE_MS)
+}
+
+/// Whether a wait is moot, its agent's own MR in `own_state` (`merged`,
+/// `closed`): its work is done, its line would only wake it to find
+/// nothing to do (#421). Dropped, never delivered.
+pub fn is_moot(own_state: Option<&str>) -> bool {
+    matches!(own_state, Some("merged" | "closed"))
 }
 
 /// What `wt:wait` was given: `{ mrs, then, hours }`, or why not.
@@ -446,6 +463,21 @@ mod tests {
                 .starts_with("waited 8 h for !213 and !217, !217 not merged yet")
         );
         assert_eq!(line_of(&wait(), &Verdict::Waiting(vec![217]), "develop", None), None);
+    }
+
+    #[test]
+    fn is_stale_after_a_day_and_moot_once_its_own_mr_is_done() {
+        let since = Wait {
+            since: Some("1970-01-01T00:00:00.000Z".into()),
+            ..wait()
+        };
+        assert!(!is_stale(&since, STALE_MS - 1));
+        assert!(is_stale(&since, STALE_MS));
+        assert!(!is_stale(&wait(), i64::MAX));
+        assert!(is_moot(Some("merged")));
+        assert!(is_moot(Some("closed")));
+        assert!(!is_moot(Some("opened")));
+        assert!(!is_moot(None));
     }
 
     #[test]
