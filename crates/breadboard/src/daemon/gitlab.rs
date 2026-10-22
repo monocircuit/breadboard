@@ -13,8 +13,16 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
-/// GitLab is read this often (overview.mjs `REMOTE_MS`).
+/// GitLab is read this often (overview.mjs `REMOTE_MS`); `BREADBOARD_REMOTE_EVERY_MS` another (the gauntlet's ticks, #460).
 pub const REMOTE_EVERY: Duration = Duration::from_secs(30);
+
+fn remote_every() -> Duration {
+    std::env::var("BREADBOARD_REMOTE_EVERY_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(REMOTE_EVERY)
+}
 /// While GitLab hasn't answered yet, its progress shows at most this often.
 const PROGRESS_EVERY: Duration = Duration::from_millis(200);
 
@@ -100,7 +108,7 @@ pub async fn read_gitlab(
             return;
         }
         tokio::select! {
-            _ = tokio::time::sleep(REMOTE_EVERY) => {}
+            _ = tokio::time::sleep(remote_every()) => {}
             asked = refreshes.recv() => match asked {
                 Some(()) => is_full = true,
                 None => return,
