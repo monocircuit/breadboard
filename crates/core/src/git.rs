@@ -150,16 +150,24 @@ pub fn orchestrations_dir(main: &Path) -> PathBuf {
     main.join(".claude").join("orchestrations")
 }
 
-/// The worktrees without the orchestrations' checkouts (worktrees.mjs `worktrees`).
+/// The worktrees breadboard made, `<main>-<feature>` next to the main
+/// checkout, the main checkout first (worktrees.mjs `worktrees`): no
+/// orchestration's checkout, and no scratch worktree added elsewhere (an
+/// agent's `/tmp/…/head` got a space in the live herdr, #423).
 pub fn worktrees(from: &Path) -> Vec<Worktree> {
     let all = all_worktrees(from);
     let Some(main) = all.first().map(|tree| tree.dir.clone()) else {
         return all;
     };
-    let skip = orchestrations_dir(&main);
     all.into_iter()
-        .filter(|tree| tree.dir == main || !tree.dir.starts_with(&skip))
+        .filter(|tree| tree.dir == main || is_own(&main, &tree.dir))
         .collect()
+}
+
+/// Whether `dir` is a worktree breadboard makes: `<main>-<feature>`.
+fn is_own(main: &Path, dir: &Path) -> bool {
+    let feature = feature_of(main, dir);
+    !feature.is_empty() && dir_of(main, &feature) == dir
 }
 
 /// The checkouts of the orchestrations (orchestrator.mjs `orchestratorCheckouts`).
@@ -367,38 +375,73 @@ pub fn merge_head_at(dir: &Path) -> Option<i64> {
 }
 
 /// How much of a worktree's branch is on origin (change.mjs `pushStateOf`):
-/// from the refs git has, no fetch.
+/// from the refs git has, no fetch. Counted against the branch's upstream,
+/// `origin/<branch>` without one (#450, what `git push` sends).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushState {
-    /// The commit of `origin/<branch>`, None without one.
+    /// The commit of the upstream (`origin/<branch>`), None without one.
     pub pushed: Option<String>,
     /// Commits of HEAD origin doesn't have (without a remote branch: the ones its base doesn't have).
     pub unpushed: u64,
+    /// Of them the branch's own: neither a merge nor its base's (#450).
+    pub unpushed_own: u64,
+    /// The base whose commits a merge brought among them (`develop`), None without such a merge.
+    pub merged_base: Option<String>,
     /// When the oldest of them was made, ms since the epoch.
     pub unpushed_at: Option<i64>,
     pub has_remote_branch: bool,
 }
 
 pub fn push_state(dir: &Path, branch: Option<&str>) -> PushState {
-    let remote = branch.map(|branch| format!("refs/remotes/origin/{branch}"));
-    let pushed = match (&remote, branch) {
-        (Some(remote), Some(branch)) if branch != "(detached)" => {
-            let out = git(dir, &["rev-parse", "--verify", "--quiet", remote]);
-            Some(out.out().to_string()).filter(|sha| out.is_ok && !sha.is_empty())
-        }
+    let upstream = git(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    );
+    let remote = match branch {
+        _ if upstream.is_ok && !upstream.out().is_empty() => Some(upstream.out().to_string()),
+        Some(branch) if branch != "(detached)" => Some(format!("refs/remotes/origin/{branch}")),
         _ => None,
     };
-    let base = if pushed.is_some() {
+    let pushed = remote.as_deref().and_then(|remote| {
+        let out = git(dir, &["rev-parse", "--verify", "--quiet", remote]);
+        Some(out.out().to_string()).filter(|sha| out.is_ok && !sha.is_empty())
+    });
+    let base = base_of(dir);
+    let from = if pushed.is_some() {
         remote.clone().unwrap_or_default()
     } else {
-        base_of(dir).remote
+        base.remote.clone()
     };
-    let log = git(dir, &["log", "--format=%ct", &format!("{base}..HEAD")]);
+    let range = format!("{from}..HEAD");
+    let log = git(dir, &["log", "--format=%ct", &range]);
     let times: Vec<i64> = log.lines().filter_map(|line| line.trim().parse().ok()).collect();
+    let beyond_base = |extra: &[&str]| {
+        let mut args = vec!["rev-list", "--count"];
+        args.extend_from_slice(extra);
+        args.extend([range.as_str(), "--not", base.remote.as_str()]);
+        let out = git(dir, &args);
+        out.out().parse::<u64>().ok().filter(|_| out.is_ok)
+    };
+    let unpushed = times.len() as u64;
+    // Without a remote branch the range starts at the base: nothing of it is the base's.
+    let (own, is_merged) = if pushed.is_some() && unpushed > 0 {
+        let off_base = beyond_base(&[]).unwrap_or(unpushed);
+        (beyond_base(&["--no-merges"]).unwrap_or(off_base), off_base < unpushed)
+    } else {
+        (unpushed, false)
+    };
     PushState {
         has_remote_branch: pushed.is_some(),
         pushed,
-        unpushed: times.len() as u64,
+        unpushed,
+        unpushed_own: if is_merged { own } else { unpushed },
+        merged_base: is_merged.then_some(base.local),
         unpushed_at: times.last().map(|seconds| seconds * 1000),
     }
 }
@@ -617,6 +660,41 @@ mod tests {
     }
 
     #[test]
+    fn counts_unpushed_commits_against_the_upstream_and_names_a_merge_of_the_base() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        let dir = worktree(&main, "1-x", true);
+        let branch = "feature/1-x";
+        // develop moves by two commits, the branch takes them in and adds one of its own.
+        for file in ["a.md", "b.md"] {
+            std::fs::write(main.join(file), "x\n").unwrap();
+            run(&main, &["add", "."]);
+            run(&main, &["commit", "--quiet", "-m", &format!("feat: {file}")]);
+        }
+        run(&main, &["push", "--quiet", "origin", "develop"]);
+        run(&dir, &["fetch", "--quiet", "origin"]);
+        run(&dir, &["merge", "--quiet", "--no-edit", "origin/develop"]);
+        std::fs::write(dir.join("work/1-x.md"), "more\n").unwrap();
+        run(&dir, &["commit", "--quiet", "-am", "feat: more"]);
+        let state = push_state(&dir, Some(branch));
+        assert_eq!(count(&dir, &format!("origin/{branch}..HEAD")), Some(4));
+        assert_eq!(
+            (state.unpushed, state.unpushed_own, state.merged_base.as_deref()),
+            (4, 1, Some("develop"))
+        );
+        // The upstream counts where it is set: here the same branch on origin.
+        run(
+            &dir,
+            &["branch", "--quiet", "--set-upstream-to", &format!("origin/{branch}")],
+        );
+        assert_eq!(push_state(&dir, Some(branch)).unpushed, 4);
+        // Pushed: nothing left, nothing merged to name.
+        run(&dir, &["push", "--quiet", "origin", branch]);
+        let state = push_state(&dir, Some(branch));
+        assert_eq!((state.unpushed, state.unpushed_own, state.merged_base), (0, 0, None));
+    }
+
+    #[test]
     fn reads_the_porcelain_list() {
         let list = parse_worktrees(
             "worktree /r/platform\nHEAD abc\nbranch refs/heads/develop\n\nworktree /r/platform-1-x\nHEAD def\nbranch refs/heads/feature/1-x\n\nworktree /r/platform/.claude/orchestrations/o\nHEAD abc\ndetached\n",
@@ -660,10 +738,18 @@ mod tests {
             ],
         );
 
+        // A scratch worktree elsewhere is none of breadboard's (#423).
+        let scratch_tree = scratch.join("head");
+        run(
+            &main,
+            &["worktree", "add", "--quiet", "--detach", scratch_tree.to_str().unwrap()],
+        );
+
         let trees = worktrees(&local);
         assert_eq!(trees.len(), 3);
         assert_eq!(trees[0].dir, main);
-        assert_eq!(all_worktrees(&main).len(), 4);
+        assert!(trees.iter().all(|tree| tree.dir != scratch_tree));
+        assert_eq!(all_worktrees(&main).len(), 5);
         assert_eq!(
             orchestrator_checkouts(&main),
             vec![main.join(".claude/orchestrations/o")]

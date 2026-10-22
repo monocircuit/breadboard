@@ -361,8 +361,12 @@ fn work_of(row: &TreeRow) -> Vec<Vec<Span<'static>>> {
 /// `2 untested` when fewer commits than its ahead are untested.
 fn check_word(row: &TreeRow) -> Option<Span<'static>> {
     let (word, tone) = match &row.tree.checked {
-        CheckState::Tested { .. } => ("✓ tested".to_string(), Tone::Green),
+        CheckState::Tested { no_test: None, .. } => ("✓ tested".to_string(), Tone::Green),
+        CheckState::Tested { .. } => ("✓ tested · no test".to_string(), Tone::Green),
         CheckState::Checking { .. } => ("checking…".into(), Tone::Cyan),
+        CheckState::Failed {
+            refused: Some(refused), ..
+        } => (format!("✗ {refused}"), Tone::Red),
         CheckState::Failed { .. } => ("✗ failed".into(), Tone::Red),
         CheckState::Untested { count } if *count > 0 && *count != row.tree.ahead => {
             (format!("{count} untested"), Tone::Yellow)
@@ -1569,6 +1573,7 @@ mod tests {
         row.tree.checked = CheckState::Failed {
             sha: "1a2b3c4d".into(),
             failures: vec![],
+            refused: None,
         };
         let (column, rest) = work_in(&row, 26);
         assert_eq!(text(&column), "✗ failed ↑3 · 1 changed");

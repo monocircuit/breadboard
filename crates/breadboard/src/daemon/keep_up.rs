@@ -8,9 +8,15 @@
 //! each orchestration's epic checkout takes develop in once develop moved
 //! (core's `epic_sync`): merged, pushed when the epic's `wt:check` passes;
 //! a conflict, a failed check or a checkout it can't touch is a `look`
-//! action of the orchestration, never a force.
+//! action of the orchestration, never a force. A product's batch (#411)
+//! takes develop in only on a conflict: the daemon opens the next batch once
+//! one shipped, and says a conflict with develop (a hotfix went past the
+//! batch) as a `look` action of the product's orchestrations. Once a
+//! shipped batch's MR merged (#414), it closes the issues GitLab left open
+//! and drops the batch from the product's `shipping`.
 
 use breadboard_core::actions::{NewAction, add_action};
+use breadboard_core::batch;
 use breadboard_core::epic::epic_of;
 use breadboard_core::epic_sync::{self, Synced, Tried};
 use breadboard_core::git::{orchestrations_dir, orchestrator_checkouts};
@@ -48,6 +54,7 @@ pub async fn keep_up(main: PathBuf) {
                 main_update::run_steps(&main, &store, &files, &settings);
             }
             keep_epics_up(&main, &store, "glab");
+            keep_batches_up(&main, &store, "glab");
         })
         .await;
     }
@@ -90,12 +97,65 @@ fn keep_epics_up(main: &Path, store: &Path, glab: &str) {
     }
 }
 
+/// Every product's batch: the next opened once it shipped (#411), a
+/// conflict with develop said once per pair of heads, and once develop
+/// moved, the issues of a shipped batch's merged MR closed (#414).
+fn keep_batches_up(main: &Path, store: &Path, glab: &str) {
+    let loaded = breadboard_core::config::of(main);
+    let develop = loaded.branch.clone();
+    for product in loaded.config.products.keys() {
+        if !breadboard_core::settings::of_product(main, Some(product)).batching {
+            continue;
+        }
+        let Some(mut current) = batch::current_of(main, product) else {
+            // The first batch opens when a task of the product needs it.
+            continue;
+        };
+        if batch::is_shipped(main, &current, &develop) {
+            match batch::ensure_current(main, product, &develop, false) {
+                Ok(opened) => current = opened.batch().clone(),
+                Err(_) => continue,
+            }
+        }
+        let heads = batch::heads_of(main, &current.branch, &develop);
+        let looked = batch::read_looked(store, product);
+        let is_new = (&heads.batch, &heads.develop) != (&looked.batch, &looked.develop);
+        if !is_new && !looked.is_closing {
+            continue;
+        }
+        // develop moved, maybe by a shipped batch's MR: a failed close is tried on the next tick.
+        let is_closing = !close_shipped(main, product, glab);
+        if is_new && let Some(files) = batch::conflicts_with_develop(main, &current.branch, &develop) {
+            for name in recorded(main) {
+                if record_of(main, &name).and_then(|record| record.product).as_deref() != Some(product) {
+                    continue;
+                }
+                let text = format!(
+                    "{} conflicts with {develop} in {}: a hotfix went past it. Merge {develop} into it in .claude/orchestrations/{name} (git merge origin/{develop}), resolve, pnpm wt:check, git push origin HEAD:{}",
+                    current.branch,
+                    files.join(", "),
+                    current.branch
+                );
+                let _ = add_action(
+                    &record_file(main, &name),
+                    NewAction {
+                        kind: "look".into(),
+                        text,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        batch::write_looked(store, product, &batch::Looked { is_closing, ..heads });
+    }
+}
+
 /// The issues of the epic's newest milestone MR (merged epic → develop)
 /// closed where GitLab didn't close them by its `Closes #n` (#352); each
 /// milestone once, `seen` the last one done. The newest milestone's iid,
 /// `seen` when there is none or GitLab doesn't answer.
 fn close_milestone(main: &Path, epic: &str, glab: &str, seen: i64) -> i64 {
-    use super::ci::{glab_get, glab_put};
+    use super::glab::glab_get;
     let endpoint = format!(
         "projects/:fullpath/merge_requests?state=merged&source_branch={}&target_branch=develop&order_by=merged_at&sort=desc&per_page=1",
         epic.replace('/', "%2F")
@@ -111,17 +171,63 @@ fn close_milestone(main: &Path, epic: &str, glab: &str, seen: i64) -> i64 {
         return seen;
     }
     let description = mr.get("description").and_then(serde_json::Value::as_str).unwrap_or("");
+    // Not all closed: tried again on the next look.
+    if close_issues(main, glab, description) {
+        iid
+    } else {
+        seen
+    }
+}
+
+/// The issues `description`'s `Closes #n` names closed where GitLab left
+/// them open (#352, #414); false when one couldn't be.
+fn close_issues(main: &Path, glab: &str, description: &str) -> bool {
+    use super::glab::{glab_get, glab_put};
     for number in crate::cli::write::mr::closed_by(description) {
         let issue = format!("projects/:fullpath/issues/{number}");
         let is_open = glab_get(main, glab, &issue)
             .ok()
             .is_some_and(|found| found.get("state").and_then(serde_json::Value::as_str) == Some("opened"));
         if is_open && glab_put(main, glab, &format!("{issue}?state_event=close")).is_err() {
-            // Tried again on the next look.
-            return seen;
+            return false;
         }
     }
-    iid
+    true
+}
+
+/// The batches of `product` the user shipped (#414) whose MR into develop
+/// GitLab says merged: what its `Closes #n` names closed where GitLab left
+/// it open, then dropped from the product's file; one closed unmerged is
+/// dropped too. False while one merged is left to try again.
+fn close_shipped(main: &Path, product: &str, glab: &str) -> bool {
+    use super::glab::glab_get;
+    let shipping = batch::shipping_of(main, product);
+    if shipping.is_empty() {
+        return true;
+    }
+    let mut is_settled = true;
+    let mut kept = Vec::new();
+    for entry in &shipping {
+        let Ok(mr) = glab_get(main, glab, &format!("projects/:fullpath/merge_requests/{}", entry.mr)) else {
+            is_settled = false;
+            kept.push(entry.clone());
+            continue;
+        };
+        let text = |key: &str| mr.get(key).and_then(serde_json::Value::as_str).unwrap_or("");
+        match text("state") {
+            "merged" if close_issues(main, glab, text("description")) => {}
+            "merged" => {
+                is_settled = false;
+                kept.push(entry.clone());
+            }
+            "closed" => {}
+            _ => kept.push(entry.clone()),
+        }
+    }
+    if kept.len() != shipping.len() && batch::write_shipping(main, product, &kept).is_err() {
+        return false;
+    }
+    is_settled
 }
 
 /// develop into the epic `epic` of `name` in `checkout`: what came of it,
@@ -387,6 +493,80 @@ mod tests {
     }
 
     #[test]
+    fn a_shipped_batch_opens_the_next_and_a_hotfix_conflict_is_said_once() {
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-batch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let toml = "[repo]\ndefault_branch = \"develop\"\n[products.breadboard]\npaths = [\"b\"]\n";
+        let (main, other) = world(&root, toml);
+        let record = record_file(&main, "breadboard");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, r#"{ "issues": [], "product": "breadboard" }"#).unwrap();
+        git(&main, &["fetch", "--quiet", "origin"]);
+        batch::ensure_current(&main, "breadboard", "develop", false).unwrap();
+        let store = main_update::store_of(&main).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        let change = |branch: &str, file: &str, text: &str| {
+            git(&other, &["fetch", "--quiet", "origin"]);
+            git(
+                &other,
+                &["checkout", "--quiet", "-B", branch, &format!("origin/{branch}")],
+            );
+            std::fs::write(other.join(file), text).unwrap();
+            git(&other, &["add", "."]);
+            git(&other, &["commit", "--quiet", "-m", "feat: x"]);
+            git(&other, &["push", "--quiet", "origin", branch]);
+            git(&main, &["fetch", "--quiet", "origin"]);
+        };
+        // A task in the batch, a hotfix of the same line in develop: said once.
+        change("batch/breadboard-1", "README.md", "the batch's\n");
+        change("develop", "README.md", "the hotfix\n");
+        let looks = || -> Vec<String> {
+            let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+            raw["actions"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|action| action["text"].as_str().unwrap_or("").to_string())
+                .collect()
+        };
+        keep_batches_up(&main, &store, "true");
+        assert_eq!(looks().len(), 1, "{:?}", looks());
+        assert!(
+            looks()[0].starts_with("batch/breadboard-1 conflicts with develop in README.md"),
+            "{:?}",
+            looks()
+        );
+        keep_batches_up(&main, &store, "true");
+        assert_eq!(looks().len(), 1, "the same heads: said once");
+        // The batch shipped (develop took it in, resolved): the next opens.
+        git(&other, &["fetch", "--quiet", "origin"]);
+        git(&other, &["checkout", "--quiet", "-B", "develop", "origin/develop"]);
+        let merged = Command::new("git")
+            .args(["merge", "--quiet", "--no-edit", "origin/batch/breadboard-1"])
+            .current_dir(&other)
+            .output()
+            .unwrap();
+        assert!(!merged.status.success(), "it conflicts");
+        std::fs::write(other.join("README.md"), "both\n").unwrap();
+        git(&other, &["commit", "--quiet", "-am", "Merge the batch"]);
+        git(&other, &["push", "--quiet", "origin", "develop"]);
+        git(&main, &["fetch", "--quiet", "origin"]);
+        keep_batches_up(&main, &store, "true");
+        assert_eq!(
+            batch::current_of(&main, "breadboard").map(|batch| batch.branch),
+            Some("batch/breadboard-2".into())
+        );
+        assert_eq!(
+            git(&main, &["rev-parse", "origin/batch/breadboard-2"]),
+            git(&main, &["rev-parse", "origin/develop"])
+        );
+        assert_eq!(looks().len(), 1, "the new batch has develop");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_milestones_issues_gitlab_left_open_are_closed_once() {
         use std::os::unix::fs::PermissionsExt;
         let root = PathBuf::from(format!("/tmp/bb-keep-up-milestone-{}", std::process::id()));
@@ -417,6 +597,41 @@ mod tests {
         std::fs::remove_file(&log).unwrap();
         assert_eq!(close_milestone(&root, "epic/15-breadboard", &glab, 400), 400);
         assert!(!std::fs::read_to_string(&log).unwrap().contains("PUT"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_shipped_batch_s_merged_mr_closes_what_gitlab_left_open_and_goes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = PathBuf::from(format!("/tmp/bb-keep-up-shipped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("glab.log");
+        let glab = root.join("glab");
+        std::fs::write(
+            &glab,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  'api projects/:fullpath/merge_requests/500') echo '{{\"state\":\"merged\",\"description\":\"Closes #411, #413\"}}' ;;\n  'api projects/:fullpath/merge_requests/501') echo '{{\"state\":\"opened\"}}' ;;\n  'api projects/:fullpath/merge_requests/502') echo '{{\"state\":\"closed\"}}' ;;\n  'api projects/:fullpath/issues/411') echo '{{\"state\":\"closed\"}}' ;;\n  'api projects/:fullpath/issues/413') echo '{{\"state\":\"opened\"}}' ;;\n  *) echo '{{}}' ;;\nesac\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&glab, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let glab = glab.to_string_lossy().into_owned();
+        let entry = |number: i64, mr: i64| batch::Shipping {
+            branch: format!("batch/breadboard-{number}"),
+            mr,
+        };
+        batch::write_shipping(&root, "breadboard", &[entry(1, 500), entry(2, 501), entry(3, 502)]).unwrap();
+        assert!(close_shipped(&root, "breadboard", &glab));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            calls.contains("api --method PUT projects/:fullpath/issues/413?state_event=close"),
+            "{calls}"
+        );
+        assert!(!calls.contains("issues/411?state_event"), "{calls}");
+        // The merged one and the closed one go, the open one stays.
+        assert_eq!(batch::shipping_of(&root, "breadboard"), [entry(2, 501)]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

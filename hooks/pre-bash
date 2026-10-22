@@ -1,0 +1,20 @@
+#!/bin/sh
+# Claude Code's PreToolUse hook on shell commands (.claude/settings.json runs
+# this file with sh): `glab mr merge`, `--no-verify` and a force push are
+# blocked with what to run instead (#427). A worktree's own binary where it
+# is built, else the main checkout's through its launcher, which never waits
+# for a build here, else the breadboard on PATH. Without any the command goes
+# through: a guard that can't run never blocks work.
+dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 0
+own="$dir/packages/breadboard/target/release/breadboard"
+if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != "$common" ] && [ -x "$own" ]; then
+  exec "$own" hook pre-bash
+fi
+package="$common/../packages/breadboard"
+if [ -x "$package/target/release/breadboard" ]; then
+  [ -f "$package/herdr/breadboard.sh" ] && exec sh "$package/herdr/breadboard.sh" --no-wait hook pre-bash
+  exec "$package/target/release/breadboard" hook pre-bash
+fi
+command -v breadboard >/dev/null 2>&1 && exec breadboard hook pre-bash
+exit 0

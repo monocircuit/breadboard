@@ -64,7 +64,7 @@ A checkout's dev stack: containers in docker compose, the app on the host. A
 worktree shares the main checkout's stack, or gets its own (`wt:stack`, or
 `wt:new` without `--shared`) with every port moved by an offset and a compose
 project `<project>-<feature>`, written into its env file. Without `[stack]`
-there is no env file, no offset, no stack tabs, no `stack:*`.
+there is no env file, no offset, no stack processes, no `stack:*`.
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -84,7 +84,7 @@ of its own (`COMPOSE_PROJECT_NAME`). So at least one port needs an `env`.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `port` | (required) | the app's port; an own stack's is moved by its offset |
-| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); the `dev` tab runs it while the stack is up |
+| `dev` | `pnpm dev` | what starts it in `dir` (`--port <p>` follows for an own stack); it runs in the background while the stack is up, its output in `.claude/stack/dev.log` |
 | `env` | none | the variable it is moved with |
 
 ### `[[stack.services]]`
@@ -125,14 +125,14 @@ WHERE and a herdr tab of its name.
 | `url` | `http://localhost:{port}` | where it is looked at |
 | `is_with_stack` | `false` | its tab opens while the stack runs, as `dev` does; else WHERE has a button that starts it |
 
-### `[stack.epic]`
+### `[stack.batch]`
 
-An orchestration's epic stack and the task stacks on it. The orchestration's
-checkout runs a full stack. Its database service keeps a template database,
+The batch stack (#411, the epic stack of #351) and the task stacks on it.
+The orchestration's checkout, on its product's batch, runs a full stack. Its database service keeps a template database,
 migrated and seeded, that nothing connects to. A worktree of the orchestration
-gets a task stack: its own stack without that service, on the epic's compose
-network, with its databases made on the epic's service. A task stack starts on
-demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.epic]`, an
+gets a task stack: its own stack without that service, on the batch stack's compose
+network, with its databases made on the batch stack's service. A task stack starts on
+demand (`stack:up`, `wt:stack`), never with `wt:new`. Without `[stack.batch]`, an
 orchestration's worktrees get own stacks like any other. It needs
 `[stack.migrations]`, whose `run` migrates the template.
 
@@ -147,7 +147,7 @@ orchestration's worktrees get own stacks like any other. It needs
 | `task_setup` | none | what a task stack runs, in order, after its containers are up and its migrations applied |
 | `env` | none | a table of what a task stack's env file sets besides; `{network}` is the epic's compose network |
 
-`[[stack.epic.databases]]` are the databases a task gets, `<name>_<feature>`:
+`[[stack.batch.databases]]` are the databases a task gets, `<name>_<feature>`:
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
@@ -159,15 +159,15 @@ orchestration's worktrees get own stacks like any other. It needs
 | `name_env` | none | the env file's variable set to its name |
 
 ```toml
-[stack.epic]
+[stack.batch]
 template = "app_tpl"
 stamp = "db"
 seed = "npm run seed"
 
-[stack.epic.env]
+[stack.batch.env]
 NETWORK = "{network}"
 
-[[stack.epic.databases]]
+[[stack.batch.databases]]
 name = "app"
 is_clone = true
 owner = "app"
@@ -181,11 +181,11 @@ urls = ["DATABASE_URL"]
 | `template` | `.gitlab/merge_request_templates/Default.md` | what `wt:mr` puts down for a branch's first description |
 | `[[mr.tests]]` | none | boxes of the template's Tests section the pre-fill decides on: `line` (the box, `- [ ] …`) goes in when the branch changes a file one of `paths` (regular expressions) matches, and out otherwise |
 
-## `[orchestration]`
+## `[merge]`
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
-| `epic_branches` | `false` | a new orchestration makes an epic branch `epic/<n>-<name>` from the default branch: its tasks branch off it and merge into it by themselves (#350). `<n>` is the epic of its issues' milestone (`… Epic N: …`) or `--epic <n>`; without it an orchestration works on the default branch, unless `--epic` names one |
+| `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
 
 ## `[products.<name>]`
 
@@ -199,6 +199,25 @@ space of its own (`⇶ <title>`).
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `paths` | none | the folders that are the product's; at least one. The name labels the herdr space: letters, digits, `-` and `_` |
+
+## `[settings]`
+
+The team's defaults of the overview's settings panel (#415; `,` or `⚙
+settings` in an orchestration's overview). A change in the panel is kept
+per product in `.claude/products/<name>.json` (for an orchestration of no
+product in its record), local and never committed; it wins over the
+default until `reset`, holds from the next tick, and the orchestration's
+journal says it (`auto-merge into batch: off (by you)`).
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `batching` | `true` | a task of a product branches off the product's rolling batch `batch/<product>-<n>` and its MR goes into it (#411): opened from the default branch when the product has none, the next the moment one shipped, kept in the product's file (`batch`). Off: their MRs go straight into the default branch. A hotfix (`wt:new --fix` of an issue labelled `hotfix`) always does |
+| `auto_merge_into_batch` | `true` | a task MR into the batch merges by itself once its bar is full and its checks are green, with a merge commit, never squashed; off: it waits for the user's click |
+| `ship_after_tasks` | `5` | the overview suggests shipping the batch once this many tasks are in it (#414), 1 to 99 |
+| `ship_after_days` | `2` | or once its oldest task waited this long, 1 to 30 |
+| `try_checker` | `false` | a small model checks and answers the tries (auto mode, #384); a record's `auto` of before holds until the panel changes it |
+| `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
+| (panel only) `agent fresh start`, `agent fresh start when idle`, `agent idle time` | `[agents] fresh_above`, `idle_fresh_above`, `idle_minutes` | when an agent retires at its merge (#381, #445), in thousands of tokens and minutes; their team defaults stay `[agents]`'s |
 
 ## `[orchestrator]`
 
@@ -214,20 +233,27 @@ The orchestrator's chat (#382): its context shows in the overview's title band.
 What the agents may spend (#372). The overview reads it from claude's
 transcripts: every answer's tokens, priced per model. Tokens are what an
 answer read and wrote anew (input, cache writes, output); cache reads are in
-the dollars, not in the tokens. A limit is tokens (`"20 M"`, `"500k"`,
+the dollars, not in the tokens. An issue's cost is its agents' answers
+while they worked on it and its worktree's try checkers' (#387). A limit is tokens (`"20 M"`, `"500k"`,
 `20000000`) or dollars (`"$40"`).
 
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `daily_limit` | none | what the repo's claudes may spend from local midnight: once it is reached the run engine of headless agents starts no new run, their lines wait in the queue and the overview says why; its `continue anyway` lifts it until midnight (`breadboard runs continue`) |
 | `orchestration_budget` | none | what an orchestration's agents may spend in all: shown against what they spent in its band |
-| `fresh_above` | `40` | the percent of its context window above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381). Below it, an agent that shares files with the next issue takes it |
+| `fresh_above` | `150_000` | the context, in tokens, above which an orchestration's agent gets no next issue: it retires at its merge, writing a handoff of what it learned, and its next issue goes to a fresh agent that reads it (#381, #445). Every resume reads the whole history again, so a large one costs on every event |
+| `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
+| `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
+| `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
+| `max_runs` | `4` | how many headless runs may be in flight at once (#445). After a crash, an OOM kill or a reboot the run engine picks every cut-off run up by itself, a few at a time: a small session is resumed with one line, one past the fresh-start rule is not resumed but taken over by a fresh session in its worktree, with a handoff breadboard writes from the disk (`.claude/handoff-cut.md`: its last prompt and answer, uncommitted and unpushed work) |
 
 ```toml
 [agents]
 daily_limit = "$40"
 orchestration_budget = "200 M"
-fresh_above = 40
+fresh_above = 150_000
+idle_fresh_above = 100_000
+idle_minutes = 55
 ```
 
 ## `[tries]`
@@ -246,6 +272,35 @@ opens its path there.
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).
+
+## `[review]`
+
+A cheap review of an MR before its merge is offered (#374): once its bar is
+full and its head green (its pipeline passed, or `wt:check` at its pushed
+head where `[merge] needs_pipeline = false` merges without one), the live overview of its orchestration starts
+one `claude -p --model <model>` in its worktree. It is given only the diff
+against the MR's target (not the repo), the issue and the AGENTS.md of the
+folders it changes, with read-only tools (`Read,Grep,Glob`), no MCP servers
+and `--max-budget-usd`. Its findings go into an MR comment; `serious` ones
+go back to the MR's agent and hold the merge (the MR back to draft) until a
+new head is reviewed, `small` ones are the user's. One review per head; the
+MR row says `reviewed ✓` or `review: 2 findings`, with its tokens. None
+starts while the daily limit (`[agents] daily_limit`) or a pause holds the
+runs, and its transcript counts toward the daily cost. Every review done or
+skipped is a line of `.claude/reviews.jsonl` in the main checkout (model,
+lines, tokens, dollars, findings): the cost per review is measured there.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `enabled` | `false` | reviews before the merge; off until its cost per review is measured |
+| `model` | `haiku` | the model of the review run |
+| `min_lines` | `20` | a diff of fewer changed lines is skipped |
+| `max_lines` | `3000` | a diff of more is skipped: no cheap review, the user reads it |
+| `max_dollars` | `0.5` | what one review may cost at most (`--max-budget-usd`) |
+| `exclude` | `pnpm-lock.yaml`, `**/Cargo.lock`, `**/migrations/meta/**` | pathspecs left out of the diff and its count |
+
+A docs-only diff (`.md`, `.mdx`, `.txt`, `.rst`, `.changelog/`, `.changeset/`)
+is skipped too.
 
 ## `[check]`
 
@@ -273,6 +328,18 @@ says when it last did or why it didn't.
 
 New migrations (`[stack.migrations]`'s journal changed) are only named in
 the band with their command: each stack runs them itself.
+
+## `[ci]`
+
+A failed MR pipeline (#371): `breadboard serve` retries a job the runner
+failed (its system, a timeout) and a job that failed its first try (a flake
+passes the second); one that failed twice its agent fixes, a headless run
+told the job and its log's end. Each head gets one such run; past
+`max_fix_attempts` of them the MR gets a `look` for the user.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `max_fix_attempts` | `3` | the runs of its agent that may fix an MR's failed pipeline (the row shows `CI fix 2/3`); `0`: the user looks at once |
 
 ## `[ci.watch]`
 

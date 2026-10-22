@@ -1,11 +1,11 @@
 //! The epic stack of an orchestration and the task stacks on it (#351), as
-//! breadboard.toml's `[stack.epic]` describes them (#365): the
+//! breadboard.toml's `[stack.batch]` describes them (#365): the
 //! orchestration's checkout runs a full stack, its database service keeps a
 //! template database (migrated and seeded, never connected to); a task
 //! worktree of the orchestration runs its stack without that service, on the
 //! epic's network, its databases made on the epic's. A task stack starts on
 //! demand (`stack:up`, `wt:stack`), never with `wt:new`. Without
-//! `[stack.epic]` an orchestration's worktrees get own stacks.
+//! `[stack.batch]` an orchestration's worktrees get own stacks.
 
 use super::proc::{self, How, fail, outln, step};
 use super::repo;
@@ -35,13 +35,13 @@ pub struct Epic {
 impl Epic {
     /// The epic of the orchestration that started the worktree `dir`; None for a
     /// free worktree, when the orchestration has no checkout (no herdr), or
-    /// when the repo's stack has no `[stack.epic]`.
+    /// when the repo's stack has no `[stack.batch]`.
     pub fn of_task(dir: &Path) -> Option<Epic> {
         let name = record::origin_of(dir)?.name;
         Epic::named(&name)
     }
 
-    /// The epic of the orchestration `name`, when its checkout exists and the stack has `[stack.epic]`.
+    /// The epic of the orchestration `name`, when its checkout exists and the stack has `[stack.batch]`.
     pub fn named(name: &str) -> Option<Epic> {
         repo::stack()?.epic?;
         let checkout = repo::lifecycle().checkout_of(name);
@@ -70,11 +70,11 @@ impl Epic {
     }
 }
 
-/// The repo's stack and its `[stack.epic]`, refused without them.
+/// The repo's stack and its `[stack.batch]`, refused without them.
 fn stack_of() -> (Stack, Config) {
     let stack = repo::stack().unwrap_or_else(|| fail("the repo has no stack: breadboard.toml has no [stack]"));
     let Some(epic) = stack.epic.clone() else {
-        fail("the repo's stack has no epic: breadboard.toml has no [stack.epic]")
+        fail("the repo's stack has no batch stack: breadboard.toml has no [stack.batch]")
     };
     (stack, epic)
 }
@@ -141,7 +141,7 @@ pub struct Task<'a> {
 
 /// What a task stack's env file says: the own stack's (ports moved by its
 /// offset, its own compose project), its databases' URLs on the epic's
-/// service (`epic_port`), then `[stack.epic] env` and its databases' names.
+/// service (`epic_port`), then `[stack.batch] env` and its databases' names.
 pub fn task_env(stack: &Stack, epic: &Config, source: &str, task: &Task) -> String {
     let own = stack::stack_env(stack, source, task.feature, task.offset);
     let pointed = |key: &str| {
@@ -633,12 +633,12 @@ mod tests {
              [[stack.services]]\nname = \"s3\"\nport = 8333\nenv = \"S3_PORT\"\n\
              [[stack.services]]\nname = \"visualizer\"\nport = 64738\nenv = \"VISUALIZER_PORT\"\n\
              [stack.migrations]\njournal = \"j.json\"\nrun = \"pnpm pg:migrate\"\n\
-             [stack.epic]\ntemplate = \"vita_tpl\"\nstamp = \"src/server/db\"\nseed = \"pnpm pg:seed\"\n\
+             [stack.batch]\ntemplate = \"vita_tpl\"\nstamp = \"src/server/db\"\nseed = \"pnpm pg:seed\"\n\
              task_setup = [\"pnpm storage:setup\", \"pnpm keycloak:setup\"]\n\
-             [stack.epic.env]\nPOSTGRES_SCALE = \"0\"\nVITA_NETWORK = \"{network}\"\nVITA_NETWORK_EXTERNAL = \"true\"\n\
-             [[stack.epic.databases]]\nname = \"vita\"\nis_clone = true\nowner = \"vita_migrator\"\n\
+             [stack.batch.env]\nPOSTGRES_SCALE = \"0\"\nVITA_NETWORK = \"{network}\"\nVITA_NETWORK_EXTERNAL = \"true\"\n\
+             [[stack.batch.databases]]\nname = \"vita\"\nis_clone = true\nowner = \"vita_migrator\"\n\
              connect = [\"vita_app\"]\nurls = [\"DATABASE_URL\", \"MIGRATION_DATABASE_URL\"]\n\
-             [[stack.epic.databases]]\nname = \"keycloak\"\nowner = \"keycloak\"\nname_env = \"KEYCLOAK_DB_NAME\"\n",
+             [[stack.batch.databases]]\nname = \"keycloak\"\nowner = \"keycloak\"\nname_env = \"KEYCLOAK_DB_NAME\"\n",
         )
         .unwrap()
         .stack
@@ -681,7 +681,7 @@ mod tests {
                 network: "vita-epic-breadboard_default",
             },
         );
-        // As #351 wrote it for vita, now from [stack.epic].
+        // As #351 wrote it for vita, now from [stack.batch].
         assert_eq!(
             env,
             "APP_ORIGIN=http://localhost:3003\nDATABASE_URL=postgresql://vita_app:a@127.0.0.1:5433/vita_40_x\nMIGRATION_DATABASE_URL=postgresql://vita_migrator:m@127.0.0.1:5433/vita_40_x\n\n# --- own dev stack of the worktree 40-x, written by breadboard (pnpm wt:new, wt:stack) ---\nCOMPOSE_PROJECT_NAME=vita-40-x\nPOSTGRES_PORT=5435\nKEYCLOAK_PORT=8083\nS3_PORT=8336\nVISUALIZER_PORT=64741\n# a task stack of the epic breadboard: no postgres of its own, its databases on the epic's (port 5433)\nBREADBOARD_EPIC=breadboard\nPOSTGRES_SCALE=0\nVITA_NETWORK=vita-epic-breadboard_default\nVITA_NETWORK_EXTERNAL=true\nKEYCLOAK_DB_NAME=keycloak_40_x\n"

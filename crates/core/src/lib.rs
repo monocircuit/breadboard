@@ -2,15 +2,19 @@
 //! today's, read and written in the same places (rewrite rule 5).
 
 pub mod actions;
+pub mod batch;
 pub mod check;
 pub mod ci;
+pub mod ci_fix;
 pub mod ci_watch;
 pub mod config;
 pub mod conversations;
 pub mod epic;
 pub mod epic_sync;
+pub mod fresh;
 pub mod git;
 pub mod gitlab;
+pub mod heal_log;
 pub mod herdr;
 pub mod journal;
 pub mod json;
@@ -19,11 +23,15 @@ pub mod lock;
 pub mod main_update;
 pub mod model;
 pub mod permissions;
+pub mod pickup;
+pub mod push;
 pub mod reader;
 pub mod ready;
 pub mod record;
+pub mod review;
 pub mod runs;
 pub mod said;
+pub mod settings;
 pub mod setups;
 pub mod snapshot;
 pub mod spend;

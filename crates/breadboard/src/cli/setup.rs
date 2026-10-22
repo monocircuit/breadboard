@@ -1,11 +1,9 @@
-//! The commands that set up (#314): `wt:new`, `wt:orchestrate`, `wt:stack`,
-//! `stack:up|down|reset|ps`, `wt:check`, `changelog [--watch]`,
-//! `changelog:add|unreleased|release|notes|check`, `commands`, `browser`,
-//! `init` (#342).
+//! The commands that set up (#314): `COMMANDS` below.
 //! Names, flags and wording as today's Node commands (rewrite rules 2, 3, 5);
 //! what other groups and core should share is in their own modules here
 //! until breadboard-core offers it (herdr, GitLab, local time).
 
+pub(in crate::cli) mod batch;
 mod browser;
 pub(in crate::cli) mod changelog;
 mod check;
@@ -29,89 +27,51 @@ pub(super) use proc::PLUGIN_CHECKED;
 use proc::{Args, Shape, outln, refuse_misuse, wants_help};
 use std::process::ExitCode;
 
-/// What each command takes (flags, those with a value, how many words) and
-/// its usage: anything else is refused before the command does anything (a
+/// A command: its name, what it takes and what runs it.
+type Command = (&'static str, &'static Shape, fn(&Args) -> ExitCode);
+
+/// The group's commands, sorted, one per line (#420: two MRs adding one each
+/// change different lines, `cli::tests` checks the order): what each takes
+/// (flags, those with a value, how many words) and its usage, kept in its
+/// own module; anything else is refused before the command does anything (a
 /// typo of `--shared` would make a worktree on its own stack and push its
 /// claim; `wt:check foo` would check what `foo` doesn't name).
-fn shape_of(command: &str) -> Option<Shape> {
-    let shape = |flags, valued, words, usage: &str| Shape {
-        flags,
-        valued,
-        words,
-        usage: usage.to_string(),
-    };
-    Some(match command {
-        "wt:new" => shape(
-            &["--shared", "--fix", "--origin", "--base"],
-            &["--origin", "--base"],
-            Some(1),
-            new::USAGE,
-        ),
-        "wt:orchestrate" => shape(
-            &[
-                "--title",
-                "--auto",
-                "--epic",
-                "--product",
-                "--shared",
-                "--peer",
-                "--brief",
-                "--queue",
-                "--after",
-                "--dry-run",
-                "--to",
-                "--limit",
-                "--end",
-                "--changelog",
-                "--watch",
-                "--changes",
-                "--fresh",
-                // What the overview's own start passes; `--cap` says it is gone (#229).
-                "--now",
-                "--cap",
-                // The overview's retirement of a full agent at its merge (#381).
-                "--retire",
-                "--mr",
-            ],
-            &[
-                "--title",
-                "--auto",
-                "--epic",
-                "--product",
-                "--peer",
-                "--brief",
-                "--to",
-                "--limit",
-                "--retire",
-                "--mr",
-            ],
-            None,
-            orchestrate::USAGE,
-        ),
-        "wt:stack" => shape(&[], &[], Some(0), "usage: pnpm wt:stack"),
-        "wt:check" => shape(&[], &[], Some(0), "usage: pnpm wt:check"),
-        "stack:up" | "stack:down" | "stack:reset" | "stack:ps" => shape(
-            &["--port"],
-            &["--port"],
-            Some(1),
-            "usage: pnpm stack:up|down|reset|ps [--port <port> | <feature>]",
-        ),
-        "changelog" => shape(
-            &["--since", "--watch"],
-            &["--since"],
-            Some(0),
-            "usage: pnpm changelog [--since 30d|2w|<date>] [--watch]",
-        ),
-        "changelog:add" => shape(&["--type", "--area"], &["--type", "--area"], None, fragments::USAGE),
-        "changelog:check" => shape(&["--mr"], &[], Some(0), fragments::USAGE),
-        "changelog:unreleased" => shape(&[], &[], Some(0), fragments::USAGE),
-        "changelog:release" | "changelog:notes" => shape(&[], &[], Some(1), fragments::USAGE),
-        "commands" => shape(&["--all"], &[], Some(0), "usage: pnpm commands [--all]"),
-        "browser" => shape(&[], &[], Some(0), "usage: pnpm browser"),
-        "hook" => shape(&[], &[], Some(3), hook::USAGE),
-        "init" => shape(&["--check"], &[], Some(0), init::USAGE),
-        _ => return None,
-    })
+const COMMANDS: &[Command] = &[
+    ("browser", &browser::SHAPE, |_| browser::command()),
+    ("changelog", &changelog::SHAPE, changelog::overall_command),
+    ("changelog:add", &fragments::ADD, |args| fragments::command("add", args)),
+    ("changelog:check", &fragments::CHECK, |args| {
+        fragments::command("check", args)
+    }),
+    ("changelog:notes", &fragments::OF_VERSION, |args| {
+        fragments::command("notes", args)
+    }),
+    ("changelog:release", &fragments::OF_VERSION, |args| {
+        fragments::command("release", args)
+    }),
+    ("changelog:unreleased", &fragments::UNRELEASED, |args| {
+        fragments::command("unreleased", args)
+    }),
+    ("commands", &commands::SHAPE, |args| {
+        commands::command(args.has("--all"))
+    }),
+    ("init", &init::SHAPE, init::command),
+    ("stack:down", &stack::SHAPE, |args| stack::control("down", args)),
+    ("stack:ps", &stack::SHAPE, |args| stack::control("ps", args)),
+    ("stack:reset", &stack::SHAPE, |args| stack::control("reset", args)),
+    ("stack:up", &stack::SHAPE, |args| stack::control("up", args)),
+    ("wt:check", &check::SHAPE, check::command),
+    ("wt:new", &new::SHAPE, new::command),
+    ("wt:orchestrate", &orchestrate::SHAPE, orchestrate::command),
+    ("wt:stack", &stack::WT_SHAPE, |_| stack::wt_stack()),
+];
+
+/// The commands no person types, which `usage` leaves out: git's pre-push hook.
+const INTERNAL: &[Command] = &[("hook", &hook::SHAPE, |args| hook::command(&args.all))];
+
+/// The group's commands, as `usage` lists them.
+pub fn names() -> Vec<&'static str> {
+    COMMANDS.iter().map(|(name, ..)| *name).collect()
 }
 
 /// The name of the root package.json for the internal names that the herdr
@@ -152,27 +112,22 @@ pub fn run(command: &str, args: &[String]) -> Option<ExitCode> {
     let (command, args) = public_of(command, args).unwrap_or_else(|| (command.to_string(), args));
     let command = command.as_str();
     let args = Args::new(args);
-    if let Some(shape) = shape_of(command) {
-        if wants_help(&args) {
-            outln!("{}", breadboard_core::config::in_repo(&shape.usage));
-            return Some(ExitCode::SUCCESS);
-        }
-        refuse_misuse(&args, &shape);
+    let Some((_, shape, run)) = COMMANDS.iter().chain(INTERNAL).find(|(name, ..)| *name == command) else {
+        // A `stack:` or `changelog:` of no command: it says which there are.
+        return if let Some(action) = command.strip_prefix("stack:") {
+            Some(stack::control(action, &args))
+        } else {
+            command
+                .strip_prefix("changelog:")
+                .map(|sub| fragments::command(sub, &args))
+        };
+    };
+    if wants_help(&args) {
+        outln!("{}", breadboard_core::config::in_repo(shape.usage));
+        return Some(ExitCode::SUCCESS);
     }
-    Some(match command {
-        "wt:new" => new::command(&args),
-        "wt:orchestrate" => orchestrate::command(&args),
-        "wt:stack" => stack::wt_stack(),
-        _ if command.starts_with("stack:") => stack::control(&command["stack:".len()..], &args),
-        "wt:check" => check::command(),
-        "changelog" => changelog::overall_command(&args),
-        _ if command.starts_with("changelog:") => fragments::command(&command["changelog:".len()..], &args),
-        "commands" => commands::command(args.has("--all")),
-        "browser" => browser::command(),
-        "hook" => hook::command(&args.all),
-        "init" => init::command(&args),
-        _ => return None,
-    })
+    refuse_misuse(&args, shape);
+    Some(run(&args))
 }
 
 #[cfg(test)]
@@ -198,20 +153,7 @@ mod tests {
 
     #[test]
     fn every_command_names_its_flags() {
-        for command in [
-            "wt:new",
-            "wt:orchestrate",
-            "wt:stack",
-            "wt:check",
-            "stack:up",
-            "changelog",
-            "changelog:add",
-            "changelog:check",
-            "changelog:release",
-            "commands",
-            "browser",
-        ] {
-            let shape = shape_of(command).unwrap();
+        for (command, shape, _) in COMMANDS.iter().chain(INTERNAL) {
             assert!(shape.usage.starts_with("usage:"), "{command}");
             assert!(shape.valued.iter().all(|flag| shape.flags.contains(flag)), "{command}");
         }

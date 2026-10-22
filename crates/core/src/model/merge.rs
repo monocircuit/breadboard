@@ -18,17 +18,53 @@ const NAMED_BOXES: usize = 2;
 /// What a row says while GitLab hasn't settled its mergeability; the read asks it to recheck (#391).
 pub const GITLAB_RECHECKS: &str = "GitLab rechecks mergeability";
 
+/// The pipeline mark of an MR that merges without a pipeline of its own (#443).
+pub const ON_WT_CHECK: &str = "merges on wt:check (no MR pipeline)";
+/// What GitLab needs changed while it holds such an MR for a pipeline (#443): the user's step.
+pub const PIPELINE_SETTING: &str = "GitLab wants a pipeline: Settings → Merge requests → Merge checks, turn on \"Skipped pipelines are considered successful\"";
+
+/// Whether `mr` needs a passed pipeline of its own before its merge: always,
+/// but into the default branch while `[merge] needs_pipeline = false`
+/// (`merges_on_check`, #443, temporary): there `wt:check` at its pushed head is enough.
+pub fn needs_pipeline(mr: &Mr, merges_on_check: bool) -> bool {
+    !merges_on_check || mr.target() != crate::git::default_branch()
+}
+
+/// Whether the commits `a` and `b` are one, either maybe abbreviated.
+pub fn is_same_commit(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
+/// What a pipeline of `mr` holds when it needs none (#443): one that failed
+/// at its head (a click ran it) says the head is broken; any other, or
+/// none, holds nothing.
+pub fn failed_at_head(mr: &Mr) -> bool {
+    mr.pipeline.as_ref().is_some_and(|pipeline| {
+        pipeline.status == "failed"
+            && pipeline
+                .sha
+                .as_deref()
+                .zip(mr.sha.as_deref())
+                .is_some_and(|(ran, head)| is_same_commit(ran, head))
+    })
+}
+
 /// GitLab's `detailed_merge_status` in words, for what a blocker doesn't say
 /// already (the draft, the pipeline); None for `mergeable`.
 pub fn merge_status_text(
     status: Option<&str>,
     is_draft: bool,
     is_pipeline_blocked: bool,
+    needs_pipeline: bool,
     target: &str,
 ) -> Option<String> {
     let status = status.filter(|status| !status.is_empty() && *status != "mergeable")?;
     if ["checking", "unchecked", "preparing", "approvals_syncing"].contains(&status) {
         return Some(GITLAB_RECHECKS.into());
+    }
+    // It needs none, GitLab wants one: its setting is what to change (#443).
+    if status == "ci_must_pass" && !needs_pipeline {
+        return Some(PIPELINE_SETTING.into());
     }
     if status == "draft_status" && is_draft {
         return None;
@@ -171,13 +207,15 @@ fn checks(boxes: &[IssueBox], actions: &[Action], answered: &[Action], is_named:
 
 /// What keeps the MR from being merged, each in a few words; none when two
 /// clicks merge it. `can_mark_ready`: its agent posted the merge, so a draft
-/// is marked ready first.
+/// is marked ready first. `needs_pipeline`: its own pipeline must pass; else
+/// (#443) only one that failed at its head holds it, its wt:check is the caller's.
 pub fn blockers_of(
     mr: Option<&Mr>,
     boxes: &[IssueBox],
     can_mark_ready: bool,
     actions: &[Action],
     answered: &[Action],
+    needs_pipeline: bool,
 ) -> Vec<String> {
     let Some(mr) = mr else {
         return vec!["no merge request".into()];
@@ -203,7 +241,11 @@ pub fn blockers_of(
     }
     blockers.extend(checks_of(boxes, actions, answered));
     let status = mr.pipeline_status();
-    let is_pipeline_blocked = status != Some("success");
+    let is_pipeline_blocked = if needs_pipeline {
+        status != Some("success")
+    } else {
+        failed_at_head(mr)
+    };
     if is_pipeline_blocked {
         blockers.push(format!("pipeline {}", status.unwrap_or("not there yet")));
     }
@@ -213,6 +255,7 @@ pub fn blockers_of(
         mr.merge_status.as_deref(),
         mr.is_draft,
         is_pipeline_blocked,
+        needs_pipeline,
         mr.target(),
     ) {
         blockers.push(text);
@@ -292,7 +335,7 @@ mod tests {
         actions: &[Action],
         answered: &[Action],
     ) -> Vec<String> {
-        blockers_of(Some(mr), boxes, can_mark_ready, actions, answered)
+        blockers_of(Some(mr), boxes, can_mark_ready, actions, answered, true)
     }
 
     #[test]
@@ -345,7 +388,7 @@ mod tests {
             ),
             ["it is merged"]
         );
-        assert_eq!(blockers_of(None, &[], false, &[], &[]), ["no merge request"]);
+        assert_eq!(blockers_of(None, &[], false, &[], &[], true), ["no merge request"]);
     }
 
     #[test]
@@ -472,16 +515,71 @@ mod tests {
     }
 
     #[test]
-    fn merge_status_leaves_out_what_another_blocker_says() {
-        assert_eq!(merge_status_text(Some("mergeable"), false, false, "develop"), None);
-        assert_eq!(merge_status_text(Some("draft_status"), true, false, "develop"), None);
-        assert_eq!(merge_status_text(Some("ci_must_pass"), false, true, "develop"), None);
+    fn without_its_own_pipeline_only_a_failed_one_at_its_head_holds_it() {
+        // #443: `[merge] needs_pipeline = false`, a push's skipped pipeline.
+        let with = |status: &str, ran: &str| Mr {
+            sha: Some("abc123".into()),
+            pipeline: Some(Pipeline {
+                status: status.into(),
+                sha: Some(ran.into()),
+                ..Default::default()
+            }),
+            ..ready()
+        };
+        let off = |mr: &Mr| blockers_of(Some(mr), &[], false, &[], &[], false);
+        assert!(off(&with("skipped", "abc123")).is_empty());
+        assert!(
+            off(&Mr {
+                pipeline: None,
+                ..ready()
+            })
+            .is_empty()
+        );
+        assert!(off(&with("running", "abc123")).is_empty());
+        assert!(off(&with("failed", "0ld")).is_empty(), "failed on an older commit");
+        assert_eq!(off(&with("failed", "abc")), ["pipeline failed"]);
+        // On, as before: a skipped one is no pass.
         assert_eq!(
-            merge_status_text(Some("need_rebase"), false, false, "develop").as_deref(),
+            blockers_of(Some(&with("skipped", "abc123")), &[], false, &[], &[], true),
+            ["pipeline skipped"]
+        );
+        // GitLab holds it for its setting: the row names what to change.
+        let held = Mr {
+            merge_status: Some("ci_must_pass".into()),
+            ..with("skipped", "abc123")
+        };
+        assert_eq!(off(&held), [PIPELINE_SETTING]);
+        assert!(needs_pipeline(
+            &Mr {
+                target: "epic/15-x".into(),
+                ..ready()
+            },
+            true
+        ));
+        assert!(!needs_pipeline(&ready(), true));
+        assert!(needs_pipeline(&ready(), false));
+    }
+
+    #[test]
+    fn merge_status_leaves_out_what_another_blocker_says() {
+        assert_eq!(
+            merge_status_text(Some("mergeable"), false, false, true, "develop"),
+            None
+        );
+        assert_eq!(
+            merge_status_text(Some("draft_status"), true, false, true, "develop"),
+            None
+        );
+        assert_eq!(
+            merge_status_text(Some("ci_must_pass"), false, true, true, "develop"),
+            None
+        );
+        assert_eq!(
+            merge_status_text(Some("need_rebase"), false, false, true, "develop").as_deref(),
             Some("needs a rebase onto develop")
         );
         assert_eq!(
-            merge_status_text(Some("some_new_thing"), false, false, "develop").as_deref(),
+            merge_status_text(Some("some_new_thing"), false, false, true, "develop").as_deref(),
             Some("GitLab: some new thing")
         );
     }

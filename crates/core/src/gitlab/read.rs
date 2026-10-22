@@ -7,8 +7,8 @@
 use super::cache::Cache;
 use super::client::{Gitlab, GitlabError, Result};
 use super::{
-    BranchRemote, Deploy, DeployPipeline, DevelopPipeline, EpicRemote, Issue, Job, Mr, Pipeline, Remote, boxes_of,
-    number_of,
+    BatchTask, BranchRemote, Deploy, DeployPipeline, DevelopPipeline, EpicRemote, Issue, Job, Mr, Pipeline, Remote,
+    boxes_of, number_of,
 };
 use crate::time::now_ms;
 use regex::Regex;
@@ -88,10 +88,15 @@ fn orchestration_query(has_branches: bool, has_issues: bool, has_awaited: bool, 
         parts.push(format!(
             "epicPipelines: pipelines(ref: $epic, first: 5) {{ nodes {{ {PIPELINE_FIELDS} jobs(first: 100) {{ nodes {{ {JOB_FIELDS} }} }} }} }}"
         ));
+        // `$epics`: the epic or batch, then the product's batches shipped before it (#414).
         parts.push(format!(
-            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 1) {{ nodes {{ {} }} }}",
+            "epicMrs: mergeRequests(sourceBranches: $epics, targetBranches: [\"develop\"], state: opened, first: 10) {{ nodes {{ {} }} }}",
             mr_fields()
         ));
+        decls.push("$epicTargets: [String!]");
+        parts.push(
+            "epicTasks: mergeRequests(targetBranches: $epicTargets, state: merged, first: 100, sort: MERGED_AT_DESC) { nodes { iid title webUrl sourceBranch mergedAt labels { nodes { title } } } }".into(),
+        );
     }
     if has_branches {
         decls.push("$branches: [String!]");
@@ -175,39 +180,41 @@ pub fn queries() -> Vec<(&'static str, String)> {
 }
 
 /// The CI queue's (#357): every open MR with its newest commit and its newest pipeline.
-pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt } } } } } }";
+pub const CI_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { mergeRequests(state: opened, first: 100) { nodes { iid draft sourceBranch targetBranch diffHeadSha labels { nodes { title } } pipelines(first: 20) { nodes { id status sha ref failureReason startedAt updatedAt } } } } } }";
 
 /// The open MRs of CI_QUERY's answer, as the CI queue takes them.
 pub fn open_mrs_of(project: &Value) -> Vec<crate::ci::OpenMr> {
     nodes(project, "mergeRequests")
         .iter()
-        .map(|node| crate::ci::OpenMr {
-            blocked_by: blocked_by(node),
-            iid: id_of(node.get("iid")),
-            source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
-            target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
-            is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
-            labels: nodes(node, "labels")
-                .iter()
-                .filter_map(|label| str_at(label, "title").map(String::from))
-                .collect(),
-            sha: str_at(node, "diffHeadSha").map(String::from),
+        .map(|node| {
             // Its newest MR pipeline, of any commit: after a push that skipped CI
             // GitLab's head pipeline is none, and a red one before it matters.
             // A branch's (the `skipped` one a push with ci.skip leaves) isn't one.
             // Newest by id: in a list of MRs gitlab.com gives each one's
             // pipelines in no order of time (by sha, 2026-10-12), and the first
             // taken for the newest started its pipelines again and again (#369).
-            pipeline: nodes(node, "pipelines")
-                .iter()
-                .filter_map(|pipeline| pipeline_of(pipeline, ""))
+            let newest = nodes(node, "pipelines")
+                .into_iter()
                 .filter(|pipeline| {
-                    pipeline
-                        .reference
-                        .as_deref()
-                        .is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+                    str_at(pipeline, "ref").is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
                 })
-                .max_by_key(|pipeline| pipeline.id),
+                .max_by_key(|pipeline| id_of(pipeline.get("id")));
+            crate::ci::OpenMr {
+                blocked_by: blocked_by(node),
+                iid: id_of(node.get("iid")),
+                source: str_at(node, "sourceBranch").unwrap_or_default().to_string(),
+                target: str_at(node, "targetBranch").unwrap_or_default().to_string(),
+                is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
+                labels: nodes(node, "labels")
+                    .iter()
+                    .filter_map(|label| str_at(label, "title").map(String::from))
+                    .collect(),
+                sha: str_at(node, "diffHeadSha").map(String::from),
+                pipeline: newest.as_ref().and_then(|pipeline| pipeline_of(pipeline, "")),
+                is_refused: newest
+                    .as_ref()
+                    .is_some_and(|pipeline| str_at(pipeline, "failureReason").is_some()),
+            }
         })
         .collect()
 }
@@ -342,6 +349,23 @@ pub fn mr_of(value: &Value) -> (Mr, Option<String>) {
     // a merge commit gets it through REST, once a try waits for its deploy.
     let merge_sha = str_at(value, "mergeCommitSha").map(String::from);
     (mr, merge_sha)
+}
+
+/// A task MR merged into a batch, of GraphQL (#414).
+fn batch_task_of(value: &Value) -> BatchTask {
+    BatchTask {
+        iid: id_of(value.get("iid")),
+        title: DRAFT
+            .replace(str_at(value, "title").unwrap_or_default(), "")
+            .into_owned(),
+        url: str_at(value, "webUrl").unwrap_or_default().to_string(),
+        branch: str_at(value, "sourceBranch").unwrap_or_default().to_string(),
+        merged_at: str_at(value, "mergedAt").map(String::from),
+        labels: nodes(value, "labels")
+            .iter()
+            .filter_map(|label| str_at(label, "title").map(String::from))
+            .collect(),
+    }
 }
 
 pub(super) static DRAFT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^Draft:\s*").unwrap());
@@ -563,6 +587,9 @@ pub struct Ask {
     /// Its epic branch (#350): its pipeline and its MR into develop are read.
     #[serde(default)]
     pub epic: Option<String>,
+    /// Its product's batches shipped before the epic's (#414): their MRs into develop are read.
+    #[serde(default)]
+    pub shipping: Vec<String>,
 }
 
 /// The links GitLab has of the open issues `numbers`, in the shape real GitLab
@@ -670,7 +697,10 @@ pub async fn read_orchestration(
     let mut variables = json!({});
     if let Some(epic) = &ask.epic {
         variables["epic"] = json!(epic);
-        variables["epics"] = json!([epic]);
+        let mut epics = vec![epic.clone()];
+        epics.extend(ask.shipping.iter().filter(|branch| *branch != epic).cloned());
+        variables["epics"] = json!(epics);
+        variables["epicTargets"] = json!([epic]);
     }
     for (name, values) in [
         ("branches", &open_branches),
@@ -829,7 +859,16 @@ pub async fn read_orchestration(
         Box::new(EpicRemote {
             branch: branch.clone(),
             pipeline: last_finished("epicPipelines").map(|pipeline| pipeline_remote(&pipeline, &web)),
-            mr: nodes(&project, "epicMrs").first().map(|node| mr_of(node).0),
+            mr: nodes(&project, "epicMrs")
+                .iter()
+                .map(|node| mr_of(node).0)
+                .find(|mr| mr.branch == *branch),
+            tasks: nodes(&project, "epicTasks").iter().map(batch_task_of).collect(),
+            shipping: nodes(&project, "epicMrs")
+                .iter()
+                .map(|node| mr_of(node).0)
+                .filter(|mr| mr.branch != *branch && ask.shipping.contains(&mr.branch))
+                .collect(),
         })
     });
     let develop = last_finished("develop").map(|pipeline| pipeline_remote(&pipeline, &web));

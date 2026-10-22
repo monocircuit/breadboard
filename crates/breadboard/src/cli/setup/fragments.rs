@@ -5,7 +5,7 @@
 //! release|notes|check`. Plain git, glab only for the MR links of a release:
 //! CI checks the fragments without an install and without glab.
 
-use super::proc::{Args, fail, git, outln};
+use super::proc::{Args, Shape, fail, git, outln};
 use breadboard_core::config::{Changelog, Library};
 use breadboard_core::json::{int_of, str_of};
 use regex::Regex;
@@ -14,6 +14,15 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::LazyLock;
+
+/// What `changelog:add` takes.
+pub const ADD: Shape = Shape::new(&["--type", "--area"], &["--type", "--area"], None, USAGE);
+/// What `changelog:check` takes.
+pub const CHECK: Shape = Shape::new(&["--mr"], &[], Some(0), USAGE);
+/// What `changelog:release` and `changelog:notes` take: the version.
+pub const OF_VERSION: Shape = Shape::new(&[], &[], Some(1), USAGE);
+/// What `changelog:unreleased` takes: nothing.
+pub const UNRELEASED: Shape = Shape::new(&[], &[], Some(0), USAGE);
 
 pub const FRAGMENTS: &str = ".changelog";
 pub const CHANGELOG: &str = "CHANGELOG.md";
@@ -543,7 +552,7 @@ fn root_of() -> std::path::PathBuf {
         .text()
         .to_string();
     if top.is_empty() {
-        fail("not inside the repo");
+        fail("not inside the repo: cd into a checkout of it");
     }
     top.into()
 }

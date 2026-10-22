@@ -76,39 +76,31 @@ pub fn space_label(main: &Path, dir: &Path) -> String {
     }
 }
 
-/// The space of a checkout, its id.
-pub fn space_of(main: &Path, dir: &Path) -> Option<String> {
-    let label = space_label(main, dir);
-    herdr::spaces()
-        .into_iter()
-        .find(|space| space.label == label)
-        .map(|space| space.id)
-}
-
-/// The space and tab a line for `to` goes to: a worktree's agent in the tab
-/// `<feature>` of its space, the orchestrator in the tab `orchestrator` of `⇶ <title>`.
-fn tab_of(main: &Path, to: &Target) -> (String, String) {
-    match to {
-        Target::Dir(dir) => (space_label(main, dir), feature_of(main, dir)),
-        Target::Orchestration(name) => (
-            space_label_of(main, name),
-            breadboard_core::local::ORCHESTRATOR_TAB.to_string(),
-        ),
-    }
-}
-
-/// The pane of the agent `to` addresses, None without one (`agentPaneOf`).
+/// The pane of the agent `to` addresses, None without one (`agentPaneOf`):
+/// a worktree's, the pane that runs its bound conversation, wherever it is
+/// (#409: a worktree has no space of its own); the orchestrator's, in the tab
+/// `orchestrator` of its space.
 pub fn agent_pane_of(main: &Path, to: &Target) -> Option<Pane> {
-    let (space, tab) = tab_of(main, to);
-    let workspace = herdr::spaces().into_iter().find(|found| found.label == space)?.id;
-    let tab = herdr::tabs_of(&workspace)
-        .into_iter()
-        .find(|found| found.label == tab)?
-        .id;
-    // Fresh, never the daemon's shared answer: what it says decides whether a line is typed in.
-    herdr::panes_of_now(&workspace)
-        .into_iter()
-        .find(|pane| pane.tab == tab && pane.agent.is_some())
+    match to {
+        Target::Dir(dir) => {
+            let id = breadboard_core::conversations::bound_session(dir)?;
+            // Fresh, never the daemon's shared answer: what it says decides whether a line is typed in.
+            herdr::all_panes_now()
+                .into_iter()
+                .find(|pane| pane.agent.is_some() && pane.session.as_deref() == Some(id.as_str()))
+        }
+        Target::Orchestration(name) => {
+            let space = space_label_of(main, name);
+            let workspace = herdr::spaces().into_iter().find(|found| found.label == space)?.id;
+            let tab = herdr::tabs_of(&workspace)
+                .into_iter()
+                .find(|found| found.label == breadboard_core::local::ORCHESTRATOR_TAB)?
+                .id;
+            herdr::panes_of_now(&workspace)
+                .into_iter()
+                .find(|pane| pane.tab == tab && pane.agent.is_some())
+        }
+    }
 }
 
 /// The tab of the pane that runs the conversation `id`, None when none does.
@@ -169,6 +161,22 @@ pub fn deliver_to(main: &Path, dir: &Path, line: &str) -> bool {
     type_into(agent_pane_of(main, &Target::Dir(dir.to_path_buf())).as_ref(), line)
 }
 
+/// A notice for the agent of `dir` (#445, `!N merged`): queued for a task
+/// agent without starting a run, the next line that does takes it along;
+/// typed into the pane of a claude that runs it interactively, as a line is.
+pub fn deliver_notice(main: &Path, dir: &Path, line: &str) -> bool {
+    if breadboard_core::runs::is_headless(main, dir) && held_pane(main, dir).is_none() {
+        return enqueue_notice(main, dir, line);
+    }
+    deliver_to(main, dir, line)
+}
+
+/// A notice queued for the headless agent of `dir`: no run starts for it,
+/// so the daemon isn't woken; false when no session is bound there.
+pub fn enqueue_notice(main: &Path, dir: &Path, line: &str) -> bool {
+    breadboard_core::runs::enqueue_notice(main, dir, &overview_line(line)).is_ok()
+}
+
 /// One line queued for the next run of the headless agent of the worktree
 /// `dir` (#358), the daemon woken to run it; false when no session is bound
 /// there. Queued is in: the daemon runs it, now or once memory allows.
@@ -186,18 +194,17 @@ pub fn enqueue_allowing(main: &Path, dir: &Path, line: &str, allowed: Vec<String
     true
 }
 
-/// A checkout's space in front (`focusSpace`); false outside herdr or without one.
-pub fn focus_space(main: &Path, dir: &Path) -> bool {
-    space_of(main, dir).is_some_and(|workspace| did(&["workspace", "focus", &workspace]))
-}
-
-/// The tab of an agent in front, its worktree's space first (auto-actions.mjs `focusAgent`).
-pub fn focus_tab(main: &Path, dir: &Path, tab: Option<&str>) -> bool {
-    let is_space = focus_space(main, dir);
-    match tab {
-        Some(tab) => did(&["tab", "focus", tab]),
-        None => is_space,
+/// The tab of an agent in front, its space first: wherever herdr has it (#409).
+pub fn focus_tab(_main: &Path, _dir: &Path, tab: Option<&str>) -> bool {
+    let Some(tab) = tab else { return false };
+    let space = herdr::all_panes()
+        .into_iter()
+        .find(|pane| pane.tab == tab)
+        .map(|pane| pane.workspace);
+    if let Some(space) = space {
+        did(&["workspace", "focus", &space]);
     }
+    did(&["tab", "focus", tab])
 }
 
 /// A herdr notification with its sound (`request`, `done`).

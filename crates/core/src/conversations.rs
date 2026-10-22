@@ -196,28 +196,41 @@ fn context_window() -> u64 {
 /// The share of its window (0 to 1) the conversation `id` had used at its
 /// last answer; read again only when its transcript changed.
 pub fn context_share_of(id: &str) -> Option<f64> {
-    static SHARES: Mutex<Option<HashMap<PathBuf, (Stamp, f64)>>> = Mutex::new(None);
+    usage_by_id(id).map(|usage| (usage.used as f64 / usage.window as f64).min(1.0))
+}
+
+/// The context the conversation `id` held at its last answer and when that
+/// came (#445): what a fresh start is judged by.
+pub fn context_of(id: &str) -> Option<crate::fresh::Context> {
+    usage_by_id(id).map(|usage| crate::fresh::Context {
+        used: usage.used,
+        at: usage.at,
+    })
+}
+
+/// The last answer's usage of the conversation `id`; read again only when its transcript changed.
+fn usage_by_id(id: &str) -> Option<Usage> {
+    static USAGES: Mutex<Option<HashMap<PathBuf, (Stamp, Usage)>>> = Mutex::new(None);
     let transcript = transcript_of(id)?;
     let meta = fs::metadata(&transcript).ok()?;
     let stamp = (meta.len(), meta.modified().ok());
-    if let Some((known, share)) = SHARES
+    if let Some((known, usage)) = USAGES
         .lock()
         .ok()?
         .as_ref()
-        .and_then(|cache| cache.get(&transcript).copied())
+        .and_then(|cache| cache.get(&transcript).cloned())
         && known == stamp
     {
-        return Some(share);
+        return Some(usage);
     }
     let (lines, _) = tail_lines(&transcript, TAIL_BYTES)?;
     let usage = usage_of(&lines);
-    let share = (usage.used as f64 / usage.window as f64).min(1.0);
-    if let Ok(mut cache) = SHARES.lock() {
+    if let Ok(mut cache) = USAGES.lock() {
         cache
             .get_or_insert_with(HashMap::new)
-            .insert(transcript, (stamp, share));
+            .insert(transcript, (stamp, usage.clone()));
     }
-    Some(share)
+    Some(usage)
 }
 
 /// The conversation bound to a worktree, as the overview reads it (claude.mjs `readClaude`).
@@ -247,6 +260,14 @@ impl Claude {
             0.0
         } else {
             (self.used as f64 / self.window as f64).min(1.0)
+        }
+    }
+
+    /// What it holds, for a fresh start (#445).
+    pub fn context(&self) -> crate::fresh::Context {
+        crate::fresh::Context {
+            used: self.used,
+            at: self.at,
         }
     }
 }

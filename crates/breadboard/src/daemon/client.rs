@@ -134,14 +134,11 @@ pub fn wake_runs(main: &Path) -> bool {
 /// that pane's agent to herdr, which resumes it there after a restart.
 fn serve_command(exe: &Path) -> Command {
     let mut command = Command::new(exe);
-    command
+    breadboard_core::herdr::off_pane(&mut command)
         .arg("serve")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    for name in breadboard_core::herdr::PANE_ENV {
-        command.env_remove(name);
-    }
     command
 }
 

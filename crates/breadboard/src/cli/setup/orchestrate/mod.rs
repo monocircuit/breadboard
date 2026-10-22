@@ -5,7 +5,6 @@
 
 mod changes;
 mod end;
-mod epic;
 mod fresh;
 mod heal;
 mod issue;
@@ -15,7 +14,7 @@ mod space;
 mod workers;
 
 use crate::cli::setup::herdr;
-use crate::cli::setup::proc::{self, Args, fail, name_refusal, outln, quote, step};
+use crate::cli::setup::proc::{self, Args, Shape, fail, name_refusal, outln, quote, step};
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
@@ -27,7 +26,7 @@ use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--epic <n>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
@@ -39,6 +38,49 @@ pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… 
 /// `--after`'s values and where they stand, the MRs in them: the handover's
 /// reading, one for `--queue --after` and `--to … --after`.
 use crate::cli::lifecycle::handover::{after_args, parse_after};
+
+/// What `wt:orchestrate` takes.
+pub const SHAPE: Shape = Shape::new(
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--shared",
+        "--peer",
+        "--brief",
+        "--queue",
+        "--after",
+        "--dry-run",
+        "--to",
+        "--limit",
+        "--end",
+        "--changelog",
+        "--watch",
+        "--changes",
+        "--fresh",
+        // What the overview's own start passes; `--cap` says it is gone (#229).
+        "--now",
+        "--cap",
+        // The overview's retirement of a full agent at its merge (#381).
+        "--retire",
+        "--mr",
+    ],
+    &[
+        "--title",
+        "--auto",
+        "--epic",
+        "--product",
+        "--peer",
+        "--brief",
+        "--to",
+        "--limit",
+        "--retire",
+        "--mr",
+    ],
+    None,
+    USAGE,
+);
 
 fn is_issue_arg(arg: &str) -> bool {
     (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()))
@@ -61,8 +103,8 @@ fn extra_for(name: &str, number: i64, given: Option<&str>) -> String {
 }
 
 /// The brief of `--brief` kept per issue (#247): a queued issue started later
-/// gets it, no other. `brief` is written as today too: the Node overview's
-/// queue starts read it while both run side by side (rule 5).
+/// gets it, no other. The record keeps no brief for the whole orchestration:
+/// the next run's issues would get it.
 fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     let main = repo::main_dir();
     let raw = breadboard_core::json::read(&record::record_file(&main, name)).unwrap_or(json!({}));
@@ -74,7 +116,7 @@ fn keep_briefs(name: &str, numbers: &[i64], text: &str) {
     for number in numbers {
         briefs.insert(number.to_string(), json!(text));
     }
-    let _ = record::update_record(&main, name, object(json!({ "brief": text, "briefs": briefs })));
+    let _ = record::update_record(&main, name, object(json!({ "briefs": briefs })));
 }
 
 /// The flags a form that only ends, reads or watches takes besides its own:
@@ -103,16 +145,7 @@ fn stray_flag(args: &Args) -> Option<String> {
 pub fn command(args: &Args) -> ExitCode {
     let argv = &args.all;
     let after = after_args(argv);
-    let valued = [
-        "--peer",
-        "--brief",
-        "--to",
-        "--limit",
-        "--title",
-        "--epic",
-        "--auto",
-        "--product",
-    ];
+    let valued = ["--peer", "--brief", "--to", "--limit", "--title", "--auto", "--product"];
     // The words, wherever the flags stand (`--dry-run breadboard 301`): the
     // orchestration, then its issues; the MRs after `--after` are none.
     let positional: Vec<&String> = argv
@@ -297,17 +330,20 @@ pub fn command(args: &Args) -> ExitCode {
             outln!("  #{:<4} {line}", item.number);
         }
     }
-    // The epic before anything is written: its tasks branch off it (#350).
-    match epic::ensure_epic(&name, &plan, args.value("--epic").as_deref(), is_dry) {
-        Ok(Some(branch)) => outln!("  epic   {branch}: its tasks branch off it and merge into it by themselves"),
-        Ok(None) => {}
-        Err(why) => fail(&format!("no epic branch: {why}")),
-    }
     // Its product before its space opens: the product's space is its space (#405).
-    match product::ensure_product(&name, &plan, args.value("--product").as_deref(), is_dry) {
-        Ok(Some(product)) => outln!("  product {product}: its space is the product's, with its other orchestrations"),
-        Ok(None) => {}
+    let product = match product::ensure_product(&name, &plan, args.value("--product").as_deref(), is_dry) {
+        Ok(Some(product)) => {
+            outln!("  product {product}: its space is the product's, with its other orchestrations");
+            Some(product)
+        }
+        Ok(None) => None,
         Err(why) => fail(&why),
+    };
+    // The batch before a task is made: its tasks branch off it (#411).
+    match crate::cli::setup::batch::ensure_batch(&name, product.as_deref(), is_dry) {
+        Ok(Some(branch)) => outln!("  base   {branch}: its tasks branch off it and merge into it by themselves"),
+        Ok(None) => {}
+        Err(why) => fail(&format!("no batch branch: {why}")),
     }
     // Its checkout up to its base, its briefs naming the base each worktree has (#380).
     if !is_dry {

@@ -6,7 +6,7 @@
 //! already is only put in front.
 
 use super::herdr::{self, quote};
-use breadboard_core::conversations::{bound_session, interactive_resumes, running_claudes};
+use breadboard_core::conversations::{interactive_resumes, running_claudes};
 use breadboard_core::git::feature_of;
 use breadboard_core::runs::{self, State, Table};
 use std::path::Path;
@@ -83,48 +83,6 @@ pub fn wait_turn(main: &Path, dir: &Path, id: &str) -> Result<(), String> {
             Step::Wait => return Err("its run did not end within 15 min".into()),
         }
     }
-}
-
-/// Opens the agent of the worktree `dir` (on the actor's thread: a wait may
-/// take minutes). What it did, for the log; Err why not.
-pub fn open(main: &Path, dir: &Path) -> Result<String, String> {
-    let id = bound_session(dir).ok_or("its worktree binds no conversation")?;
-    let feature = feature_of(main, dir);
-    let started = Instant::now();
-    loop {
-        match step_of(is_running(&id), run_of(main, &id)) {
-            Step::Focus => {
-                let tab = herdr::agent_tab_of_session(&id);
-                herdr::focus_tab(main, dir, tab.as_deref());
-                return Ok(format!("{feature}'s claude runs already: its tab in front"));
-            }
-            Step::Wait if started.elapsed() < RUN_WAIT => std::thread::sleep(Duration::from_secs(2)),
-            Step::Wait => return Err("its run did not end within 15 min".into()),
-            Step::Open => break,
-        }
-    }
-    // Its space may be closed (#386): the click opens it again.
-    let space = herdr::space_of(main, dir)
-        .or_else(|| {
-            let repo = crate::cli::lifecycle::repo::Repo {
-                main: main.to_path_buf(),
-            };
-            crate::cli::lifecycle::layout::open_space(&repo, dir)
-        })
-        .ok_or("herdr has no space of its worktree and made none")?;
-    let tabs = breadboard_core::herdr::tabs_of(&space);
-    let command = open_command(dir, &id, &feature);
-    if !herdr::ensure_tab(&space, &feature, dir, Some(&command), &tabs) {
-        return Err(format!("its tab {feature} is busy: something else runs in it"));
-    }
-    let tab = breadboard_core::herdr::tabs_of(&space)
-        .into_iter()
-        .find(|tab| tab.label == feature)
-        .map(|tab| tab.id);
-    herdr::focus_tab(main, dir, tab.as_deref());
-    Ok(format!(
-        "{feature} opened in its tab: its lines wait until that claude ends"
-    ))
 }
 
 #[cfg(test)]
