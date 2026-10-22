@@ -164,7 +164,17 @@ fn glab_refusal(command: &str, pause: Option<breadboard_core::gitlab::budget::Pa
         ));
     }
     for args in glabs {
-        breadboard_core::gitlab::budget::note_by("agent", "glab", &format!("glab {}", args.join(" ")), None);
+        // Its redirections (`2>/dev/null`) are the shell's, not what glab asks.
+        let asked: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .filter(|word| {
+                !word
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .starts_with(['>', '<'])
+            })
+            .collect();
+        breadboard_core::gitlab::budget::note_by("agent", "glab", &format!("glab {}", asked.join(" ")), None);
     }
     None
 }
