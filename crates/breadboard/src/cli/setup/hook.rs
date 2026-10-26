@@ -4,7 +4,8 @@
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
 //! Same texts as the Node hook: an agent reads them and acts on them. It
 //! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`),
-//! and moves a worktree off a batch that shipped onto the next (#411).
+//! and moves a worktree off a batch that shipped onto the next (#411). What
+//! carries no code passes unchecked: a commit origin has, changelog fragments (#464).
 
 use super::check::{self, Failure};
 use super::gitlab;
@@ -99,10 +100,28 @@ pub struct Pushed<'a> {
     pub record: &'a Map<String, Value>,
     /// None when not asked (nothing changed, or stamped).
     pub plan: Option<&'a Plan>,
-    /// Nothing changed against develop (a claim, wt:new).
+    /// No code to check: nothing changed against develop (a claim, wt:new),
+    /// a commit origin has already (the next batch, #464) or changelog
+    /// fragments only (a shipped batch's line, #464).
     pub is_empty: bool,
     /// What the stamp of its tree left out of what it changes (#366), when stamped.
     pub gap: Option<&'a str>,
+}
+
+/// Whether a diff (`git diff --name-status`) only adds or rewrites changelog
+/// fragments, `.changelog/<name>.md`: no code, nothing to check (#464).
+pub fn is_changelog_only(name_status: &str) -> bool {
+    let mut lines = name_status.lines().filter(|line| !line.trim().is_empty()).peekable();
+    lines.peek().is_some()
+        && lines.all(|line| {
+            let mut parts = line.split('\t');
+            let (status, path) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+            matches!(status, "A" | "M")
+                && parts.next().is_none()
+                && path
+                    .strip_prefix(".changelog/")
+                    .is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
+        })
 }
 
 /// The tree of a record's `passed` / `failed`.
@@ -218,9 +237,15 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
         };
         let tree = tree_of(sha);
         let base = text_of(&["merge-base", &remote, sha]);
-        let is_empty = base
-            .as_ref()
-            .is_some_and(|base| git(&["diff", "--quiet", base, sha], dir).is_ok);
+        // What the push brings that origin hasn't seen: nothing (a branch made
+        // at a commit origin has, the next batch), or changelog fragments only
+        // (the shipped batch's line) carry no code (#464).
+        let is_on_origin = text_of(&["for-each-ref", "--count=1", "--contains", sha, "refs/remotes/origin"]).is_some();
+        let is_empty = is_on_origin
+            || base.as_ref().is_some_and(|base| {
+                git(&["diff", "--quiet", base, sha], dir).is_ok
+                    || is_changelog_only(git(&["diff", "--no-renames", "--name-status", base, sha], dir).text())
+            });
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
             (None, _) => Err(format!("no merge base with {remote}: git fetch origin")),
@@ -342,6 +367,22 @@ mod tests {
         let text = refusal_of("feature/1-a", &[merged]).unwrap();
         assert!(text.starts_with("✗ push refused: !7 of feature/1-a is merged, so no merge request"));
         assert!(text.ends_with("pnpm wt:new <n>-<feature>.\n  https://g/mr/7"));
+    }
+
+    #[test]
+    fn changelog_fragments_alone_carry_no_code() {
+        assert!(is_changelog_only("A\t.changelog/batch-breadboard-6.md\n"));
+        assert!(is_changelog_only(
+            "M\t.changelog/batch-breadboard-6.md\nA\t.changelog/464-ship.md\n"
+        ));
+        assert!(!is_changelog_only(""));
+        assert!(!is_changelog_only("D\t.changelog/batch-breadboard-6.md"));
+        assert!(!is_changelog_only(
+            "A\t.changelog/a.md\nM\tpackages/breadboard/src/x.rs"
+        ));
+        assert!(!is_changelog_only("A\t.changelog/sub/a.md"));
+        assert!(!is_changelog_only("A\t.changelog/a.sh"));
+        assert!(!is_changelog_only("A\tdocs/.changelog/a.md"));
     }
 
     #[test]
