@@ -31,7 +31,21 @@ fn glab(main: &Path, args: &[&str], what: &str, limit: Duration) -> Out {
             stderr: "timeout: GitLab was silent before in this run".into(),
         };
     }
-    let out = output_within("glab", args, main, &wait_for(what, limit));
+    // A 429 paused GitLab for every caller (#462): nothing is asked before it ends.
+    if let Some(pause) = breadboard_core::gitlab::budget::glab_may("glab", args) {
+        return Out {
+            is_ok: false,
+            status: -1,
+            stdout: String::new(),
+            stderr: pause,
+        };
+    }
+    let mut out = output_within("glab", args, main, &wait_for(what, limit));
+    if !out.is_ok
+        && let Some(pause) = breadboard_core::gitlab::budget::glab_failed(&out.stderr)
+    {
+        out.stderr = pause;
+    }
     if out.stderr.starts_with("timeout") {
         IS_SILENT.store(true, Ordering::Relaxed);
     }

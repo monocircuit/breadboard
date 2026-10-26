@@ -310,7 +310,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
                     .entry(key.clone())
                     .or_insert_with(|| {
                         let kept = state.kept.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
-                        Feed::start(main, ask.clone(), kept.map(|(_, last)| last))
+                        Feed::start(main, view.clone(), ask.clone(), kept.map(|(_, last)| last))
                     })
                     .clone();
                 let (said, last) = feed.follow();

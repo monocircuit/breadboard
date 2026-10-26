@@ -19,6 +19,11 @@ pub fn get(main: &Path, endpoint: &str) -> Result<Value, String> {
 /// `glab api <args>`, its answer parsed; `what` names the call in an error.
 fn glab_api(main: &Path, args: &[&str], what: &str) -> Result<Value, String> {
     let failed = |reason: &str| format!("GitLab: {reason} ({what})");
+    let mut asked = vec!["api"];
+    asked.extend_from_slice(args);
+    if let Some(pause) = breadboard_core::gitlab::budget::glab_may("glab", &asked) {
+        return Err(pause);
+    }
     let output = Command::new("glab")
         .arg("api")
         .args(args)
@@ -30,6 +35,9 @@ fn glab_api(main: &Path, args: &[&str], what: &str) -> Result<Value, String> {
             _ => failed(&format!("glab did not start: {error}")),
         })?;
     if !output.status.success() {
+        if let Some(pause) = breadboard_core::gitlab::budget::glab_failed(&String::from_utf8_lossy(&output.stderr)) {
+            return Err(pause);
+        }
         let reason = reason_of(&String::from_utf8_lossy(&output.stderr))
             .unwrap_or_else(|| format!("glab api exited with {}", output.status));
         return Err(failed(&reason));

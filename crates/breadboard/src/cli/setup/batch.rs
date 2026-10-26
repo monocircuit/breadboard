@@ -145,15 +145,16 @@ fn retarget(branch: &str, target: &str) -> String {
     else {
         return String::new();
     };
+    let target_field = format!("target_branch={target}");
+    let endpoint = format!("projects/:fullpath/merge_requests/{iid}");
+    let args = ["api", "--method", "PUT", &endpoint, "--raw-field", &target_field];
+    if breadboard_core::gitlab::budget::glab_may("glab", &args).is_some() {
+        return format!(
+            ", !{iid} not retargeted (GitLab's rate limit): `glab mr update {iid} --target-branch {target}`"
+        );
+    }
     let status = std::process::Command::new("glab")
-        .args([
-            "api",
-            "--method",
-            "PUT",
-            &format!("projects/:fullpath/merge_requests/{iid}"),
-            "--raw-field",
-            &format!("target_branch={target}"),
-        ])
+        .args(args)
         .current_dir(repo::main_dir())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

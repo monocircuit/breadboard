@@ -279,14 +279,14 @@ async fn read_gitlab(
     });
     match daemon::client::follow(&main, &view, &mut asks, &mut refreshes, &out).await {
         daemon::client::Followed::Done => {}
-        daemon::client::Followed::Lost => daemon::read_gitlab(main, asks, refreshes, out).await,
+        daemon::client::Followed::Lost => daemon::read_gitlab(main, view, asks, refreshes, out).await,
         daemon::client::Followed::Silent => {
             let _ = out.send(Feed::Remote {
                 result: Err(daemon::SILENT_TEXT.into()),
                 at: now_ms(),
                 rate: None,
             });
-            daemon::read_gitlab(main, asks, refreshes, out).await;
+            daemon::read_gitlab(main, view, asks, refreshes, out).await;
         }
     }
 }

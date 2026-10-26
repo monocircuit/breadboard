@@ -10,10 +10,11 @@
 //!   one call per worktree and stamp of its files in STALE_MS for all
 //!   overviews together; what the key holds (merge base, diff, ahead,
 //!   cherry, …) each overview keeps in its own memo while the key holds;
-//! - GitLab: one feed per view (`feed`), read on the overview's cadence
-//!   (`gitlab::read_gitlab`) and sent to every overview of that view; `r` in
-//!   any of them reads again for all; an overview opened later gets the last
-//!   answer at once;
+//! - GitLab: one feed per view (`feed`), read on its cadence
+//!   (`gitlab::read_gitlab`: 30 s, longer while nothing changes, at once on
+//!   an event) and sent to every overview of that view; `r` in any of them
+//!   reads again for all; an overview opened later gets the last answer at
+//!   once; one process of the user polls a view (#462), a 429 pauses all;
 //! - docker isn't the daemon's: core reads it once in 12 s for every process
 //!   of the user through a file (`local::containers`, #331), with or without it.
 //!
