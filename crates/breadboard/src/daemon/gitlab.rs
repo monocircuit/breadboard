@@ -155,7 +155,9 @@ pub async fn read_gitlab(
         }
         // GitLab paused after a 429 (#462): the next read once the pause ended, not one before.
         let wait = match breadboard_core::gitlab::budget::paused() {
-            Some(pause) => Duration::from_millis(u64::try_from(pause.until - now_ms()).unwrap_or(0)).max(remote_every()),
+            Some(pause) => {
+                Duration::from_millis(u64::try_from(pause.until - now_ms()).unwrap_or(0)).max(remote_every())
+            }
             None => wait_after(same, found.as_deref().is_some_and(is_moving)),
         };
         let refs = origin_refs(&main).await;
