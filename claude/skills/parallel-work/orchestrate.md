@@ -419,7 +419,7 @@ starts none for it (a click on its row still runs one). develop's pipeline
 after each merge is the safety net: while it is red, no merge into develop
 is offered. Into an epic nothing changes, and a batch's MR into develop
 always runs its pipeline; a task MR into its batch follows `[merge]
-batch_needs_pipeline` ([batches.md](batches.md), #461).
+batch_needs_pipeline` ({{#batches}}[batches.md](batches.md), {{/batches}}#461).
 
 `breadboard serve` marks an MR ready once its bar is full and no try or
 change holds it, and back to draft when a box is unticked (#399); a draft set
