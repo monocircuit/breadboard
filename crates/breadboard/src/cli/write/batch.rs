@@ -3,7 +3,8 @@
 //! lists every task MR merged into the batch and closes their issues, and
 //! it merges with the merge commits of the tasks (no squash), by the user's
 //! two clicks. The batch carries its changelog line, the next batch opens
-//! off it at once and the MRs still on their way into it go into the next.
+//! off it at once and the MRs still on their way into it go into the next,
+//! their worktrees' base with them (#464).
 //! Held while a batch shipped before is red (#413).
 
 mod fix;
@@ -13,7 +14,8 @@ use super::epic::{mrs_of, query};
 use super::glab;
 use super::mr::closed_by;
 use breadboard_core::batch::{self, Batch, Shipping};
-use breadboard_core::git::{git, issue_of_branch};
+use breadboard_core::git::{Worktree, git, issue_of_branch};
+use breadboard_core::record;
 use serde_json::Value;
 use std::path::Path;
 use std::process::ExitCode;
@@ -124,8 +126,9 @@ fn ensure_changelog(main: &Path, batch: &Batch, path: &str, text: &str) -> Resul
     batch::commit_file(main, &batch.branch, path, text, &message).map(|_| true)
 }
 
-/// The open MRs into `from` retargeted to `to`: the iids moved, and the lines of those that didn't.
-fn retarget_open(main: &Path, from: &str, to: &str) -> (Vec<i64>, Vec<String>) {
+/// The open MRs into `from` retargeted to `to`: the iids moved with their
+/// source branches, and the lines of those that didn't.
+fn retarget_open(main: &Path, from: &str, to: &str) -> (Vec<(i64, String)>, Vec<String>) {
     let mrs = "projects/:fullpath/merge_requests";
     let Ok(open) = mrs_of(
         main,
@@ -149,7 +152,7 @@ fn retarget_open(main: &Path, from: &str, to: &str) -> (Vec<i64>, Vec<String>) {
             &[glab::Field::Raw("target_branch", to)],
         );
         if sent.is_ok {
-            moved.push(iid);
+            moved.push((iid, glab::text_of(mr, "source_branch").to_string()));
         } else {
             failed.push(format!(
                 "!{iid} not retargeted: `glab mr update {iid} --target-branch {to}`"
@@ -157,6 +160,34 @@ fn retarget_open(main: &Path, from: &str, to: &str) -> (Vec<i64>, Vec<String>) {
         }
     }
     (moved, failed)
+}
+
+/// The worktrees of `branches` whose base is still the shipped batch `from`:
+/// they follow their MR into the next one (#464), as a push of theirs would (#411).
+fn followers<'a>(
+    trees: &'a [Worktree],
+    branches: &[String],
+    from: &str,
+    base_of: impl Fn(&Path) -> Option<String>,
+) -> Vec<&'a Worktree> {
+    trees
+        .iter()
+        .filter(|tree| tree.branch.as_ref().is_some_and(|branch| branches.contains(branch)))
+        .filter(|tree| base_of(&tree.dir).as_deref() == Some(from))
+        .collect()
+}
+
+/// The moved MRs' worktrees based on `to` now: the lines of those not switched.
+fn follow_moved(main: &Path, branches: &[String], from: &str, to: &str) -> Vec<String> {
+    let trees = breadboard_core::git::worktrees(main);
+    followers(&trees, branches, from, record::base_in)
+        .into_iter()
+        .filter_map(|tree| {
+            record::write_base(&tree.dir, to)
+                .err()
+                .map(|error| format!("{}'s base not switched to {to}: {error}", tree.dir.display()))
+        })
+        .collect()
 }
 
 /// Why shipping waits: a batch of `product` shipped before `current` whose
@@ -310,7 +341,9 @@ pub fn run(argv: &Argv) -> Outcome {
     }
     let next = batch::open_next_off(main, product, &current)
         .map_err(|why| format!("!{iid} is open, but the next batch didn't open: {why}"))?;
-    let (moved, failed) = retarget_open(main, &current.branch, &next.branch);
+    let (moved, mut failed) = retarget_open(main, &current.branch, &next.branch);
+    let branches: Vec<String> = moved.iter().map(|(_, branch)| branch.clone()).collect();
+    failed.extend(follow_moved(main, &branches, &current.branch, &next.branch));
     let mut lines = vec![
         format!(
             "\n✓ !{iid} {} → {develop}: {} ({}), closes {}",
@@ -331,7 +364,7 @@ pub fn run(argv: &Argv) -> Outcome {
         format!("✓ the next batch {} is open off it", next.branch),
     ];
     if !moved.is_empty() {
-        let listed: Vec<String> = moved.iter().map(|iid| format!("!{iid}")).collect();
+        let listed: Vec<String> = moved.iter().map(|(iid, _)| format!("!{iid}")).collect();
         lines.push(format!("✓ {} go into {} now", listed.join(" "), next.branch));
     }
     lines.extend(failed.into_iter().map(|line| format!("! {line}")));
@@ -397,6 +430,32 @@ mod tests {
         assert!(body.contains("- !442 chore: tidy\n"), "{body}");
         assert!(body.contains("`batch/breadboard-3` into develop"), "{body}");
         assert_eq!(closed_by(&body), [411]);
+    }
+
+    #[test]
+    fn the_worktrees_of_moved_mrs_follow_them_off_the_shipped_batch() {
+        let tree = |dir: &str, branch: Option<&str>| Worktree {
+            dir: dir.into(),
+            branch: branch.map(String::from),
+        };
+        let trees = [
+            tree("/p", Some("develop")),
+            tree("/p-1-a", Some("feature/1-a")),
+            tree("/p-2-b", Some("feature/2-b")),
+            tree("/p-3-c", Some("feature/3-c")),
+            tree("/p-4-d", None),
+        ];
+        let moved = ["feature/1-a".to_string(), "feature/3-c".to_string()];
+        let base_of = |dir: &Path| match dir.to_str() {
+            Some("/p-1-a" | "/p-2-b") => Some("batch/breadboard-6".to_string()),
+            Some("/p-3-c") => Some("epic/15-x".to_string()),
+            _ => None,
+        };
+        let found: Vec<&str> = followers(&trees, &moved, "batch/breadboard-6", base_of)
+            .iter()
+            .filter_map(|tree| tree.dir.to_str())
+            .collect();
+        assert_eq!(found, ["/p-1-a"]);
     }
 
     #[test]
