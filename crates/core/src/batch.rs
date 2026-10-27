@@ -237,6 +237,187 @@ pub fn conflicts_with_develop(main: &Path, batch: &str, develop: &str) -> Option
         .filter(|files| !files.is_empty())
 }
 
+/// A batch the user shipped (#414): its MR into develop open, the product's
+/// next batch open off it. The product's file keeps them (`shipping`) until
+/// the daemon saw the MR merged and closed what GitLab left open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shipping {
+    pub branch: String,
+    pub mr: i64,
+}
+
+/// The batches of `product` on their way into develop, oldest first.
+pub fn shipping_of(main: &Path, product: &str) -> Vec<Shipping> {
+    let Some(raw) = json::read(&product_file(main, product)) else {
+        return Vec::new();
+    };
+    raw.get("shipping")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some(Shipping {
+                branch: str_of(entry, "branch").filter(|branch| is_batch(branch))?.to_string(),
+                mr: entry.get("mr")?.as_i64()?,
+            })
+        })
+        .collect()
+}
+
+/// `shipping` kept as `product`'s batches on their way, the file's other fields as they were.
+pub fn write_shipping(main: &Path, product: &str, shipping: &[Shipping]) -> std::io::Result<()> {
+    let file = product_file(main, product);
+    let mut raw = json::read_object(&file);
+    let entries: Vec<Value> = shipping
+        .iter()
+        .map(|entry| json!({ "branch": entry.branch, "mr": entry.mr }))
+        .collect();
+    raw.insert("shipping".into(), Value::Array(entries));
+    json::write_pretty(&file, &Value::Object(raw))
+}
+
+/// The fix issues of `product`'s red shipped batches (#413): (issue, batch branch).
+pub fn fixes_of(main: &Path, product: &str) -> Vec<(i64, String)> {
+    let Some(raw) = json::read(&product_file(main, product)) else {
+        return Vec::new();
+    };
+    raw.get("fixes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let number = entry.get("issue")?.as_i64()?;
+            Some((
+                number,
+                str_of(entry, "branch").filter(|branch| is_batch(branch))?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The shipped batch the fix issue `number` goes into (#413), while that
+/// batch is still on its way into develop: the base of its worktree.
+pub fn fix_base(main: &Path, product: &str, number: i64) -> Option<String> {
+    let branch = fixes_of(main, product)
+        .into_iter()
+        .find(|(issue, _)| *issue == number)?
+        .1;
+    shipping_of(main, product)
+        .iter()
+        .any(|entry| entry.branch == branch)
+        .then_some(branch)
+}
+
+/// The fix issue `number` of the red shipped batch `branch` kept in `product`'s file, the others as they were.
+pub fn write_fix(main: &Path, product: &str, number: i64, branch: &str) -> std::io::Result<()> {
+    let file = product_file(main, product);
+    let mut raw = json::read_object(&file);
+    let mut fixes: Vec<Value> = raw
+        .get("fixes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.get("issue").and_then(Value::as_i64) != Some(number))
+        .collect();
+    fixes.push(json!({ "issue": number, "branch": branch }));
+    raw.insert("fixes".into(), Value::Array(fixes));
+    json::write_pretty(&file, &Value::Object(raw))
+}
+
+/// The next batch of `product` opened off `shipped` (#414), pushed and kept
+/// as its current one: tasks go on in it while the shipped batch's MR runs
+/// its pipeline. Opened from the shipped batch's head on origin (the caller
+/// fetches), so it has every task of it and needs no merge once it lands.
+/// One open on origin already (another clone, a ship tried again) is taken over.
+pub fn open_next_off(main: &Path, product: &str, shipped: &Batch) -> Result<Batch, String> {
+    let Some(head) = remote_head(main, &shipped.branch) else {
+        return Err(format!("origin has no {} to open the next batch from", shipped.branch));
+    };
+    let next = Batch {
+        branch: branch_of(product, shipped.number + 1),
+        number: shipped.number + 1,
+        from: Some(head.clone()),
+    };
+    match remote_head(main, &next.branch) {
+        Some(found) => {
+            // Taken over: it was opened from what the shipped batch had then.
+            let from = git(main, &["merge-base", &found, &head]).out().to_string();
+            let taken = Batch {
+                from: Some(from).filter(|from| !from.is_empty()),
+                ..next
+            };
+            write_current(main, product, &taken).map_err(|error| format!("{product}'s batch not kept: {error}"))?;
+            Ok(taken)
+        }
+        None => {
+            let pushed = git(
+                main,
+                &[
+                    "push",
+                    "--quiet",
+                    "origin",
+                    &format!("{head}:refs/heads/{}", next.branch),
+                ],
+            );
+            if !pushed.is_ok {
+                return Err(format!("{} not pushed: {}", next.branch, pushed.stderr.trim()));
+            }
+            let _ = git(main, &["fetch", "--quiet", "origin", &next.branch]);
+            write_current(main, product, &next).map_err(|error| format!("{product}'s batch not kept: {error}"))?;
+            Ok(next)
+        }
+    }
+}
+
+/// `text` as the file `path` committed on top of `branch` as origin has it
+/// and pushed (#414: the changelog fragment of a shipped batch), without a
+/// checkout: a scratch index, never the clone's own. The new head; Err why
+/// not (origin moved meanwhile: tried again by the next ship).
+pub fn commit_file(main: &Path, branch: &str, path: &str, text: &str, message: &str) -> Result<String, String> {
+    let Some(head) = remote_head(main, branch) else {
+        return Err(format!("origin has no {branch}"));
+    };
+    let git_dir = git(main, &["rev-parse", "--absolute-git-dir"]);
+    if !git_dir.is_ok {
+        return Err("not in a git checkout".into());
+    }
+    let index = Path::new(git_dir.out()).join(format!("breadboard-commit-{}.index", std::process::id()));
+    let scratch = index.with_extension("blob");
+    let run = |args: &[&str]| -> Result<String, String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(main)
+            .env("GIT_INDEX_FILE", &index)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|error| format!("git didn't start: {error}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            Err(format!(
+                "git {}: {}",
+                args[0],
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    };
+    let made = (|| {
+        std::fs::write(&scratch, text).map_err(|error| format!("{path} not written: {error}"))?;
+        let blob = run(&["hash-object", "-w", &scratch.to_string_lossy()])?;
+        run(&["read-tree", &head])?;
+        run(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},{path}")])?;
+        let tree = run(&["write-tree"])?;
+        let commit = run(&["commit-tree", &tree, "-p", &head, "-m", message])?;
+        run(&["push", "--quiet", "origin", &format!("{commit}:refs/heads/{branch}")])?;
+        let _ = git(main, &["fetch", "--quiet", "origin", branch]);
+        Ok(commit)
+    })();
+    let _ = std::fs::remove_file(&index);
+    let _ = std::fs::remove_file(&scratch);
+    made
+}
+
 /// What the daemon last looked at of a product's batch, kept in the store
 /// (`batch-<product>.json`): one look per pair of heads.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -244,6 +425,8 @@ pub fn conflicts_with_develop(main: &Path, batch: &str, develop: &str) -> Option
 pub struct Looked {
     pub batch: String,
     pub develop: String,
+    /// A shipped batch's merged MR whose issues weren't all closed (#414): looked at again.
+    pub is_closing: bool,
 }
 
 pub fn looked_file(store: &Path, product: &str) -> std::path::PathBuf {
@@ -268,6 +451,7 @@ pub fn heads_of(main: &Path, batch: &str, develop: &str) -> Looked {
     Looked {
         batch: remote_head(main, batch).unwrap_or_default(),
         develop: remote_head(main, develop).unwrap_or_default(),
+        is_closing: false,
     }
 }
 
@@ -374,6 +558,86 @@ mod tests {
             conflicts_with_develop(&main, "batch/vita-1", "develop"),
             Some(vec!["README.md".to_string()])
         );
+    }
+
+    #[test]
+    fn a_shipped_batch_gets_its_changelog_and_the_next_opens_off_it() {
+        let scratch = Scratch::new();
+        let main = repo(&scratch);
+        run(&main, &["config", "user.name", "Test"]);
+        run(&main, &["config", "user.email", "test@example.com"]);
+        let first = ensure_current(&main, "breadboard", "develop", false)
+            .unwrap()
+            .batch()
+            .clone();
+        let head = commit_file(
+            &main,
+            &first.branch,
+            ".changelog/batch-breadboard-1.md",
+            "batch 1 shipped\n",
+            "docs(changelog): batch/breadboard-1 shipped",
+        )
+        .unwrap();
+        assert_eq!(run(&main, &["rev-parse", "origin/batch/breadboard-1"]), head);
+        assert_eq!(
+            run(
+                &main,
+                &["show", "origin/batch/breadboard-1:.changelog/batch-breadboard-1.md"]
+            ),
+            "batch 1 shipped"
+        );
+        assert_eq!(run(&main, &["status", "--porcelain"]), "", "the checkout untouched");
+
+        let next = open_next_off(&main, "breadboard", &first).unwrap();
+        assert_eq!(
+            next,
+            Batch {
+                branch: "batch/breadboard-2".into(),
+                number: 2,
+                from: Some(head.clone()),
+            }
+        );
+        assert_eq!(run(&main, &["rev-parse", "origin/batch/breadboard-2"]), head);
+        assert_eq!(current_of(&main, "breadboard"), Some(next.clone()));
+        // The shipped one isn't in develop yet: the next stays open, also once it is.
+        assert!(!is_shipped(&main, &next, "develop"));
+        run(
+            &main,
+            &["push", "--quiet", "origin", &format!("{head}:refs/heads/develop")],
+        );
+        run(&main, &["fetch", "--quiet", "origin"]);
+        assert!(matches!(
+            ensure_current(&main, "breadboard", "develop", false).unwrap(),
+            Opened::Kept(batch) if batch.number == 2
+        ));
+        // A ship tried again takes the next one over.
+        assert_eq!(open_next_off(&main, "breadboard", &first).unwrap(), next);
+
+        write_shipping(
+            &main,
+            "breadboard",
+            &[Shipping {
+                branch: first.branch.clone(),
+                mr: 7,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            shipping_of(&main, "breadboard"),
+            [Shipping {
+                branch: first.branch.clone(),
+                mr: 7
+            }]
+        );
+        // A fix of the red shipped batch goes into it (#413), only while it is on its way.
+        write_fix(&main, "breadboard", 460, &first.branch).unwrap();
+        write_fix(&main, "breadboard", 461, "batch/breadboard-0").unwrap();
+        assert_eq!(fix_base(&main, "breadboard", 460), Some(first.branch.clone()));
+        assert_eq!(fix_base(&main, "breadboard", 461), None, "no longer shipping");
+        assert_eq!(fix_base(&main, "breadboard", 9), None);
+        assert_eq!(shipping_of(&main, "breadboard").len(), 1, "kept beside it");
+        assert_eq!(current_of(&main, "breadboard"), Some(next), "the batch kept beside it");
+        assert!(shipping_of(&main, "vita").is_empty());
     }
 
     #[test]

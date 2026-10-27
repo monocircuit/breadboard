@@ -30,6 +30,10 @@ pub fn glab_api(main: &Path, glab: &str, args: &[&str]) -> Result<serde_json::Va
 }
 
 fn glab_out(main: &Path, glab: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    // A 429 paused GitLab for every caller (#462): nothing is asked before it ends.
+    if let Some(pause) = breadboard_core::gitlab::budget::glab_may("daemon glab", args) {
+        return Err(pause);
+    }
     let spawn = || {
         Command::new(glab)
             .args(args)
@@ -51,11 +55,12 @@ fn glab_out(main: &Path, glab: &str, args: &[&str]) -> Result<Vec<u8>, String> {
         return Ok(output.stdout);
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if stderr.is_empty() {
+    let said = if stderr.is_empty() {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     } else {
         stderr
-    })
+    };
+    Err(breadboard_core::gitlab::budget::glab_failed(&said).unwrap_or(said))
 }
 
 /// A glab answering from `answers` (`$*` → its JSON), each call logged to `<scratch>/glab.log`.

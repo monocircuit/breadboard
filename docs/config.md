@@ -39,7 +39,7 @@ How the repo shows in herdr, one plugin per repo.
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `plugin` | `breadboard.<main checkout's folder>` | the plugin's id: its manifest's, the sidebar tokens' source, the marker of its block in herdr's configs |
-| `space` | `[repo] name`, else the main checkout's folder | the label of the main checkout's space; a worktree's space is its feature, an orchestration's `⇶ <title>` |
+| `space` | `[repo] name`, else the main checkout's folder | the label of the main checkout's space; a product's is its name, an orchestration of no product `⇶ <title>`; a worktree has none (#409) |
 
 ## `[[worktrees.setup]]`
 
@@ -186,6 +186,7 @@ urls = ["DATABASE_URL"]
 | Key | Default | What it does |
 | --- | ------- | ------------ |
 | `needs_pipeline` | `true` | an MR into the default branch is offered for its merge only once its own pipeline passed. `false` is temporary (#443, until the batch branches carry the testing): `wt:check` passed at its pushed head is enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue starts no pipeline for it by itself (a click still does). The default branch's pipeline after each merge still runs, and a red one holds the next merge offers. GitLab must let it merge without one: Settings → Merge requests → Merge checks, "Skipped pipelines are considered successful" on, or "Pipelines must succeed" off |
+| `batch_needs_pipeline` | `true` | a task MR into its batch (`batch/<product>-<n>`) is offered, and merged by itself (`auto_merge_into_batch`), only once its own pipeline passed. `false` (#461): every box, every try `looks good`, `wt:check` passed at its pushed head, no conflicts and its turn are enough; its row says `merges on wt:check (no MR pipeline)` and the CI queue starts no pipeline for it by itself (a click still asks for one; this repo's `.gitlab-ci.yml` skips MR pipelines into `batch/*`). The batch's own MR into the default branch always runs the full pipeline, whatever `needs_pipeline` says, and `ship batch` waits for it green. `needs_pipeline` is for the other MRs into the default branch (a hotfix) |
 
 ## `[products.<name>]`
 
@@ -245,6 +246,8 @@ while they worked on it and its worktree's try checkers' (#387). A limit is toke
 | `idle_fresh_above` | `100_000` | the context above which it retires too once idle longer than `idle_minutes`: its prompt cache (an hour) is gone, and a resume writes all of it to the cache again before it does anything. Below both, an agent that shares files with the next issue takes it |
 | `idle_minutes` | `55` | how long idle that is: a little under the cache's hour |
 | `mcp_configs` | `[]` | the MCP configs (files relative to the main checkout) a headless run loads (#445). A run starts lean: `--strict-mcp-config` with only these, `--setting-sources project,local` (the repo's skills and settings, no user-level ones), and of `~/.claude/settings.json` only the model, effort, auto mode and permissions. Measured: the first call of a run 31.9 k → 23.4 k tokens |
+| `max_runs` | `4` | how many headless runs may be in flight at once (#445). After a crash, an OOM kill or a reboot the run engine picks every cut-off run up by itself, a few at a time: a small session is resumed with one line, one past the fresh-start rule is not resumed but taken over by a fresh session in its worktree, with a handoff breadboard writes from the disk (`.claude/handoff-cut.md`: its last prompt and answer, uncommitted and unpushed work) |
+| `docs_labels` | `["documentation"]` | the issue labels that make its agent a `docs` one (`[agents.models]`) |
 
 ```toml
 [agents]
@@ -253,6 +256,32 @@ orchestration_budget = "200 M"
 fresh_above = 150_000
 idle_fresh_above = 100_000
 idle_minutes = 55
+```
+
+### `[agents.models]`
+
+A model per kind of work (#373): every claude breadboard starts gets
+`--model` of its stage. A task agent's stage comes from its issue's labels
+when it starts (`docs` with a `docs_labels` one, else `build`) and is kept in
+its worktree (`.claude/stage`); a run whose every line is its MR's failed
+pipeline is `ci_fix`. The try checker is `review`, the orchestrator's chat
+`orchestrator` (its tab's `claude`, a resume, a fresh start). The overview
+shows the model each agent last answered with next to its name.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `default` | none | the model of every stage without its own; none at all: claude's own default, no `--model` |
+| `build` | `default` | a feature or fix agent |
+| `docs` | `default` | an agent of an issue with a `docs_labels` label |
+| `ci_fix` | `default` | a run that only gets a failed pipeline of its MR |
+| `review` | `[tries] checker` | the try checker (not `default`: a small model unless set) |
+| `orchestrator` | `default` | the orchestrator's chat |
+
+```toml
+[agents.models]
+default = "opus"
+docs = "sonnet"
+ci_fix = "sonnet"
 ```
 
 ## `[tries]`
@@ -267,7 +296,7 @@ opens its path there.
 | `deploy_jobs` | none | the jobs of the default branch's pipeline that deploy; a failure of another doesn't hold the try |
 | `deploy_job` | none | the last of them; without one the pipeline passing is the deploy |
 | `publish_job` | none | the last step of a pipeline that has no `deploy_job` |
-| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree |
+| `checker` | `haiku` | the model that checks and answers a try while its orchestration's auto mode is on (#384): `claude -p --model <it>` in the try's worktree; `[agents.models] review` wins over it |
 
 A deploy counts as done 90 s after its last job passed (the host pulls and
 starts the image).

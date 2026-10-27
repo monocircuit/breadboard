@@ -37,7 +37,8 @@ pub fn ensure_batch(name: &str, product: Option<&str>, is_dry: bool) -> Result<O
 
 /// The base of a new worktree without `--base` (#411), origin fetched: develop
 /// for a hotfix (`--fix`, its issue labelled `hotfix`); else its
-/// orchestration's epic still open; else the batch of its orchestration's
+/// orchestration's epic still open; else the red shipped batch its issue
+/// fixes (#413, `wt:batch --fix`); else the batch of its orchestration's
 /// product or of its issue's milestone's, opened when there is none open;
 /// else develop. Err why the batch can't be opened.
 pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<Base, String> {
@@ -66,6 +67,16 @@ pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<
             .and_then(|issue| issue.milestone.as_deref())
             .and_then(|milestone| config.product_of_milestone(milestone))
     });
+    // The fix of a red shipped batch (#413): from that batch, its MR into develop takes it.
+    let number = feature.split('-').next().and_then(|number| number.parse::<i64>().ok());
+    if let Some(branch) = product
+        .as_deref()
+        .zip(number)
+        .and_then(|(product, number)| breadboard_core::batch::fix_base(&main, product, number))
+    {
+        step(&format!("the fix of a red batch: from {branch}"));
+        return Ok(Base::of(&branch));
+    }
     let Some(product) = product.filter(|product| breadboard_core::settings::of_product(&main, Some(product)).batching)
     else {
         return Ok(Base::of(&develop));
@@ -134,15 +145,16 @@ fn retarget(branch: &str, target: &str) -> String {
     else {
         return String::new();
     };
+    let target_field = format!("target_branch={target}");
+    let endpoint = format!("projects/:fullpath/merge_requests/{iid}");
+    let args = ["api", "--method", "PUT", &endpoint, "--raw-field", &target_field];
+    if breadboard_core::gitlab::budget::glab_may("glab", &args).is_some() {
+        return format!(
+            ", !{iid} not retargeted (GitLab's rate limit): `glab mr update {iid} --target-branch {target}`"
+        );
+    }
     let status = std::process::Command::new("glab")
-        .args([
-            "api",
-            "--method",
-            "PUT",
-            &format!("projects/:fullpath/merge_requests/{iid}"),
-            "--raw-field",
-            &format!("target_branch={target}"),
-        ])
+        .args(args)
         .current_dir(repo::main_dir())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

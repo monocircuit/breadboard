@@ -17,13 +17,14 @@ use super::herdr;
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
-use breadboard_core::conversations::{context_of, interactive_pids_of};
+use breadboard_core::conversations::{self, context_of, interactive_pids_of};
 use breadboard_core::fresh::Fresh;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
 use breadboard_core::record::{self, is_name, origin_of};
 use breadboard_core::runs;
 use breadboard_core::setups::{Claim, claim_setup, setup_text};
+use breadboard_core::stage::{self, Stage};
 use breadboard_core::time::{now_ms, to_iso};
 pub use brief::brief_of;
 use regex::Regex;
@@ -118,6 +119,8 @@ pub struct Issue {
     pub branch: String,
     /// Its milestone's title: which epic it belongs to (#350).
     pub milestone: Option<String>,
+    /// Its kind of work by its labels, its agent's model (#373).
+    pub stage: Stage,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -276,14 +279,13 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     } else {
         arg.to_string()
     };
-    let has_label = |name: &str| {
-        found
-            .get("labels")
-            .and_then(Value::as_array)
-            .is_some_and(|labels| labels.iter().any(|label| label == name))
-    };
-    let is_fix = has_label("bug");
-    let is_hotfix = has_label("hotfix");
+    let labels: Vec<String> = found
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+    let is_fix = labels.iter().any(|label| label == "bug");
+    let is_hotfix = labels.iter().any(|label| label == "hotfix");
     let dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
     let why = if state != "opened" {
@@ -314,6 +316,7 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
             .get("milestone")
             .and_then(|milestone| str_of(milestone, "title"))
             .map(String::from),
+        stage: stage::of_labels(&breadboard_core::config::of(&repo.main).config, &labels),
     })
 }
 
@@ -1063,6 +1066,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let context = context_of(&worker.id);
     let share = context_share_of(&worker.id);
     let fresh = context.and_then(|context| rule.why(&context, now_ms()));
+    let is_full = fresh.is_some();
     let refusal = refusal_of(pane.as_ref(), worker.is_free, fresh);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
@@ -1074,7 +1078,19 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         fail(format!("{} gets no next issue: {reason}", worker.name))
     };
     if let Some(refusal) = refusal {
-        return failed(&refusal);
+        if !is_full {
+            return failed(&refusal);
+        }
+        // Too full to take it (#445): a fresh agent instead, in its worktree
+        // should that be there without one (#455).
+        if !request.is_dry {
+            record_failure(repo, name, &worker.id, number, &refusal);
+        }
+        return fail(format!(
+            "{} gets no next issue: {refusal}; a fresh agent instead: {} wt:orchestrate {name} {number}",
+            worker.name,
+            breadboard_core::config::run_word()
+        ));
     }
     // Once nothing refused it: a refusal costs no extra herdr call (#230).
     if !request.is_dry {
@@ -1201,6 +1217,8 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
+    // Its runs there are on the model of the issue's kind of work (#373).
+    let _ = stage::write(&issue.dir, issue.stage);
     let feature = issue.feature.as_str();
     let line = next_issue_line(number, feature, &issue.dir);
     // A headless agent (#359, #361): its next run, in the worktree under its new name; nothing is typed.
@@ -1256,16 +1274,17 @@ fn alarm(repo: &Repo, name: &str, text: &str) {
 fn unbind(worker: &Worker, issue: &Issue) {
     let _ = fs::remove_file(session_file(&issue.dir));
     if !worker.is_free {
-        let _ = fs::write(session_file(&worker.dir), format!("{}\n", worker.id));
+        let _ = conversations::bind(&worker.dir, &worker.id);
     }
 }
 
 /// The binding follows the conversation: a restart resumes it in its new
 /// worktree; a free agent's checkout is the orchestration's, no binding of its own there.
 fn bind(worker: &Worker, issue: &Issue) {
-    let _ = fs::write(session_file(&issue.dir), format!("{}\n", worker.id));
+    let _ = conversations::bind(&issue.dir, &worker.id);
     if !worker.is_free {
-        let _ = fs::remove_file(session_file(&worker.dir));
+        // Its MR merged, its worktree goes; unmerged, a fresh agent takes it on (#455).
+        conversations::unbind_leaving(&worker.dir, Some(&worker.id));
     }
 }
 
@@ -1453,6 +1472,7 @@ mod tests {
             why: None,
             branch: "feature/5-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1476,6 +1496,7 @@ mod tests {
             why: None,
             branch: "fix/247-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);

@@ -28,7 +28,7 @@ use breadboard_core::model::{Entry, Paint, Tree, issues_of};
 use breadboard_core::record::{Worker, record_file, write_plan, write_worker};
 use breadboard_core::runs::{self, Usage};
 use breadboard_core::time::{now_ms, to_iso};
-use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_waiting, line_of, verdict_of, wait_of};
+use breadboard_core::wait::{Awaited, Verdict, clear_wait, is_moot, is_waiting, line_of, verdict_of, wait_of};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1016,7 +1016,9 @@ pub fn removal_said(removal: &Removal, feature: &str) -> Option<Vec<breadboard_c
 /// The waits of the orchestration's agents whose command is gone (waits.mjs
 /// `deliverWaits`): judged from what the refresh read (its MRs and the
 /// awaited ones, no call of its own, #305), the line `wt:wait` would have
-/// printed typed into the agent; delivered, the wait goes.
+/// printed typed into the agent; delivered, the wait goes. One whose agent's
+/// own MR is merged or closed is dropped instead (#421): its worktree is
+/// about to go, and its line would only wake an agent with nothing left to do.
 fn deliver_waits(app: &mut Overview, local: &OrchestrationLocal, remote: &Remote) {
     let mut found: HashMap<i64, Awaited> = remote
         .awaited
@@ -1047,6 +1049,21 @@ fn deliver_waits(app: &mut Overview, local: &OrchestrationLocal, remote: &Remote
     for tree in &local.trees {
         let Some(wait) = &tree.wait else { continue };
         if is_waiting(wait) || app.actor.auto.waits_in_flight.contains(&tree.dir) {
+            continue;
+        }
+        if let Some(own) = remote
+            .of(&tree.branch)
+            .mr
+            .as_ref()
+            .filter(|mr| is_moot(Some(&mr.state)))
+        {
+            clear_wait(&tree.dir);
+            app.state.undelivered_waits.remove(&tree.dir);
+            let who = feature_of(&app.actor.main, &tree.dir);
+            app.actor.log(
+                Paint::Dim,
+                format!("dropped the wait of {who}: its own !{} is {}", own.iid, own.state),
+            );
             continue;
         }
         let awaited: Vec<Awaited> = wait.mrs.iter().filter_map(|iid| found.get(iid).cloned()).collect();

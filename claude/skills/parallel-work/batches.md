@@ -62,21 +62,61 @@ on its product's batch and has its setup (`[[worktrees.setup]]`). The setting `b
 
 | MR | Merged by |
 | -- | --------- |
-| task → its batch | **itself**, once done: every box ticked, every try `looks good`, its fast checks green, no conflicts, its turn in the merge order; a merge commit, no squash |
+| task → its batch | **itself**, once done: every box ticked, every try `looks good`, green (its pipeline, or its `wt:check` stamp, see below), no conflicts, its turn in the merge order; a merge commit, no squash |
 | batch → `{{branch}}` (ship) | the user's two clicks |
 | anything else into `{{branch}}` or `main` (a hotfix) | the user's two clicks |
 
 Into a batch no merge needs to be posted: once the merge turn offers a task
-MR (every box, tries `looks good`, pipeline green on its current head, no
+MR (every box, tries `looks good`, green on its current head, no
 conflicts, its turn), the overview marks a draft ready and merges it, one at
 a time, never twice for the same head. A posted `wt:action merge` does no
 harm (it is marked done with the merge). The overview marks a merged task
 `in batch` until its batch reaches `{{branch}}`. The setting
 `auto-merge into batch` off leaves that merge to the user's click too.
 
-A task MR into a batch runs only the fast checks (lint and unit tests of the
-packages it changes); the full pipeline (gauntlet, integration tests, image,
-deploy) runs on the batch's MR into `{{branch}}` and on `{{branch}}`.
+Green for a task MR into a batch depends on `[merge] batch_needs_pipeline`
+in breadboard.toml (#461). On (the default), its own pipeline runs only the
+fast checks (lint and unit tests of the packages it changes) and must pass.
+Off, it runs no pipeline: `{{run}} wt:check` passed at its pushed head is
+enough, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
+starts none for it. Either way the full pipeline (gauntlet, integration
+tests, image, deploy) runs on the batch's MR into `{{branch}}` and on
+`{{branch}}`. `[merge] needs_pipeline` is about the other MRs into
+`{{branch}}` (a hotfix), never the batch's.
+
+## Shipping
+
+The user ships the batch with **`ship batch`** in BATCH, the batch's row of
+the overview (`batch/<product>-<n> · 6 tasks · fast checks ✓ · ship batch`,
+the task MRs merged into it in a fold under it). UP NEXT suggests it once
+`ship after tasks` task MRs are in it (the settings, 5), a hotfix or an MR
+labelled `ship` is among them, or its oldest task has waited `ship after
+days` (2). Both run `{{run}} wt:batch <product> --ship`:
+
+- the MR batch → `{{branch}}`, opened or brought up to date: its description
+  lists every task MR (`!N #issue title`) and closes their issues, squash
+  off, so each task keeps its merge commit; the full pipeline runs on it,
+  and its merge is the user's two clicks;
+- the batch gets its changelog fragment `.changelog/batch-<product>-<n>.md`
+  (`batch <n> shipped: !a !b …`);
+- the next batch `batch/<product>-<n+1>` opens off the shipped one at once:
+  tasks go on in it while the batch MR's pipeline runs, and the task MRs
+  still open into the shipped batch go into it. Once the batch MR merged,
+  it takes `{{branch}}` in only on a conflict;
+- after the merge, breadboard closes the issues GitLab left open.
+
+## A red batch
+
+When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH says
+`batch red: <job>` and lists the task MRs merged into that batch, the likeliest
+first: those whose files a failed job covers (its `rules: changes:`). `ship
+batch` is held meanwhile (`ship held: batch/<product>-<n> is red (<job>)`, also
+in UP NEXT and from `{{run}} wt:batch <product> --ship`). **`fix batch`** (or the
+held row) runs `{{run}} wt:batch <product> --fix`: it files the fix issue with
+the failed jobs and the suspects with their files, and queues it in the
+orchestration. The overview hands it to the free agent that knows those
+files, else to a fresh one. Its worktree branches off the red batch, and its
+MR goes into it, so the batch MR's pipeline runs again with the fix.
 
 ## Hotfixes
 

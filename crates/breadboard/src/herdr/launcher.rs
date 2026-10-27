@@ -326,6 +326,32 @@ chmod +x "$target/release/breadboard"
         assert_eq!(out(&checkout.run(&["x"], true, &[])), "new x");
     }
 
+    // #456: CI's store is a cache outside the git dir (BREADBOARD_STORE): a
+    // pipeline whose sources an earlier one built copies the binary from it,
+    // a target/ without the binary (the dependencies' cache) builds nothing.
+    #[test]
+    fn a_store_named_by_breadboard_store_is_used_instead_of_the_git_dirs() {
+        let checkout = Checkout::new("ci-store");
+        let store = checkout.root.join("cache/store");
+        let env = [("BREADBOARD_STORE", store.to_str().unwrap())];
+        assert!(checkout.run(&["--built"], true, &env).status.success());
+        assert_eq!(checkout.builds(), 1);
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 1);
+        assert!(!checkout.root.join("repo/.git/breadboard/bin").exists());
+        // The next pipeline: a fresh target/, the cached store.
+        fs::remove_dir_all(checkout.package.join("target")).unwrap();
+        let copied = checkout.run(&["--built"], true, &env);
+        assert!(copied.status.success(), "{}", err(&copied));
+        assert_eq!(err(&copied), "");
+        assert_eq!(checkout.builds(), 1);
+        assert_eq!(out(&checkout.run(&["x"], true, &env)), "ran x");
+        // Other sources: built, and kept beside the first.
+        checkout.change("crates/core/lib.rs");
+        assert!(checkout.run(&["--built"], true, &env).status.success());
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(fs::read_dir(store.join("bin")).unwrap().count(), 2);
+    }
+
     /// `sh herdr/cargo.sh <args>` of the package at `package`, as pnpm lint:rs runs it.
     fn cargo_in(checkout: &Checkout, package: &Path, args: &[&str]) -> Output {
         cargo_with(checkout, package, args, &[])
@@ -498,6 +524,54 @@ chmod +x "$target/release/breadboard"
         let copied = run_in(&checkout, &third, &["x"], &[("CARGO_SAYS", "never")]);
         assert_eq!(out(&copied), "ran x");
         assert_eq!(checkout.builds(), 2);
+    }
+
+    // #451: a build of the tree before its commit carries the key the commit
+    // has: the commit needs no build of its own (wt:check after the
+    // gauntlet), the next launch keeps it in the store for the others, and
+    // until HEAD's sources move the scripts run it.
+    #[test]
+    fn a_build_of_the_tree_before_its_commit_is_the_commits_binary() {
+        let checkout = Checkout::new("tree");
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        assert_eq!(checkout.builds(), 1);
+        // An uncommitted change: --built (HEAD's) has nothing to build, --tree builds it once.
+        let lib = checkout.package.join("crates/core/lib.rs");
+        fs::write(&lib, "2\n").unwrap();
+        assert!(checkout.run(&["--built"], true, &[]).status.success());
+        assert_eq!(checkout.builds(), 1);
+        let tree = checkout.run(&["--tree"], true, &[("CARGO_SAYS", "tree")]);
+        assert!(tree.status.success(), "{}", err(&tree));
+        assert!(err(&tree).contains("and its uncommitted changes"), "{}", err(&tree));
+        assert_eq!(checkout.builds(), 2);
+        assert!(checkout.run(&["--tree"], true, &[]).status.success());
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "tree x");
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(stored(&checkout).len(), 1);
+        // Committed as it was built: HEAD's binary without a build, and stored.
+        checkout.commit();
+        assert_eq!(out(&checkout.run(&["x"], true, &[])), "tree x");
+        assert_eq!(checkout.builds(), 2);
+        assert_eq!(stored(&checkout).iter().filter(|(_, said)| said == "tree x").count(), 1);
+        let other = worktree(&checkout, "feature/8-x");
+        assert_eq!(out(&run_in(&checkout, &other, &["x"], &[])), "tree x");
+        assert_eq!(checkout.builds(), 2);
+        // An untracked source is one of the tree's.
+        let new = checkout.package.join("crates/core/new.rs");
+        fs::write(&new, "new\n").unwrap();
+        assert!(
+            checkout
+                .run(&["--tree"], true, &[("CARGO_SAYS", "new")])
+                .status
+                .success()
+        );
+        assert_eq!(checkout.builds(), 3);
+        // A commit of other sources than it was built from: built again.
+        fs::write(&lib, "4\n").unwrap();
+        checkout.commit();
+        assert_eq!(out(&checkout.run(&["x"], true, &[("CARGO_SAYS", "four")])), "four x");
+        assert_eq!(checkout.builds(), 4);
     }
 
     // #339: sources that change while cargo builds are built, not stored

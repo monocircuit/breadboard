@@ -51,6 +51,30 @@ pub fn session_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("herdr-session")
 }
 
+/// Written where a conversation was unbound and moved on with the work there
+/// unmerged (#455): a `wt:new` from inside it, a handover. Its worktree's
+/// agent is gone, not unknown: the overview starts a fresh one in it. A new
+/// binding ([`bind`]) removes it.
+pub fn left_file(dir: &Path) -> PathBuf {
+    dir.join(".claude").join("agent-left")
+}
+
+/// The conversation `id` unbound from `dir` as it moves on (#455): its
+/// binding goes, [`left_file`] says so.
+pub fn unbind_leaving(dir: &Path, id: Option<&str>) {
+    let _ = fs::remove_file(session_file(dir));
+    if let Some(id) = id {
+        let _ = fs::write(left_file(dir), format!("{id}\n"));
+    }
+}
+
+/// `id` bound to `dir`: a gone agent's [`left_file`] goes with it.
+pub fn bind(dir: &Path, id: &str) -> std::io::Result<()> {
+    fs::write(session_file(dir), format!("{id}\n"))?;
+    let _ = fs::remove_file(left_file(dir));
+    Ok(())
+}
+
 /// The conversation bound to a worktree's space, its id or None.
 pub fn bound_session(dir: &Path) -> Option<String> {
     let id = fs::read_to_string(session_file(dir)).ok()?.trim().to_string();

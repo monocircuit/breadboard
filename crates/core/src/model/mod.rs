@@ -29,7 +29,9 @@ pub mod numbering;
 pub mod orchestration;
 pub mod orchestrator;
 pub mod order;
+pub mod red_batch;
 pub mod resolve;
+pub mod ship;
 pub mod tree;
 pub mod try_state;
 pub mod waiting;
@@ -185,6 +187,11 @@ pub struct Tree {
     // What an orchestration's read adds (view.mjs `readView`).
     /// The conversation bound to its space.
     pub claude: Option<Claude>,
+    /// A conversation is bound to it (`.claude/herdr-session`), its
+    /// transcript written or not yet (a fresh agent's first run still queued).
+    pub is_bound: bool,
+    /// Its agent moved on and left it unmerged (`.claude/agent-left`, #455).
+    pub is_left: bool,
     /// What its agent said it does (`pnpm wt:action note`, #341).
     pub note: Option<crate::said::Note>,
     /// claudes that stand in it without being its agent (#252).

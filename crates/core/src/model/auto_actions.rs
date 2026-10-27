@@ -257,7 +257,8 @@ pub struct AutoFacts<'a> {
 /// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
 /// - `waits`: the agent asks something or stopped on a question;
-/// - `held`: a claude open in its tab holds its lines past ten minutes (#386).
+/// - `held`: a claude open in its tab holds its lines past ten minutes (#386);
+/// - `old wait`: a `wt:wait` stood for a day: a click drops it (#421).
 pub fn auto_actions_of(
     issues: &[Entry],
     remote: Option<&Remote>,
@@ -475,6 +476,24 @@ pub fn auto_actions_of(
                     .into(),
                 None,
                 Go::EndHeld(tree.dir.clone()),
+            ));
+        }
+        // A wait that has stood for a day (#421): its MRs may never merge the
+        // way it expects, its line would wake the agent long after it mattered.
+        if let Some(tree) = tree
+            && let Some(wait) = tree.wait.as_ref().filter(|wait| crate::wait::is_stale(wait, facts.now))
+        {
+            let since = wait.since.clone().unwrap_or_default();
+            actions.push(base(
+                "old wait",
+                format!("old wait:{}:{since}", issue.branch),
+                format!(
+                    "waits for {} for over {} h: click to drop the wait",
+                    crate::wait::list_of(&wait.mrs),
+                    crate::wait::STALE_MS / 3_600_000
+                ),
+                Some(&since),
+                Go::DropWait(tree.dir.clone()),
             ));
         }
         // A headless agent at a would-be question has its `permission` action
@@ -945,6 +964,30 @@ mod tests {
         assert_eq!(items[0].kind, "held");
         assert_eq!(items[0].go, Go::EndHeld("/w/7".into()));
         assert!(items[0].text.contains("ends it once it is idle"));
+    }
+
+    #[test]
+    fn a_wait_of_a_day_has_a_row_that_drops_it() {
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let waiting = |since: i64| {
+            let mut entry = issue();
+            entry.tree.as_mut().unwrap().wait = Some(crate::wait::Wait {
+                mrs: vec![387],
+                since: Some(to_iso(since)),
+                ..Default::default()
+            });
+            entry
+        };
+        let fresh = waiting(NOW - crate::wait::STALE_MS + 1);
+        assert!(auto_actions_of(&[fresh], None, &HashMap::new(), &facts).is_empty());
+        let items = auto_actions_of(&[waiting(NOW - crate::wait::STALE_MS)], None, &HashMap::new(), &facts);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].kind, "old wait");
+        assert_eq!(items[0].text, "waits for !387 for over 24 h: click to drop the wait");
+        assert_eq!(items[0].go, Go::DropWait("/w/7".into()));
     }
 
     #[test]

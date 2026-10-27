@@ -5,7 +5,7 @@
 //! GitLab's rate limit belongs in breadboard-core (rewrite-plan.md), shared
 //! with the overview; these calls move to it once the halves meet.
 //!
-//! A call that fails for a reason that passes (a 429, a 5xx, a timeout, the
+//! A call that fails for a reason that passes (a 5xx, a timeout, the
 //! network) is tried again after 1 s and 4 s, as lib/glab.mjs does; what
 //! still fails is a `Failure` whose `reason` says why in a few words.
 
@@ -29,7 +29,8 @@ const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
 pub struct Failure {
     pub reason: String,
     pub endpoint: String,
-    /// Whether another try may pass: a 429, a 5xx, a timeout, the network.
+    /// Whether another try may pass: a 5xx, a timeout, the network; never a
+    /// 429, which pauses every caller until GitLab's `retry-after` (#462).
     pub is_passing: bool,
 }
 
@@ -86,6 +87,9 @@ fn once(endpoint: &str) -> Result<Value, Failure> {
         endpoint: endpoint.to_string(),
         is_passing,
     };
+    if let Some(pause) = breadboard_core::gitlab::budget::glab_may("glab", &["api", endpoint]) {
+        return Err(failed(pause, false));
+    }
     let mut child = Command::new("glab")
         .args(["api", endpoint])
         .current_dir(super::repo::main_dir())
@@ -120,7 +124,11 @@ fn once(endpoint: &str) -> Result<Value, Failure> {
         return Err(failed("timeout".into(), true));
     };
     if !status.success() {
-        let (reason, is_passing) = reason_of(&String::from_utf8_lossy(&stderr));
+        let said = String::from_utf8_lossy(&stderr);
+        if let Some(pause) = breadboard_core::gitlab::budget::glab_failed(&said) {
+            return Err(failed(pause, false));
+        }
+        let (reason, is_passing) = reason_of(&said);
         return Err(failed(reason, is_passing));
     }
     serde_json::from_slice(&stdout).map_err(|_| failed("its answer was no JSON".into(), false))
@@ -164,7 +172,7 @@ fn reason_of(stderr: &str) -> (String, bool) {
             (_, Some(text)) => format!("HTTP {status} {}", text.as_str()),
             (_, None) => format!("HTTP {status}"),
         };
-        return (reason, status == 429 || status >= 500);
+        return (reason, status >= 500);
     }
     if TIMEOUT_SAID.is_match(said) {
         return ("timeout".to_string(), true);
@@ -281,7 +289,7 @@ mod tests {
         );
         assert_eq!(
             reason_of("glab: 429 Too Many Requests (HTTP 429)"),
-            ("HTTP 429, rate limit".to_string(), true)
+            ("HTTP 429, rate limit".to_string(), false)
         );
         assert_eq!(
             reason_of("glab: 404 Not Found"),

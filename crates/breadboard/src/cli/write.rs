@@ -4,6 +4,7 @@
 //! today, and GitLab exactly where today's breadboard does (rewrite rules 5, 6).
 
 mod action;
+mod batch;
 mod boxes;
 mod change;
 mod common;
@@ -29,6 +30,7 @@ const COMMANDS: &[Command] = &[
     ("status", status::run),
     ("submit", submit::run),
     ("wt:action", action::run),
+    ("wt:batch", batch::run),
     ("wt:epic", epic::run),
     ("wt:journal", journal::run),
     ("wt:merge-base", merge_base::run),
