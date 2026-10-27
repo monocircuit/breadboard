@@ -655,6 +655,7 @@ fn actions_of(
             removals: Some(&state.removals),
             pipeline_tries: Some(&state.pipeline_tries),
             fixes: fixes_of(local),
+            merges_on_check: local.merges_on_check,
             now,
         },
     );
@@ -1834,6 +1835,45 @@ mod tests {
         };
         let (reasons, _) = hold_push_while_develop_is_red(unpushed(), Some(&tested), Some(&red));
         assert_eq!(reasons[0].who, "agent");
+    }
+
+    #[test]
+    fn a_task_into_its_batch_with_a_skipped_pipeline_is_merged_by_itself() {
+        // #482: no `merge` action of its agent, its push's pipeline skipped,
+        // wt:check passed at its head: the overview's own merge row, which
+        // `merge_into_batch` merges.
+        let mut local = local();
+        local.merges_on_check = OnCheck {
+            into_default: false,
+            into_batch: true,
+        };
+        local.trees[0].pushed = Some("a".into());
+        local.trees[0].checked = crate::check::CheckState::Tested {
+            sha: "a".into(),
+            packages: vec![],
+            no_test: None,
+        };
+        let mut remote = remote();
+        remote.of.get_mut("feature/1-one").unwrap().mr = Some(Mr {
+            target: "batch/breadboard-7".into(),
+            sha: Some("a".into()),
+            ..mr(11, "feature/1-one", "opened", "skipped")
+        });
+        let merges = |local: &OrchestrationLocal| {
+            let model = orchestration_of(local, Some(&remote), &mut ViewState::default(), NOW);
+            model
+                .actions
+                .unwrap()
+                .actions
+                .into_iter()
+                .filter(|item| item.kind == "merge" && item.is_auto)
+                .map(|item| (item.who, item.merge.map(|offer| (offer.iid, offer.blockers))))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(merges(&local), [("1-one".to_string(), Some((11, vec![])))]);
+        // With `batch_needs_pipeline` on, it waits for a pipeline as before.
+        local.merges_on_check = OnCheck::default();
+        assert!(merges(&local).is_empty());
     }
 
     #[test]

@@ -6,7 +6,8 @@
 
 use super::change::is_change_open;
 use super::half_merged::half_merged_action_of;
-use super::merge::checks_of;
+use super::merge::{OnCheck, checks_of, needs_pipeline};
+use super::mr_blockers::is_green;
 use super::order::{Go, Item, Target};
 use super::resolve::is_conflict_settled;
 use super::{Entry, Tree};
@@ -247,11 +248,14 @@ pub struct AutoFacts<'a> {
     pub pipeline_tries: Option<&'a HashMap<String, String>>,
     /// The CI queue's failed pipelines by iid (#371), None without a queue.
     pub fixes: Option<&'a BTreeMap<i64, Fix>>,
+    /// Which MRs merge on wt:check at their head, no pipeline of their own (#443, #461).
+    pub merges_on_check: OnCheck,
     pub now: i64,
 }
 
 /// The automatic actions of the issues, `key` the same for as long as the cause lasts:
-/// - `merge`: ready and green, every check done, GitLab says mergeable; a ready draft too;
+/// - `merge`: ready and green (its pipeline passed, or wt:check at its head where
+///   it needs none, #482), every check done, GitLab says mergeable; a ready draft too;
 /// - `pipeline`: the pipeline of the open MR failed and its line didn't get in yet;
 /// - `look`: its failed pipeline is past what the CI queue does by itself (#371);
 /// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
@@ -304,18 +308,20 @@ pub fn auto_actions_of(
             let (open, answered) = tree
                 .map(|tree| (&tree.actions[..], &tree.answered[..]))
                 .unwrap_or((&[], &[]));
+            let needs_pipeline = needs_pipeline(mr, facts.merges_on_check);
             if (!mr.is_draft || is_ready_draft)
-                && status == Some("success")
+                && is_green(mr, tree, needs_pipeline)
                 // GitLab's word, not ours: conflicts, a check still running, … block.
                 && (mr.merge_status.as_deref() == Some("mergeable") || is_ready_draft)
                 && !open.iter().any(|action| action.kind == "merge")
                 && !is_change_open(tree, Some(mr))
                 && checks_of(boxes, open, answered).is_empty()
             {
-                let text = if is_ready_draft {
-                    "pipeline passed, every box and try done, still a draft"
-                } else {
-                    "ready, pipeline passed"
+                let text = match (is_ready_draft, needs_pipeline) {
+                    (true, true) => "pipeline passed, every box and try done, still a draft",
+                    (true, false) => "wt:check passed, every box and try done, still a draft",
+                    (false, true) => "ready, pipeline passed",
+                    (false, false) => "ready, wt:check passed at its head",
                 };
                 let mut item = base(
                     "merge",
@@ -673,6 +679,57 @@ mod tests {
         assert_eq!(found[0].text, "pipeline passed, every box and try done, still a draft");
         assert!(found[0].merge.as_ref().unwrap().can_mark_ready);
         assert!(kinds(&[issue()], &draft).is_empty());
+    }
+
+    #[test]
+    fn asks_for_the_merge_of_a_task_into_its_batch_on_wt_check_at_its_head() {
+        // #482: `.gitlab-ci.yml` runs no MR pipeline into `batch/*`, its push's is skipped.
+        let task = |pipeline: &str, sha: &str| Mr {
+            branch: "feature/7-thing".into(),
+            target: "batch/breadboard-7".into(),
+            sha: Some("58bd6f1f".into()),
+            pipeline: Some(Pipeline {
+                status: pipeline.into(),
+                sha: Some(sha.into()),
+                ..Default::default()
+            }),
+            ..mr()
+        };
+        let checked = |sha: &str| {
+            let mut checked = issue();
+            checked.tree.as_mut().unwrap().checked = crate::check::CheckState::Tested {
+                sha: sha.into(),
+                packages: vec![],
+                no_test: None,
+            };
+            checked
+        };
+        let on_check = AutoFacts {
+            merges_on_check: OnCheck {
+                into_default: false,
+                into_batch: true,
+            },
+            now: NOW,
+            ..Default::default()
+        };
+        let none = HashMap::new();
+        let skipped = remote(Some(task("skipped", "58bd6f1f")), vec![], None);
+        assert_eq!(
+            kinds_with(&[checked("58bd6f1f")], &skipped, &none, &on_check),
+            [pair("merge", "ready, wt:check passed at its head")]
+        );
+        // Its pipeline is needed while `batch_needs_pipeline` holds.
+        assert!(kinds(&[checked("58bd6f1f")], &skipped).is_empty());
+        // wt:check not at the pushed head, or none known: no merge.
+        assert!(kinds_with(&[checked("0ld0ld0")], &skipped, &none, &on_check).is_empty());
+        assert!(kinds_with(&[issue()], &skipped, &none, &on_check).is_empty());
+        // A pipeline a click ran that failed at its head says the head is broken.
+        let failed = remote(Some(task("failed", "58bd6f1f")), vec![], None);
+        let merges = |found: Vec<(String, String)>| found.iter().any(|(kind, _)| kind == "merge");
+        assert!(!merges(kinds_with(&[checked("58bd6f1f")], &failed, &none, &on_check)));
+        // One failed at an older head holds nothing.
+        let older = remote(Some(task("failed", "0ld0ld0")), vec![], None);
+        assert!(merges(kinds_with(&[checked("58bd6f1f")], &older, &none, &on_check)));
     }
 
     #[test]
