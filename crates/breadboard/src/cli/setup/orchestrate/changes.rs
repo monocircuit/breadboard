@@ -7,9 +7,10 @@ use crate::cli::setup::gitlab;
 use crate::cli::setup::proc::git;
 use crate::cli::setup::repo;
 use breadboard_core::gitlab::cache::{Cache, cache_file};
-use breadboard_core::gitlab::merged::{keep_merged, merged_of};
+use breadboard_core::gitlab::merged::{keep_settled, known_of};
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record;
+use breadboard_core::time::now_ms;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -161,7 +162,8 @@ pub fn combine(groups: &[Value]) -> Vec<Value> {
 /// What `name` changed: `{ name, title, root, groups, combined, missing }`,
 /// None without a record. Err: the branch GitLab didn't answer for after its
 /// tries, and why: no set that leaves its MRs out as if there were none (#306).
-/// A branch merged for good is read from the cache, not asked again (#484).
+/// A branch merged for good is read from the cache, an open one from the list
+/// of the open MRs: neither is asked on its own (#484).
 pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;
@@ -174,9 +176,21 @@ pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
             branches.push(branch.clone());
         }
     }
-    // A branch merged for good from the overview's cache, asked only once (#484).
+    // One list of the open MRs, the rest from the cache: only a branch that
+    // moved otherwise is asked (#484). A full page may leave some out: then
+    // an open branch is asked too.
+    let opened = gitlab::list("projects/:fullpath/merge_requests?state=opened&per_page=100")
+        .map_err(|failure| ("the open merge requests".to_string(), failure.reason));
+    let opened = match opened {
+        Ok(opened) => Some(opened).filter(|opened| opened.len() < 100),
+        Err(unanswered) => return Some(Err(unanswered)),
+    };
     let mut cache = Cache::open(Some(cache_file(&main)));
-    let known: Vec<Option<Value>> = branches.iter().map(|branch| merged_of(&cache, branch)).collect();
+    let now = now_ms();
+    let known: Vec<Option<Vec<Value>>> = branches
+        .iter()
+        .map(|branch| known_of(&mut cache, branch, opened.as_deref(), now))
+        .collect();
     let unknown: Vec<&String> = branches
         .iter()
         .zip(&known)
@@ -197,13 +211,12 @@ pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let read_mrs: Vec<Vec<Value>> = branches
         .iter()
         .zip(known)
-        .map(|(branch, known)| match known {
-            Some(mr) => vec![mr],
-            None => {
+        .map(|(branch, known)| {
+            known.unwrap_or_else(|| {
                 let listed = asked.next().unwrap_or_default();
-                keep_merged(&mut cache, branch, &listed);
+                keep_settled(&mut cache, branch, &listed, now);
                 listed
-            }
+            })
         })
         .collect();
     cache.save();
