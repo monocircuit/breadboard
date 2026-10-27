@@ -3,8 +3,9 @@
 //! far develop has gone on since it, the tasks in it, its last pipeline and
 //! its MR into develop. A batch's (#414): `ship batch` beside it while
 //! tasks are in it and it has no MR into develop, and the task MRs merged
-//! into it in a fold. A red batch shipped before (#413): `ship batch` held
-//! and why, the tasks merged into it the likeliest first.
+//! into it in a fold. A red batch shipped before (#413): the tasks merged
+//! into it the likeliest first, `fix batch`, and the red batch `ship batch`
+//! replaces (#464).
 
 use super::{Act, Ctx, Fold, look, work};
 use crate::tui::Page;
@@ -26,8 +27,9 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         if batch.can_ship {
             scene.atom(vec![look::dim(" ·")]);
             scene.button("ship batch", Tone::Green, Act::Go(Go::ShipBatch(batch.product.clone())));
-        } else if let Some(held) = &batch.held {
-            scene.atom(vec![look::dim(format!(" · {held}"))]);
+            if let Some(replaces) = &batch.replaces {
+                scene.atom(vec![look::dim(format!(" {replaces}"))]);
+            }
         }
         if batch.can_fix {
             scene.atom(vec![look::dim(" ·")]);

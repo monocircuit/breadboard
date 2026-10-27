@@ -2,8 +2,9 @@
 //! product's batch once enough is in it: `ship after tasks` task MRs (the
 //! settings, #415), a hotfix or an issue labelled `ship` among them, or its
 //! oldest task waiting `ship after days`. A click runs `wt:batch <product>
-//! --ship`, as the band's `ship batch` button does. Held while a batch
-//! shipped before is red (#413): the row says so instead.
+//! --ship`, as the band's `ship batch` button does. While a batch shipped
+//! before is red (#413), the row of its fix instead, until the fix is in the
+//! batch: then the ship replaces the red one (#464).
 
 use super::orchestration::OrchestrationLocal;
 use super::order::{Go, Item};
@@ -48,24 +49,45 @@ fn reason_of(tasks: &[BatchTask], after_tasks: i64, after_days: i64, now: i64) -
 
 /// The row suggesting to ship the batch the orchestration works on, while
 /// it has tasks and no MR into develop; while a batch shipped before is red,
-/// the row of that instead (#413). None before GitLab answered.
+/// the row of its fix instead (#413), or the ship once the fix is in it
+/// (#464). None before GitLab answered.
 pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) -> Option<Item> {
     let epic = local.epic.as_ref()?;
     let (product, _) = crate::batch::parse(&epic.branch)?;
     let found = remote?.epic.as_ref()?;
     let could_ship = found.mr.is_none() && !found.tasks.is_empty();
-    // A batch shipped before is red (#413): held, the row says why and files the fix.
+    let develop = crate::git::default_branch();
+    // A batch shipped before is red (#413): its fix first, into this batch;
+    // once it is in, the ship replaces the red one (#464).
     if let Some(red) = super::red_batch::red_of(local, remote) {
-        let held = red.held();
-        let said = if could_ship {
-            held.as_str()
-        } else {
-            held.strip_prefix("ship held: ").unwrap_or(&held)
-        };
+        let is_fixed = red.fix.is_some_and(|number| {
+            found
+                .tasks
+                .iter()
+                .any(|task| crate::git::issue_of_branch(&task.branch) == Some(number as u64))
+        });
+        if could_ship && is_fixed {
+            return Some(Item {
+                key: format!("ship:{}", epic.branch),
+                kind: "ship".into(),
+                text: format!(
+                    "ship {} to {develop}: #{} fixes {} in it, the ship replaces !{}",
+                    epic.branch,
+                    red.fix.unwrap_or_default(),
+                    red.branch,
+                    red.mr
+                ),
+                who: format!("{ORCHESTRATOR} orchestrator"),
+                is_auto: true,
+                rank: -1,
+                go: Go::ShipBatch(product.to_string()),
+                ..Default::default()
+            });
+        }
         return Some(Item {
             key: format!("batch-red:{}:{}", red.branch, red.mr),
             kind: "batch red".into(),
-            text: format!("{said}: {}", red.fixing()),
+            text: format!("{}: {}", red.said(), red.fixing()),
             who: format!("{ORCHESTRATOR} orchestrator"),
             is_auto: true,
             rank: -1,
@@ -88,7 +110,6 @@ pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) ->
         positive(settings.ship_after_days, DAYS),
         now,
     )?;
-    let develop = crate::git::default_branch();
     Some(Item {
         key: format!("ship:{}", epic.branch),
         kind: "ship".into(),
@@ -173,16 +194,14 @@ mod tests {
         let mut open = remote(vec![task(1, 0, &["hotfix"])]);
         open.epic.as_mut().unwrap().mr = Some(Mr::default());
         assert_eq!(ship_of(&local("batch/breadboard-3"), Some(&open), NOW), None, "shipped");
-        // A batch shipped before is red: held, and why.
+        // A batch shipped before is red: its fix first.
         let (red_local, mut red_remote) = crate::model::red_batch::tests::red_world();
         red_remote.epic.as_mut().unwrap().tasks = (1..=5).map(|iid| task(iid, 0, &[])).collect();
         let held = ship_of(&red_local, Some(&red_remote), NOW).unwrap();
         assert_eq!(held.kind, "batch red");
         assert_eq!(held.go, Go::FixBatch("b".into()));
-        assert_eq!(
-            held.text,
-            "ship held: batch/b-2 is red (check:vita): a click files its fix"
-        );
+        assert_eq!(held.text, "batch/b-2 is red (check:vita): a click files its fix");
+        let five = red_remote.epic.as_ref().unwrap().tasks.clone();
         // Nothing to ship yet: red all the same.
         red_remote.epic.as_mut().unwrap().tasks.clear();
         let red = ship_of(&red_local, Some(&red_remote), NOW).unwrap();
@@ -193,6 +212,20 @@ mod tests {
         let held = ship_of(&fixed, Some(&red_remote), NOW).unwrap();
         assert_eq!((held.go, held.number), (Go::Nothing, Some(460)));
         assert_eq!(held.text, "batch/b-2 is red (check:vita): #460 fixes it");
+        // The fix merged into this batch (#464): its ship replaces the red one.
+        let mut with_fix = red_remote.clone();
+        let mut tasks = five;
+        tasks.push(BatchTask {
+            branch: "fix/460-batch-b-2-red".into(),
+            ..task(6, 0, &[])
+        });
+        with_fix.epic.as_mut().unwrap().tasks = tasks;
+        let ship = ship_of(&fixed, Some(&with_fix), NOW).unwrap();
+        assert_eq!((ship.kind.as_str(), ship.go), ("ship", Go::ShipBatch("b".into())));
+        assert_eq!(
+            ship.text,
+            "ship batch/b-3 to develop: #460 fixes batch/b-2 in it, the ship replaces !500"
+        );
         let hotfix = remote(vec![task(1, 0, &["hotfix"])]);
         assert_eq!(
             ship_of(&local("epic/15-b"), Some(&hotfix), NOW),

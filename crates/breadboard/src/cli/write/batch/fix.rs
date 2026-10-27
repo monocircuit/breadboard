@@ -1,8 +1,8 @@
 //! `wt:batch <product> --fix` (#413): the fix of a red shipped batch. Its
 //! issue names the batch MR, the failed jobs and the tasks merged into the
-//! batch, the likeliest first with their files; its worktree branches off
-//! the red batch (`batch::fix_base`), so the fix goes into the batch's MR
-//! into develop. Queued in the product's orchestration: the overview hands
+//! batch, the likeliest first with their files. The fix goes into the
+//! product's current batch like any task, and that batch's ship replaces the
+//! red one (#464). Queued in the product's orchestration: the overview hands
 //! it to the free agent that knows those files, else to a fresh one.
 
 use super::super::common::{Outcome, say};
@@ -68,8 +68,8 @@ fn title_of(product: &str, red: &Red) -> String {
 }
 
 /// The issue's description: what is red, the suspects the likeliest first
-/// with their files, the box that closes it.
-fn body_of(red: &Red, suspects: &[Suspect], globs: &[(String, Vec<String>)]) -> String {
+/// with their files, the box that closes it; `into`: the current batch.
+fn body_of(red: &Red, into: &str, suspects: &[Suspect], globs: &[(String, Vec<String>)]) -> String {
     let branch = &red.shipping.branch;
     let mr = red.shipping.mr;
     let jobs: Vec<String> = red
@@ -129,7 +129,7 @@ fn body_of(red: &Red, suspects: &[Suspect], globs: &[(String, Vec<String>)]) -> 
         body.push('\n');
     }
     body.push_str(&format!(
-        "\n## Scope\n\n- [ ] The pipeline of !{mr} passes again: the fix goes into `{branch}`, its worktree branches off it\n"
+        "\n## Scope\n\n- [ ] The fix of what fails in !{mr} goes into `{into}`, the current batch: its ship replaces !{mr}, which is closed then (#464)\n"
     ));
     body
 }
@@ -177,8 +177,11 @@ pub fn run(main: &Path, product: &str, develop: &str, orchestration: Option<&str
         .collect();
     let given: Vec<&[String]> = globs.iter().map(|(_, globs)| globs.as_slice()).collect();
     let ranked = suspects(&shipped.tasks, &given);
+    let Some(current) = batch::current_of(main, product) else {
+        return Err(format!("{product} has no batch for the fix of {branch} to go into"));
+    };
     let title = title_of(product, &red);
-    let body = body_of(&red, &ranked, &globs);
+    let body = body_of(&red, &current.branch, &ranked, &globs);
     let name = orchestration.map(String::from).or_else(|| {
         breadboard_core::record::orchestrations_of_product(main, product)
             .into_iter()
@@ -191,14 +194,15 @@ pub fn run(main: &Path, product: &str, develop: &str, orchestration: Option<&str
         ));
         return Ok(ExitCode::SUCCESS);
     }
-    let me = me(main).map(|id| id.to_string());
+    let me = me(main).map(|id| format!("[{id}]"));
     let milestone = milestone_of(main, &ranked).map(|id| id.to_string());
     let mut fields = vec![
         glab::Field::Raw("title", &title),
         glab::Field::Text("description", &body),
     ];
     if let Some(me) = &me {
-        fields.push(glab::Field::Typed("assignee_ids[]", me));
+        // A JSON array: glab 1.123 refuses a field name with brackets (#464).
+        fields.push(glab::Field::Typed("assignee_ids", me));
     }
     if let Some(milestone) = &milestone {
         fields.push(glab::Field::Typed("milestone_id", milestone));
@@ -227,7 +231,8 @@ pub fn run(main: &Path, product: &str, develop: &str, orchestration: Option<&str
     match queued {
         Ok(status) if status.success() => {
             say(&format!(
-                "✓ queued in {name}: to the agent that knows its files, else a fresh one, off {branch}\n"
+                "✓ queued in {name}: to the agent that knows its files, else a fresh one, off {}\n",
+                current.branch
             ));
             Ok(ExitCode::SUCCESS)
         }
@@ -294,19 +299,22 @@ mod tests {
             title_of("breadboard", &red()),
             "fix(breadboard): batch/breadboard-2 red in check:vita"
         );
-        let body = body_of(&red(), &ranked, &globs);
+        let body = body_of(&red(), "batch/breadboard-3", &ranked, &globs);
         assert_eq!(
             body,
             "## Bug\n\nThe batch `batch/breadboard-2` is red (#413): the pipeline of !500 into develop failed in [`check:vita`](https://g/p/-/jobs/7).\n\n\
              ## Suspects, the likeliest first\n\n\
              - !431 #411 feat: task 431: its files run in `check:vita` (`products/vita/page.tsx`)\n\
              - !440 #413 feat: task 440\n\n\
-             ## Scope\n\n- [ ] The pipeline of !500 passes again: the fix goes into `batch/breadboard-2`, its worktree branches off it\n"
+             ## Scope\n\n- [ ] The fix of what fails in !500 goes into `batch/breadboard-3`, the current batch: its ship replaces !500, which is closed then (#464)\n"
         );
         // What the hand-out matches agents on: the likeliest task's files only.
         assert_eq!(breadboard_core::gitlab::paths_of(&body), ["products/vita/page.tsx"]);
         // None likelier: every task's files.
         let even = [suspect(440, 413, &["packages/breadboard/x.rs"], false)];
-        assert!(body_of(&red(), &even, &[]).contains("- !440 #413 feat: task 440 (`packages/breadboard/x.rs`)\n"));
+        assert!(
+            body_of(&red(), "batch/breadboard-3", &even, &[])
+                .contains("- !440 #413 feat: task 440 (`packages/breadboard/x.rs`)\n")
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! A red batch in the overview (#413): the MR into develop of a batch the
 //! product shipped has a failed pipeline. BATCH says `batch red: <job>` and
 //! lists the tasks merged into it, those whose files a failed job covers
-//! first; `ship batch` is held while it is red, and says why.
+//! first. Its fix goes into the current batch, whose ship replaces it (#464).
 
 use super::orchestration::OrchestrationLocal;
 use super::{Paint, Span};
@@ -39,10 +39,10 @@ impl Red {
         }
     }
 
-    /// Why `ship batch` waits: `ship held: batch/breadboard-2 is red (check:vita)`.
-    pub fn held(&self) -> String {
+    /// `batch/breadboard-2 is red (check:vita)`.
+    pub fn said(&self) -> String {
         let first = self.jobs.first().map_or("its pipeline", |(job, _)| job.as_str());
-        format!("ship held: {} is red ({first})", self.branch)
+        format!("{} is red ({first})", self.branch)
     }
 
     /// What is done about it: `#460 fixes it`, or the click that files the fix.
@@ -243,7 +243,7 @@ pub(crate) mod tests {
         let red = red_of(&local, Some(&remote)).unwrap();
         assert_eq!((red.branch.as_str(), red.mr), ("batch/b-2", 500));
         assert_eq!(red.headline(), "batch red: check:vita +1");
-        assert_eq!(red.held(), "ship held: batch/b-2 is red (check:vita)");
+        assert_eq!(red.said(), "batch/b-2 is red (check:vita)");
         assert_eq!(red.part()[0].url.as_deref(), Some("https://g/p/-/jobs/7"));
         let lines: Vec<String> = red.lines().iter().map(|line| text_of(line)).collect();
         assert_eq!(

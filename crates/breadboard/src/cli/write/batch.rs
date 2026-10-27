@@ -4,8 +4,9 @@
 //! it merges with the merge commits of the tasks (no squash), by the user's
 //! two clicks. The batch carries its changelog line, the next batch opens
 //! off it at once and the MRs still on their way into it go into the next,
-//! their worktrees' base with them (#464).
-//! Held while a batch shipped before is red (#413).
+//! their worktrees' base with them (#464). A batch shipped before whose MR
+//! is red (#413) had its fix go into this one: the ship replaces its MR
+//! (closed, its tasks listed here, #464).
 
 mod fix;
 
@@ -26,10 +27,11 @@ const USAGE: &str = "usage: pnpm wt:batch <product> --ship [--dry-run]
 
   --ship      open the MR batch → develop, or bring its description up to date:
               it lists every task MR merged into the batch and closes their
-              issues; the next batch opens off it and takes the MRs still open
+              issues; the next batch opens off it and takes the MRs still open;
+              a red batch shipped before is replaced: its MR closed (#464)
   --fix       file the fix of a red shipped batch (#413): the issue names its
               failed jobs and the tasks in it, the likeliest first; queued in
-              the product's orchestration (or <name>), off the red batch
+              the product's orchestration (or <name>), off the current batch
   --dry-run   show the MR or the issue, send nothing";
 const TAKES: Takes = Takes {
     valued: &["--orchestration"],
@@ -81,8 +83,8 @@ fn mrs_line(tasks: &[Task]) -> String {
         .join(" ")
 }
 
-/// The batch MR's description: every task MR, then the issues it closes.
-fn body_of(batch: &Batch, develop: &str, tasks: &[Task]) -> String {
+/// The batch MR's description: the red MRs it replaces, every task MR, then the issues it closes.
+fn body_of(batch: &Batch, develop: &str, tasks: &[Task], replaced: &[Shipping]) -> String {
     let listed: Vec<String> = tasks
         .iter()
         .map(|task| match task.issue {
@@ -98,6 +100,16 @@ fn body_of(batch: &Batch, develop: &str, tasks: &[Task]) -> String {
         if tasks.len() == 1 { "task" } else { "tasks" },
         listed.join("\n")
     );
+    if !replaced.is_empty() {
+        let listed: Vec<String> = replaced
+            .iter()
+            .map(|red| format!("!{} (`{}`)", red.mr, red.branch))
+            .collect();
+        body.push_str(&format!(
+            "\nIt replaces {}, red (#413): its fix is in this batch, its tasks are listed above, and it is closed.\n",
+            listed.join(", ")
+        ));
+    }
     if !closes.is_empty() {
         body.push_str(&format!("\nCloses {}\n", closes.join(", ")));
     }
@@ -190,28 +202,51 @@ fn follow_moved(main: &Path, branches: &[String], from: &str, to: &str) -> Vec<S
         .collect()
 }
 
-/// Why shipping waits: a batch of `product` shipped before `current` whose
-/// MR into develop failed its last pipeline; None while none did.
-fn red_before(main: &Path, product: &str, current: &str) -> Option<String> {
+/// The batches of `product` shipped before `current` whose MR into develop
+/// is open and failed its last pipeline (#413): the ship replaces them (#464).
+fn reds_before(main: &Path, product: &str, current: &str) -> Vec<Shipping> {
     batch::shipping_of(main, product)
-        .iter()
+        .into_iter()
         .filter(|entry| entry.branch != current)
-        .find_map(|entry| {
-            let mr = glab::api(main, &format!("projects/:fullpath/merge_requests/{}", entry.mr)).json()?;
-            let status = mr
-                .get("head_pipeline")
-                .map(|pipeline| glab::text_of(pipeline, "status"));
-            held_by(&entry.branch, entry.mr, status)
+        .filter(|entry| {
+            glab::api(main, &format!("projects/:fullpath/merge_requests/{}", entry.mr))
+                .json()
+                .is_some_and(|mr| is_red(&mr))
         })
+        .collect()
 }
 
-/// The line that holds the ship while `branch`'s MR `iid` failed its pipeline.
-fn held_by(branch: &str, iid: i64, status: Option<&str>) -> Option<String> {
-    (status == Some("failed")).then(|| {
-        format!(
-            "ship held: {branch} is red (!{iid}'s pipeline failed): its fix goes in first, the overview names the suspects"
-        )
-    })
+/// An MR into develop that is open and whose last pipeline failed.
+fn is_red(mr: &Value) -> bool {
+    glab::text_of(mr, "state") == "opened"
+        && mr
+            .get("head_pipeline")
+            .is_some_and(|pipeline| glab::text_of(pipeline, "status") == "failed")
+}
+
+/// The red batch MR `red` closed, `iid` named as what replaces it; Err the line why not.
+fn close_replaced(main: &Path, red: &Shipping, iid: i64) -> Result<(), String> {
+    let endpoint = format!("projects/:fullpath/merge_requests/{}", red.mr);
+    let note =
+        format!("Replaced by !{iid}: the fix of this red batch went into the next one, which ships its tasks (#464).");
+    let _ = glab::send(
+        main,
+        "POST",
+        &format!("{endpoint}/notes"),
+        &[glab::Field::Text("body", &note)],
+    );
+    let closed = glab::send(main, "PUT", &endpoint, &[glab::Field::Raw("state_event", "close")]);
+    if closed.is_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "!{} ({}) not closed: {}: `glab mr close {}`",
+            red.mr,
+            red.branch,
+            closed.why(),
+            red.mr
+        ))
+    }
 }
 
 pub fn run(argv: &Argv) -> Outcome {
@@ -258,16 +293,27 @@ pub fn run(argv: &Argv) -> Outcome {
             query(&current.branch)
         ),
     )?;
-    let tasks = tasks_of(&merged);
+    let own = tasks_of(&merged);
+    // A red batch shipped before (#413): its fix is in this one, which replaces it (#464).
+    let reds = reds_before(main, product, &current.branch);
+    let mut every = merged;
+    for red in &reds {
+        every.extend(mrs_of(
+            main,
+            &format!("{mrs}?state=merged&target_branch={}&per_page=100", query(&red.branch)),
+        )?);
+    }
+    let tasks = tasks_of(&every);
     if tasks.is_empty() {
         return Err(format!(
             "no task is merged into {} yet: nothing to ship",
             current.branch
         ));
     }
-    let body = body_of(&current, &develop, &tasks);
+    let body = body_of(&current, &develop, &tasks, &reds);
     debug_assert_eq!(closed_by(&body), issues_of(&tasks));
-    let (path, text) = changelog_of(product, &current, &tasks);
+    // The red batches carry their own line already.
+    let (path, text) = changelog_of(product, &current, if own.is_empty() { &tasks } else { &own });
     let open = mrs_of(
         main,
         &format!(
@@ -276,17 +322,16 @@ pub fn run(argv: &Argv) -> Outcome {
             query(&develop)
         ),
     )?;
-    // Held while a batch shipped before is red (#413): its fix goes first.
-    if let Some(why) = red_before(main, product, &current.branch) {
-        return Err(why);
-    }
     let next_name = batch::branch_of(product, current.number + 1);
     if argv.has("--dry-run") {
         say(&format!(
-            "\n{} the MR {} → {develop} ({}), {path} in it, the next batch {next_name} off it:\n\n{body}",
+            "\n{} the MR {} → {develop} ({}), {path} in it, the next batch {next_name} off it{}:\n\n{body}",
             if open.is_empty() { "would open" } else { "would update" },
             current.branch,
-            mrs_line(&tasks)
+            mrs_line(&tasks),
+            reds.iter()
+                .map(|red| format!(", closing !{}", red.mr))
+                .collect::<String>()
         ));
         return Ok(ExitCode::SUCCESS);
     }
@@ -330,18 +375,35 @@ pub fn run(argv: &Argv) -> Outcome {
             )
         }
     };
-    let mut shipping = batch::shipping_of(main, product);
+    // The red MRs it replaces are closed, and no longer on their way (#464).
+    let mut replaced = Vec::new();
+    let mut not_closed = Vec::new();
+    for red in &reds {
+        match close_replaced(main, red, iid) {
+            Ok(()) => replaced.push(red),
+            Err(line) => not_closed.push(line),
+        }
+    }
+    let kept = batch::shipping_of(main, product);
+    let mut shipping: Vec<Shipping> = kept
+        .iter()
+        .filter(|entry| !replaced.iter().any(|red| red.branch == entry.branch))
+        .cloned()
+        .collect();
     if !shipping.iter().any(|entry| entry.branch == current.branch) {
         shipping.push(Shipping {
             branch: current.branch.clone(),
             mr: iid,
         });
+    }
+    if shipping != kept {
         batch::write_shipping(main, product, &shipping)
             .map_err(|error| format!("!{iid} is open, but {product}'s file not written: {error}"))?;
     }
     let next = batch::open_next_off(main, product, &current)
         .map_err(|why| format!("!{iid} is open, but the next batch didn't open: {why}"))?;
     let (moved, mut failed) = retarget_open(main, &current.branch, &next.branch);
+    failed.extend(not_closed);
     let branches: Vec<String> = moved.iter().map(|(_, branch)| branch.clone()).collect();
     failed.extend(follow_moved(main, &branches, &current.branch, &next.branch));
     let mut lines = vec![
@@ -363,6 +425,11 @@ pub fn run(argv: &Argv) -> Outcome {
         format!("  {url}"),
         format!("✓ the next batch {} is open off it", next.branch),
     ];
+    lines.extend(
+        replaced
+            .iter()
+            .map(|red| format!("✓ !{} {} closed: !{iid} replaces it", red.mr, red.branch)),
+    );
     if !moved.is_empty() {
         let listed: Vec<String> = moved.iter().map(|(iid, _)| format!("!{iid}")).collect();
         lines.push(format!("✓ {} go into {} now", listed.join(" "), next.branch));
@@ -390,15 +457,15 @@ mod tests {
     }
 
     #[test]
-    fn a_red_batch_shipped_before_holds_the_ship() {
-        assert_eq!(
-            held_by("batch/breadboard-2", 500, Some("failed")).as_deref(),
-            Some(
-                "ship held: batch/breadboard-2 is red (!500's pipeline failed): its fix goes in first, the overview names the suspects"
-            )
-        );
-        assert_eq!(held_by("batch/breadboard-2", 500, Some("running")), None);
-        assert_eq!(held_by("batch/breadboard-2", 500, None), None);
+    fn a_red_batch_shipped_before_is_its_open_mr_with_a_failed_pipeline() {
+        let mr = |state: &str, status: Option<&str>| match status {
+            Some(status) => json!({ "state": state, "head_pipeline": { "status": status } }),
+            None => json!({ "state": state }),
+        };
+        assert!(is_red(&mr("opened", Some("failed"))));
+        assert!(!is_red(&mr("opened", Some("running"))));
+        assert!(!is_red(&mr("opened", None)));
+        assert!(!is_red(&mr("closed", Some("failed"))), "replaced already");
     }
 
     #[test]
@@ -422,13 +489,25 @@ mod tests {
             merged(431, "feature/411-rolling-batch", "feat(breadboard): rolling batches"),
             merged(442, "chore/no-number", "chore: tidy"),
         ]);
-        let body = body_of(&batch(), "develop", &tasks);
+        let body = body_of(&batch(), "develop", &tasks, &[]);
         assert!(
             body.contains("- !431 #411 feat(breadboard): rolling batches\n"),
             "{body}"
         );
         assert!(body.contains("- !442 chore: tidy\n"), "{body}");
         assert!(body.contains("`batch/breadboard-3` into develop"), "{body}");
+        assert!(!body.contains("replaces"), "{body}");
+        assert_eq!(closed_by(&body), [411]);
+        // A red batch shipped before (#464): replaced, its tasks among them.
+        let red = Shipping {
+            branch: "batch/breadboard-2".into(),
+            mr: 500,
+        };
+        let body = body_of(&batch(), "develop", &tasks, &[red]);
+        assert!(
+            body.contains("\nIt replaces !500 (`batch/breadboard-2`), red (#413): its fix is in this batch, its tasks are listed above, and it is closed.\n"),
+            "{body}"
+        );
         assert_eq!(closed_by(&body), [411]);
     }
 

@@ -295,19 +295,6 @@ pub fn fixes_of(main: &Path, product: &str) -> Vec<(i64, String)> {
         .collect()
 }
 
-/// The shipped batch the fix issue `number` goes into (#413), while that
-/// batch is still on its way into develop: the base of its worktree.
-pub fn fix_base(main: &Path, product: &str, number: i64) -> Option<String> {
-    let branch = fixes_of(main, product)
-        .into_iter()
-        .find(|(issue, _)| *issue == number)?
-        .1;
-    shipping_of(main, product)
-        .iter()
-        .any(|entry| entry.branch == branch)
-        .then_some(branch)
-}
-
 /// The fix issue `number` of the red shipped batch `branch` kept in `product`'s file, the others as they were.
 pub fn write_fix(main: &Path, product: &str, number: i64, branch: &str) -> std::io::Result<()> {
     let file = product_file(main, product);
@@ -629,12 +616,14 @@ mod tests {
                 mr: 7
             }]
         );
-        // A fix of the red shipped batch goes into it (#413), only while it is on its way.
+        // The fix of a red shipped batch, by the batch it fixes (#413).
         write_fix(&main, "breadboard", 460, &first.branch).unwrap();
         write_fix(&main, "breadboard", 461, "batch/breadboard-0").unwrap();
-        assert_eq!(fix_base(&main, "breadboard", 460), Some(first.branch.clone()));
-        assert_eq!(fix_base(&main, "breadboard", 461), None, "no longer shipping");
-        assert_eq!(fix_base(&main, "breadboard", 9), None);
+        assert_eq!(
+            fixes_of(&main, "breadboard"),
+            [(460, first.branch.clone())],
+            "no batch 0"
+        );
         assert_eq!(shipping_of(&main, "breadboard").len(), 1, "kept beside it");
         assert_eq!(current_of(&main, "breadboard"), Some(next), "the batch kept beside it");
         assert!(shipping_of(&main, "vita").is_empty());

@@ -35,8 +35,8 @@ pub struct BatchFold {
     pub product: String,
     /// Tasks are in it and it has no MR into develop yet: `ship batch` is offered.
     pub can_ship: bool,
-    /// Why `ship batch` isn't offered though it could be (#413): a batch shipped before is red.
-    pub held: Option<String>,
+    /// The red batch shipped before whose MR the ship replaces (#464): `replaces batch/b-2 (red)`.
+    pub replaces: Option<String>,
     /// The red batch's suspects, the likeliest first (#413).
     pub suspects: Vec<Vec<Span>>,
     /// A red batch without its fix issue yet: `fix batch` files it (#413).
@@ -187,8 +187,11 @@ pub fn batch_fold_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Opt
     let red = super::red_batch::red_of(local, remote);
     Some(BatchFold {
         product,
-        can_ship: could_ship && red.is_none(),
-        held: red.as_ref().filter(|_| could_ship).map(super::red_batch::Red::held),
+        can_ship: could_ship,
+        replaces: red
+            .as_ref()
+            .filter(|_| could_ship)
+            .map(|red| format!("replaces {} (red)", red.branch)),
         suspects: red.as_ref().map(super::red_batch::Red::lines).unwrap_or_default(),
         can_fix: red.as_ref().is_some_and(|red| red.fix.is_none()),
         fix: red.as_ref().and_then(|red| red.fix),
@@ -337,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn a_red_batch_says_so_holds_ship_batch_and_lists_its_suspects() {
+    fn a_red_batch_says_so_lists_its_suspects_and_the_ship_replaces_it() {
         let (local, mut remote) = crate::model::red_batch::tests::red_world();
         remote.epic.as_mut().unwrap().tasks = vec![BatchTask {
             iid: 450,
@@ -348,8 +351,8 @@ mod tests {
             "batch/b-3 · 1 task · shipping batch/b-2 !500 → develop ✗ failed · batch red: check:vita +1"
         );
         let fold = batch_fold_of(&local, Some(&remote)).unwrap();
-        assert!(!fold.can_ship);
-        assert_eq!(fold.held.as_deref(), Some("ship held: batch/b-2 is red (check:vita)"));
+        assert!(fold.can_ship);
+        assert_eq!(fold.replaces.as_deref(), Some("replaces batch/b-2 (red)"));
         assert!(fold.can_fix && fold.fix.is_none());
         assert_eq!(
             text_of(&fold.suspects[0]),
@@ -368,6 +371,6 @@ mod tests {
             .unwrap()
             .status = "success".into();
         let fold = batch_fold_of(&local, Some(&remote)).unwrap();
-        assert!(fold.can_ship && fold.held.is_none() && fold.suspects.is_empty() && !fold.can_fix);
+        assert!(fold.can_ship && fold.replaces.is_none() && fold.suspects.is_empty() && !fold.can_fix);
     }
 }

@@ -101,7 +101,8 @@ days` (2). Both run `{{run}} wt:batch <product> --ship`:
   (`batch <n> shipped: !a !b …`);
 - the next batch `batch/<product>-<n+1>` opens off the shipped one at once:
   tasks go on in it while the batch MR's pipeline runs, and the task MRs
-  still open into the shipped batch go into it. Once the batch MR merged,
+  still open into the shipped batch go into it, their worktrees' base with
+  them. Once the batch MR merged,
   it takes `{{branch}}` in only on a conflict;
 - after the merge, breadboard closes the issues GitLab left open.
 
@@ -109,14 +110,20 @@ days` (2). Both run `{{run}} wt:batch <product> --ship`:
 
 When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH says
 `batch red: <job>` and lists the task MRs merged into that batch, the likeliest
-first: those whose files a failed job covers (its `rules: changes:`). `ship
-batch` is held meanwhile (`ship held: batch/<product>-<n> is red (<job>)`, also
-in UP NEXT and from `{{run}} wt:batch <product> --ship`). **`fix batch`** (or the
-held row) runs `{{run}} wt:batch <product> --fix`: it files the fix issue with
-the failed jobs and the suspects with their files, and queues it in the
-orchestration. The overview hands it to the free agent that knows those
-files, else to a fresh one. Its worktree branches off the red batch, and its
-MR goes into it, so the batch MR's pipeline runs again with the fix.
+first: those whose files a failed job covers (its `rules: changes:`).
+**`fix batch`** (or the `batch red` row of UP NEXT) runs `{{run}} wt:batch
+<product> --fix`: it files the fix issue with the failed jobs and the suspects
+with their files, and queues it in the orchestration. The overview hands it to
+the free agent that knows those files, else to a fresh one. The fix is a task
+of the **current** batch like any other: its worktree branches off it and its
+MR goes into it (the user's decision on #413, #464).
+
+The current batch was opened off the red one and holds all its tasks, so its
+ship replaces the red one: `ship batch` is never held (`replaces
+batch/<product>-<n> (red)` beside it), and UP NEXT suggests it once the fix is
+merged into it. The ship lists the red batch's task MRs too and closes their
+issues, closes the red MR with a note naming the new one, and drops it from the
+batches on their way.
 
 ## Hotfixes
 

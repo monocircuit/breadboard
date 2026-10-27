@@ -67,16 +67,6 @@ pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<
             .and_then(|issue| issue.milestone.as_deref())
             .and_then(|milestone| config.product_of_milestone(milestone))
     });
-    // The fix of a red shipped batch (#413): from that batch, its MR into develop takes it.
-    let number = feature.split('-').next().and_then(|number| number.parse::<i64>().ok());
-    if let Some(branch) = product
-        .as_deref()
-        .zip(number)
-        .and_then(|(product, number)| breadboard_core::batch::fix_base(&main, product, number))
-    {
-        step(&format!("the fix of a red batch: from {branch}"));
-        return Ok(Base::of(&branch));
-    }
     let Some(product) = product.filter(|product| breadboard_core::settings::of_product(&main, Some(product)).batching)
     else {
         return Ok(Base::of(&develop));
