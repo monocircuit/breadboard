@@ -26,7 +26,13 @@ pub fn merged_of(cache: &Cache, branch: &str) -> Option<Value> {
 /// Keeps what REST listed for `branch` once it settled: no open MR, one
 /// merged. Another final MR the cache holds for it stays.
 pub fn keep_merged(cache: &mut Cache, branch: &str, listed: &[Value]) {
-    let state = |value: &Value| value.get("state").and_then(Value::as_str).unwrap_or_default().to_string();
+    let state = |value: &Value| {
+        value
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     if listed.iter().any(|value| state(value) == "opened") {
         return;
     }
@@ -84,7 +90,14 @@ mod tests {
     fn leaves_the_overview_s_final_mr_of_a_branch() {
         let mut cache = Cache::open(None);
         cache.set("branches", "fix/1-a", &4);
-        cache.set("mrs", "4", &Final { mr: mr_of(&listed(4, "closed")).0, merge_sha: None });
+        cache.set(
+            "mrs",
+            "4",
+            &Final {
+                mr: mr_of(&listed(4, "closed")).0,
+                merge_sha: None,
+            },
+        );
         keep_merged(&mut cache, "fix/1-a", &[listed(5, "merged")]);
         assert_eq!(cache.raw("branches", "fix/1-a"), Some(&json!(4)));
         assert!(merged_of(&cache, "fix/1-a").is_none());
@@ -98,6 +111,9 @@ mod tests {
         cache.set("mrs", "5", &Final { mr, merge_sha: None });
         assert!(merged_of(&cache, "fix/1-a").is_none());
         keep_merged(&mut cache, "fix/1-a", &[listed(5, "merged")]);
-        assert_eq!(merged_of(&cache, "fix/1-a").expect("kept")["merge_commit_sha"], json!("abc"));
+        assert_eq!(
+            merged_of(&cache, "fix/1-a").expect("kept")["merge_commit_sha"],
+            json!("abc")
+        );
     }
 }
