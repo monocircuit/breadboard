@@ -6,6 +6,8 @@
 use crate::cli::setup::gitlab;
 use crate::cli::setup::proc::git;
 use crate::cli::setup::repo;
+use breadboard_core::gitlab::cache::{Cache, cache_file};
+use breadboard_core::gitlab::merged::{keep_merged, merged_of};
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record;
 use serde_json::{Value, json};
@@ -159,6 +161,7 @@ pub fn combine(groups: &[Value]) -> Vec<Value> {
 /// What `name` changed: `{ name, title, root, groups, combined, missing }`,
 /// None without a record. Err: the branch GitLab didn't answer for after its
 /// tries, and why: no set that leaves its MRs out as if there were none (#306).
+/// A branch merged for good is read from the cache, not asked again (#484).
 pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;
@@ -171,17 +174,39 @@ pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
             branches.push(branch.clone());
         }
     }
-    let read_mrs = gitlab::all_in_turns(&branches, 12, |branch| {
+    // A branch merged for good from the overview's cache, asked only once (#484).
+    let mut cache = Cache::open(Some(cache_file(&main)));
+    let known: Vec<Option<Value>> = branches.iter().map(|branch| merged_of(&cache, branch)).collect();
+    let unknown: Vec<&String> = branches
+        .iter()
+        .zip(&known)
+        .filter(|(_, known)| known.is_none())
+        .map(|(branch, _)| branch)
+        .collect();
+    let asked = gitlab::all_in_turns(&unknown, 12, |branch| {
         gitlab::list(&format!(
             "projects/:fullpath/merge_requests?source_branch={}",
             gitlab::encode(branch)
         ))
-        .map_err(|failure| (branch.clone(), failure.reason))
+        .map_err(|failure| ((*branch).clone(), failure.reason))
     });
-    let read_mrs = match read_mrs {
-        Ok(read) => read,
+    let mut asked = match asked {
+        Ok(read) => read.into_iter(),
         Err(unanswered) => return Some(Err(unanswered)),
     };
+    let read_mrs: Vec<Vec<Value>> = branches
+        .iter()
+        .zip(known)
+        .map(|(branch, known)| match known {
+            Some(mr) => vec![mr],
+            None => {
+                let listed = asked.next().unwrap_or_default();
+                keep_merged(&mut cache, branch, &listed);
+                listed
+            }
+        })
+        .collect();
+    cache.save();
     let mut groups: Vec<Value> = Vec::new();
     let mut missing: Vec<i64> = Vec::new();
     for (branch, mrs) in branches.iter().zip(read_mrs) {
