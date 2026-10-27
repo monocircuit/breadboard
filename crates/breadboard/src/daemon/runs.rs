@@ -102,9 +102,10 @@ fn mark_look(started: usize) {
     let Some(file) = std::env::var_os(LOOKS_ENV) else {
         return;
     };
-    let line = serde_json::json!({ "at": now_ms(), "started": started });
+    // One write: a reader never sees half a line.
+    let line = format!("{}\n", serde_json::json!({ "at": now_ms(), "started": started }));
     if let Ok(mut looks) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
-        let _ = writeln!(looks, "{line}");
+        let _ = looks.write_all(line.as_bytes());
     }
 }
 
