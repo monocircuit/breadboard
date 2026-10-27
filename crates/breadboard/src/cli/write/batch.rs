@@ -312,8 +312,14 @@ pub fn run(argv: &Argv) -> Outcome {
     }
     let body = body_of(&current, &develop, &tasks, &reds);
     debug_assert_eq!(closed_by(&body), issues_of(&tasks));
-    // The red batches carry their own line already.
-    let (path, text) = changelog_of(product, &current, if own.is_empty() { &tasks } else { &own });
+    // The batch's line names its own tasks only: a red batch it replaces
+    // carries its own line, in this batch already (opened off it, #464); the
+    // description lists both, as their issues close. Nothing of its own: no line.
+    let changelog = (!own.is_empty()).then(|| changelog_of(product, &current, &own));
+    let in_it = changelog
+        .as_ref()
+        .map(|(path, _)| format!(", {path} in it"))
+        .unwrap_or_default();
     let open = mrs_of(
         main,
         &format!(
@@ -325,7 +331,7 @@ pub fn run(argv: &Argv) -> Outcome {
     let next_name = batch::branch_of(product, current.number + 1);
     if argv.has("--dry-run") {
         say(&format!(
-            "\n{} the MR {} → {develop} ({}), {path} in it, the next batch {next_name} off it{}:\n\n{body}",
+            "\n{} the MR {} → {develop} ({}){in_it}, the next batch {next_name} off it{}:\n\n{body}",
             if open.is_empty() { "would open" } else { "would update" },
             current.branch,
             mrs_line(&tasks),
@@ -335,7 +341,9 @@ pub fn run(argv: &Argv) -> Outcome {
         ));
         return Ok(ExitCode::SUCCESS);
     }
-    ensure_changelog(main, &current, &path, &text)?;
+    if let Some((path, text)) = &changelog {
+        ensure_changelog(main, &current, path, text)?;
+    }
     let (iid, url) = match open.first() {
         Some(mr) => {
             let iid = mr.get("iid").and_then(Value::as_i64).unwrap_or(0);
