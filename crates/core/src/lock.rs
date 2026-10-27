@@ -9,14 +9,39 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 /// Whether the process `pid` runs: `kill(pid, 0)`, EPERM counts (it runs as
-/// someone else).
+/// someone else). Where there is a `/proc`, a thread's id is none (#445):
+/// `kill` answers yes for it too, and after a reboot the pid of a file
+/// written before may be a thread of another process now.
 pub fn is_alive(pid: i64) -> bool {
     if pid <= 0 || pid > i64::from(i32::MAX) {
         return false;
     }
+    if Path::new("/proc/self/status").exists() {
+        return tgid_of(pid) == Some(pid);
+    }
     // SAFETY: signal 0 only asks whether the process exists.
     let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
     result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// The process the task `pid` belongs to (`Tgid` of `/proc/<pid>/status`):
+/// itself for a process, another for a thread; None when there is none.
+fn tgid_of(pid: i64) -> Option<i64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Tgid:"))
+        .and_then(|tgid| tgid.trim().parse().ok())
+}
+
+/// Who a process is beyond its pid: this boot's id and when it started
+/// (`/proc/<pid>/stat`'s ticks since boot), `<boot> <start>`; None without a `/proc`.
+fn identity_of(pid: i64) -> Option<String> {
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The name in parentheses may hold spaces: the fields count from its end.
+    let start = stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.to_string();
+    Some(format!("{} {start}", boot.trim()))
 }
 
 /// How old the lock directory is, None when it is gone.
@@ -78,9 +103,15 @@ pub struct PidFile {
 }
 
 impl PidFile {
-    /// The pid file `file` for this process, None while another live one holds it.
+    /// The pid file `file` for this process, None while another live one
+    /// holds it: its pid alive and, where written (#445), the same boot and
+    /// start time, so a pid reused after a reboot holds nothing.
     pub fn hold(file: &Path) -> Option<PidFile> {
-        let own = std::process::id().to_string();
+        let pid = i64::from(std::process::id());
+        let own = match identity_of(pid) {
+            Some(identity) => format!("{pid} {identity}"),
+            None => pid.to_string(),
+        };
         for _ in 0..2 {
             match fs::OpenOptions::new().write(true).create_new(true).open(file) {
                 Ok(mut created) => {
@@ -91,8 +122,7 @@ impl PidFile {
                     });
                 }
                 Err(_) => {
-                    let pid = pid_in(file);
-                    if pid != 0 && is_alive(pid) {
+                    if holds(file) {
                         return None;
                     }
                     let _ = fs::remove_file(file);
@@ -115,8 +145,20 @@ impl Drop for PidFile {
 pub fn pid_in(file: &Path) -> i64 {
     fs::read_to_string(file)
         .ok()
-        .and_then(|text| text.trim().parse().ok())
+        .and_then(|text| text.split_whitespace().next()?.parse().ok())
         .unwrap_or(0)
+}
+
+/// Whether the process a pid file names still holds it: alive, and the one
+/// that wrote it when the file says who (`<pid> <boot> <start>`).
+fn holds(file: &Path) -> bool {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    let mut parts = text.split_whitespace();
+    let Some(pid) = parts.next().and_then(|pid| pid.parse::<i64>().ok()) else {
+        return false;
+    };
+    let written: Vec<&str> = parts.collect();
+    is_alive(pid) && (written.is_empty() || identity_of(pid).is_none_or(|now| now == written.join(" ")))
 }
 
 #[cfg(test)]
@@ -205,6 +247,33 @@ mod tests {
         assert!(!file.exists());
         fs::write(&file, "999999999").unwrap();
         assert!(PidFile::hold(&file).is_some());
+    }
+
+    #[test]
+    fn a_stale_pid_file_naming_a_thread_or_another_boot_is_taken_over() {
+        let scratch = scratch::Scratch::new();
+        let file = scratch.join("engine.pid");
+        // A thread of this very process: `kill(tid, 0)` says yes, it is no process.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (_stop, wait) = std::sync::mpsc::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            // SAFETY: gettid has no arguments and only reads.
+            sender.send(unsafe { libc::gettid() } as i64).unwrap();
+            let _ = wait.recv();
+        });
+        let tid = receiver.recv().unwrap();
+        assert!(!is_alive(tid), "a thread id counts as a process");
+        assert!(is_alive(i64::from(std::process::id())));
+        fs::write(&file, tid.to_string()).unwrap();
+        let held = PidFile::hold(&file).expect("not taken over from a thread id");
+        let written = fs::read_to_string(&file).unwrap();
+        assert_eq!(written.split_whitespace().count(), 3, "{written}");
+        drop(held);
+        // This process, but written in another boot: a pid reused.
+        fs::write(&file, format!("{} 00000000-0000 1", std::process::id())).unwrap();
+        assert!(PidFile::hold(&file).is_some(), "a pid of another boot holds it");
+        drop(_stop);
+        thread.join().unwrap();
     }
 
     #[test]

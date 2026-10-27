@@ -1,10 +1,10 @@
 //! The automatic actions of an orchestration (auto-actions.mjs): what the
 //! overview finds waiting without anyone posting it: a merge that is ready, a
-//! failed pipeline, commits sitting unpushed, the clean-up after a merge, an
+//! failed pipeline, the clean-up after a merge, an
 //! agent that stopped on a question. And the lines it sends by itself about
 //! conflicts and failed pipelines, as data: the writing side sends them.
 
-use super::change::{is_change_open, unpushed_action_of};
+use super::change::is_change_open;
 use super::half_merged::half_merged_action_of;
 use super::merge::checks_of;
 use super::order::{Go, Item, Target};
@@ -254,11 +254,11 @@ pub struct AutoFacts<'a> {
 /// - `merge`: ready and green, every check done, GitLab says mergeable; a ready draft too;
 /// - `pipeline`: the pipeline of the open MR failed and its line didn't get in yet;
 /// - `look`: its failed pipeline is past what the CI queue does by itself (#371);
-/// - `push`: commits sit unpushed for long;
 /// - `half-merged`: a merge open for long, no run of its agent in flight (#396);
 /// - `clean up`: merged: a removal that failed, the issue's open boxes for its agent;
 /// - `waits`: the agent asks something or stopped on a question;
-/// - `held`: a claude open in its tab holds its lines past ten minutes (#386).
+/// - `held`: a claude open in its tab holds its lines past ten minutes (#386);
+/// - `old wait`: a `wt:wait` stood for a day: a click drops it (#421).
 pub fn auto_actions_of(
     issues: &[Entry],
     remote: Option<&Remote>,
@@ -397,30 +397,6 @@ pub fn auto_actions_of(
                 ));
             }
         }
-        if let Some(tree) = tree
-            && let Some(unpushed) = unpushed_action_of(&issue.branch, tree, mr, facts.now)
-        {
-            let focus = Go::FocusAgent(tree.dir.clone());
-            // Its row says a click tells its agent: it tries herdr's agent of its tab,
-            // known conversation or not, and brings the tab to the front when none takes it.
-            let go = if unpushed.is_sent {
-                focus
-            } else {
-                Go::Send {
-                    dir: tree.dir.clone(),
-                    key: unpushed.key.clone(),
-                    line: unpushed.line.clone(),
-                    fallback: Box::new(focus),
-                }
-            };
-            actions.push(base(
-                "push",
-                format!("push:{}", issue.branch),
-                unpushed.text,
-                Some(&unpushed.at),
-                go,
-            ));
-        }
         let is_running = agent.is_some_and(|agent| agent.status.as_deref() == Some("working"));
         if let Some(tree) = tree
             && let Some(half) = half_merged_action_of(&issue.branch, tree, is_running, facts.now)
@@ -472,7 +448,7 @@ pub fn auto_actions_of(
                     "clean up",
                     format!("clean up:{}:boxes", issue.branch),
                     format!(
-                        "{} {} {open} open boxes: click to have its agent tick the done ones",
+                        "{} {} {open} open boxes: click to have a small run tick the done ones, its agent not woken",
                         part.issues_text(),
                         if part.also.is_empty() { "has" } else { "have" }
                     ),
@@ -500,6 +476,24 @@ pub fn auto_actions_of(
                     .into(),
                 None,
                 Go::EndHeld(tree.dir.clone()),
+            ));
+        }
+        // A wait that has stood for a day (#421): its MRs may never merge the
+        // way it expects, its line would wake the agent long after it mattered.
+        if let Some(tree) = tree
+            && let Some(wait) = tree.wait.as_ref().filter(|wait| crate::wait::is_stale(wait, facts.now))
+        {
+            let since = wait.since.clone().unwrap_or_default();
+            actions.push(base(
+                "old wait",
+                format!("old wait:{}:{since}", issue.branch),
+                format!(
+                    "waits for {} for over {} h: click to drop the wait",
+                    crate::wait::list_of(&wait.mrs),
+                    crate::wait::STALE_MS / 3_600_000
+                ),
+                Some(&since),
+                Go::DropWait(tree.dir.clone()),
             ));
         }
         // A headless agent at a would-be question has its `permission` action
@@ -749,18 +743,13 @@ mod tests {
     }
 
     #[test]
-    fn asks_for_a_push_once_commits_sit_unpushed_for_long() {
+    fn asks_nothing_for_commits_unpushed_for_long_breadboard_pushes_them() {
         let mut late = issue();
         let tree = late.tree.as_mut().unwrap();
         tree.unpushed = 2;
         tree.unpushed_at = Some(NOW - 11 * 60_000);
         tree.pushed = Some("a".into());
         tree.has_remote_branch = true;
-        assert_eq!(
-            kinds(&[late.clone()], &Remote::default()),
-            [pair("push", "2 commits not pushed for 11 min: click to tell its agent")]
-        );
-        late.tree.as_mut().unwrap().unpushed_at = Some(NOW);
         assert!(kinds(&[late], &Remote::default()).is_empty());
     }
 
@@ -984,6 +973,30 @@ mod tests {
         assert_eq!(items[0].kind, "held");
         assert_eq!(items[0].go, Go::EndHeld("/w/7".into()));
         assert!(items[0].text.contains("ends it once it is idle"));
+    }
+
+    #[test]
+    fn a_wait_of_a_day_has_a_row_that_drops_it() {
+        let facts = AutoFacts {
+            now: NOW,
+            ..Default::default()
+        };
+        let waiting = |since: i64| {
+            let mut entry = issue();
+            entry.tree.as_mut().unwrap().wait = Some(crate::wait::Wait {
+                mrs: vec![387],
+                since: Some(to_iso(since)),
+                ..Default::default()
+            });
+            entry
+        };
+        let fresh = waiting(NOW - crate::wait::STALE_MS + 1);
+        assert!(auto_actions_of(&[fresh], None, &HashMap::new(), &facts).is_empty());
+        let items = auto_actions_of(&[waiting(NOW - crate::wait::STALE_MS)], None, &HashMap::new(), &facts);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0].kind, "old wait");
+        assert_eq!(items[0].text, "waits for !387 for over 24 h: click to drop the wait");
+        assert_eq!(items[0].go, Go::DropWait("/w/7".into()));
     }
 
     #[test]

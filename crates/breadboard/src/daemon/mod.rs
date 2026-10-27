@@ -10,10 +10,11 @@
 //!   one call per worktree and stamp of its files in STALE_MS for all
 //!   overviews together; what the key holds (merge base, diff, ahead,
 //!   cherry, …) each overview keeps in its own memo while the key holds;
-//! - GitLab: one feed per view (`feed`), read on the overview's cadence
-//!   (`gitlab::read_gitlab`) and sent to every overview of that view; `r` in
-//!   any of them reads again for all; an overview opened later gets the last
-//!   answer at once;
+//! - GitLab: one feed per view (`feed`), read on its cadence
+//!   (`gitlab::read_gitlab`: 30 s, longer while nothing changes, at once on
+//!   an event) and sent to every overview of that view; `r` in any of them
+//!   reads again for all; an overview opened later gets the last answer at
+//!   once; one process of the user polls a view (#462), a 429 pauses all;
 //! - docker isn't the daemon's: core reads it once in 12 s for every process
 //!   of the user through a file (`local::containers`, #331), with or without it.
 //!
@@ -27,7 +28,9 @@
 //! queued lines it runs with `claude -p`, staying while any are queued or in
 //! flight; the CI queue (`ci`, #357), which creates the MR pipelines of a
 //! repo in their order; and the marks (`ready`, #399), which mark an
-//! orchestration's MR ready once its bar is full. An overview that can't reach it reads by itself.
+//! orchestration's MR ready once its bar is full; and the pushes (`push`,
+//! #450), which check and push what a headless agent left unpushed. An
+//! overview that can't reach it reads by itself.
 //! And one more (#348, `keep_up`): it fast-forwards the main checkouts of
 //! its overviews to origin/develop, when that is safe, and goes on in a
 //! build installed over its binary; and it merges develop into each
@@ -40,6 +43,7 @@ mod feed;
 pub mod gitlab;
 mod glab;
 mod keep_up;
+mod push;
 mod ready;
 pub mod runs;
 mod serve;

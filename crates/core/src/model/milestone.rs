@@ -96,6 +96,7 @@ mod tests {
             epic: Some(EpicLocal {
                 branch: EPIC.into(),
                 behind: Some(0),
+                ..EpicLocal::default()
             }),
             record: Some(Record {
                 issues: vec![entry(1), entry(2), entry(3)],

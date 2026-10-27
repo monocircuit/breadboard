@@ -39,7 +39,7 @@ pub const SHAPE: Shape = Shape::new(
 const TASKS: [&str; 3] = ["lint", "typecheck", "test"];
 /// breadboard's cargo checks (#336): only when the branch changes its Rust
 /// sources, never because develop was merged in or a package it depends on
-/// changed. They run through herdr/cargo.sh, in the clone's shared target/.
+/// changed. They run through herdr/cargo.sh, in the checkout's own target/.
 const RUST_TASKS: [&str; 2] = ["lint:rs", "test:rs"];
 /// The Rust sources of breadboard, as the launcher keys its builds on them
 /// (herdr/breadboard.sh `sources`: the crates and what they embed).
@@ -390,7 +390,7 @@ pub fn mr_command(args: &Args) -> ExitCode {
     }
     let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
     if dir.is_empty() {
-        fail("wt:check runs in a checkout of the repo");
+        fail("wt:check runs in a checkout of the repo: cd into your worktree, then pnpm wt:check");
     }
     let dir = PathBuf::from(dir);
     let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
@@ -400,7 +400,9 @@ pub fn mr_command(args: &Args) -> ExitCode {
     let Some(base) = var("CI_MERGE_REQUEST_DIFF_BASE_SHA").or_else(|| {
         Some(git(&["merge-base", &against, "HEAD"], &dir).text().to_string()).filter(|sha| !sha.is_empty())
     }) else {
-        fail(&format!("no base to compare with (fetch {against})"))
+        fail(&format!(
+            "no base to compare with: git fetch origin (for {against}), then pnpm wt:check"
+        ))
     };
     let reason = var("CI_MERGE_REQUEST_DESCRIPTION").and_then(|text| check::no_test_of(&text));
     let short: String = base.chars().take(8).collect();
@@ -474,7 +476,9 @@ fn plain_check(dir: &Path, sha: &str, tree: &str, no_test: Option<&str>) -> Exit
     }
     if working_tree_of(dir).as_deref() != Some(tree) {
         write_check(dir, json!({ "running": null }));
-        fail("the files changed while wt:check ran: what passed isn't what is there now. Run it again.");
+        fail(
+            "the files changed while wt:check ran: what passed isn't what is there now. Run pnpm wt:check again once nothing writes to them.",
+        );
     }
     write_check(
         dir,
@@ -773,7 +777,7 @@ pub fn command(args: &Args) -> ExitCode {
     }
     let dir = git(&["rev-parse", "--show-toplevel"], &repo::cwd()).text().to_string();
     if dir.is_empty() {
-        fail("wt:check runs in a checkout of the repo");
+        fail("wt:check runs in a checkout of the repo: cd into your worktree, then pnpm wt:check");
     }
     let dir = PathBuf::from(dir);
     let turbo = turbo_of(&dir);
@@ -921,7 +925,9 @@ pub fn command(args: &Args) -> ExitCode {
     }
     if working_tree_of(&dir).as_deref() != Some(tree.as_str()) {
         write_check(&dir, json!({ "running": null }));
-        fail("the files changed while wt:check ran: what passed isn't what is there now. Run it again.");
+        fail(
+            "the files changed while wt:check ran: what passed isn't what is there now. Run pnpm wt:check again once nothing writes to them.",
+        );
     }
     write_check(
         &dir,

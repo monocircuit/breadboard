@@ -80,7 +80,9 @@ fn word_of(
             auto::removal_said(removals.get(dir)?, &feature)
         }
         Go::End => end_said(actor.end.as_ref()?, name),
-        Go::EpicMr => epic_mr_said(actor.epic_mr.as_ref()?, &item.text),
+        Go::EpicMr => epic_mr_said(actor.epic_mr.as_ref()?, &item.text, "milestone MR"),
+        Go::ShipBatch(_) => epic_mr_said(actor.ship.as_ref()?, &item.text, "batch MR"),
+        Go::FixBatch(_) => epic_mr_said(actor.fix.as_ref()?, &item.text, "fix issue"),
         _ => None,
     }
 }
@@ -105,17 +107,18 @@ fn end_said(end: &Run, name: &str) -> Option<Vec<Span>> {
 }
 
 /// The milestone row of UP NEXT while its `wt:epic --mr` runs, once it
-/// opened the MR (until GitLab shows it), or after it failed (#402).
-fn epic_mr_said(run: &Run, text: &str) -> Option<Vec<Span>> {
+/// opened the MR (until GitLab shows it), or after it failed (#402); the
+/// ship row the same with its `wt:batch --ship` (#414). `what`: `milestone MR`, `batch MR`.
+fn epic_mr_said(run: &Run, text: &str, what: &str) -> Option<Vec<Span>> {
     if run.is_running {
         return Some(vec![
-            Span::plain("opening the milestone MR … "),
+            Span::plain(format!("opening the {what} … ")),
             Span::dim(run.last_line()),
         ]);
     }
     if run.error.is_none() && run.done_at.is_some() {
         return Some(vec![
-            Span::new("milestone MR open ", Paint::Green),
+            Span::new(format!("{what} open "), Paint::Green),
             Span::dim(run.last_line()),
         ]);
     }

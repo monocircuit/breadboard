@@ -362,9 +362,12 @@ pub struct Freed {
     pub at: Option<String>,
     pub from: Option<String>,
     pub mr: Option<i64>,
+    /// The handoff it wrote at its last run (#445), next to the record: a
+    /// fresh agent reads it once this one starts fresh.
+    pub handoff: Option<String>,
 }
 
-/// An agent that retired at its merge (#381): above `[agents] fresh_above`,
+/// An agent that retired at its merge (#381): one that starts fresh (#445),
 /// it wrote a handoff and takes no next issue; a fresh agent reads it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Retired {
@@ -374,8 +377,21 @@ pub struct Retired {
     pub mr: Option<i64>,
     /// The share of its context then.
     pub context: Option<f64>,
+    /// Its context then, in tokens (#445); None for one retired before.
+    pub tokens: Option<u64>,
     /// Its handoff, next to the record (`handoff_file`); None when it wrote none.
     pub handoff: Option<String>,
+}
+
+impl Retired {
+    /// ` at 162 k tokens of context`, for one retired before #445 ` at 47 % of its context`; empty when unknown.
+    pub fn context_text(&self) -> String {
+        match (self.tokens, self.context) {
+            (Some(tokens), _) => format!(" at {} tokens of context", crate::fresh::k(tokens)),
+            (None, Some(share)) => format!(" at {} % of its context", (share * 100.0).round() as i64),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// An agent of the orchestration (#217), by its conversation's id.
@@ -400,6 +416,22 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Its kept handoff (relative to the main checkout): the retired one's, else the free one's (#445).
+    pub fn handoff(&self) -> Option<&str> {
+        self.retired
+            .as_ref()
+            .and_then(|retired| retired.handoff.as_deref())
+            .or_else(|| self.free.as_ref().and_then(|free| free.handoff.as_deref()))
+    }
+
+    /// When it left that handoff.
+    pub fn handoff_at(&self) -> Option<&str> {
+        self.retired
+            .as_ref()
+            .and_then(|retired| retired.at.as_deref())
+            .or_else(|| self.free.as_ref().and_then(|free| free.at.as_deref()))
+    }
+
     pub fn from_value(id: &str, value: &Value) -> Worker {
         let history = value.get("history").and_then(Value::as_array).map(|starts| {
             starts
@@ -434,6 +466,7 @@ impl Worker {
             at: str_of(free, "at").map(String::from),
             from: str_of(free, "from").map(String::from),
             mr: int_of(free, "mr"),
+            handoff: str_of(free, "handoff").map(String::from),
         });
         let retired = value
             .get("retired")
@@ -443,6 +476,7 @@ impl Worker {
                 from: str_of(retired, "from").map(String::from),
                 mr: int_of(retired, "mr"),
                 context: retired.get("context").and_then(Value::as_f64),
+                tokens: retired.get("tokens").and_then(Value::as_u64),
                 handoff: str_of(retired, "handoff").map(String::from),
             });
         Worker {
@@ -492,7 +526,8 @@ pub struct Record {
     pub actions: Vec<Action>,
     pub chat: Option<Chat>,
     pub peer: Option<String>,
-    /// The branch its worktrees are based on (#349): an epic, None for develop.
+    /// The branch its worktrees are based on (#349): an epic still open, None
+    /// for develop or its product's batch (#411).
     pub base: Option<String>,
     /// The product of `[products.*]` it belongs to (#405): its space is the product's.
     pub product: Option<String>,
@@ -593,11 +628,12 @@ impl Record {
             .collect()
     }
 
-    /// The agents that retired with a handoff (#381), the latest last.
+    /// The agents that left a handoff (#381): retired, or free with the
+    /// one written at their last run (#445).
     pub fn retired(&self) -> Vec<&Worker> {
         self.workers
             .iter()
-            .filter(|worker| worker.retired.as_ref().is_some_and(|retired| retired.handoff.is_some()))
+            .filter(|worker| worker.handoff().is_some())
             .collect()
     }
 }
@@ -664,11 +700,19 @@ pub fn write_chat(main: &Path, name: &str, session_id: &str, cwd: &str) -> io::R
 }
 
 /// The base a new worktree of the orchestration `name` gets (`wt:new
-/// --origin`, #349): its record's epic, else the repo's default branch;
-/// both read from the main checkout `main`, never the process's cwd (#380).
+/// --origin`, #349): its record's epic still open, else its product's batch
+/// (#411), else the repo's default branch; read from the main checkout
+/// `main`, never the process's cwd (#380).
 pub fn planned_base(main: &Path, name: Option<&str>) -> crate::git::Base {
-    name.and_then(|name| record_of(main, name))
-        .and_then(|record| record.base)
+    let record = name.and_then(|name| record_of(main, name));
+    let batch = || {
+        let product = record.as_ref()?.product.as_deref()?;
+        crate::batch::planned_of(main, product).map(|batch| batch.branch)
+    };
+    record
+        .as_ref()
+        .and_then(|record| record.base.clone())
+        .or_else(batch)
         .map_or_else(
             || crate::git::Base::of(&crate::config::of(main).branch),
             |base| crate::git::Base::of(&base),

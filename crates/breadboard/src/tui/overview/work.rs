@@ -377,7 +377,7 @@ fn done_text(parts: &Parts, merge_requests: &MergeRequests) -> String {
 }
 
 /// `▸ done (42) · click to show`: a click folds or shows what is under it.
-fn fold_line(scene: &mut Scene<Act>, fold: Fold, is_folded: bool, text: &str, ctx: &Ctx) {
+pub(super) fn fold_line(scene: &mut Scene<Act>, fold: Fold, is_folded: bool, text: &str, ctx: &Ctx) {
     let mark = if is_folded { "▸" } else { "▾" };
     let hint = match (ctx.is_once, is_folded) {
         (true, _) => "",

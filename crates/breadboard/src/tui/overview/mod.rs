@@ -279,14 +279,14 @@ async fn read_gitlab(
     });
     match daemon::client::follow(&main, &view, &mut asks, &mut refreshes, &out).await {
         daemon::client::Followed::Done => {}
-        daemon::client::Followed::Lost => daemon::read_gitlab(main, asks, refreshes, out).await,
+        daemon::client::Followed::Lost => daemon::read_gitlab(main, view, asks, refreshes, out).await,
         daemon::client::Followed::Silent => {
             let _ = out.send(Feed::Remote {
                 result: Err(daemon::SILENT_TEXT.into()),
                 at: now_ms(),
                 rate: None,
             });
-            daemon::read_gitlab(main, asks, refreshes, out).await;
+            daemon::read_gitlab(main, view, asks, refreshes, out).await;
         }
     }
 }
@@ -349,6 +349,9 @@ pub struct Folds {
     pub is_every_command_shown: bool,
     /// The settings panel is open (#415): `,` or `⚙ settings`.
     pub is_settings_open: bool,
+    /// BATCH's task MRs (#414), folded until opened.
+    #[serde(default)]
+    pub is_batch_shown: bool,
     /// The boxes opened under an MR's row and a worktree's node (#346).
     /// Not handed to a new build: it reads them from their file (`folds_file`).
     #[serde(skip)]
@@ -568,7 +571,7 @@ impl App for Overview {
                 }
                 settings::build(page, model, &ctx);
                 next::build(page, model, &ctx);
-                epic::build(page, model);
+                epic::build(page, model, &ctx);
                 actions::build(page, model, &ctx);
                 work::build(page, model, &ctx);
                 agents::build(page, model, &ctx);

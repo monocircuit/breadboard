@@ -51,7 +51,12 @@ What it does, in this order:
 
 1. Reads every issue. Closed ones, ones another branch claims and ones with a
    worktree already are skipped and listed (a bundle with such an issue
-   whole); nothing to start stops here.
+   whole); nothing to start stops here. A
+   worktree of the orchestration whose agent is gone (none bound, its MR not
+   merged) gets a fresh agent in it instead (#455), its brief saying it takes
+   over; the overview does the same for such a worktree in the work order
+   once its agent left it marked (`.claude/agent-left`: a `wt:new` from
+   inside it, a handover).
 2. Opens the space `⇶ <name>`, or its product's (`<product>`), (`root`, `overview`, `orchestrator`,
    `changelog` and `changes`, see The changelog) and
    moves the tab it runs in there: the orchestrator's own tab. That happens only
@@ -63,9 +68,9 @@ What it does, in this order:
    of the main checkout, with the orchestrator's conversation
    (`orchestrator: { sessionId, cwd }`, see The orchestrator's chat). A
    second run with the same name adds to it. The
-   space `⇶ <name>` stands on the orchestration's epic branch
-   `epic/<N>-<name>` (made from `origin/{{branch}}` at the first run, the base
-   of every task{{#epics}}, [epics.md](epics.md){{/epics}}) in `.claude/orchestrations/<name>/`,
+   space `⇶ <name>` stands on its product's batch
+   `batch/<product>-<n>` (opened from `origin/{{branch}}` when the product has none, the base
+   of every task{{#batches}}, [batches.md](batches.md){{/batches}}) in `.claude/orchestrations/<name>/`,
    so herdr hangs it under `{{space}}` like a worktree's.
 3. Per issue, **at once** whatever the number at work: to a free or idle
    agent whose worktrees share the most files with the paths the issue
@@ -76,13 +81,13 @@ What it does, in this order:
    starts on the shared stack anyway, and the command says so.
 4. For a fresh agent `{{run}} wt:new <feature> --origin <name>`, **one after the other**
    (two at once would pick the same free ports). The worktree is one of the
-   main checkout like any other, its space in the same group; `wt:list`, the
+   main checkout like any other, with no space of its own (#409); `wt:list`, the
    overview, `wt:remove` and `wt:prune` know it. The origin is recorded in `.claude/origin` of the
-   worktree; its space opens unfocused, with the usual tabs.
+   worktree; a click on its row in the overview shows it in the detail pane.
 5. Per worktree a new session id, bound to it (`.claude/herdr-session`), and
    its first run queued: `.claude/brief.md` of the worktree as the prompt.
-   No tab: the worktree's space has `root`, `overview`, `nvim` and its stack
-   tabs, no claude.
+   No tab and no space: the worktree is a row in the overview, its agent runs
+   headless and opens in the detail pane (`a`).
 
 A worktree counts as made when it exists: `wt:new` may still fail in its
 summary (#130), and the next issue still starts.
@@ -138,12 +143,9 @@ and a reboot. `resume` runs every waiting line, one run per agent, and
 switches the CI queue on again if the pause switched it off. Never end runs
 or daemons by hand to pause.
 
-**A headless agent waits only through a line** (#417). A background command
-(a backgrounded Bash call, a Monitor) is stopped when its run ends, and its
-notification never comes: an agent runs `wt:check`, the gauntlet and builds
-in the foreground, and waits for something external only with `wt:wait`,
-never with a background command and "I'll wait". The engine wakes one that
-does anyway: a run that ends with a background task still running (from its
+**A headless agent waits only through a line** (#417): foreground commands
+and `wt:wait`, never a background command ([agent.md](agent.md), "Your
+run"). The engine wakes one that waits anyway: a run that ends with a background task still running (from its
 stream) leaves `.claude/wake.json` in its worktree, and once the processes it
 left behind (they carry `BREADBOARD_RUN=<id>`) are gone, at the latest after
 15 min, the line `[breadboard] your background command finished: <cmd>,
@@ -155,7 +157,7 @@ second time in a row); until then its node says `waits on itself since
 **Open an agent in a tab** (#361): a click on an agent (its block in
 WORK, an action that opens it, the `resume` row of its worktree's view)
 runs `cd <worktree> && claude --resume <id> --name <feature>` in the
-`<feature>` tab of its space, once no run is in flight (it waits for one up
+overview's detail pane (#406), once no run is in flight (it waits for one up
 to 15 min); a claude that already runs the conversation is put in front
 instead. While that claude runs, the agent's queue waits; when it ends, the
 queue goes on headless. Type there for anything the overview has no button
@@ -196,7 +198,19 @@ sh packages/breadboard/herdr/breadboard.sh runs tell <worktree dir> "<line>"
 ```
 
 The line starts the agent's next run, or goes into the next one when a run
-is in flight.
+is in flight. A line it needn't act on now (`!N is merged`, a hotfix's
+pipeline runs, a rule for later) goes with `runs tell --notice <dir>
+"<line>"`: it starts no run but rides along with the next line that does
+(#445). Every run resumes the agent's whole history, so a notice of its own
+costs a full read, and past the cache's hour a full write too. The
+overview's own `!N merged` is such a notice.
+
+**After a crash, an OOM kill or a reboot** the run engine picks up every
+run that was cut off by itself, once and a few at a time (`[agents]
+max_runs`): don't wake the agents by hand. A small session is resumed with
+one line; one past the fresh-start rule is taken over by a fresh session in
+its worktree with a handoff from the disk (`.claude/handoff-cut.md`), never
+resumed with its whole history (#445).
 
 **Lean: the overview reports, the chat decides.** Status never goes through
 the orchestrator's conversation: every message there stays in its context.
@@ -204,13 +218,8 @@ An agent reports nothing to the chat: its block in WORK shows its state
 (How agents run) and what it waits for, with commits, MR, pipeline and
 boxes, the problem it works on and what it is on now (its `{{run}}
 wt:action note "<one line>"`, asked for at every stage, or its last answer's
-first line). The brief asks for `SendMessage`
-only for:
-
-- its plan, when it differs from the issue;
-- a decision that is the user's, with options and a recommendation — and to
-  wait for the answer;
-- what concerns another agent's work (an order, a conflict, a dependency).
+first line). It sends a `SendMessage` only in the three cases of
+[agent.md](agent.md), "Telling".
 
 The orchestrator relays nothing the overview shows, and doesn't ask an agent
 where it stands: WORK says it. **A decision with a `decide` (or `plan`)
@@ -224,15 +233,18 @@ has buttons for. It answers with the user's word, not its own
 guess. Never merge, approve or tag for an agent. The user can also open an
 agent in a tab (How agents run) and type there: that wins.
 
-**Waiting for other MRs needs no orchestrator, and no process** (#359). An
-agent that has to wait runs `{{run}} wt:wait !N … --then "<what next>"` and
-stops: the command records the wait in `.claude/wait.json` and returns at
-once (MRs already merged or closed: it says so then). The daemon asks
+**Waiting for other MRs needs no orchestrator, and no process** (#359). The
+agent's side is in [agent.md](agent.md), "Your run": `wt:wait` records the
+wait in `.claude/wait.json` and returns at once (MRs already merged or
+closed: it says so then). The daemon asks
 GitLab every minute and queues the line to go on with (`!213 is merged:
 develop is 3 behind: merge it in only if your work needs it or it
 conflicts, then …`), which starts the agent's next run;
 early when one is closed, stays in conflict for 30 min, or after 8 h.
-Meanwhile the MR row says `waits for !213`.
+Meanwhile the MR row says `waits for !213`. An MR GitLab merged with
+another counts as merged too. Once the agent's own MR is merged or closed,
+its wait is dropped instead (#421): no run wakes it to find nothing to do. A
+wait that has stood for 24 h shows in ACTIONS as `old wait`: a click drops it.
 
 **The overview answers "what now?"**, so the user never has to ask. The
 orchestrator sets the order right after the start and again whenever it
@@ -312,7 +324,7 @@ a merge and never once the plan is stale. ACTIONS holds only what needs the user
 see Merging; gone once merged; each agent posts its own), `try`
 (what only the human can check, and the click that opens its spot:
 `--run <command>` the overview's detail pane running it in the
-worktree, `--url <page>` the page on the worktree's app in its tab group, a
+worktree, `--url <page>` the page on the worktree's app in the browser, a
 path `/atlas/…` on the worktree's port, its stack and app started
 first when the app is down; the row shows the command or page before;
 `browser-check --url` is its old name; `--on test --url <path>` the path on
@@ -324,15 +336,14 @@ that isn't ready is grey, its buttons don't answer, NEXT skips it, and the
 overview notifies once it turns ready. A check that needs the deployment is
 a `try --on test` posted with the merge, not a box in prose; its worktree
 isn't cleaned up while it is open), `decide`, `plan` and
-`look` (go to the agent's space) — and the automatic `permission` (what auto
-mode would have asked in a run, see Permissions), `push` (commits a worktree
-holds unpushed for over 10 minutes; the click queues the order for its
-agent) and `merge` (a ready, green MR without its agent's, none while a
-change is requested).
-Sorted by what blocks most: `permission`, `decide`, `plan`, `push`, `merge`,
+`look` (its worktree in the detail pane) — and the automatic `permission` (what auto
+mode would have asked in a run, see Permissions) and `merge` (a ready, green MR without its agent's, none while a
+change is requested). Commits an agent left unpushed get no row:
+breadboard checks and pushes them itself (README, "Headless agents").
+Sorted by what blocks most: `permission`, `decide`, `plan`, `merge`,
 `try`, `look`; within a kind by merge order, then age. UP NEXT,
 the automatic follow-ups in merge order, one click each: `clean up` (remove
-the worktree, have its agent tick the done boxes), `pipeline` (a failed
+the worktree, a small run of its own ticks the done boxes: Sonnet at low effort with the issue, the MR and the agent's handoff, its agent not woken, #445), `pipeline` (a failed
 MR pipeline whose line didn't reach its agent; queued, it arrives on the
 first try, so the row is rare: a worktree without an agent), `hand over` and `start` (see Agents are workers), `end` (see The end). `wt:action --list` / `--done <id>` from the
 worktree. WORK (#347: what WORKTREES and MERGE REQUESTS showed apart),
@@ -393,8 +404,8 @@ until folded). Its title counts the agents by whom they wait for and the MRs
   shows only what it has.
 
 An issue that got no worktree says why; an MR without a worktree gets a
-block of the same shape. A click on a block goes to its worktree's space
-(without one to its MR, else its issue), on `!M` to the MR, on the mark to
+block of the same shape. A click on a block shows its worktree in the detail pane
+(without one it goes to its MR, else its issue), on `!M` to the MR, on the mark to
 its pipeline; hover lights the whole block. Look here before asking an
 agent where it stands.
 
@@ -419,16 +430,13 @@ no pipeline of its own. `{{run}} wt:check` passed at its pushed head stands
 for it, its row says `merges on wt:check (no MR pipeline)`, and the CI queue
 starts none for it (a click on its row still runs one). develop's pipeline
 after each merge is the safety net: while it is red, no merge into develop
-is offered. Into an epic nothing changes.
+is offered. Into an epic nothing changes, and a batch's MR into develop
+always runs its pipeline; a task MR into its batch follows `[merge]
+batch_needs_pipeline` ({{#batches}}[batches.md](batches.md), {{/batches}}#461).
 
-No agent marks an MR ready (#399): `breadboard serve` does it once its bar
-is full, every box of its issue ticked (after-deploy ones excepted) and no
-try or change holding it, once per head, and notes `!N marked ready
-automatically` in the orchestration's journal. Its row says `ready (bar
-full) → breadboard` until then. A box unticked again puts an MR it marked
-ready back to draft; a person who sets it back to draft is respected until
-the next push (`draft by hand: ready after the next push → you`). Into
-develop and into an epic alike, for a repo GitLab serves.
+`breadboard serve` marks an MR ready once its bar is full and no try or
+change holds it, and back to draft when a box is unticked (#399); a draft set
+by hand holds until the next push.
 
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
@@ -441,28 +449,25 @@ names it in one line, and a click opens the MR instead. After the merge the
 agent gets `[overview] !N merged`, NEXT moves on to the next ready MR, and that
 MR's agent gets `merge <base> in` only when GitLab says the merge conflicts with it (#392);
 an MR that merges cleanly keeps its green pipeline and stays offered;
-`clean up` offers the worktree. Agents still never run `glab mr merge`: the
-click is the user's (`core/src/model/merge.rs`).
+`clean up` offers the worktree. The click is the user's, never an agent's
+(`core/src/model/merge.rs`).
 
-**Into an epic the merge needs no click.** A task MR whose target is its
-orchestration's epic branch merges by itself under the same rule (bar full,
-pipeline green, no conflicts, its turn), without a posted `merge`: the
-overview marks a draft ready and merges it; the row says `in epic` until the
-epic reaches `{{branch}}`. The two clicks stay for the milestone MR epic →
-`{{branch}}` and for anything into `{{branch}}` or `main`{{#epics}} ([epics.md](epics.md)){{/epics}}.
+**Into a batch the merge needs no click.** A task MR whose target is its
+product's batch (or an epic branch of before) merges by itself under the same rule (bar full,
+fast checks green, no conflicts, its turn), without a posted `merge`: the
+overview marks a draft ready and merges it with a merge commit, never squashed; the row says `in batch` until the
+batch reaches `{{branch}}`. The two clicks stay for shipping the batch to
+`{{branch}}` and for anything into `{{branch}}` or `main`{{#batches}} ([batches.md](batches.md)){{/batches}}.
 
 ## Change requests
 
-Every piece of work is pushed at once, a draft MR from the first commit;
-waiting for another MR (`wt:wait`) comes after the push, never instead of
-it. A change the user asks for on an MR first blocks it: `{{run}} wt:action
-change "<what>" --orchestration <name> --mr !N` (or the agent's own, in its
-worktree) makes the MR a draft before any code is written, withdraws its
-merge actions and shows `change requested: <what>` on the worktree and the
-MR row until a commit after it is pushed and green; then the agent posts
-its merge again. Send the change to the agent after the command. An MR
-merged meanwhile takes no change: the command refuses, and the change gets
-its own issue, branch and draft MR at once (`cli/write/change.rs`).
+The agent's side is in [agent.md](agent.md), "The work". From the
+orchestrator: `{{run}} wt:action change "<what>" --orchestration <name> --mr
+!N` before any code is written, then send the change to the agent. It makes
+the MR a draft, withdraws its merge actions and shows `change requested:
+<what>` on the worktree and the MR row until a commit after it is pushed and
+green. An MR merged meanwhile takes no change: the command refuses
+(`cli/write/change.rs`).
 
 ## Answers
 
@@ -477,23 +482,8 @@ after the text: `try` `looks good` / `broken`, `look` `done`, `plan` `ok` /
 `different`, a merge only `✓`, which ticks it off. The rest of a block does
 the action. NEXT shows its first action as the same block.
 
-A decide is answered from its row, so `wt:action decide` asks for it
-precisely and refuses one that lacks a part:
-
-- the question: what is decided, in one sentence, with its `?`; a second
-  sentence may give the recommendation's why, in one line;
-- two or more options, each a short label (the answer the agent gets) and
-  what happens, its consequence: `--option "Go" --why "phases 2-4 build
-  the Skia painter"`, or `--option "Go: phases 2-4 …"` split at the first
-  colon; a label alone must say it in a few words (`keep both lines`, not `A`);
-- `--recommend <label>` (or its number), marked `(Recommended)`.
-
-```sh
-{{run}} wt:action decide "Which line of the merge hint stays? The new one says what the two clicks do." \
-  --option "Both" --why "the row keeps the old and the new line" \
-  --option "New only" --why "the row says what the two clicks do, WORK the rest" \
-  --recommend 2
-``` The answer is stored with the action
+A decide is answered from its row, so `wt:action decide` refuses one that
+lacks a part (what it needs: [agent.md](agent.md), "Actions"). The answer is stored with the action
 (`answer`, `answeredAt`) and goes to the agent as one line, `[overview] #3
 decide "A or B" → B`: into its queue, so it starts the agent's next run, or
 goes into the next one when a run is in flight (#359). The orchestrator's
@@ -509,14 +499,8 @@ prompt under the action, and Enter queues the whole line `[overview] #3 try
 line, never from the bare word. A `broken` on a try of a ready MR also puts
 the MR back to draft and withdraws its merge (see Merging).
 
-The Stop hook (`breadboard hook stop-answers`, `breadboard init` puts it
-into `.claude/settings.json`) is the safety net for a line that came while a
-run was ending: it only reads the worktree's `.claude/actions.json` (in the
-main checkout, the orchestrator's actions whose `pane` is its
-`$HERDR_PANE_ID`), blocks the stop with the lines and takes them out.
-Without an answer it exits silently. `{{run}} wt:action --answers` does the
-same by hand. Each answer arrives once, and no agent turn is spent waiting
-for one.
+The Stop hook `stop-answers` hands over an answer that came while a run was
+ending (`{{run}} wt:action --answers` by hand); each arrives once.
 
 A click on a button shows at once (#303): the buttons give way to `→
 looks good` and where it is (`queued for its agent`, `in its run`), before
@@ -541,10 +525,9 @@ that names what the agent had before and moves the binding
 again in its worktree <dir>, read .claude/brief.md`. Nothing ends, no tab
 moves. So its Claude Code name is the feature's (`ListAgents` and
 `SendMessage` go by it during a run), the record's too (its node shows `was
-<old>` for a day). The old worktree keeps its space until its clean-up.
+<old>` for a day).
 `--to` takes the old name too. Refused while a run of the agent is in
-flight or it waits for an answer, or above `--limit` (`[agents]
-fresh_above` of `breadboard.toml`, 40 %) of its context. An issue no free
+flight or it waits for an answer, or when it starts fresh (below). An issue no free
 agent shares a file with goes to a fresh agent: another issue's context
 buys it nothing.
 
@@ -557,17 +540,24 @@ the worktree's, and the worktree goes. An agent that never ran is freed
 too. Its next issue is its next run, in the new worktree, the path of every
 handover. While the record keeps a free agent, the space `⇶ <name>` stays.
 
-**A full agent retires** (#381): above `[agents] fresh_above` (40 % of its
-context window) it isn't freed but retires at its merge, never mid-issue:
-`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` gives its
-conversation one last run that writes `.claude/handoff.md` (a page at most:
-what it learned about the files it changed), keeps it next to the record
+**A full agent retires** (#381, #445): every resume reads its whole history
+again, and once it idled past the prompt cache's hour a resume writes all of
+it to the cache anew. So above `[agents] fresh_above` (150 k tokens of
+context), or above `idle_fresh_above` (100 k) and idle longer than
+`idle_minutes` (55), it isn't freed but retires at its merge, never mid-issue:
+`{{run}} wt:orchestrate <name> --retire <feature> --mr <iid>` takes the
+handoff it wrote at its last real run (`.claude/handoff-next.md`, a page at
+most: what it learned about the files it changed; `wt:action merge` asks for
+it once its context passes `idle_fresh_above`), else gives its conversation
+one last run that writes `.claude/handoff.md`, but only while its cache is
+warm: a cold one is never woken for it. It keeps the handoff next to the record
 (`<name>.handoffs/<id>.md`) and marks the agent `retired` there; then its
 worktree goes. A fresh agent on those files gets the handoff of the retired
 agent sharing the most of them as its own `.claude/handoff.md`, its brief's
-`## Handoff` says whose it is. The overview says it in advance: the agent's
+`## Handoff` says whose it is; a freed agent's handoff is kept too, for
+when it starts fresh later. The overview says it in advance: the agent's
 node `fresh start at its next issue`, UP NEXT `#380 → fresh agent (Mira
-retires, 47 %)`, and the changelog notes the retirement under its merge.
+retires, 162 k)`, and the changelog notes the retirement under its merge.
 
 A handover that has to wait for other MRs is announced, not kept in your
 head: `{{run}} wt:orchestrate <name> <issue> --to <agent> --after !232 [!233…]`
@@ -644,7 +634,7 @@ conversation id: `history` (each issue, how it came: `fresh`, `handover`,
 
 ## In the sidebar
 
-The space `⇶ <name>` and the spaces of its worktrees, all under
+The space `⇶ <name>`, under
 `{{space}}`, show `⇶ <name>` (`⇶ <title>` with `--title`) in
 front of the branch, in the orchestration's colour (a slot of three: blue,
 teal, mauve of the theme; a fourth orchestration shares one). The rows come

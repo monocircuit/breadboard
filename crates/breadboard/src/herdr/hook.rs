@@ -10,6 +10,12 @@
 //! its own worktree, so an edit in the main checkout is blocked with the
 //! command that starts one.
 //!
+//! `breadboard hook pre-bash`: Claude Code's PreToolUse hook on shell
+//! commands (#427): what an agent must never run is blocked with what to
+//! run instead: `glab mr merge` and `approve` name the overview's merge
+//! action, `--no-verify` and a force push `bb submit` and `wt:merge-base`.
+//! A plain `git push` is the git pre-push hook's: it names `bb submit`.
+//!
 //! Also the git pre-push shim of the binary (`PRE_PUSH_SHIM`,
 //! packages/breadboard/hooks/pre-push): wt:new and wt:mr install it
 //! (`cli::write::mr::SHIM`). Its sibling hooks/stop-answers is what
@@ -28,7 +34,8 @@ use std::process::ExitCode;
 pub const PRE_PUSH_SHIM: &str = include_str!("../../../../hooks/pre-push");
 
 pub const USAGE: &str = "usage: breadboard hook stop-answers   (Claude Code runs it at a stop, its JSON on stdin)
-       breadboard hook pre-edit       (before an edit, its JSON on stdin: exit 2 blocks it)";
+       breadboard hook pre-edit       (before an edit, its JSON on stdin: exit 2 blocks it)
+       breadboard hook pre-bash       (before a shell command, its JSON on stdin: exit 2 blocks it)";
 
 /// `breadboard hook pre-edit`: the edit of `tool_input.file_path` (or
 /// `notebook_path`) in the main checkout is blocked (exit 2, why on
@@ -106,6 +113,219 @@ fn blocked(target: &Path, trees: &[PathBuf], is_ignored: impl FnOnce() -> bool) 
     (owner == main && !is_ignored()).then(|| main.clone())
 }
 
+/// `breadboard hook pre-bash`: the command of `tool_input.command` blocked
+/// (exit 2, why on stderr) when it does what only a person decides; anything
+/// it can't read goes through.
+pub fn pre_bash(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        let _ = writeln!(std::io::stderr(), "{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+    let value: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let Some(command) = value
+        .get("tool_input")
+        .and_then(|tool| tool.get("command"))
+        .and_then(|command| command.as_str())
+    else {
+        return ExitCode::SUCCESS;
+    };
+    let refusal = bash_refusal(command).or_else(|| glab_refusal(command, breadboard_core::gitlab::budget::paused()));
+    match refusal {
+        Some(why) => {
+            let _ = writeln!(std::io::stderr(), "{}", breadboard_core::config::in_repo(&why));
+            ExitCode::from(2)
+        }
+        None => ExitCode::SUCCESS,
+    }
+}
+
+/// An agent's glab while GitLab is paused after a 429 (#462): refused with
+/// the pause's end, no caller asks before it. Else it is logged as the
+/// agent's request (its glab writes no log of its own).
+fn glab_refusal(command: &str, pause: Option<breadboard_core::gitlab::budget::Pause>) -> Option<String> {
+    let glabs: Vec<Vec<String>> = simple_commands(command)
+        .into_iter()
+        .filter_map(|words| {
+            let start = words.iter().position(|word| {
+                !word.contains('=') && !matches!(word.as_str(), "env" | "command" | "exec" | "time" | "nice")
+            })?;
+            (words[start].rsplit('/').next() == Some("glab")).then(|| words[start + 1..].to_vec())
+        })
+        .collect();
+    if glabs.is_empty() {
+        return None;
+    }
+    if let Some(pause) = pause {
+        return Some(format!(
+            "Blocked: {}.\nAsking before then only makes GitLab lock the token longer; go on with what needs no GitLab, or stop and say what waits for it.",
+            pause.text()
+        ));
+    }
+    for args in glabs {
+        // Its redirections (`2>/dev/null`) are the shell's, not what glab asks.
+        let asked: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .filter(|word| {
+                !word
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .starts_with(['>', '<'])
+            })
+            .collect();
+        breadboard_core::gitlab::budget::note_by("agent", "glab", &format!("glab {}", asked.join(" ")), None);
+    }
+    None
+}
+
+/// Why a shell command is blocked, with what to run instead, or None.
+pub fn bash_refusal(command: &str) -> Option<String> {
+    simple_commands(command)
+        .iter()
+        .find_map(|words| refusal_of_words(words))
+}
+
+fn refusal_of_words(words: &[String]) -> Option<String> {
+    // Assignments and wrappers before the program: `FOO=1 glab …`, `env glab …`, `command git …`.
+    let start = words.iter().position(|word| {
+        !word.contains('=') && !matches!(word.as_str(), "env" | "command" | "exec" | "time" | "nice")
+    })?;
+    let words = &words[start..];
+    let program = words[0].rsplit('/').next().unwrap_or_default();
+    let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    match program {
+        "glab" if args.first() == Some(&"mr") && matches!(args.get(1), Some(&"merge") | Some(&"approve")) => Some(
+            "Blocked: merging and approving a merge request is the user's decision, never an agent's.
+Once the work is done (pipeline passed, every box ticked, every try answered `looks good`), post it:
+
+  pnpm wt:action merge \"<what is in it>\"
+
+The overview offers it to the user, and merges a task MR into its epic by itself. bb status says what is still missing."
+                .into(),
+        ),
+        "git" => {
+            let at = git_subcommand(&args)?;
+            let (sub, rest) = (args[at], &args[at + 1..]);
+            let is_no_verify = rest.contains(&"--no-verify") || (sub == "commit" && rest.contains(&"-n"));
+            if is_no_verify {
+                return Some(format!(
+                    "Blocked: --no-verify skips git's hooks, and nothing reaches GitLab unchecked.
+{}",
+                    if sub == "push" {
+                        "Run bb submit instead: wt:check, then the push. A failing check is fixed, not pushed."
+                    } else {
+                        "Run it without --no-verify; then bb submit checks and pushes."
+                    }
+                ));
+            }
+            let is_force = |arg: &&str| {
+                arg.starts_with("--force") || (arg.starts_with('-') && !arg.starts_with("--") && arg.contains('f'))
+                    || arg.starts_with('+')
+            };
+            if sub == "push" && rest.iter().any(is_force) {
+                return Some(
+                    "Blocked: a force push rewrites a pushed branch, and lost work can't be recovered.
+Your base moved or conflicts? Merge it in instead: pnpm wt:merge-base, then bb submit."
+                        .into(),
+                );
+            }
+            destroys_work(sub, rest)
+        }
+        _ => None,
+    }
+}
+
+/// Why `git <sub> <rest>` is blocked when it throws away work nobody can
+/// get back: uncommitted changes (`reset --hard`), untracked files (`clean`),
+/// a branch's unmerged commits (`branch -D`). They may be another session's.
+fn destroys_work(sub: &str, rest: &[&str]) -> Option<String> {
+    let has_short = |letter: char| {
+        rest.iter()
+            .any(|arg| arg.starts_with('-') && !arg.starts_with("--") && arg.contains(letter))
+    };
+    let why = match sub {
+        "reset" if rest.contains(&"--hard") => {
+            "Blocked: reset --hard throws away uncommitted changes, and lost work can't be recovered.
+Changes you didn't make belong to another session. Undo your own by path after `git diff`
+(git restore <file>), or commit them and bb submit."
+        }
+        "clean" if !has_short('n') && !rest.contains(&"--dry-run") => {
+            "Blocked: git clean deletes untracked files, and lost work can't be recovered.
+Files you didn't create belong to another session. Delete your own by path (rm <file>);
+git clean -n lists what it would delete."
+        }
+        "branch"
+            if has_short('D')
+                || ((has_short('d') || rest.contains(&"--delete"))
+                    && (has_short('f') || rest.contains(&"--force"))) =>
+        {
+            "Blocked: branch -D deletes a branch with commits that are nowhere else, and lost work can't be recovered.
+A merged worktree's branch goes with pnpm wt:remove <feature> or pnpm wt:prune; git branch -d deletes a merged one.
+Anything else is the user's decision."
+        }
+        _ => return None,
+    };
+    Some(why.into())
+}
+
+/// Where git's subcommand is, after its global options (`-C <dir>`, `-c <k=v>`, `--no-pager`).
+fn git_subcommand(args: &[&str]) -> Option<usize> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        match *arg {
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace" => at += 2,
+            _ if arg.starts_with('-') => at += 1,
+            _ => return Some(at),
+        }
+    }
+    None
+}
+
+/// The simple commands of a shell line, each as its words: split at `;`,
+/// `&`, `|`, newlines, parentheses and backticks outside quotes; quotes
+/// keep a word whole (a commit message naming `--no-verify` is no flag).
+fn simple_commands(line: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (Some('"'), '\\') => {
+                if let Some(next) = chars.next() {
+                    word.get_or_insert_default().push(next);
+                }
+            }
+            (Some(_), _) => word.get_or_insert_default().push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                word.get_or_insert_default();
+            }
+            (None, '\\') => {
+                if let Some(next) = chars.next().filter(|next| *next != '\n') {
+                    word.get_or_insert_default().push(next);
+                }
+            }
+            (None, ' ' | '\t') => words.extend(word.take()),
+            (None, ';' | '&' | '|' | '\n' | '(' | ')' | '`') => {
+                words.extend(word.take());
+                if !words.is_empty() {
+                    commands.push(std::mem::take(&mut words));
+                }
+            }
+            (None, _) => word.get_or_insert_default().push(c),
+        }
+    }
+    words.extend(word);
+    if !words.is_empty() {
+        commands.push(words);
+    }
+    commands
+}
+
 pub fn stop_answers(args: &[String]) -> ExitCode {
     if !args.is_empty() {
         let _ = writeln!(std::io::stderr(), "{USAGE}");
@@ -174,6 +394,98 @@ fn reply_of(answers: &[Action]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_an_agents_glab_while_gitlab_is_paused() {
+        let pause = breadboard_core::gitlab::budget::Pause {
+            until: breadboard_core::time::now_ms() + 60_000,
+            at: 0,
+            why: "sustained_traffic_per_user_free_plan".into(),
+        };
+        let why = glab_refusal("cd x && GITLAB_HOST=g glab ci view 4 | head", Some(pause.clone())).unwrap();
+        assert!(
+            why.contains("GitLab's rate limit (sustained_traffic_per_user_free_plan)"),
+            "{why}"
+        );
+        assert_eq!(glab_refusal("git log --grep glab", Some(pause.clone())), None);
+        assert_eq!(glab_refusal("echo glab", Some(pause)), None);
+    }
+
+    #[test]
+    fn blocks_what_only_a_person_decides_and_names_what_to_run() {
+        let merge = bash_refusal("cd x && glab mr merge 12 --squash").unwrap();
+        assert!(merge.contains("pnpm wt:action merge \"<what is in it>\""), "{merge}");
+        assert!(bash_refusal("GITLAB_HOST=g /usr/bin/glab mr approve 12").is_some());
+        assert!(
+            bash_refusal("git push --no-verify")
+                .unwrap()
+                .contains("Run bb submit instead")
+        );
+        assert!(
+            bash_refusal("git -C ../x commit -n -m wip")
+                .unwrap()
+                .contains("without --no-verify")
+        );
+        for force in [
+            "git push -f",
+            "git push --force-with-lease origin x",
+            "git push origin +x",
+            "git push -uf",
+        ] {
+            assert!(bash_refusal(force).unwrap().contains("pnpm wt:merge-base"), "{force}");
+        }
+        for destroys in [
+            "git reset --hard origin/develop",
+            "git -C ../x reset --hard",
+            "git clean -fd",
+            "git clean -f -x",
+            "git branch -D feature/1-x",
+            "git branch -df feature/1-x",
+            "git branch --delete --force feature/1-x",
+        ] {
+            assert!(
+                bash_refusal(destroys).unwrap().contains("can't be recovered"),
+                "{destroys}"
+            );
+        }
+        // What only reads or names them goes through.
+        for fine in [
+            "git reset HEAD~1",
+            "git reset --soft HEAD~1",
+            "git clean -n",
+            "git clean --dry-run -d",
+            "git branch -d feature/1-x",
+            "git branch --show-current",
+        ] {
+            assert_eq!(bash_refusal(fine), None, "{fine}");
+        }
+        for fine in [
+            "git push",
+            "git push -u origin feature/1-x",
+            "glab mr view 12",
+            "git commit -m \"never --no-verify, never glab mr merge\"",
+            "git log --no-verify-signatures",
+            "echo 'glab mr merge'",
+            "grep -n 'git push -f' AGENTS.md",
+        ] {
+            assert_eq!(bash_refusal(fine), None, "{fine}");
+        }
+    }
+
+    #[test]
+    fn splits_a_line_into_its_simple_commands() {
+        let words = |list: &[&str]| list.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            simple_commands("a 'b c'; d \"e\\\"f\" | (g)&&h\\\n i"),
+            [
+                words(&["a", "b c"]),
+                words(&["d", "e\"f"]),
+                words(&["g"]),
+                words(&["h", "i"])
+            ]
+        );
+        assert_eq!(simple_commands("x ''"), [words(&["x", ""])]);
+    }
 
     #[test]
     fn blocks_an_edit_in_the_main_checkout_only() {

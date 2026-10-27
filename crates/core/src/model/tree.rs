@@ -15,7 +15,7 @@ use super::diff::Overlap;
 use super::display_names::{Names, counts_of, names_of};
 use super::everything::app_cell;
 use super::half_merged::half_merged_fact;
-use super::handovers::{Announced, CONTEXT_LIMIT, Known, mrs_text, next_text, worker_of};
+use super::handovers::{Announced, Known, mrs_text, next_text, worker_of};
 use super::history::{history_of, reuse_of, reuse_text};
 use super::memory::{THRESHOLD, gb};
 use super::merge::checks_of;
@@ -26,6 +26,7 @@ use super::workers::{Suggestion, TRIES_AGAIN};
 use super::{Docker, Entry, Fact, Paint, Span, Tone, Tree, text_of};
 use crate::check::{CheckState, failures_text};
 use crate::conversations::Claude;
+use crate::fresh::Fresh;
 use crate::gitlab::{Issue, Mr, Pipeline, Remote};
 use crate::herdr::Agent;
 
@@ -164,10 +165,10 @@ pub fn pipeline_mark(pipeline: Option<&Pipeline>) -> Span {
     }
 }
 
-/// Where an MR stands: ` in epic` (#350), ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
+/// Where an MR stands: ` in batch` (#411) or ` in epic` (#350), ` merged`, ` closed`, ` draft`, ` ready` (render-worktree.mjs `mrState`).
 pub fn mr_state(mr: &Mr, issue: Option<&Issue>) -> Span {
     if crate::epic::is_in_epic(mr, issue) {
-        return Span::new(" in epic", Paint::Cyan);
+        return Span::new(format!(" {}", crate::epic::in_word(mr)), Paint::Cyan);
     }
     match mr.state.as_str() {
         "merged" => Span::new(" merged", Paint::Cyan),
@@ -232,9 +233,9 @@ pub fn check_fact(checked: &CheckState) -> Option<Span> {
 }
 
 /// How full an agent's context is and when it last answered.
-/// `limit`: the share of its context above which it retires at its merge
-/// (#381): said in advance, `fresh start at its next issue`.
-pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
+/// Whether it retires at its merge (`fresh`, #381, #445) is said in
+/// advance: `fresh start at its next issue`.
+pub fn agent_fact(claude: &Claude, now: i64, fresh: &Fresh) -> Fact {
     let Some(at) = claude.at else {
         return vec![Span::dim("no answer yet")];
     };
@@ -250,7 +251,7 @@ pub fn agent_fact(claude: &Claude, now: i64, limit: f64) -> Fact {
         Span::new(format!("{}%", (share * 100.0).round() as i64), paint),
         Span::dim(format!(" of {} · {}", tokens(claude.window), ago(at, now))),
     ];
-    if share > limit {
+    if fresh.why(&claude.context(), now).is_some() {
         fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
     }
     fact
@@ -335,6 +336,7 @@ impl Node {
         let mut all: Vec<Fact> = vec![lines.issue.clone(), lines.mr.clone(), lines.commits.clone()];
         all.extend(lines.tested.clone().map(|tested| vec![tested]));
         all.push(lines.renamed.clone());
+        all.extend(lines.model.clone().map(|model| vec![model]));
         all.push(lines.context.clone());
         if let Some(doing) = &self.doing {
             all.extend(doing.parts.iter().map(|part| vec![part.clone()]));
@@ -451,8 +453,8 @@ pub struct TreeFacts<'a> {
     /// What the agents spent (#372): today per session, per issue.
     pub spent: Option<&'a crate::spend::Spent>,
     pub now: i64,
-    /// `[agents] fresh_above` as a share (#381); None: `CONTEXT_LIMIT`.
-    pub limit: Option<f64>,
+    /// When an agent starts fresh (#445); None: breadboard.toml's defaults.
+    pub fresh_rule: Option<Fresh>,
 }
 
 /// The tree of the issues: `live`, the worktrees there and the issues that
@@ -513,9 +515,9 @@ fn queued_text(issue: &Entry, facts: &TreeFacts, names: &Names) -> String {
         }
         return if worker.is_merged {
             format!(
-                "→ {} (free, {} %)",
+                "→ {} (free, {})",
                 names.shown(&worker.name),
-                (worker.share * 100.0).round() as i64
+                crate::fresh::k(worker.used)
             )
         } else {
             format!("→ {} once its MR is merged", names.shown(&worker.name))
@@ -545,6 +547,8 @@ pub struct Lines {
     pub renamed: Fact,
     /// How full its agent's context is: `48%`, past its limit `· fresh start at its next issue` (#381).
     pub context: Fact,
+    /// The model its agent last answered with (#373): `sonnet-5-5`.
+    pub model: Option<Span>,
 }
 
 /// What a node's agent does or waits for, in words (#390): its question,
@@ -656,15 +660,23 @@ fn lines_of(issue: &Entry, found: Option<&Issue>, also: &[Issue], mr: Option<&Mr
             }
             agent.push(Span::dim(format!("was {was}")));
         }
-        lines.context = context_of(claude, facts.limit.unwrap_or(CONTEXT_LIMIT));
+        lines.context = context_of(claude, &facts.fresh_rule.unwrap_or_default(), now);
+        lines.model = claude.model.as_deref().and_then(model_word).map(Span::dim);
     }
     lines
 }
 
+/// A model's id as said next to its agent: `claude-sonnet-5-5` → `sonnet-5-5`,
+/// none for claude's `<synthetic>` answers.
+pub fn model_word(model: &str) -> Option<String> {
+    let word = model.trim().trim_start_matches("claude-");
+    (!word.is_empty() && !word.starts_with('<')).then(|| word.to_string())
+}
+
 /// `48%` of its agent's context, green, yellow from half, red from 80 %;
-/// past `limit` (#381) `· fresh start at its next issue`; `no answer yet`
-/// before its first.
-fn context_of(claude: &Claude, limit: f64) -> Fact {
+/// starting fresh (#381, #445) `· fresh start at its next issue`; `no
+/// answer yet` before its first.
+fn context_of(claude: &Claude, fresh: &Fresh, now: i64) -> Fact {
     if claude.at.is_none() {
         return vec![Span::dim("no answer yet")];
     }
@@ -677,7 +689,7 @@ fn context_of(claude: &Claude, limit: f64) -> Fact {
         Paint::Green
     };
     let mut fact = vec![Span::new(format!("{}%", (share * 100.0).round() as i64), paint)];
-    if share > limit {
+    if fresh.why(&claude.context(), now).is_some() {
         fact.push(Span::new(" · fresh start at its next issue", Paint::Yellow));
     }
     fact
@@ -1137,13 +1149,28 @@ mod tests {
     fn says_a_full_agent_starts_fresh_at_its_next_issue() {
         let claude = Claude {
             at: Some(0),
-            used: 94_000,
-            window: 200_000,
+            used: 120_000,
+            window: 1_000_000,
             ..crate::model::handovers::tests::claude_of("c1")
         };
         let text = |fact: Fact| fact.iter().map(|span| span.text.clone()).collect::<String>();
-        assert!(text(agent_fact(&claude, 0, 0.4)).ends_with(" · fresh start at its next issue"));
-        assert!(!text(agent_fact(&claude, 0, 0.5)).contains("fresh start"));
+        let fresh = Fresh::default();
+        // 120 k: fresh once idle past its cache's time (#445), not before.
+        assert!(!text(agent_fact(&claude, 10 * 60_000, &fresh)).contains("fresh start"));
+        assert!(text(agent_fact(&claude, 60 * 60_000, &fresh)).ends_with(" · fresh start at its next issue"));
+        let full = Claude {
+            used: 160_000,
+            ..claude
+        };
+        assert!(text(agent_fact(&full, 0, &fresh)).ends_with(" · fresh start at its next issue"));
+    }
+
+    #[test]
+    fn names_the_model_an_agent_answered_with() {
+        assert_eq!(model_word("claude-sonnet-5-5").as_deref(), Some("sonnet-5-5"));
+        assert_eq!(model_word("claude-opus-5-5[1m]").as_deref(), Some("opus-5-5[1m]"));
+        assert_eq!(model_word("<synthetic>"), None);
+        assert_eq!(model_word(""), None);
     }
     use crate::actions::{Action, Change};
     use crate::gitlab::BranchRemote;
@@ -1885,7 +1912,7 @@ mod tests {
             queue,
             [
                 format!("→ {shown} after !256"),
-                format!("→ {shown} (free, 0 %)"),
+                format!("→ {shown} (free, 0 k)"),
                 format!("→ {shown}: its handover failed: wt:orchestrate: not built yet; a click tries again"),
             ]
         );

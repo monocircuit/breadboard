@@ -465,14 +465,15 @@ fn mr_of_fragment(root: &Path, file: &str) -> Option<(i64, String)> {
     if sha.is_empty() {
         return None;
     }
-    let found = super::proc::sh(
-        "glab",
-        &[
-            "api",
-            &format!("projects/:fullpath/repository/commits/{sha}/merge_requests"),
-        ],
-        Some(root),
-    );
+    let endpoint = format!("projects/:fullpath/repository/commits/{sha}/merge_requests");
+    let args = ["api", endpoint.as_str()];
+    if breadboard_core::gitlab::budget::glab_may("glab", &args).is_some() {
+        return None;
+    }
+    let found = super::proc::sh("glab", &args, Some(root));
+    if !found.is_ok {
+        breadboard_core::gitlab::budget::glab_failed(&found.err);
+    }
     if !found.is_ok {
         return None;
     }
@@ -552,7 +553,7 @@ fn root_of() -> std::path::PathBuf {
         .text()
         .to_string();
     if top.is_empty() {
-        fail("not inside the repo");
+        fail("not inside the repo: cd into a checkout of it");
     }
     top.into()
 }
