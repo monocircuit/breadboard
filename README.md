@@ -184,6 +184,8 @@ of your own keeps its claude in a tab (#361).
   A session open in an interactive claude (`~/.claude/sessions`) holds its
   queue. Between runs no claude process exists. The daemon stays while a
   line is queued or a run in flight; one engine per repo (`.claude/runs/engine.pid`).
+  `BREADBOARD_LOOKS` names a file each look at the queue appends
+  `{ at, started }` to (the gauntlet's, #470).
 - **Capacity**: a run starts while `MemAvailable` less 6 GB (the reserve
   `gitlab-runner-autoscale` keeps) and 0.5 GB for each run still starting
   leaves 0.5 GB. Waiting sessions go in the merge order of their
