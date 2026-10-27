@@ -685,6 +685,65 @@ mod tests {
         assert!(text.contains("and `auth_<feature>` next to"), "{text}");
     }
 
+    /// #428: the description is all Claude Code sees before it loads the
+    /// skill, so it names every task the skill's details are for; every side
+    /// file a rendered page links is rendered too.
+    #[test]
+    fn the_description_names_its_tasks_and_every_link_resolves() {
+        for config in [
+            config::Config::default(),
+            config::Config::parse("[products.app]\npaths = [\"app\"]\n").unwrap(),
+        ] {
+            let loaded = Loaded {
+                config,
+                main: "/r/app".into(),
+                branch: "main".into(),
+                error: None,
+            };
+            let skill = skill_of(&loaded);
+            let names: Vec<String> = skill
+                .iter()
+                .map(|(path, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            let main = &skill.iter().find(|(path, _)| path.ends_with("SKILL.md")).unwrap().1;
+            let description = main
+                .lines()
+                .find_map(|line| line.strip_prefix("description: "))
+                .unwrap();
+            assert!(description.len() <= 1024, "{}", description.len());
+            for task in [
+                "worktree",
+                "wt:new",
+                "wt:remove",
+                "wt:orchestrate",
+                "wt:action",
+                "wt:wait",
+                "wt:check",
+                "stack:*",
+                "overview",
+                "herdr",
+                "batches",
+                "agents",
+            ] {
+                assert!(
+                    description.contains(task),
+                    "the description lacks {task}: {description}"
+                );
+            }
+            static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\]\(([A-Za-z]+\.md)\)").unwrap());
+            for (path, text) in &skill {
+                for link in LINK.captures_iter(text) {
+                    assert!(
+                        names.contains(&link[1].to_string()),
+                        "{} links {}",
+                        path.display(),
+                        &link[1]
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn makes_the_plugin_of_another_repo() {
         let manifest = "# ours\n# more\nid = \"x.y\"\nname = \"X\"\ndescription = \"x\"\n[[actions]]\ncommand = [\"sh\", \"breadboard.sh\", \"--no-wait\", \"herdr\", \"open\", \"overview\"]\n[[panes]]\ncommand = [\"sh\", \"breadboard.sh\", \"herdr\", \"pane\", \"overview\"]\n";

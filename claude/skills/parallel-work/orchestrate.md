@@ -130,12 +130,9 @@ and a reboot. `resume` runs every waiting line, one run per agent, and
 switches the CI queue on again if the pause switched it off. Never end runs
 or daemons by hand to pause.
 
-**A headless agent waits only through a line** (#417). A background command
-(a backgrounded Bash call, a Monitor) is stopped when its run ends, and its
-notification never comes: an agent runs `wt:check`, the gauntlet and builds
-in the foreground, and waits for something external only with `wt:wait`,
-never with a background command and "I'll wait". The engine wakes one that
-does anyway: a run that ends with a background task still running (from its
+**A headless agent waits only through a line** (#417): foreground commands
+and `wt:wait`, never a background command ([agent.md](agent.md), "Your
+run"). The engine wakes one that waits anyway: a run that ends with a background task still running (from its
 stream) leaves `.claude/wake.json` in its worktree, and once the processes it
 left behind (they carry `BREADBOARD_RUN=<id>`) are gone, at the latest after
 15 min, the line `[breadboard] your background command finished: <cmd>,
@@ -208,13 +205,8 @@ An agent reports nothing to the chat: its block in WORK shows its state
 (How agents run) and what it waits for, with commits, MR, pipeline and
 boxes, the problem it works on and what it is on now (its `{{run}}
 wt:action note "<one line>"`, asked for at every stage, or its last answer's
-first line). The brief asks for `SendMessage`
-only for:
-
-- its plan, when it differs from the issue;
-- a decision that is the user's, with options and a recommendation — and to
-  wait for the answer;
-- what concerns another agent's work (an order, a conflict, a dependency).
+first line). It sends a `SendMessage` only in the three cases of
+[agent.md](agent.md), "Telling".
 
 The orchestrator relays nothing the overview shows, and doesn't ask an agent
 where it stands: WORK says it. **A decision with a `decide` (or `plan`)
@@ -228,10 +220,10 @@ has buttons for. It answers with the user's word, not its own
 guess. Never merge, approve or tag for an agent. The user can also open an
 agent in a tab (How agents run) and type there: that wins.
 
-**Waiting for other MRs needs no orchestrator, and no process** (#359). An
-agent that has to wait runs `{{run}} wt:wait !N … --then "<what next>"` and
-stops: the command records the wait in `.claude/wait.json` and returns at
-once (MRs already merged or closed: it says so then). The daemon asks
+**Waiting for other MRs needs no orchestrator, and no process** (#359). The
+agent's side is in [agent.md](agent.md), "Your run": `wt:wait` records the
+wait in `.claude/wait.json` and returns at once (MRs already merged or
+closed: it says so then). The daemon asks
 GitLab every minute and queues the line to go on with (`!213 is merged:
 develop is 3 behind: merge it in only if your work needs it or it
 conflicts, then …`), which starts the agent's next run;
@@ -427,16 +419,11 @@ starts none for it (a click on its row still runs one). develop's pipeline
 after each merge is the safety net: while it is red, no merge into develop
 is offered. Into an epic nothing changes, and a batch's MR into develop
 always runs its pipeline; a task MR into its batch follows `[merge]
-batch_needs_pipeline` ([batches.md](batches.md), #461).
+batch_needs_pipeline` ({{#batches}}[batches.md](batches.md), {{/batches}}#461).
 
-No agent marks an MR ready (#399): `breadboard serve` does it once its bar
-is full, every box of its issue ticked (after-deploy ones excepted) and no
-try or change holding it, once per head, and notes `!N marked ready
-automatically` in the orchestration's journal. Its row says `ready (bar
-full) → breadboard` until then. A box unticked again puts an MR it marked
-ready back to draft; a person who sets it back to draft is respected until
-the next push (`draft by hand: ready after the next push → you`). Into
-develop and into a batch alike, for a repo GitLab serves.
+`breadboard serve` marks an MR ready once its bar is full and no try or
+change holds it, and back to draft when a box is unticked (#399); a draft set
+by hand holds until the next push.
 
 A `merge` action, posted or found by the overview (ready, pipeline passed),
 merges on two clicks: the first arms it (`click again to merge !N`, for 5 s),
@@ -449,8 +436,8 @@ names it in one line, and a click opens the MR instead. After the merge the
 agent gets `[overview] !N merged`, NEXT moves on to the next ready MR, and that
 MR's agent gets `merge <base> in` only when GitLab says the merge conflicts with it (#392);
 an MR that merges cleanly keeps its green pipeline and stays offered;
-`clean up` offers the worktree. Agents still never run `glab mr merge`: the
-click is the user's (`core/src/model/merge.rs`).
+`clean up` offers the worktree. The click is the user's, never an agent's
+(`core/src/model/merge.rs`).
 
 **Into a batch the merge needs no click.** A task MR whose target is its
 product's batch (or an epic branch of before) merges by itself under the same rule (bar full,
@@ -461,16 +448,13 @@ batch reaches `{{branch}}`. The two clicks stay for shipping the batch to
 
 ## Change requests
 
-Every piece of work is pushed at once, a draft MR from the first commit;
-waiting for another MR (`wt:wait`) comes after the push, never instead of
-it. A change the user asks for on an MR first blocks it: `{{run}} wt:action
-change "<what>" --orchestration <name> --mr !N` (or the agent's own, in its
-worktree) makes the MR a draft before any code is written, withdraws its
-merge actions and shows `change requested: <what>` on the worktree and the
-MR row until a commit after it is pushed and green; then the agent posts
-its merge again. Send the change to the agent after the command. An MR
-merged meanwhile takes no change: the command refuses, and the change gets
-its own issue, branch and draft MR at once (`cli/write/change.rs`).
+The agent's side is in [agent.md](agent.md), "The work". From the
+orchestrator: `{{run}} wt:action change "<what>" --orchestration <name> --mr
+!N` before any code is written, then send the change to the agent. It makes
+the MR a draft, withdraws its merge actions and shows `change requested:
+<what>` on the worktree and the MR row until a commit after it is pushed and
+green. An MR merged meanwhile takes no change: the command refuses
+(`cli/write/change.rs`).
 
 ## Answers
 
@@ -485,23 +469,8 @@ after the text: `try` `looks good` / `broken`, `look` `done`, `plan` `ok` /
 `different`, a merge only `✓`, which ticks it off. The rest of a block does
 the action. NEXT shows its first action as the same block.
 
-A decide is answered from its row, so `wt:action decide` asks for it
-precisely and refuses one that lacks a part:
-
-- the question: what is decided, in one sentence, with its `?`; a second
-  sentence may give the recommendation's why, in one line;
-- two or more options, each a short label (the answer the agent gets) and
-  what happens, its consequence: `--option "Go" --why "phases 2-4 build
-  the Skia painter"`, or `--option "Go: phases 2-4 …"` split at the first
-  colon; a label alone must say it in a few words (`keep both lines`, not `A`);
-- `--recommend <label>` (or its number), marked `(Recommended)`.
-
-```sh
-{{run}} wt:action decide "Which line of the merge hint stays? The new one says what the two clicks do." \
-  --option "Both" --why "the row keeps the old and the new line" \
-  --option "New only" --why "the row says what the two clicks do, WORK the rest" \
-  --recommend 2
-``` The answer is stored with the action
+A decide is answered from its row, so `wt:action decide` refuses one that
+lacks a part (what it needs: [agent.md](agent.md), "Actions"). The answer is stored with the action
 (`answer`, `answeredAt`) and goes to the agent as one line, `[overview] #3
 decide "A or B" → B`: into its queue, so it starts the agent's next run, or
 goes into the next one when a run is in flight (#359). The orchestrator's
@@ -517,14 +486,8 @@ prompt under the action, and Enter queues the whole line `[overview] #3 try
 line, never from the bare word. A `broken` on a try of a ready MR also puts
 the MR back to draft and withdraws its merge (see Merging).
 
-The Stop hook (`breadboard hook stop-answers`, `breadboard init` puts it
-into `.claude/settings.json`) is the safety net for a line that came while a
-run was ending: it only reads the worktree's `.claude/actions.json` (in the
-main checkout, the orchestrator's actions whose `pane` is its
-`$HERDR_PANE_ID`), blocks the stop with the lines and takes them out.
-Without an answer it exits silently. `{{run}} wt:action --answers` does the
-same by hand. Each answer arrives once, and no agent turn is spent waiting
-for one.
+The Stop hook `stop-answers` hands over an answer that came while a run was
+ending (`{{run}} wt:action --answers` by hand); each arrives once.
 
 A click on a button shows at once (#303): the buttons give way to `→
 looks good` and where it is (`queued for its agent`, `in its run`), before

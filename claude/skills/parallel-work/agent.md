@@ -16,7 +16,8 @@ the next line.
   its notification never reaches you (#417).
 - **Wait only with `{{run}} wt:wait !N … --then "<what next>"`**, then stop:
   it records the wait and returns at once; its line starts your next run
-  once the MRs are merged, or says why the wait ended. Never end a run with
+  once the MRs are merged, or says why the wait ended. It comes after your
+  push, never instead of it. Never end a run with
   "I'll wait for …". An issue that builds on an open MR starts at once all
   the same.
 - `AskUserQuestion` is off (#360): a question for the user is a `decide`
@@ -60,7 +61,7 @@ description you write). `{{bb}} status` says where you are and the next step.
   first (the MR goes to draft, your merge action is withdrawn), then build
   it, and post the merge again once it is pushed and green. Merged
   meanwhile: the command says so, and the change gets its own issue, branch
-  and draft MR at once ([orchestrate.md](orchestrate.md), "Change requests").
+  and draft MR at once.
 
 ## Your context
 
@@ -102,9 +103,17 @@ ACTIONS come from them: the user never has to ask you what is next.
   `--on test --url <path>`, posted with the merge, its box
   `(after deploy, try #<id>)`. A `broken` puts the MR back to draft until a
   fix is pushed, green and tried again.
-- `decide "<what is decided>? <why the recommendation>" --option "<label>"
-  --why "<what happens>" … --recommend <label>`: short labels that say it,
-  not `A`/`B` ([orchestrate.md](orchestrate.md), "Answers").
+- `decide`: the question (one sentence with its `?`, a second may give the
+  recommendation's why), two or more options, each a short label that says
+  it (not `A`/`B`) with its consequence (`--why`, or `--option "<label>:
+  <what happens>"`), and `--recommend`; one that lacks a part is refused:
+
+  ```sh
+  {{run}} wt:action decide "Which line of the merge hint stays? The new one says what the two clicks do." \
+    --option "Both" --why "the row keeps the old and the new line" \
+    --option "New only" --why "the row says what the two clicks do, WORK the rest" \
+    --recommend 2
+  ```
 - `plan "<the plan in one line>"` before larger work; `look "<what>"` for
   anything else the user has to do.
 
