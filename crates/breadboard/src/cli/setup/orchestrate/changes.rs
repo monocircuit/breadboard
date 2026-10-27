@@ -163,7 +163,7 @@ pub fn combine(groups: &[Value]) -> Vec<Value> {
 /// None without a record. Err: the branch GitLab didn't answer for after its
 /// tries, and why: no set that leaves its MRs out as if there were none (#306).
 /// A branch merged for good is read from the cache, an open one from the list
-/// of the open MRs: neither is asked on its own (#484).
+/// of the open MRs, one with neither asked once an hour (#484).
 pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;

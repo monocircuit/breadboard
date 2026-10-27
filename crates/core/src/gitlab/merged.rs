@@ -3,16 +3,17 @@
 //! `breadboard`, though a merged MR's range never changes. A merged branch
 //! comes from the overview's entries (`branches`, `mrs`): what one of them
 //! learned, the other doesn't ask. An open one from the list of the open
-//! MRs, one request for all; one with only closed MRs is asked once an hour.
+//! MRs, one request for all; one with neither (closed MRs, or none) is asked
+//! once an hour.
 
 use super::cache::Cache;
 use super::read::Final;
 use super::rest::mr_of;
 use serde_json::{Value, json};
 
-/// How long a branch with only closed MRs isn't asked again: a new MR on it
-/// shows in the open list meanwhile.
-pub const CLOSED_FOR_MS: i64 = 60 * 60 * 1000;
+/// How long a branch with neither a merged nor an open MR isn't asked again:
+/// a new MR on it shows in the open list meanwhile.
+pub const IDLE_FOR_MS: i64 = 60 * 60 * 1000;
 
 fn state(value: &Value) -> &str {
     value.get("state").and_then(Value::as_str).unwrap_or_default()
@@ -34,7 +35,7 @@ pub fn merged_of(cache: &Cache, branch: &str) -> Option<Value> {
 
 /// The MRs of `branch` known without asking it: its open ones from `opened`
 /// (the project's open MRs, None when not read in full) with a merged one the
-/// cache holds, else that merged one, else none while it was closed lately.
+/// cache holds, else that merged one, else none while it had neither lately.
 /// None: it is asked.
 pub fn known_of(cache: &mut Cache, branch: &str, opened: Option<&[Value]>, now: i64) -> Option<Vec<Value>> {
     if let Some(opened) = opened {
@@ -44,9 +45,9 @@ pub fn known_of(cache: &mut Cache, branch: &str, opened: Option<&[Value]>, now: 
             .cloned()
             .collect();
         if !mine.is_empty() {
-            // Open again: once merged, it is asked, not taken for closed.
-            if cache.raw("closedBranches", branch).is_some() {
-                cache.set("closedBranches", branch, &Value::Null);
+            // Open now: once merged, it is asked, not taken for idle.
+            if cache.raw("idleBranches", branch).is_some() {
+                cache.set("idleBranches", branch, &Value::Null);
             }
             return Some(mine.into_iter().chain(merged_of(cache, branch)).collect());
         }
@@ -54,20 +55,20 @@ pub fn known_of(cache: &mut Cache, branch: &str, opened: Option<&[Value]>, now: 
     if let Some(merged) = merged_of(cache, branch) {
         return Some(vec![merged]);
     }
-    let closed_at = cache.raw("closedBranches", branch).and_then(Value::as_i64)?;
-    (opened.is_some() && now - closed_at < CLOSED_FOR_MS).then(Vec::new)
+    let idle_at = cache.raw("idleBranches", branch).and_then(Value::as_i64)?;
+    (opened.is_some() && now - idle_at < IDLE_FOR_MS).then(Vec::new)
 }
 
 /// Keeps what REST listed for `branch` once it settled: one merged MR and
-/// none open, or only closed ones (until `CLOSED_FOR_MS`). Another final MR
-/// the overview holds for it stays.
+/// none open, or neither (until `IDLE_FOR_MS`). Another final MR the
+/// overview holds for it stays.
 pub fn keep_settled(cache: &mut Cache, branch: &str, listed: &[Value], now: i64) {
     if listed.iter().any(|value| state(value) == "opened") {
         return;
     }
     let merged: Vec<&Value> = listed.iter().filter(|value| state(value) == "merged").collect();
-    if merged.is_empty() && !listed.is_empty() {
-        cache.set("closedBranches", branch, &now);
+    if merged.is_empty() {
+        cache.set("idleBranches", branch, &now);
         return;
     }
     let [value] = merged[..] else { return };
@@ -115,8 +116,7 @@ mod tests {
         assert_eq!(known[0]["title"], json!("fix it"));
         keep_settled(&mut cache, "fix/2-b", &[listed(6, "merged"), listed(7, "opened")], NOW);
         keep_settled(&mut cache, "fix/3-c", &[listed(8, "merged"), listed(9, "merged")], NOW);
-        keep_settled(&mut cache, "fix/4-d", &[], NOW);
-        for branch in ["fix/2-b", "fix/3-c", "fix/4-d", "fix/5-e"] {
+        for branch in ["fix/2-b", "fix/3-c", "fix/5-e"] {
             assert!(known_of(&mut cache, branch, Some(&[]), NOW).is_none(), "{branch}");
         }
     }
@@ -132,13 +132,15 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_branch_is_asked_again_after_a_while_or_once_it_was_open() {
+    fn an_idle_branch_is_asked_again_after_a_while_or_once_it_was_open() {
         let mut cache = Cache::open(None);
         keep_settled(&mut cache, "fix/1-a", &[listed(4, "closed")], NOW);
+        keep_settled(&mut cache, "fix/4-d", &[], NOW);
+        assert_eq!(known_of(&mut cache, "fix/4-d", Some(&[]), NOW + 1000), Some(vec![]));
         assert_eq!(known_of(&mut cache, "fix/1-a", Some(&[]), NOW + 1000), Some(vec![]));
         // The open list not read in full: it might have a new MR.
         assert!(known_of(&mut cache, "fix/1-a", None, NOW + 1000).is_none());
-        assert!(known_of(&mut cache, "fix/1-a", Some(&[]), NOW + CLOSED_FOR_MS).is_none());
+        assert!(known_of(&mut cache, "fix/1-a", Some(&[]), NOW + IDLE_FOR_MS).is_none());
         assert!(known_of(&mut cache, "fix/1-a", Some(&[listed(9, "opened")]), NOW).is_some());
         assert!(known_of(&mut cache, "fix/1-a", Some(&[]), NOW + 1000).is_none());
     }
