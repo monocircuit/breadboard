@@ -83,9 +83,9 @@ pub async fn schedule(main: PathBuf) {
             ranks.cancelled = own_cancels;
             ranks.preempts = preempts;
             ranks.now = now;
-            // `[merge] needs_pipeline = false` (#443): MRs into the default branch merge on wt:check.
-            let loaded = breadboard_core::config::of_main(&main_now);
-            ranks.no_pipeline_into = (!loaded.config.merge.needs_pipeline).then(|| loaded.branch.clone());
+            // `[merge] needs_pipeline = false` (#443), `batch_needs_pipeline = false` (#461):
+            // those MRs merge on wt:check.
+            ranks.on_check = breadboard_core::model::merge::OnCheck::of_main(&main_now);
             let members: HashSet<i64> = mrs.iter().filter(|mr| ranks.is_member(mr)).map(|mr| mr.iid).collect();
             (
                 ci::decide(&mrs, &ranks, slots, &started),

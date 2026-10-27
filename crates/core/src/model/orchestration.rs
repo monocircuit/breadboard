@@ -9,7 +9,7 @@ use super::boxes::{BoxSection, all_sections_of, open_sections_of};
 use super::display_names::names_of;
 use super::free_agents::{FreeRow, free_rows_of};
 use super::handovers::announced_of;
-use super::merge::{blockers_of, needs_pipeline, to_check_of};
+use super::merge::{OnCheck, blockers_of, needs_pipeline, to_check_of};
 use super::merge_order::{GraphRow, MergeEntry, MergeOrder, graph_of, merge_order_of};
 use super::merge_turn::{MergeTurn, TurnRecord, merge_verdict_of};
 use super::mr_blockers::{Progress, Reason, files_text, progress_of, row_blockers_of};
@@ -27,7 +27,7 @@ use crate::herdr::Agent;
 use crate::record::{ORCHESTRATOR, Plan, Record, Worker};
 use crate::setups::Setup;
 use crate::time::ago;
-use crate::wait::{Awaited, Verdict, is_waiting, verdict_of};
+use crate::wait::{Awaited, Verdict, is_moot, is_waiting, verdict_of};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -105,9 +105,9 @@ pub struct OrchestrationLocal {
     pub journal: Vec<String>,
     /// Its settings as they hold now (#415), the panel's rows.
     pub settings: Vec<crate::settings::Row>,
-    /// `[merge] needs_pipeline = false` (#443, temporary): an MR into the
-    /// default branch merges on wt:check at its pushed head, no pipeline of its own.
-    pub merges_on_check: bool,
+    /// Which MRs merge on wt:check at their pushed head, no pipeline of their
+    /// own (`[merge] needs_pipeline`, #443; `batch_needs_pipeline`, #461).
+    pub merges_on_check: OnCheck,
     /// When the orchestrator gets a fresh start (`[orchestrator]`).
     pub fresh: crate::config::Orchestrator,
     /// What its agents and the repo's spent (#372).
@@ -417,7 +417,7 @@ fn turns_of(
     remote: Option<&Remote>,
     order: &MergeOrder,
     done: &HashSet<i64>,
-    merges_on_check: bool,
+    merges_on_check: OnCheck,
 ) -> Turns {
     let Some(remote) = remote else { return Turns::new() };
     let after_of: HashMap<i64, &[super::merge_order::After]> =
@@ -452,7 +452,13 @@ fn turns_of(
 }
 
 /// What a merge row offers: its MR, what its two clicks need.
-fn merge_offer(mr: &Mr, part: &BranchRemote, issue: &Entry, can_mark_ready: bool, merges_on_check: bool) -> MergeOffer {
+fn merge_offer(
+    mr: &Mr,
+    part: &BranchRemote,
+    issue: &Entry,
+    can_mark_ready: bool,
+    merges_on_check: OnCheck,
+) -> MergeOffer {
     let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
     let (actions, answered) = issue
         .tree
@@ -1162,7 +1168,8 @@ fn ci_mark(place: &crate::ci::Place, last: Option<&crate::gitlab::Pipeline>) -> 
 }
 
 /// Leaves out the waits whose command is gone and that ended (all merged, one
-/// closed, past `until`): the live overview types their line and clears them
+/// closed, past `until`) or are moot (their own MR merged or closed, #421):
+/// the live overview types their line (drops a moot one) and clears them
 /// a moment after this read (actor/auto.rs `deliver_waits`), as Node does
 /// before its first frame with GitLab's data. Drawn, `waits for` would come
 /// and go and everything below it jump (#296). Without GitLab's data only
@@ -1193,13 +1200,16 @@ fn drop_ended_waits(issues: &mut [Entry], remote: Option<&Remote>, now: i64, und
         }
     }
     let found: Vec<Awaited> = found.into_values().collect();
-    for tree in issues
-        .iter_mut()
-        .filter_map(|issue| issue.tree.as_mut())
-        .filter(|tree| !undelivered.contains(&tree.dir))
-    {
+    for issue in issues.iter_mut() {
+        // Its own MR merged or closed: dropped, not delivered (#421).
+        let own = remote.and_then(|remote| remote.of(&issue.branch).mr.as_ref());
+        let is_moot = is_moot(own.map(|mr| mr.state.as_str()));
+        let Some(tree) = issue.tree.as_mut().filter(|tree| !undelivered.contains(&tree.dir)) else {
+            continue;
+        };
         let is_ended = tree.wait.as_ref().is_some_and(|wait| {
-            !is_waiting(wait) && !matches!(verdict_of(wait, &found, now, &mut HashMap::new()), Verdict::Waiting(_))
+            !is_waiting(wait)
+                && (is_moot || !matches!(verdict_of(wait, &found, now, &mut HashMap::new()), Verdict::Waiting(_)))
         });
         if is_ended {
             tree.wait = None;
@@ -1254,7 +1264,7 @@ pub fn orchestration_of(
         chat: local.chat.clone(),
         is_auto: record.is_some_and(|record| record.is_auto),
         settings: local.settings.clone(),
-        checker: crate::config::here().config.tries.checker.clone(),
+        checker: crate::stage::model_of(&crate::config::here().config, crate::stage::Stage::Review).unwrap_or_default(),
         is_empty: issues.is_empty(),
         has_remote: remote.is_some(),
         next: Err(String::new()),
@@ -2201,5 +2211,30 @@ mod tests {
             reasons(&mut deliverer, &local),
             [vec!["waits for !12".to_string()], vec![]]
         );
+    }
+
+    #[test]
+    fn a_wait_whose_own_mr_is_done_is_dropped_not_waited_on() {
+        // 3-three's own !13 is merged; it still waits for !12, open (#421).
+        let entry = |branch: &str| Entry {
+            branch: branch.into(),
+            tree: Some(Tree {
+                dir: PathBuf::from(format!("/w/{branch}")),
+                wait: Some(crate::wait::Wait {
+                    mrs: vec![12],
+                    until: Some("2099-01-01T00:00:00Z".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut issues = vec![entry("feature/1-one"), entry("feature/3-three")];
+        drop_ended_waits(&mut issues, Some(&remote()), NOW, &HashSet::new());
+        let waits: Vec<bool> = issues
+            .iter()
+            .map(|issue| issue.tree.as_ref().unwrap().wait.is_some())
+            .collect();
+        assert_eq!(waits, [true, false]);
     }
 }

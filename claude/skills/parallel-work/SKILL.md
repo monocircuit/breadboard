@@ -67,13 +67,13 @@ repo is to it comes from its `breadboard.toml`):
 {{/stack}}
 | `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its product's batch; `wt:new --base <branch>`) once, for **exactly one issue** (a description closing a second, or one other than the branch's, is refused) — title from the last commit, description from the template with `Closes #<issue>`, the **labels and the milestone of the work item**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
 | `{{run}} wt:check [--no-test "<reason>"]` | inside a worktree, **before every push**: {{check}}. Stamps the tree it passed in `.claude/checked.json`; the pre-push hook refuses a commit with another tree (a docs-only one passes). Uncommitted changes count: check, commit, push. A `fix/*` branch that changes no test (`*.test.*`, `*.spec.*`, `*.check.*`, a `tests/` folder, a Rust `#[cfg(test)]` module) is refused (#316): write the test that would have caught it, or `--no-test "<reason>"` when none can; the reason goes into the stamp and `wt:mr` puts it into the MR description (CI's `check:fix-test` reads it there). The overview shows `✓ tested <sha>` / `untested: N commits` / `checking…` / `✗ tests failed: …` / `✗ fix without test` per worktree |
-| `{{run}} wt:herdr` | inside herdr: the main space (`root`, `overview`), a space per worktree, the tabs of every running stack (see below) |
+| `{{run}} wt:herdr` | inside herdr: the main space (`root`, `overview`) and the space of each product or orchestration; no space per worktree and no stack tabs (see below) |
 | `{{run}} wt:prune [--dry-run]` | **after merges**: every worktree whose branch is gone from origin and fully in its base is closed with `wt:remove`, its leftover local branches deleted. Everything with own commits or uncommitted changes is only listed |
 | `{{run}} wt:merge-base [--resolve]` | inside a worktree, **the only way to merge its base in** (and only on a conflict or when told): fetches `origin/<base>`, `git merge --no-commit`; clean, it commits; on a conflict it names the files and runs `git merge --abort`, so the worktree is never left half-merged. `--resolve` keeps the conflicted merge open: resolve, `git add`, `git commit --no-edit`, `wt:check`, push in the same run. The overview flags a merge left open for 10 min with no run in flight (`half-merged since 14:02`) |
 | `{{run}} wt:tick [<issue>] [<box>…]` | the boxes of the issue (default: the worktree's), numbered under their headings; with box numbers, ticks them in the description and reads them back. `wt:mr` ends with how many are ticked |
 | `{{run}} wt:issues` | **after merges**: the issues of merged MRs that are open or have a box left open and got no comment since the merge, with ticked/total — catch them up with `wt:tick` and `wt:note` |
 | `{{run}} wt:list` | **the overview**: per worktree the branch, its url with `●` when something answers there, {{#stack}}the stack with its {{stack.first}} port and how many containers run, {{/stack}}and `→` for the one you are standing in |
-| `{{run}} overview` | **live**, for the human: every worktree with its app, stack, MR and pipeline, the open MRs and issues; a click opens a herdr space or a browser tab ([herdr.md](herdr.md)). `--once` prints it once, `--worktree <dir>` shows one, with how far it is from {{branch}} and which files collide with {{branch}} or another worktree |
+| `{{run}} overview` | **live**, for the human: every worktree with its app, stack, MR and pipeline, the open MRs and issues; a click on a worktree or an MR opens the detail pane beside it (nvim, try, logs, agent), on a link a browser tab ([herdr.md](herdr.md)). `--once` prints it once, `--worktree <dir>` shows one, with how far it is from {{branch}} and which files collide with {{branch}} or another worktree |
 | `{{run}} wt:remove <feature>` | own stack (`down -v`), worktree and branch away |
 {{#stack}}
 | `{{run}} stack:up\|down\|reset\|ps --port <port>` | from **any** checkout: the stack of the worktree that serves `<port>` — the app port `wt:list` and the worktree's overview show, or a port of its services ({{stack.first}} `{{stack.first_port}}+n`). `<feature>` instead of `--port` works too, nothing at all means the checkout you are in. A worktree on the shared stack acts on the main checkout's, and says so |
@@ -102,9 +102,9 @@ they apply in the new worktree. Work in that directory for the whole task.
 
 Inside herdr (`HERDR_ENV=1`) the scripts arrange spaces and tabs themselves:
 an agent never calls `herdr` by hand and never runs `{{run}} herdr`. When an
-agent runs `wt:new`, its own tab moves into the space of the worktree; it
-follows with `EnterWorktree`. `wt:remove` closes the space, idle agents too,
-but never an agent at work or a running server. The spaces, the stack's processes, the
+agent runs `wt:new`, its tab stays where it is (a worktree has no space of
+its own, #409); it follows with `EnterWorktree`. `wt:remove` closes the
+worktree's leftover tabs, idle agents too, but never an agent at work or a running server. The spaces, the stack's processes, the
 restore after a restart and the plugin: [herdr.md](herdr.md).
 
 {{#stack}}

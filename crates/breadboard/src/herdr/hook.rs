@@ -196,7 +196,7 @@ fn refusal_of_words(words: &[String]) -> Option<String> {
     let args: Vec<&str> = words[1..].iter().map(String::as_str).collect();
     match program {
         "glab" if args.first() == Some(&"mr") && matches!(args.get(1), Some(&"merge") | Some(&"approve")) => Some(
-            "Blocked: merging and approving a merge request is the user's decision, never an agent's (AGENTS.md).
+            "Blocked: merging and approving a merge request is the user's decision, never an agent's.
 Once the work is done (pipeline passed, every box ticked, every try answered `looks good`), post it:
 
   pnpm wt:action merge \"<what is in it>\"
@@ -210,7 +210,7 @@ The overview offers it to the user, and merges a task MR into its epic by itself
             let is_no_verify = rest.contains(&"--no-verify") || (sub == "commit" && rest.contains(&"-n"));
             if is_no_verify {
                 return Some(format!(
-                    "Blocked: --no-verify skips git's hooks, and nothing reaches GitLab unchecked (AGENTS.md: never).
+                    "Blocked: --no-verify skips git's hooks, and nothing reaches GitLab unchecked.
 {}",
                     if sub == "push" {
                         "Run bb submit instead: wt:check, then the push. A failing check is fixed, not pushed."
@@ -225,15 +225,48 @@ The overview offers it to the user, and merges a task MR into its epic by itself
             };
             if sub == "push" && rest.iter().any(is_force) {
                 return Some(
-                    "Blocked: a force push rewrites a pushed branch, and lost work can't be recovered (AGENTS.md: never).
+                    "Blocked: a force push rewrites a pushed branch, and lost work can't be recovered.
 Your base moved or conflicts? Merge it in instead: pnpm wt:merge-base, then bb submit."
                         .into(),
                 );
             }
-            None
+            destroys_work(sub, rest)
         }
         _ => None,
     }
+}
+
+/// Why `git <sub> <rest>` is blocked when it throws away work nobody can
+/// get back: uncommitted changes (`reset --hard`), untracked files (`clean`),
+/// a branch's unmerged commits (`branch -D`). They may be another session's.
+fn destroys_work(sub: &str, rest: &[&str]) -> Option<String> {
+    let has_short = |letter: char| {
+        rest.iter()
+            .any(|arg| arg.starts_with('-') && !arg.starts_with("--") && arg.contains(letter))
+    };
+    let why = match sub {
+        "reset" if rest.contains(&"--hard") => {
+            "Blocked: reset --hard throws away uncommitted changes, and lost work can't be recovered.
+Changes you didn't make belong to another session. Undo your own by path after `git diff`
+(git restore <file>), or commit them and bb submit."
+        }
+        "clean" if !has_short('n') && !rest.contains(&"--dry-run") => {
+            "Blocked: git clean deletes untracked files, and lost work can't be recovered.
+Files you didn't create belong to another session. Delete your own by path (rm <file>);
+git clean -n lists what it would delete."
+        }
+        "branch"
+            if has_short('D')
+                || ((has_short('d') || rest.contains(&"--delete"))
+                    && (has_short('f') || rest.contains(&"--force"))) =>
+        {
+            "Blocked: branch -D deletes a branch with commits that are nowhere else, and lost work can't be recovered.
+A merged worktree's branch goes with pnpm wt:remove <feature> or pnpm wt:prune; git branch -d deletes a merged one.
+Anything else is the user's decision."
+        }
+        _ => return None,
+    };
+    Some(why.into())
 }
 
 /// Where git's subcommand is, after its global options (`-C <dir>`, `-c <k=v>`, `--no-pager`).
@@ -401,7 +434,31 @@ mod tests {
         ] {
             assert!(bash_refusal(force).unwrap().contains("pnpm wt:merge-base"), "{force}");
         }
+        for destroys in [
+            "git reset --hard origin/develop",
+            "git -C ../x reset --hard",
+            "git clean -fd",
+            "git clean -f -x",
+            "git branch -D feature/1-x",
+            "git branch -df feature/1-x",
+            "git branch --delete --force feature/1-x",
+        ] {
+            assert!(
+                bash_refusal(destroys).unwrap().contains("can't be recovered"),
+                "{destroys}"
+            );
+        }
         // What only reads or names them goes through.
+        for fine in [
+            "git reset HEAD~1",
+            "git reset --soft HEAD~1",
+            "git clean -n",
+            "git clean --dry-run -d",
+            "git branch -d feature/1-x",
+            "git branch --show-current",
+        ] {
+            assert_eq!(bash_refusal(fine), None, "{fine}");
+        }
         for fine in [
             "git push",
             "git push -u origin feature/1-x",

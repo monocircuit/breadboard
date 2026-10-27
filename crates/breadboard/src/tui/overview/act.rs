@@ -339,6 +339,16 @@ pub fn go_to(app: &mut Overview, go: Go) {
                 Err(why) => app.actor.log(Paint::Red, why),
             }))
         }),
+        // ACTIONS' `old wait` row (#421): the wait goes, its line is never sent.
+        Go::DropWait(dir) => {
+            breadboard_core::wait::clear_wait(&dir);
+            let who = breadboard_core::git::feature_of(&main, &dir);
+            app.actor.log(Paint::Green, format!("dropped the wait of {who}"));
+            // Read again now: the row goes without waiting for the next look.
+            if let Some(wake) = &app.wake_local {
+                let _ = wake.try_send(());
+            }
+        }
         Go::FocusAgent(dir) => {
             let tab = app.agent_tab_of(&dir);
             app.actor.queue(move || {
@@ -357,6 +367,7 @@ pub fn go_to(app: &mut Overview, go: Go) {
         Go::End => end(app),
         Go::EpicMr => epic_mr(app),
         Go::ShipBatch(product) => ship_batch(app, &product),
+        Go::FixBatch(product) => fix_batch(app, &product),
     }
 }
 
@@ -399,6 +410,28 @@ fn ship_batch(app: &mut Overview, product: &str) {
             key: "ship",
             what: "batch MR",
             args: vec!["wt:batch".into(), product.to_string(), "--ship".into()],
+        },
+    );
+}
+
+/// A click on `fix batch` or the held ship row (#413): `wt:batch <product> --fix`,
+/// the issue queued in this orchestration.
+fn fix_batch(app: &mut Overview, product: &str) {
+    let Some(name) = app.orchestration_name() else { return };
+    let args = vec![
+        "wt:batch".into(),
+        product.to_string(),
+        "--fix".into(),
+        "--orchestration".into(),
+        name.to_string(),
+    ];
+    open_mr(
+        app,
+        Opening {
+            slot: |actor| &mut actor.fix,
+            key: "fix",
+            what: "fix issue",
+            args,
         },
     );
 }

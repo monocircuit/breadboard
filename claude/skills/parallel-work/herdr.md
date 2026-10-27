@@ -12,7 +12,7 @@ to call `herdr` by hand. There is a space per purpose:
 | Space | Tabs |
 | ----- | ---- |
 | `{{space}}` | `root` (a shell in the main checkout), `overview` (`{{run}} overview --herdr`, live) |
-| `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview` |
+| `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview`. A click on a worktree or an MR in `overview` splits it to the right with a **detail pane**: the worktree's nvim, its try's terminal, its stack's logs or its agent's conversation, switched by `e` `t` `l` `a` ("The detail pane" in `packages/breadboard/README.md`) |
 | `⇶ <name>`, one per orchestration of no product | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
 
 A worktree has **no space of its own** (#409): a click on its row splits
@@ -33,12 +33,10 @@ its space `⇶ <name>` stands on a detached checkout in
 `.claude/orchestrations/<name>/`, its worktrees are worktrees of the main
 checkout, and the orchestration's colour mark tells them from the rest.
 
-The order is fixed: `root`, `overview`, `<feature>` (always the third tab),
-`nvim`, then the rest. herdr can't reorder tabs, so a tab out of place (an
-older space, a tab closed and back, the tab an agent moved in) moves its pane
-into a new tab at the end, what runs in it keeps running. A space never keeps
-two `<feature>` tabs: a spare one, whose shell idles and holds no agent,
-closes.
+The order is fixed: `root`, `overview`, then `orchestrator`, `changelog` and
+`changes` where the space has them. herdr can't reorder tabs, so a tab out of
+place (a tab closed and back, the tab an agent moved in) moves its pane into
+a new tab at the end, what runs in it keeps running.
 
 **Conversations** of every worktree are kept in the claude project of the
 main checkout (`~/.claude/projects/<main checkout>`), so `/resume` in
@@ -69,7 +67,7 @@ part right away.
 where they are (an agent with `EnterWorktree`), an orchestration's agent
 runs headless, its worktree a row in the overview.
 
-`wt:remove` (and so `wt:prune`) **closes** what is left of a worktree's space or tabs. Not blindly:
+`wt:remove` (and so `wt:prune`) **closes** what is left of a worktree's old space or tabs (from before #409). Not blindly:
 a tab with an agent at work, more than one pane, or the tab `wt:remove`
 itself runs in stays. Closing it would cut off a turn or kill a running
 server. An idle agent's tab closes: its conversation lives in the main
@@ -87,7 +85,7 @@ still runs in stays until the agent ends.
 adds what is missing, so it is also the way back after a herdr restart or
 after tabs were closed by hand. herdr restores its tabs after a restart, but
 as bare shells: a tab of ours whose shell idles runs its command again
-(`overview`, `nvim`). No claude is
+(`overview`). No claude is
 resumed in a tab, not even one you ran yourself: resume that by hand
 (`claude --resume`, the worktree's view shows the command). An
 orchestration's agent is the conversation bound to its worktree
@@ -132,7 +130,7 @@ An agent that finished one issue starts the next in the same conversation:
 
 ## The overview
 
-`{{run}} overview`: **live**, for the human: every worktree (app up, stack, ahead/changed, its MR and pipeline), stacks without a worktree, the open MRs with their pipelines, the open issues with the branch that claims them. Local state every 2 s, GitLab every 30 s; `q` quits, `r` fetches GitLab now. A click on a row opens it (a worktree or a claimed issue: its herdr space; an MR or an issue: a browser popup, a small Chromium window of its own without tabs (`--app`, your profile, so logged in) that floats centered under Hyprland — placed by the script through `hyprctl`, no rule in your config; a URL: the browser, in the Chromium tab group named like the space it belongs to, see `packages/breadboard/chromium/README.md`), Ctrl-click on `!n`, `#n` or a pipeline opens that link as a tab. Its WHERE (the view of one worktree) lists `storybook` on 6006 + the offset; a click on it while it is down starts it in a herdr tab `storybook` of the space. A stack that is down gets a button `▶ start the stack` (the default stack in the full view, the own one in a worktree's view): a click or `u` runs `stack:up` for it, the button shows how far it got, and once up the stack gets its tabs. `--once` prints it once, `--worktree <dir>` shows only that worktree, `--orchestration <name>` only the issues and merge requests of that orchestration
+`{{run}} overview`: **live**, for the human: every worktree (app up, stack, ahead/changed, its MR and pipeline), stacks without a worktree, the open MRs with their pipelines, the open issues with the branch that claims them. Local state every 2 s, GitLab every 30 s; `q` quits, `r` fetches GitLab now. A click on a row opens it (a worktree, an MR of one or a claimed issue: the detail pane beside the overview; another MR or an issue: a browser popup, a small Chromium window of its own without tabs (`--app`, your profile, so logged in) that floats centered under Hyprland — placed by the script through `hyprctl`, no rule in your config; a URL: the browser, in the Chromium tab group named like the space it belongs to, see `packages/breadboard/chromium/README.md`), Ctrl-click on `!n`, `#n` or a pipeline opens that link as a tab. Its WHERE (the view of one worktree) lists `storybook` on 6006 + the offset; a click on it while it is down starts it in a herdr tab `storybook` of the space. A stack that is down gets a button `▶ start the stack` (the default stack in the full view, the own one in a worktree's view): a click or `u` runs `stack:up` for it, the button shows how far it got, and once up the stack gets its tabs. `--once` prints it once, `--worktree <dir>` shows only that worktree, `--orchestration <name>` only the issues and merge requests of that orchestration
 
 The **view of one worktree** (`--worktree <dir>`, the tab `overview` of its
 space), top to bottom: WORK (conversation, issue, MR, the ✕), AGENT (its last

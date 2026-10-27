@@ -313,7 +313,7 @@ impl Gitlab {
             .filter(|errors| !errors.is_empty())
         {
             let first = errors[0].get("message").and_then(Value::as_str).unwrap_or("an error");
-            return Err(GitlabError::new(format!("GraphQL: {first}")));
+            return Err(GitlabError::new(refusal_text(first)));
         }
         Ok(answer
             .get("data")
@@ -339,6 +339,20 @@ impl Gitlab {
     pub async fn get_json(&self, endpoint: &str) -> Result<Value> {
         serde_json::from_str(&self.get_text(endpoint).await?)
             .map_err(|error| GitlabError::new(format!("{endpoint}: {error}")))
+    }
+}
+
+/// What GraphQL's first error says, a query GitLab finds too big in words
+/// that say it isn't GitLab's to fix (#454).
+fn refusal_text(message: &str) -> String {
+    static COMPLEXITY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"complexity of (\d+), which exceeds max complexity of (\d+)").unwrap());
+    match COMPLEXITY.captures(message) {
+        Some(found) => format!(
+            "GraphQL: breadboard's query is too big for GitLab (complexity {} > {}): a breadboard bug, file an issue",
+            &found[1], &found[2]
+        ),
+        None => format!("GraphQL: {message}"),
     }
 }
 
@@ -375,5 +389,17 @@ mod tests {
             Some(("gitlab.com".into(), "monocircuit/platform".into()))
         );
         assert_eq!(remote_of(""), None);
+    }
+
+    #[test]
+    fn says_a_query_too_big_is_breadboards_bug() {
+        assert_eq!(
+            refusal_text("Query has complexity of 281, which exceeds max complexity of 250"),
+            "GraphQL: breadboard's query is too big for GitLab (complexity 281 > 250): a breadboard bug, file an issue"
+        );
+        assert_eq!(
+            refusal_text("Field 'x' doesn't exist on type 'MergeRequest'"),
+            "GraphQL: Field 'x' doesn't exist on type 'MergeRequest'"
+        );
     }
 }

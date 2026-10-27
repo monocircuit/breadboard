@@ -3,6 +3,7 @@
 
 pub mod actions;
 pub mod batch;
+pub mod batch_red;
 pub mod check;
 pub mod ci;
 pub mod ci_fix;
@@ -36,6 +37,7 @@ pub mod setups;
 pub mod snapshot;
 pub mod spend;
 pub mod stack;
+pub mod stage;
 pub mod time;
 pub mod try_check;
 pub mod wait;

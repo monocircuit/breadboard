@@ -99,9 +99,13 @@ pub enum Go {
     EpicMr,
     /// `wt:batch <product> --ship`: the product's batch → develop (#414).
     ShipBatch(String),
+    /// `wt:batch <product> --fix`: the fix issue of its red shipped batch, queued (#413).
+    FixBatch(String),
     /// The claude open in the tab of the worktree's agent ended once it idles:
     /// its lines run headless again (#386).
     EndHeld(PathBuf),
+    /// The `wt:wait` of the worktree dropped, its line never sent (#421).
+    DropWait(PathBuf),
 }
 
 /// An action as a row of ACTIONS, UP NEXT or NEXT (render-orchestration.mjs

@@ -648,7 +648,7 @@ impl LocalReader {
                 .and_then(|chat| crate::conversations::context_share_of(&chat.session_id)),
             journal: crate::journal::last(&self.main, name, JOURNAL_LINES),
             settings: crate::settings::rows_of(&self.main, name),
-            merges_on_check: !crate::config::of_main(&self.main).config.merge.needs_pipeline,
+            merges_on_check: crate::model::merge::OnCheck::of_main(&self.main),
             fresh: crate::config::Orchestrator {
                 // A setting (#415): the panel's, else `[orchestrator] auto_fresh`.
                 auto_fresh: crate::settings::of(&self.main, name).auto_fresh,
@@ -1033,11 +1033,26 @@ fn epic_local(main: &Path, record: Option<&record::Record>) -> Option<crate::mod
             &format!("origin/{branch}..{}", git::Base::of(&git::branch(main)).remote),
         ],
     );
+    let develop = git::default_branch();
+    let shipped = record?
+        .product
+        .as_deref()
+        .map(|product| crate::batch::shipping_of(main, product))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|entry| crate::batch_red::shipped_of(main, &entry.branch, develop))
+        .collect();
     Some(crate::model::epic_row::EpicLocal {
         behind: (behind.status == 0)
             .then(|| behind.stdout.trim().parse().ok())
             .flatten(),
+        fixes: record?
+            .product
+            .as_deref()
+            .map(|product| crate::batch::fixes_of(main, product))
+            .unwrap_or_default(),
         branch,
+        shipped,
     })
 }
 

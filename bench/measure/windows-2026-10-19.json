@@ -1,0 +1,46 @@
+{
+  "about": "The table of 2026-10-19 (#451): BEFORE 17 Oct 00:00 to 18 Oct 23:55 CEST, AFTER 19 Oct 00:00 CEST until the run at 08:04:22Z, GitLab's data as fetched at about 08:00Z. Holds from the orchestration journal and heal.log, in UTC.",
+  "periods": {
+    "BEFORE": {
+      "from": "2026-10-16T22:00:00Z",
+      "to": "2026-10-18T21:55:00Z"
+    },
+    "AFTER": {
+      "from": "2026-10-18T22:00:00Z",
+      "to": "2026-10-19T08:04:22Z"
+    }
+  },
+  "gitlab_fetched": "2026-10-19T08:00:00Z",
+  "held": [
+    {
+      "what": "battery pause + reboot",
+      "from": "2026-10-17T14:27:00Z",
+      "to": "2026-10-17T15:09:30Z"
+    },
+    {
+      "what": "pause (user: stop everything)",
+      "from": "2026-10-17T16:05:00Z",
+      "to": "2026-10-18T09:32:00Z"
+    },
+    {
+      "what": "herdr closed -> woken",
+      "from": "2026-10-18T17:45:00Z",
+      "to": "2026-10-18T18:03:30Z"
+    },
+    {
+      "what": "OOM kill -> woken",
+      "from": "2026-10-18T18:07:45Z",
+      "to": "2026-10-18T18:10:20Z"
+    },
+    {
+      "what": "reboot (evening), stale engine.pid",
+      "from": "2026-10-18T21:05:00Z",
+      "to": "2026-10-18T21:24:00Z"
+    },
+    {
+      "what": "machine down overnight -> reboot",
+      "from": "2026-10-18T21:56:00Z",
+      "to": "2026-10-19T07:23:00Z"
+    }
+  ]
+}

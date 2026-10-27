@@ -16,7 +16,7 @@ use crate::tui::overview::Overview;
 use breadboard_core::actions::{Action, actions_file, actions_of, answered_of, done_action};
 use breadboard_core::check::{CheckState, check_of};
 use breadboard_core::gitlab::{IssueBox, Mr, Pipeline, boxes_of};
-use breadboard_core::model::merge::{blockers_of, is_same_commit, needs_pipeline};
+use breadboard_core::model::merge::{OnCheck, blockers_of, is_same_commit, needs_pipeline};
 use breadboard_core::model::order::{Go, MergeOffer};
 use breadboard_core::model::{Paint, Span};
 use serde_json::Value;
@@ -366,8 +366,7 @@ impl Running {
         let (boxes, mut fresh, mut squash) = fresh_of(boxes, first)?;
         let cant = |why: String| format!("can't merge: {why}");
         let (actions, answered) = self.tries();
-        let merges_on_check = !breadboard_core::config::of_main(&self.main).config.merge.needs_pipeline;
-        let needs = needs_pipeline(&fresh, merges_on_check);
+        let needs = needs_pipeline(&fresh, OnCheck::of_main(&self.main));
         let mut blockers = blockers_of(Some(&fresh), &boxes, self.can_mark_ready, &actions, &answered, needs);
         if !needs && let Some(why) = self.check_lack(&fresh) {
             blockers.push(why);

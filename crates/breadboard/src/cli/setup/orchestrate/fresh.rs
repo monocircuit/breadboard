@@ -17,6 +17,7 @@ use crate::cli::setup::repo;
 use breadboard_core::conversations::context_share_of;
 use breadboard_core::journal;
 use breadboard_core::record::{self, Record, is_session_id};
+use breadboard_core::stage::orchestrator_model;
 use breadboard_core::time::now_ms;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -287,10 +288,11 @@ pub fn command(name: &str) -> ExitCode {
 /// The shell line of the new chat: in the old one's directory, a new conversation, the prompt its first.
 pub fn start_command(cwd: &Path, id: &str, name: &str, prompt: &str) -> String {
     format!(
-        "cd {} && claude --session-id {id} --name {}{} {}",
+        "cd {} && claude --session-id {id} --name {}{}{} {}",
         quote(&cwd.to_string_lossy()),
         quote(&format!("orchestrator {name}")),
         ide_flag(cwd),
+        orchestrator_model(cwd),
         quote(prompt)
     )
 }

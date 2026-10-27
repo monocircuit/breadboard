@@ -276,6 +276,55 @@ pub fn write_shipping(main: &Path, product: &str, shipping: &[Shipping]) -> std:
     json::write_pretty(&file, &Value::Object(raw))
 }
 
+/// The fix issues of `product`'s red shipped batches (#413): (issue, batch branch).
+pub fn fixes_of(main: &Path, product: &str) -> Vec<(i64, String)> {
+    let Some(raw) = json::read(&product_file(main, product)) else {
+        return Vec::new();
+    };
+    raw.get("fixes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let number = entry.get("issue")?.as_i64()?;
+            Some((
+                number,
+                str_of(entry, "branch").filter(|branch| is_batch(branch))?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The shipped batch the fix issue `number` goes into (#413), while that
+/// batch is still on its way into develop: the base of its worktree.
+pub fn fix_base(main: &Path, product: &str, number: i64) -> Option<String> {
+    let branch = fixes_of(main, product)
+        .into_iter()
+        .find(|(issue, _)| *issue == number)?
+        .1;
+    shipping_of(main, product)
+        .iter()
+        .any(|entry| entry.branch == branch)
+        .then_some(branch)
+}
+
+/// The fix issue `number` of the red shipped batch `branch` kept in `product`'s file, the others as they were.
+pub fn write_fix(main: &Path, product: &str, number: i64, branch: &str) -> std::io::Result<()> {
+    let file = product_file(main, product);
+    let mut raw = json::read_object(&file);
+    let mut fixes: Vec<Value> = raw
+        .get("fixes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.get("issue").and_then(Value::as_i64) != Some(number))
+        .collect();
+    fixes.push(json!({ "issue": number, "branch": branch }));
+    raw.insert("fixes".into(), Value::Array(fixes));
+    json::write_pretty(&file, &Value::Object(raw))
+}
+
 /// The next batch of `product` opened off `shipped` (#414), pushed and kept
 /// as its current one: tasks go on in it while the shipped batch's MR runs
 /// its pipeline. Opened from the shipped batch's head on origin (the caller
@@ -576,10 +625,17 @@ mod tests {
         assert_eq!(
             shipping_of(&main, "breadboard"),
             [Shipping {
-                branch: first.branch,
+                branch: first.branch.clone(),
                 mr: 7
             }]
         );
+        // A fix of the red shipped batch goes into it (#413), only while it is on its way.
+        write_fix(&main, "breadboard", 460, &first.branch).unwrap();
+        write_fix(&main, "breadboard", 461, "batch/breadboard-0").unwrap();
+        assert_eq!(fix_base(&main, "breadboard", 460), Some(first.branch.clone()));
+        assert_eq!(fix_base(&main, "breadboard", 461), None, "no longer shipping");
+        assert_eq!(fix_base(&main, "breadboard", 9), None);
+        assert_eq!(shipping_of(&main, "breadboard").len(), 1, "kept beside it");
         assert_eq!(current_of(&main, "breadboard"), Some(next), "the batch kept beside it");
         assert!(shipping_of(&main, "vita").is_empty());
     }
