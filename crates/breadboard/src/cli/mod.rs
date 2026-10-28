@@ -89,10 +89,11 @@ pub fn main(command: &str, args: &[String]) -> ExitCode {
         let _ = writeln!(std::io::stdout(), "{}", usage());
         return ExitCode::SUCCESS;
     }
-    if command != "init" && groups().iter().flatten().any(|name| *name == command) {
-        if let Some(code) = refused() {
-            return code;
-        }
+    if command != "init"
+        && groups().iter().flatten().any(|name| *name == command)
+        && let Some(code) = refused()
+    {
+        return code;
     }
     if let Some(code) = read::run(command, args) {
         return code;
