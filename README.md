@@ -399,6 +399,16 @@ on a heading or `z` folds it, `Z` folds all):
   MR changed is kept in `.claude/changelog.json`, so a rewrite reads only the
   new ones. The tab is in the main space, `root · overview · changelog`.
 
+## The web UI
+
+The daemon behind the overviews (`breadboard serve`) serves the overview as
+a page too: `http://127.0.0.1:7435/` once an overview runs (#435). It shows
+the view of everything or one orchestration of each repo, drawn as the
+terminal draws it and read again every two seconds; GitLab comes from the
+daemon's feed of the view. It binds 127.0.0.1 only, answers only to its own
+names, loads nothing from elsewhere and only reads. Port, a proxy's names
+(`tailscale serve`) and the write switch: [`[web]`](docs/config.md#web).
+
 ## The CI queue
 
 GitLab has no job priorities: its runner takes jobs first come, first served,

@@ -37,6 +37,8 @@
 //! build installed over its binary; and it merges develop into each
 //! orchestration's epic checkout once develop moved, pushed when the epic's
 //! wt:check passes, else a look action of the orchestration (#352).
+//! And the web UI (#435, `web`): the overviews of its repos as a page on
+//! 127.0.0.1, read-only unless `[web] writes` says otherwise.
 
 mod ci;
 pub mod client;
@@ -50,6 +52,7 @@ mod ready;
 pub mod runs;
 mod serve;
 pub mod watch;
+mod web;
 
 pub use gitlab::{Feed, read_gitlab};
 pub use serve::main;
@@ -138,7 +141,7 @@ const PROTOCOL: &str = env!("BREADBOARD_PROTOCOL");
 const TOOLS: [&str; 4] = ["herdr", "glab", "git", "claude"];
 
 /// The environment the daemon's reads depend on besides those programs.
-const ENV: [&str; 8] = [
+const ENV: [&str; 10] = [
     "HOME",
     "XDG_CONFIG_HOME",
     "HERDR_ENV",
@@ -149,6 +152,9 @@ const ENV: [&str; 8] = [
     "BREADBOARD_CI_DRY",
     // The run engine's memory (#358): a world's low memory never reaches the user's daemon.
     "BREADBOARD_MEMINFO",
+    // Another port of the web UI (#435): a world's daemon never takes the user's.
+    "BREADBOARD_WEB_PORT",
+    "BREADBOARD_WEB_HOSTS",
 ];
 
 /// What the daemon must share with its clients: its protocol, the programs

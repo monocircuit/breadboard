@@ -10,5 +10,11 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src", "herdr", "nvim", "chromium"]
+  "include": [
+    "src",
+    "herdr",
+    "nvim",
+    "chromium",
+    "crates/breadboard/src/daemon/web"
+  ]
 }
