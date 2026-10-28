@@ -444,6 +444,11 @@ pub fn tree_of(
         },
         branch: worktree.branch.clone().unwrap_or_else(|| "(detached)".into()),
         origin: if is_main { None } else { origin_of(dir) },
+        issues: if is_main {
+            Vec::new()
+        } else {
+            record::task_issues(dir, worktree.branch.as_deref().unwrap_or_default())
+        },
         base: git::base_of(dir),
         is_here: is_inside(here, dir),
         is_main,
