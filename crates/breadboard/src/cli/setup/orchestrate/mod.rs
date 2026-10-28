@@ -555,7 +555,7 @@ pub fn command(args: &Args) -> ExitCode {
                     if let Some(made) = made.as_ref().filter(|made| !made.is_there || made.failed.is_some()) {
                         let failed = made.failed.clone().unwrap_or_else(|| "no worktree".into());
                         results.push(format!("✗ #{} {}: {failed}", item.number, item.feature));
-                        if !made.is_there || is_now {
+                        if !made.is_there || made.is_unclaimed() || is_now {
                             issue::undo_start(
                                 &name,
                                 item,
