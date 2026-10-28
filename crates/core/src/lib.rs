@@ -19,6 +19,7 @@ pub mod json;
 pub mod local;
 pub mod lock;
 pub mod main_update;
+pub mod notify;
 pub mod model;
 pub mod permissions;
 pub mod reader;

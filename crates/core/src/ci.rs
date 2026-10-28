@@ -45,6 +45,13 @@ fn is_waiting(status: &str) -> bool {
 // The pushes
 // ---------------------------------------------------------------------------
 
+/// Whether GitLab serves `main`'s origin (its push URL a network one): a
+/// clone of a local path (a gauntlet world's) has no MRs, no CI of its own.
+pub fn is_served(main: &Path) -> bool {
+    let origin = crate::git::git(main, &["remote", "get-url", "--push", "origin"]);
+    origin.is_ok && is_network_url(origin.out())
+}
+
 /// A remote reached over the network (`git@host:p.git`, `ssh://`, `https://`):
 /// one GitLab serves, which takes push options.
 pub fn is_network_url(url: &str) -> bool {

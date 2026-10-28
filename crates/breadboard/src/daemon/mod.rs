@@ -27,7 +27,9 @@
 //! queued lines it runs with `claude -p`, staying while any are queued or in
 //! flight; the CI queue (`ci`, #357), which creates the MR pipelines of a
 //! repo in their order; and the marks (`ready`, #399), which mark an
-//! orchestration's MR ready once its bar is full. An overview that can't reach it reads by itself.
+//! orchestration's MR ready once its bar is full; the desktop notifications
+//! (`notify`, #449), one `notify-send` per event of the repo. An overview
+//! that can't reach it reads by itself.
 //! And one more (#348, `keep_up`): it fast-forwards the main checkouts of
 //! its overviews to origin/develop, when that is safe, and goes on in a
 //! build installed over its binary; and it merges develop into each
@@ -40,6 +42,7 @@ mod feed;
 pub mod gitlab;
 mod glab;
 mod keep_up;
+mod notify;
 mod ready;
 pub mod runs;
 mod serve;

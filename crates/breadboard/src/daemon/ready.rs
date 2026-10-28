@@ -12,19 +12,13 @@
 use super::ci::every;
 use super::glab::{glab_api, glab_get};
 use crate::tui::overview::actor::glab::ready_title;
-use breadboard_core::ci::{self, is_network_url};
+use breadboard_core::ci;
 use breadboard_core::gitlab::client::Gitlab;
 use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
 use breadboard_core::ready::{self, Mark, Marks, Step};
 use breadboard_core::time::now_ms;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-
-/// Whether GitLab serves `main`'s origin: a local path has no MRs to mark.
-fn is_served(main: &Path) -> bool {
-    let origin = breadboard_core::git::git(main, &["remote", "get-url", "--push", "origin"]);
-    origin.is_ok && is_network_url(origin.out())
-}
 
 /// The marks of `main`, as long as the daemon runs.
 pub async fn mark(main: PathBuf) {
@@ -38,7 +32,7 @@ pub async fn mark(main: PathBuf) {
         }
         let is_on = {
             let main = main.clone();
-            tokio::task::spawn_blocking(move || is_served(&main) && ci::holds(&main, &ready::marker_file(&main)))
+            tokio::task::spawn_blocking(move || ci::is_served(&main) && ci::holds(&main, &ready::marker_file(&main)))
                 .await
                 .unwrap_or(false)
         };

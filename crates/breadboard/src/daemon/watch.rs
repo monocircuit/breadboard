@@ -54,7 +54,7 @@ pub async fn watch(main: PathBuf) {
 /// One look: GitLab read, docker sampled, the report and the actions written.
 fn look(main: &Path, glab: &str, docker: &str) {
     let watch = breadboard_core::config::of(main).config.ci.watch.clone();
-    if !watch.is_on || !is_hosted(main) {
+    if !watch.is_on || !breadboard_core::ci::is_served(main) {
         let _ = std::fs::remove_file(ci_watch::watch_file(main));
         return;
     }
@@ -70,14 +70,6 @@ fn look(main: &Path, glab: &str, docker: &str) {
     post(main, &mut history, &report);
     let _ = breadboard_core::ci::write_whole(&file, &history);
     let _ = breadboard_core::ci::write_whole(&ci_watch::watch_file(main), &report);
-}
-
-/// Whether `main`'s origin is a hosted repo whose CI there is to watch, as
-/// the CI queue asks it (`ci::is_network_url`): a clone of a local path (a
-/// gauntlet world's) has no CI of its own.
-fn is_hosted(main: &Path) -> bool {
-    let origin = breadboard_core::git::git(main, &["remote", "get-url", "--push", "origin"]);
-    origin.is_ok && breadboard_core::ci::is_network_url(origin.out())
 }
 
 /// GitLab's newest pipelines into `history`, docker sampled, what holds
