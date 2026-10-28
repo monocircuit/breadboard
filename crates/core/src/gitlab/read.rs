@@ -94,6 +94,10 @@ fn orchestration_query(has_issues: bool, has_awaited: bool, has_epic: bool) -> S
         parts.push(
             "epicTasks: mergeRequests(targetBranches: $epicTargets, state: merged, first: 100, sort: MERGED_AT_DESC) { nodes { iid title webUrl sourceBranch mergedAt labels { nodes { title } } } }".into(),
         );
+        // The task MRs still open into it (#491): BATCH's `waiting` line.
+        parts.push(
+            "epicWaiting: mergeRequests(targetBranches: $epicTargets, state: opened, first: 30) { nodes { iid title webUrl sourceBranch } }".into(),
+        );
     }
     if has_issues {
         decls.push("$iids: [String!]");
@@ -955,12 +959,13 @@ pub async fn read_orchestration(
                 .map(|node| mr_of(node).0)
                 .find(|mr| mr.branch == *branch),
             tasks: nodes(&project, "epicTasks").iter().map(batch_task_of).collect(),
+            waiting: nodes(&project, "epicWaiting").iter().map(batch_task_of).collect(),
             shipping: nodes(&mrs, "epicMrs")
                 .iter()
                 .map(|node| mr_of(node).0)
                 .filter(|mr| mr.branch != *branch && ask.shipping.contains(&mr.branch))
                 .collect(),
-            failed_jobs: nodes(&project, "epicMrs")
+            failed_jobs: nodes(&mrs, "epicMrs")
                 .iter()
                 .filter_map(|node| {
                     let pipeline = node.get("headPipeline")?;

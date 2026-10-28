@@ -349,9 +349,9 @@ pub struct Folds {
     pub is_every_command_shown: bool,
     /// The settings panel is open (#415): `,` or `⚙ settings`.
     pub is_settings_open: bool,
-    /// BATCH's task MRs (#414), folded until opened.
+    /// BATCH's task MRs (#414), shown until folded (#491).
     #[serde(default)]
-    pub is_batch_shown: bool,
+    pub is_batch_folded: bool,
     /// The boxes opened under an MR's row and a worktree's node (#346).
     /// Not handed to a new build: it reads them from their file (`folds_file`).
     #[serde(skip)]

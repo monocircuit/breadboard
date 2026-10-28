@@ -89,8 +89,10 @@ tests, image, deploy) runs on the batch's MR into `{{branch}}` and on
 ## Shipping
 
 The user ships the batch with **`ship batch`** in BATCH, the batch's row of
-the overview (`batch/<product>-<n> · 6 tasks · fast checks ✓ · ship batch`,
-the task MRs merged into it in a fold under it). UP NEXT suggests it once
+the overview (`batch/<product>-<n> · fast checks ✓ · ship batch`; under it
+the batches shipped before it with their MRs, then `3 of 5 tasks in batch
+<n>`, the task MRs merged into it, and `waiting: !a !b`, those still open
+into it). UP NEXT suggests it once
 `ship after tasks` task MRs are in it (the settings, 5), a hotfix or an MR
 labelled `ship` is among them, or its oldest task has waited `ship after
 days` (2). Both run `{{run}} wt:batch <product> --ship`:
@@ -110,9 +112,10 @@ days` (2). Both run `{{run}} wt:batch <product> --ship`:
 
 ## A red batch
 
-When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH says
-`batch red: <job>` and lists the task MRs merged into that batch, the likeliest
-first: those whose files a failed job covers (its `rules: changes:`).
+When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH names
+it apart from the current batch (`batch 7 (!468, shipped) failed: <job> · ship
+of batch 8 held until it is green`) and lists the task MRs merged into that
+batch, the likeliest first: those whose files a failed job covers (its `rules: changes:`).
 **`fix batch`** (or the `batch red` row of UP NEXT) runs `{{run}} wt:batch
 <product> --fix`: it files the fix issue with the failed jobs and the suspects
 with their files, and queues it in the orchestration. The overview hands it to
