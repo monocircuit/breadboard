@@ -203,6 +203,8 @@ pub struct MrFacts {
     pub open_boxes: Vec<BoxSection>,
     /// The issue its bar counts the boxes of: the bar names it (#346).
     pub issue: Option<i64>,
+    /// Every issue of its task whose boxes the bar counts (#321), `issue` first.
+    pub issues: Vec<i64>,
     /// What its issue's agents spent on it (#372), None before they answered.
     pub spent: Option<crate::spend::Spend>,
     /// Its review at its head (#374): `reviewed ✓`, `review: 2 findings`; a click opens the MR, its comment there.
@@ -432,7 +434,7 @@ fn turns_of(
         let tree = issue.tree.as_ref();
         let verdict = merge_verdict_of(
             mr,
-            part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]),
+            &part.boxes(),
             tree.map(|tree| tree.behind).unwrap_or(0),
             after_of.get(&number).copied().unwrap_or(&[]),
             &part.jobs,
@@ -459,7 +461,7 @@ fn merge_offer(
     can_mark_ready: bool,
     merges_on_check: OnCheck,
 ) -> MergeOffer {
-    let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
+    let boxes = &part.boxes()[..];
     let (actions, answered) = issue
         .tree
         .as_ref()
@@ -792,7 +794,7 @@ fn merge_requests_of(
         } else if let Some((reasons, _)) = issue.number.and_then(|number| turns.get(&number)) {
             reasons.clone()
         } else {
-            let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
+            let boxes = &part.boxes()[..];
             let after = issue
                 .number
                 .and_then(|number| after_of.get(&number).copied())
@@ -930,27 +932,28 @@ fn merge_requests_of(
             progress: if is_merged {
                 None
             } else {
-                part.issue.as_ref().and_then(|found| progress_of(&found.boxes))
+                part.issue.as_ref().and_then(|_| progress_of(&part.boxes()))
             },
             boxes: match (&part.issue, is_merged) {
-                (Some(found), false) => {
+                (Some(_), false) => {
                     let (actions, answered) = tree
                         .map(|tree| (&tree.actions[..], &tree.answered[..]))
                         .unwrap_or((&[], &[]));
-                    all_sections_of(&found.boxes, Some((mr.iid, &mr.boxes[..])), actions, answered)
+                    all_sections_of(&part.task_boxes(), Some((mr.iid, &mr.boxes[..])), actions, answered)
                 }
                 _ => Vec::new(),
             },
             open_boxes: match (&part.issue, is_merged) {
-                (Some(found), false) => {
+                (Some(_), false) => {
                     let (actions, answered) = tree
                         .map(|tree| (&tree.actions[..], &tree.answered[..]))
                         .unwrap_or((&[], &[]));
-                    open_sections_of(&found.boxes, actions, answered)
+                    open_sections_of(&part.task_boxes(), actions, answered)
                 }
                 _ => Vec::new(),
             },
             issue: issue.number,
+            issues: part.issues().map(|found| found.iid).collect(),
             spent: issue
                 .number
                 .and_then(|number| local.spent.by_issue.get(&number))
@@ -1583,6 +1586,7 @@ mod tests {
             }),
             mr: Some(mr),
             jobs: vec![],
+            also: vec![],
         };
         Remote {
             of: [

@@ -304,7 +304,7 @@ pub fn auto_actions_of(
                 && issue
                     .number
                     .is_some_and(|number| facts.ready_drafts.is_some_and(|ready| ready.contains(&number)));
-            let boxes = part.issue.as_ref().map(|found| &found.boxes[..]).unwrap_or(&[]);
+            let boxes = &part.boxes()[..];
             let (open, answered) = tree
                 .map(|tree| (&tree.actions[..], &tree.answered[..]))
                 .unwrap_or((&[], &[]));
@@ -443,13 +443,9 @@ pub fn auto_actions_of(
                     Go::Remove(tree.dir.clone()),
                 ));
             }
-            let open = part
-                .issue
-                .as_ref()
-                .map(|found| found.boxes.iter().filter(|found| !found.is_ticked).count())
-                .unwrap_or(0);
+            let open = part.boxes().iter().filter(|found| !found.is_ticked).count();
             let boxes = format!("boxes:!{}", mr.iid);
-            if let (Some(tree), Some(found)) = (tree, part.issue.as_ref())
+            if let (Some(tree), Some(_)) = (tree, part.issue.as_ref())
                 && open > 0
                 && agent.is_some()
                 && !sent.contains(&boxes)
@@ -457,14 +453,18 @@ pub fn auto_actions_of(
                 actions.push(base(
                     "clean up",
                     format!("clean up:{}:boxes", issue.branch),
-                    format!("#{} has {open} open boxes: click to have a small run tick the done ones, its agent not woken", found.iid),
+                    format!(
+                        "{} {} {open} open boxes: click to have a small run tick the done ones, its agent not woken",
+                        part.issues_text(),
+                        if part.also.is_empty() { "has" } else { "have" }
+                    ),
                     merged_at.as_deref(),
                     Go::Send {
                         dir: tree.dir.clone(),
                         key: boxes,
                         line: format!(
-                            "MR !{} is merged: tick the boxes of #{} that are done ({run} wt:tick), say what stays open.",
-                            mr.iid, found.iid, run = crate::config::run_word()),
+                            "MR !{} is merged: tick the boxes of {} that are done ({run} wt:tick), say what stays open.",
+                            mr.iid, part.issues_text(), run = crate::config::run_word()),
                         fallback: Box::new(Go::FocusAgent(tree.dir.clone())),
                     },
                 ));
@@ -583,7 +583,16 @@ mod tests {
     }
     fn remote(mr: Option<Mr>, jobs: Vec<Job>, found: Option<Issue>) -> Remote {
         Remote {
-            of: [("feature/7-thing".to_string(), BranchRemote { mr, jobs, issue: found })].into(),
+            of: [(
+                "feature/7-thing".to_string(),
+                BranchRemote {
+                    mr,
+                    jobs,
+                    issue: found,
+                    also: Vec::new(),
+                },
+            )]
+            .into(),
             ..Default::default()
         }
     }

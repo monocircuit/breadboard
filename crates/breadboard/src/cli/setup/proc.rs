@@ -43,6 +43,22 @@ impl Args {
             .find_map(|arg| arg.strip_prefix(&prefix).map(String::from))
     }
 
+    /// Every value of a flag given more than once (`--also 7 --also 9`, `--also=7`).
+    pub fn values(&self, name: &str) -> Vec<String> {
+        let prefix = format!("{name}=");
+        self.all
+            .iter()
+            .enumerate()
+            .filter_map(|(at, arg)| {
+                if arg == name {
+                    self.all.get(at + 1).filter(|value| !value.starts_with("--")).cloned()
+                } else {
+                    arg.strip_prefix(&prefix).map(String::from)
+                }
+            })
+            .collect()
+    }
+
     /// The words that are no flag and no value of one of `valued`.
     pub fn words(&self, valued: &[&str]) -> Vec<String> {
         self.all
