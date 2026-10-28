@@ -323,6 +323,10 @@ pub struct Node {
     pub problem: Option<String>,
     /// Its tries a checker answered or holds (#384).
     pub checked: Vec<crate::try_check::Checked>,
+    /// A conversation is bound to its worktree: its agent opens with `--resume` (#490's `agent`).
+    pub is_bound: bool,
+    /// An open try of it has a terminal (`--run`): the detail pane can run it (#490's `try`).
+    pub has_try_run: bool,
     /// A click: its space, else its issue's page.
     pub go: Go,
 }
@@ -1004,6 +1008,12 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                         )
                     })
                     .unwrap_or_default(),
+                is_bound: tree.is_some_and(|tree| tree.is_bound),
+                has_try_run: tree.is_some_and(|tree| {
+                    tree.actions
+                        .iter()
+                        .any(|action| action.is_try() && action.answer.is_none() && action.run.is_some())
+                }),
                 go,
             }
         })
@@ -2022,6 +2032,8 @@ mod tests {
             boxes: Vec::new(),
             problem: None,
             checked: Vec::new(),
+            is_bound: false,
+            has_try_run: false,
             go: Go::Nothing,
         }
     }

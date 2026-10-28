@@ -796,6 +796,7 @@ impl<A: Clone + PartialEq> View<A> {
             let ground = match (drawn.ground, is_lit) {
                 (Ground::Plain, false) => None,
                 (Ground::Island, false) => Some(theme::ISLAND),
+                (Ground::Stripe, false) => Some(theme::STRIPE),
                 (Ground::Head, false) => Some(theme::HEAD),
                 (Ground::Head, true) => Some(theme::HOVER_HEAD),
                 // The block picked with Tab on its own ground, as lazygit's selected row: never read as hover.

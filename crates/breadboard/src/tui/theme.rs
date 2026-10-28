@@ -7,6 +7,9 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// The ground of an island.
 pub const ISLAND: Color = Color::Rgb(38, 38, 38);
+/// Every second block of WORK (#490): a step lighter than the island, a
+/// step darker than the hover, so both stripes still light up under the pointer.
+pub const STRIPE: Color = Color::Rgb(46, 46, 46);
 /// The ground of an island's title line and of the title band: herdr's tab strip.
 pub const HEAD: Color = Color::Rgb(58, 58, 58);
 /// A clickable block under the pointer: a step lighter than the island.
@@ -107,6 +110,9 @@ mod tests {
         for tone in [Tone::Cyan, Tone::Green, Tone::Red, Tone::Yellow] {
             assert_ne!(tone.lit().bg, tone.button().bg);
             assert_ne!(tone.lit().bg, Some(HOVER));
+        }
+        for ground in [ISLAND, STRIPE] {
+            assert_ne!(ground, HOVER);
         }
         assert_eq!(Tone::Gray.lit(), Tone::Gray.button());
     }

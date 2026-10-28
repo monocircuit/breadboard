@@ -84,6 +84,9 @@ pub enum Act {
     },
     /// A tool of the stack (Storybook) in a tab of the worktree's space, by name.
     Tool(PathBuf, String),
+    /// A worktree's nvim, try, logs or agent in the detail pane (#490's
+    /// buttons): what its key shows, without the click on its row first.
+    Detail(PathBuf, Shows),
     /// A file in the worktree's nvim, at a line.
     OpenFile {
         dir: PathBuf,
@@ -199,6 +202,10 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
         // Stored, typed into the agent's pane, shown at once (actions.rs, answers.mjs).
         Act::Answer { file, id, answer } => return super::actions::answer(app, &file, id, &answer),
         Act::Go(go) | Act::Action { go, .. } => go_to(app, go),
+        Act::Detail(dir, shows) => {
+            let (main, detail) = (app.actor.main.clone(), app.actor.detail.clone());
+            in_detail(app, move || detail.show(&main, &dir, shows, None));
+        }
         Act::Chat => chat::click(app),
         Act::Auto => toggle_auto(app),
         Act::Settings => return super::settings::toggle(app),

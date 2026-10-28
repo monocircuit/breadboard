@@ -288,6 +288,12 @@ there: the same try again runs again once it ended, another try replaces it
 | `l` | its stack's logs, the services' and its background processes' (`.claude/stack/*.log`) together, or its dev server while nothing runs |
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
+Each worktree's block in WORK has the same as buttons, without a click on
+the block first: `agent`, `nvim`, `try`, `logs`, and `MR` for its page in
+the browser; a button is drawn only where it has something to show (a
+bound conversation, an open try with a terminal, a stack). Every second
+block sits on a lighter grey, so the blocks stand apart.
+
 The pane is kept next to the overview's folds (`.claude/orchestrations/<name>.detail`),
 with the try it runs, so a reload of the overview finds it again; one herdr
 closed is forgotten.

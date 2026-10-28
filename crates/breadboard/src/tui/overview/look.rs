@@ -263,6 +263,7 @@ pub fn gutter<A: Clone>(
         spans.extend(line.spans);
         scene.lines.push(Line::from(spans));
     }
+    scene.striped.extend(inner.striped.iter().map(|line| line + top));
     for mut region in inner.regions {
         region.area.y += top;
         region.area.x += width;

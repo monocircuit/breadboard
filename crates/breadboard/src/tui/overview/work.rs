@@ -12,11 +12,14 @@
 //! its app and stack; its GitLab line (commits, pipeline, the bar of its
 //! boxes with their fold, where its conflicts stand with the button that
 //! resolves them, what its MR still lacks); where it collides, a fold of
-//! its own; then the problem it works on (#341), two lines until a click,
-//! after its title where that says more. A click anywhere goes to the
-//! worktree's space (its MR, else its issue, where it has none), `!M` opens
-//! the MR, the pipeline its page; hover lights the whole block (#296).
+//! its own; its buttons (#490: agent, nvim, try, logs, MR, each where it
+//! has something to show); then the problem it works on (#341), two lines
+//! until a click, after its title where that says more. A click anywhere
+//! goes to the worktree's space (its MR, else its issue, where it has none),
+//! `!M` opens the MR, the pipeline its page; hover lights the whole block
+//! (#296); every second block is on a lighter grey (#490).
 
+use super::actor::detail::Shows;
 use super::actor::merge::Phase;
 use super::merge_requests::{self as mrs};
 use super::worktrees::{self as nodes, Cells};
@@ -323,9 +326,11 @@ fn work(
             look::say(scene, why, style);
         }
     });
+    // Every second block on the lighter grey (#490), counted over the folds too.
+    let mut blocks = 0;
     for row in &parts.open {
         match row {
-            Row::Block(block) => block_lines(scene, block, &layout, ctx),
+            Row::Block(block) => striped(scene, block, &layout, ctx, &mut blocks),
             Row::Graph(graph) => {
                 scene.end_line();
                 scene.atom(mrs::lanes(graph, layout.graph as usize));
@@ -339,7 +344,7 @@ fn work(
         fold_line(scene, Fold::Queued, is_folded, &text, ctx);
         if !is_folded {
             for block in &parts.queued {
-                block_lines(scene, block, &layout, ctx);
+                striped(scene, block, &layout, ctx, &mut blocks);
             }
         }
     }
@@ -348,7 +353,7 @@ fn work(
         fold_line(scene, Fold::Removed, is_folded, &done_text(&parts, merge_requests), ctx);
         if !is_folded {
             for block in &parts.done {
-                block_lines(scene, block, &layout, ctx);
+                striped(scene, block, &layout, ctx, &mut blocks);
             }
         }
     }
@@ -404,6 +409,17 @@ fn go_of(block: &Block) -> Go {
     }
 }
 
+/// The `n`th block, every second one on the island's lighter grey (#490),
+/// the whole of it, so one block stands apart from the next.
+fn striped(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx, n: &mut usize) {
+    if *n % 2 == 1 {
+        scene.stripe(|scene| block_lines(scene, block, layout, ctx));
+    } else {
+        block_lines(scene, block, layout, ctx);
+    }
+    *n += 1;
+}
+
 /// A block: its gutter (the MR's lane, its number), then its lines.
 fn block_lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
     let width = layout.graph as usize;
@@ -437,6 +453,7 @@ fn lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
         nodes::stack_lines(scene, node, &layout.cells, ctx);
         gitlab_line(scene, block, ctx);
         nodes::collides(scene, node, ctx);
+        buttons(scene, block, node, ctx);
         description(scene, block, node, ctx);
         nodes::checked_lines(scene, node);
         return;
@@ -461,6 +478,30 @@ fn lines(scene: &mut Scene<Act>, block: &Block, layout: &Layout, ctx: &Ctx) {
         look::say(scene, &node.title, theme::dim());
         scene.end_line();
     }
+}
+
+/// What a worktree does at a click (#490), each a view of the detail pane
+/// (#406), drawn only where it has something to show: `agent` its
+/// conversation (a headless one in the pane, its runs held while it is
+/// open, #361; else its tab), `nvim`, `try` the open try's terminal, `logs`
+/// its stack's (its dev server while down), `MR` its page.
+fn buttons(scene: &mut Scene<Act>, block: &Block, node: &Node, ctx: &Ctx) {
+    let Some(dir) = node.dir.as_ref().filter(|_| !ctx.is_once) else {
+        return;
+    };
+    let detail = |shows| Act::Detail(dir.clone(), shows);
+    let buttons = [
+        node.is_bound.then(|| ("agent", Act::Go(Go::FocusAgent(dir.clone())))),
+        Some(("nvim", detail(Shows::Editor))),
+        node.has_try_run.then(|| ("try", detail(Shows::Try))),
+        node.stack.is_some().then(|| ("logs", detail(Shows::Logs))),
+        block.mr.map(|mr| ("MR", Act::Go(mrs::show(mr)))),
+    ];
+    scene.end_line();
+    for (label, act) in buttons.into_iter().flatten() {
+        scene.button(label, theme::Tone::Cyan, act);
+    }
+    scene.end_line();
 }
 
 /// The head line (#390): `!M` (a click opens the MR), the name, where it
@@ -854,6 +895,8 @@ mod tests {
             title: format!("the title of #{}", place + 300),
             problem: None,
             checked: Vec::new(),
+            is_bound: false,
+            has_try_run: false,
             boxes: vec![],
             go: if has_tree {
                 Go::Detail(PathBuf::from(format!("/w/{name}")))
@@ -1328,6 +1371,41 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn a_worktree_has_a_button_for_each_view_it_has_and_every_second_block_is_striped() {
+        let mut worktrees = worktrees(0, 0);
+        for node in &mut worktrees.tree.live {
+            node.dir = Some(PathBuf::from(format!("/w/{}", node.name)));
+        }
+        let first = &mut worktrees.tree.live[0];
+        first.is_bound = true;
+        first.has_try_run = true;
+        first.stack = Some(model::Span::new("stack up", Paint::Green));
+        let scene = draw(&worktrees, Folds::default(), 72);
+        let lines = text(&scene);
+        let at = first_node(&lines);
+        // Above its problem, which ends the block (#341).
+        assert_eq!(lines[at + 3], "    agent   nvim   try   logs");
+        assert_eq!(lines[at + 4], "   the title of #301");
+        // The second block has nothing but its worktree: nvim alone.
+        assert_eq!(lines[at + 8], "    nvim");
+        let one = PathBuf::from("/w/303-every-button");
+        let two = PathBuf::from("/w/305-refresh");
+        assert_eq!(
+            buttons(&scene),
+            [
+                ("agent".to_string(), Act::Go(Go::FocusAgent(one.clone()))),
+                ("nvim".to_string(), Act::Detail(one.clone(), Shows::Editor)),
+                ("try".to_string(), Act::Detail(one.clone(), Shows::Try)),
+                ("logs".to_string(), Act::Detail(one, Shows::Logs)),
+                ("nvim".to_string(), Act::Detail(two, Shows::Editor)),
+            ]
+        );
+        // The second block, every line of it, on the lighter grey; the first not.
+        let second = at + 5..lines.len();
+        assert_eq!(scene.striped, second.map(|line| line as u16).collect::<Vec<_>>());
+    }
+
     /// `with_stacks` without collisions, the first node's own stack down where docker told at 1000.
     fn down() -> Worktrees {
         let mut worktrees = with_stacks();
@@ -1349,8 +1427,13 @@ mod tests {
         let lines = text(&scene);
         assert_eq!(lines[5], "   ○ :3002  ▶ stack down");
         let dir = PathBuf::from("/w/303-every-button");
+        // The block's own buttons (#490) aside.
+        let stack_buttons: Vec<(String, Act)> = buttons(&scene)
+            .into_iter()
+            .filter(|(_, act)| !matches!(act, Act::Detail(..)))
+            .collect();
         assert_eq!(
-            buttons(&scene),
+            stack_buttons,
             [
                 (
                     "○ :3002".to_string(),
