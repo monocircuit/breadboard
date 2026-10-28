@@ -6,6 +6,8 @@
 //! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`),
 //! and moves a worktree off a batch that shipped onto the next (#411). What
 //! carries no code passes unchecked: a commit origin has, changelog fragments (#464).
+//! A push that changes or deletes a file of `[agents.deny] paths` is refused
+//! with the rule named (#375).
 
 use super::check::{self, Failure};
 use super::gitlab;
@@ -122,6 +124,55 @@ pub fn is_changelog_only(name_status: &str) -> bool {
                     .strip_prefix(".changelog/")
                     .is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
         })
+}
+
+/// The files of a diff (`git diff --name-status`) a deny rule holds: changed
+/// or deleted ones; a new file passes (#375: a tool made it, agents can't edit it).
+pub fn denied_of(name_status: &str) -> Vec<String> {
+    name_status
+        .lines()
+        .filter_map(|line| {
+            let (status, path) = line.split_once('\t')?;
+            (!status.starts_with('A')).then(|| path.to_string())
+        })
+        .collect()
+}
+
+/// Why a push touching denied files is refused (#375), or None. `hits`:
+/// each rule of `[agents.deny] paths` with the files it holds.
+pub fn deny_refusal_of(branch: &str, sha: &str, hits: &[(String, Vec<String>)]) -> Option<String> {
+    let lines: Vec<String> = hits
+        .iter()
+        .filter(|(_, files)| !files.is_empty())
+        .map(|(rule, files)| format!("  {rule}: {}", files.join(", ")))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let short: String = sha.chars().take(8).collect();
+    Some(format!(
+        "✗ push refused: {branch} at {short} changes files agents must never touch ([agents.deny] paths in breadboard.toml, #375):
+{}
+  Undo those changes (git checkout <base> -- <file>), commit, then push. Never --no-verify.",
+        lines.join("\n")
+    ))
+}
+
+/// What of `base..sha` each rule of `[agents.deny] paths` holds.
+fn deny_hits(dir: &Path, base: &str, sha: &str) -> Vec<(String, Vec<String>)> {
+    let loaded = breadboard_core::config::of(dir);
+    loaded
+        .config
+        .agents
+        .deny
+        .paths
+        .iter()
+        .map(|rule| {
+            let spec = format!(":(glob){}", rule.trim_start_matches('/'));
+            let diff = git(&["diff", "--no-renames", "--name-status", base, sha, "--", &spec], dir);
+            (rule.clone(), denied_of(diff.text()))
+        })
+        .collect()
 }
 
 /// The tree of a record's `passed` / `failed`.
@@ -246,6 +297,13 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
                 git(&["diff", "--quiet", base, sha], dir).is_ok
                     || is_changelog_only(git(&["diff", "--no-renames", "--name-status", base, sha], dir).text())
             });
+        if !is_empty
+            && let Some(base) = &base
+            && let Some(refusal) = deny_refusal_of(branch, sha, &deny_hits(dir, base, sha))
+        {
+            refusals.push(refusal);
+            continue;
+        }
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
             (None, _) => Err(format!("no merge base with {remote}: git fetch origin")),
@@ -367,6 +425,22 @@ mod tests {
         let text = refusal_of("feature/1-a", &[merged]).unwrap();
         assert!(text.starts_with("✗ push refused: !7 of feature/1-a is merged, so no merge request"));
         assert!(text.ends_with("pnpm wt:new <n>-<feature>.\n  https://g/mr/7"));
+    }
+
+    #[test]
+    fn refuses_a_change_of_a_denied_file_with_its_rule() {
+        assert_eq!(
+            denied_of("A\tm/0002_new.sql\nM\tm/0001_old.sql\nD\tm/0000_gone.sql\n"),
+            vec!["m/0001_old.sql".to_string(), "m/0000_gone.sql".to_string()]
+        );
+        let rule = "m/*.sql".to_string();
+        assert_eq!(
+            deny_refusal_of("feature/1-a", "abcdef123456", &[(rule.clone(), vec![])]),
+            None
+        );
+        let text = deny_refusal_of("feature/1-a", "abcdef123456", &[(rule, vec!["m/0001_old.sql".into()])]).unwrap();
+        assert!(text.starts_with("✗ push refused: feature/1-a at abcdef12 changes files agents must never touch"));
+        assert!(text.contains("\n  m/*.sql: m/0001_old.sql\n"));
     }
 
     #[test]
