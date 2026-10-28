@@ -220,6 +220,28 @@ journal says it (`auto-merge into batch: off (by you)`).
 | `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
 | (panel only) `agent fresh start`, `agent fresh start when idle`, `agent idle time` | `[agents] fresh_above`, `idle_fresh_above`, `idle_minutes` | when an agent retires at its merge (#381, #445), in thousands of tokens and minutes; their team defaults stay `[agents]`'s |
 
+## `[notifications]`
+
+The desktop notifications of the repo's events (#449): `notify-send` with
+the app name `breadboard`, the issue or MR as its title (`!449 feat: …`),
+what happened as its body. The daemon behind the overviews (`breadboard
+serve`) reads GitLab's newest issues and MRs and the repo's open `decide`
+actions every 10 s, and one daemon per checkout sends each event once: what
+it saw is kept in `.claude/ci/notified.json`, so a restart repeats nothing,
+and its first read only learns what is there. Only for a repo GitLab serves.
+Without `notify-send` on the machine the overview says so in one line and
+none are sent. herdr's own notifications (an agent asks, a pipeline failed
+in a worktree's space) stay as they are.
+
+The settings panel has a switch for all (`desktop notifications`) and one
+per event; they are the repo's, not an orchestration's: a change is kept in
+`.claude/notifications.json` and holds in every orchestration's panel.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `desktop` | `true` | any desktop notification at all; off: none, and what was seen is forgotten (switched on again, it starts from what is there) |
+| `events` | every one | the events that send one: `issue_created` (by anyone, an agent or the orchestrator too), `mr_opened`, `mr_merged` (into develop, an epic or a batch), `mr_ready`, `pipeline_failed` (an MR's newest pipeline), `mr_conflict`, `decide` (an agent or an orchestrator asks the user) |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.

@@ -20,7 +20,9 @@ under each other and mix their uncommitted changes.
   otherwise it is named after the task (`chronicle-tags`,
   `login-theme`).
 - `wt:new` claims the issue (pushes the empty branch); it stops when origin
-  has a branch with the number: say so instead of starting.
+  has a branch with the number: say so instead of starting; `--also <m>` bundles
+  another issue into the task (#321), refused when a branch or another open
+  MR claims it.
 - Reading, answering questions and reviewing need no worktree.
 - **An agent that starts a worktree moves into it**: right after `wt:new`,
   `EnterWorktree(path: "<the directory wt:new printed>")`. That changes the
@@ -62,7 +64,7 @@ repo is to it comes from its `breadboard.toml`):
 {{#stack}}
 | `{{run}} wt:stack` | inside a worktree: move it from the shared stack to an own one |
 {{/stack}}
-| `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its product's batch; `wt:new --base <branch>`) once, for **exactly one issue** (a description closing a second, or one other than the branch's, is refused) — title from the last commit, description from the template with `Closes #<issue>`, the **labels and the milestone of the work item**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
+| `{{run}} wt:mr [<issue>]` | inside a worktree: opens the **draft MR** into the worktree's base (`{{branch}}`, or its product's batch; `wt:new --base <branch>`) once, for **exactly its task** (the branch's issue and those `wt:new --also` bundled, #321; a description closing another is refused) — title from the last commit, description from the template with `Closes #<issue>` for each, the **labels of all its issues and the first milestone**, assigned to you, source branch deleted on merge. The issue number comes from the worktree name (`34-…`) or from the argument; without one it refuses. Run again and it only prints the MR that is there. `--dry-run` shows what it would send |
 | `{{run}} wt:check [--no-test "<reason>"]` | inside a worktree, **before every push**: {{check}}. The pre-push hook refuses a commit whose tree it didn't pass (`.claude/checked.json`; docs-only passes): check, commit, push. A `fix/*` branch that changes no test is refused (#316): write the test, or `--no-test "<reason>"` when none can (it goes into the MR description for CI's `check:fix-test`). The overview shows `✓ tested <sha>` / `untested: N commits` / `checking…` / `✗ tests failed: …` / `✗ fix without test` per worktree |
 | `{{run}} wt:herdr` | inside herdr: the main space (`root`, `overview`) and the space of each product or orchestration; no space per worktree and no stack tabs (see below) |
 | `{{run}} wt:prune [--dry-run]` | **after merges**: every worktree whose branch is gone from origin and fully in its base is closed with `wt:remove`, its leftover local branches deleted. Everything with own commits or uncommitted changes is only listed |

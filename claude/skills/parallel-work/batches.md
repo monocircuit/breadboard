@@ -37,11 +37,13 @@ Everything that compared with `{{branch}}` compares with the base:
   keeps it open to finish in the same run;
 - `wt:remove` / `wt:prune` count a branch merged into its base as done.
 
-**One issue, one branch, one MR.** `wt:mr` refuses a description that closes
-a second issue (any of GitLab's closing keywords) or an issue other than the
-branch's, and `wt:orchestrate` never puts two issues into one worktree:
-review, revert, the progress bar and the auto-merge stay per issue, and the
-batch keeps one merge commit per task.
+**One task, one branch, one MR.** A task is usually one issue; it may close
+several that belong together (#321, a *bundle*, `wt:orchestrate <name> <n>+<m>`
+or `wt:new <n>-<feature> --also <m>`). `wt:mr` writes `Closes #n` for every
+issue of the task and refuses a description that closes any other (any of
+GitLab's closing keywords): review, revert, the progress bar and the
+auto-merge stay per task, the bar and the merge counting every issue's boxes,
+and the batch keeps one merge commit per task.
 
 ## The batch branch
 

@@ -28,17 +28,30 @@ spaces stay empty.
 | `<name>` | kebab-case, names the orchestration: the space `⇶ <name>`, the origin of its worktrees |
 | `--title "<text>"` | what the overview's title band, the space and the sidebar show instead: `⇶ <title>` (e.g. `@acme/web`). Recorded, so a later run keeps it; `wt:orchestrate <name> --title "…"` alone changes it. Commands, files and `SendMessage` keep the name |
 | `--product <name>` | the product of `breadboard.toml` it belongs to (#405): it works in the product's space with the product's other orchestrations. Without it the issues' milestone names it (`vita · …` → `vita`); recorded |
-| `<issue>` | a number (the worktree is named after the issue's title, `fix/` with the label `bug`), or `<n>-<feature>` to name it yourself |
+| `<issue>` | a number (the worktree is named after the issue's title, `fix/` with the label `bug`), or `<n>-<feature>` to name it yourself; `<n>+<m>…` a bundle (see below) |
 | `--shared` | every worktree on the shared stack: for issues that never start the app (~1 GB RAM less each) |
 | `--queue` | start none: the overview hands each to a free agent (the one that knows its files first), else starts a fresh one by itself, memory permitting, in the work order of `wt:plan` |
 | `--queue --after !<mr>…` | the same, but none starts before those MRs are merged (their node: `waits for !282 to be merged`) |
 | `--peer <session>` | the name `ListAgents` shows for the orchestrator, written into each brief |
 | `--brief <file>` | text added to every brief, e.g. an order to keep between the MRs |
 
+**A bundle** (#321): issues that share an ownership boundary (the same
+package or files, or they only work together) and stay reviewable in one
+piece go into one task: `<n>+<m>` (`<n>-<feature>+<m>`), one worktree, branch
+and MR. The branch carries the first issue; the others are claimed by the
+MR's `Closes` lines (`wt:new --also`, written to the worktree's
+`.claude/origin` as `issues` and to the record's entry as `numbers`). A
+bundle whose other issue is closed, has a branch or is closed by another
+open MR is skipped whole. Its bar, its merge and its brief cover every
+issue; `wt:tick <issue> <box>…` ticks within one. A queued bundle is handed
+out by its first number, the record keeps the others. Otherwise issues are
+separate tasks.
+
 What it does, in this order:
 
 1. Reads every issue. Closed ones, ones another branch claims and ones with a
-   worktree already are skipped and listed; nothing to start stops here. A
+   worktree already are skipped and listed (a bundle with such an issue
+   whole); nothing to start stops here. A
    worktree of the orchestration whose agent is gone (none bound, its MR not
    merged) gets a fresh agent in it instead (#455), its brief saying it takes
    over; the overview does the same for such a worktree in the work order
