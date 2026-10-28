@@ -37,11 +37,13 @@ Everything that compared with `{{branch}}` compares with the base:
   keeps it open to finish in the same run;
 - `wt:remove` / `wt:prune` count a branch merged into its base as done.
 
-**One issue, one branch, one MR.** `wt:mr` refuses a description that closes
-a second issue (any of GitLab's closing keywords) or an issue other than the
-branch's, and `wt:orchestrate` never puts two issues into one worktree:
-review, revert, the progress bar and the auto-merge stay per issue, and the
-batch keeps one merge commit per task.
+**One task, one branch, one MR.** A task is usually one issue; it may close
+several that belong together (#321, a *bundle*, `wt:orchestrate <name> <n>+<m>`
+or `wt:new <n>-<feature> --also <m>`). `wt:mr` writes `Closes #n` for every
+issue of the task and refuses a description that closes any other (any of
+GitLab's closing keywords): review, revert, the progress bar and the
+auto-merge stay per task, the bar and the merge counting every issue's boxes,
+and the batch keeps one merge commit per task.
 
 ## The batch branch
 
@@ -87,8 +89,10 @@ tests, image, deploy) runs on the batch's MR into `{{branch}}` and on
 ## Shipping
 
 The user ships the batch with **`ship batch`** in BATCH, the batch's row of
-the overview (`batch/<product>-<n> · 6 tasks · fast checks ✓ · ship batch`,
-the task MRs merged into it in a fold under it). UP NEXT suggests it once
+the overview (`batch/<product>-<n> · fast checks ✓ · ship batch`; under it
+the batches shipped before it with their MRs, then `3 of 5 tasks in batch
+<n>`, the task MRs merged into it, and `waiting: !a !b`, those still open
+into it). UP NEXT suggests it once
 `ship after tasks` task MRs are in it (the settings, 5), a hotfix or an MR
 labelled `ship` is among them, or its oldest task has waited `ship after
 days` (2). Both run `{{run}} wt:batch <product> --ship`:
@@ -108,9 +112,10 @@ days` (2). Both run `{{run}} wt:batch <product> --ship`:
 
 ## A red batch
 
-When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH says
-`batch red: <job>` and lists the task MRs merged into that batch, the likeliest
-first: those whose files a failed job covers (its `rules: changes:`).
+When the pipeline of a shipped batch's MR into `{{branch}}` fails, BATCH names
+it apart from the current batch (`batch 7 (!468, shipped) failed: <job> · ship
+of batch 8 held until it is green`) and lists the task MRs merged into that
+batch, the likeliest first: those whose files a failed job covers (its `rules: changes:`).
 **`fix batch`** (or the `batch red` row of UP NEXT) runs `{{run}} wt:batch
 <product> --fix`: it files the fix issue with the failed jobs and the suspects
 with their files, and queues it in the orchestration. The overview hands it to
@@ -127,8 +132,8 @@ batches on their way.
 
 ## Hotfixes
 
-`{{run}} wt:new <n>-<feature> --fix` of an issue labelled `hotfix`, or `--base main`,
-bypasses the batch: it branches off `{{branch}}` (or `main`), its MR goes there with
+`{{run}} wt:new <n>-<feature> --fix` of an issue labelled `hotfix` (`wt:orchestrate`
+starts one so, on `fix/…`, its brief saying so), or `--base main`, bypasses the batch: it branches off `{{branch}}` (or `main`), its MR goes there with
 the full pipeline. The batch takes `{{branch}}` in only when the two conflict:
 the overview says so, and the batch's checkout merges it with `{{run}} wt:merge-base`.
 

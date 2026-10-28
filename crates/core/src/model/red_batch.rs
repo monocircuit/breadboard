@@ -1,11 +1,11 @@
 //! A red batch in the overview (#413): the MR into develop of a batch the
-//! product shipped has a failed pipeline. BATCH says `batch red: <job>` and
-//! lists the tasks merged into it, those whose files a failed job covers
-//! first. Its fix goes into the current batch, whose ship replaces it (#464).
+//! product shipped has a failed pipeline. BATCH names it apart from the
+//! current batch (#491), `batch 7 (!468, shipped) failed: <job>`, and lists
+//! the tasks merged into it, those whose files a failed job covers first. Its fix goes into the current batch, whose ship replaces it (#464).
 
 use super::orchestration::OrchestrationLocal;
 use super::{Paint, Span};
-use crate::batch_red::{Suspect, covers, headline, job_of, suspects};
+use crate::batch_red::{Suspect, covers, job_of, suspects};
 use crate::gitlab::Remote;
 
 /// At most this many suspects under BATCH; the others in a count.
@@ -19,6 +19,8 @@ pub struct Red {
     /// Its MR into develop.
     pub mr: i64,
     pub mr_url: String,
+    /// Its pipeline's page: the link of a red batch without a failed job.
+    pub pipeline_url: Option<String>,
     /// Its failed jobs, each once, with the page of the first of its copies.
     pub jobs: Vec<(String, Option<String>)>,
     /// The tasks merged into it, the likeliest first.
@@ -30,13 +32,51 @@ pub struct Red {
 }
 
 impl Red {
-    /// `batch red: check:vita`, `batch red: check:vita +1`.
-    pub fn headline(&self) -> String {
-        let first = self.jobs.first().map_or("its pipeline", |(job, _)| job.as_str());
-        match self.jobs.len() {
-            0 | 1 => headline(first),
-            count => format!("{} +{}", headline(first), count - 1),
+    /// `: check:vita`, `: check:vita +1`: its failed jobs; none before a job ran.
+    fn failed(&self) -> String {
+        match &self.jobs[..] {
+            [] => String::new(),
+            [(first, _)] => format!(": {first}"),
+            [(first, _), rest @ ..] => format!(": {first} +{}", rest.len()),
         }
+    }
+
+    /// Whether its fix issue is merged into `tasks`, the current batch's (#464).
+    pub fn is_fixed_in(&self, tasks: &[crate::gitlab::BatchTask]) -> bool {
+        self.fix.is_some_and(|number| {
+            tasks
+                .iter()
+                .any(|task| crate::git::issue_of_branch(&task.branch) == Some(number as u64))
+        })
+    }
+
+    /// BATCH's line of it, apart from the current batch's own state (#491),
+    /// linked to the failed job: `batch 7 (!468, shipped) failed:
+    /// scan:deps:mr · ship of batch 8 held until it is green`.
+    pub fn line(&self, current: &str, is_fixed: bool) -> Vec<Span> {
+        let current = name_of(current);
+        let then = if is_fixed {
+            format!("its fix is in {current}, whose ship replaces it")
+        } else {
+            format!("ship of {current} held until it is green")
+        };
+        vec![
+            Span {
+                text: format!(
+                    "{} (!{}, shipped) failed{}",
+                    name_of(&self.branch),
+                    self.mr,
+                    self.failed()
+                ),
+                paint: Paint::Red,
+                url: self
+                    .jobs
+                    .first()
+                    .and_then(|(_, url)| url.clone())
+                    .or_else(|| self.pipeline_url.clone()),
+            },
+            Span::dim(format!(" · {then}")),
+        ]
     }
 
     /// `batch/breadboard-2 is red (check:vita)`.
@@ -51,15 +91,6 @@ impl Red {
             Some(number) => format!("#{number} fixes it"),
             None => "a click files its fix".into(),
         }
-    }
-
-    /// The part of the BATCH row, linked to the failed job.
-    pub fn part(&self) -> Vec<Span> {
-        vec![Span {
-            text: self.headline(),
-            paint: Paint::Red,
-            url: self.jobs.first().and_then(|(_, url)| url.clone()),
-        }]
     }
 
     /// One line per suspect, the likeliest first: `!431 #411 feat: … · its files run in check:vita`.
@@ -108,8 +139,13 @@ impl Red {
     }
 }
 
+/// `batch/breadboard-7` → `batch 7`; another branch as it is.
+pub fn name_of(branch: &str) -> String {
+    crate::batch::parse(branch).map_or_else(|| branch.to_string(), |(_, number)| format!("batch {number}"))
+}
+
 /// The page of MR `iid` beside the page `url` of another MR of the project.
-fn mr_url_of(url: &str, iid: i64) -> String {
+pub fn mr_url_of(url: &str, iid: i64) -> String {
     match url.rsplit_once("/merge_requests/") {
         Some((project, _)) => format!("{project}/merge_requests/{iid}"),
         None => String::new(),
@@ -125,10 +161,13 @@ pub fn red_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Red
         .as_ref()
         .filter(|epic| crate::batch::is_batch(&epic.branch))?;
     let found = remote?.epic.as_ref()?;
-    let (mr, failed) = found.shipping.iter().chain(&found.mr).find_map(|mr| {
-        let failed = found.failed_jobs.get(&mr.iid).filter(|jobs| !jobs.is_empty())?;
-        (mr.pipeline_status() == Some("failed")).then_some((mr, failed))
-    })?;
+    // A pipeline that failed before any job ran (its CI config) is red all the same (#491).
+    let mr = found
+        .shipping
+        .iter()
+        .chain(&found.mr)
+        .find(|mr| mr.pipeline_status() == Some("failed"))?;
+    let failed = found.failed_jobs.get(&mr.iid).map(Vec::as_slice).unwrap_or_default();
     let mut jobs: Vec<(String, Option<String>)> = Vec::new();
     for job in failed {
         let name = job_of(&job.name);
@@ -155,6 +194,7 @@ pub fn red_of(local: &OrchestrationLocal, remote: Option<&Remote>) -> Option<Red
         branch: mr.branch.clone(),
         mr: mr.iid,
         mr_url: mr.url.clone(),
+        pipeline_url: mr.pipeline.as_ref().and_then(|pipeline| pipeline.web_url.clone()),
         jobs,
         suspects,
         globs,
@@ -242,9 +282,19 @@ pub(crate) mod tests {
         let (local, remote) = red_world();
         let red = red_of(&local, Some(&remote)).unwrap();
         assert_eq!((red.branch.as_str(), red.mr), ("batch/b-2", 500));
-        assert_eq!(red.headline(), "batch red: check:vita +1");
+        assert_eq!(
+            text_of(&red.line("batch/b-3", false)),
+            "batch 2 (!500, shipped) failed: check:vita +1 · ship of batch 3 held until it is green"
+        );
+        assert_eq!(
+            text_of(&red.line("batch/b-3", true)),
+            "batch 2 (!500, shipped) failed: check:vita +1 · its fix is in batch 3, whose ship replaces it"
+        );
         assert_eq!(red.said(), "batch/b-2 is red (check:vita)");
-        assert_eq!(red.part()[0].url.as_deref(), Some("https://g/p/-/jobs/7"));
+        assert_eq!(
+            red.line("batch/b-3", false)[0].url.as_deref(),
+            Some("https://g/p/-/jobs/7")
+        );
         let lines: Vec<String> = red.lines().iter().map(|line| text_of(line)).collect();
         assert_eq!(
             lines,
@@ -276,6 +326,17 @@ pub(crate) mod tests {
         local.epic.as_mut().unwrap().shipped.clear();
         let red = red_of(&local, Some(&remote)).unwrap();
         assert!(red.suspects.is_empty());
-        assert_eq!(red.headline(), "batch red: check:vita +1");
+        assert!(text_of(&red.line("batch/b-3", false)).starts_with("batch 2 (!500, shipped) failed: check:vita +1"));
+        // Failed before any job ran (its CI config): red, its pipeline linked (#491).
+        let (local, mut remote) = red_world();
+        remote.epic.as_mut().unwrap().failed_jobs.clear();
+        let red = red_of(&local, Some(&remote)).unwrap();
+        let line = red.line("batch/b-3", false);
+        assert_eq!(
+            text_of(&line),
+            "batch 2 (!500, shipped) failed · ship of batch 3 held until it is green"
+        );
+        assert_eq!(line[0].url, red.pipeline_url);
+        assert_eq!(red.suspects.len(), 3, "its tasks, unranked");
     }
 }

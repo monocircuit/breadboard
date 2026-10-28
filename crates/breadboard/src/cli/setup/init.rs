@@ -5,7 +5,8 @@
 //!   `claude/skills/parallel-work/` with the repo's commands, branch, stack;
 //! - Claude Code's hooks in `.claude/settings.json`: `hook pre-edit` (no edit
 //!   in the main checkout), `hook pre-bash` (no merge, `--no-verify` or force
-//!   push by an agent, #427) and `hook stop-answers` (the overview's answers);
+//!   push by an agent, #427) and `hook stop-answers` (the overview's answers),
+//!   and the deny rules of `[agents.deny]` (#375);
 //! - in a repo breadboard isn't developed in: the herdr plugin with the
 //!   repo's id (`[herdr] plugin`), its keys and base config, the nvim Lua and
 //!   the Chromium extension in `.breadboard/`, where herdr links it from;
@@ -478,6 +479,37 @@ pub fn with_hooks(settings: &Value, is_developed: bool) -> Option<Value> {
     changed.then_some(settings)
 }
 
+/// The deny rules of `[agents.deny]` (#375): `Edit(<path>)` (Claude Code
+/// applies it to every tool that edits) and `Bash(<command>)`.
+pub fn deny_rules_of(deny: &config::Deny) -> Vec<String> {
+    let paths = deny.paths.iter().map(|path| format!("Edit({path})"));
+    paths
+        .chain(deny.commands.iter().map(|command| format!("Bash({command})")))
+        .collect()
+}
+
+/// `settings` with the deny rules of `[agents.deny]` added to
+/// `permissions.deny` where they are missing, None when all are there.
+pub fn with_denies(settings: &Value, deny: &config::Deny) -> Option<Value> {
+    let mut settings = settings.clone();
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    let list = &mut settings["permissions"]["deny"];
+    if !list.is_array() {
+        *list = json!([]);
+    }
+    let rules = list.as_array_mut()?;
+    let mut changed = false;
+    for rule in deny_rules_of(deny) {
+        if !rules.iter().any(|had| had.as_str() == Some(rule.as_str())) {
+            rules.push(json!(rule));
+            changed = true;
+        }
+    }
+    changed.then_some(settings)
+}
+
 /// The lines breadboard keeps out of git: what it writes into `.claude/`
 /// (Claude Code's own tracked files stay), `.breadboard/`, the pinned herdr.
 const EXCLUDED: &str = ".claude/*
@@ -550,16 +582,26 @@ pub fn command(args: &Args) -> ExitCode {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_else(|| json!({}));
-    if let Some(merged) = with_hooks(&settings, is_developed) {
+    let hooked = with_hooks(&settings, is_developed);
+    let denied = with_denies(hooked.as_ref().unwrap_or(&settings), &loaded.config.agents.deny);
+    let parts: Vec<&str> = [
+        (hooked.is_some(), "breadboard's hooks"),
+        (denied.is_some(), "[agents.deny]"),
+    ]
+    .into_iter()
+    .filter_map(|(is_changed, part)| is_changed.then_some(part))
+    .collect();
+    if let Some(merged) = denied.or(hooked) {
+        let what = format!(".claude/settings.json ({})", parts.join(", "));
         if is_check {
-            stale.push(".claude/settings.json (breadboard's hooks)".into());
+            stale.push(what);
         } else {
             let text = format!("{}\n", serde_json::to_string_pretty(&merged).unwrap_or_default());
             let _ = fs::create_dir_all(top.join(".claude"));
             if let Err(error) = fs::write(&settings_file, text) {
                 fail(&format!("couldn't write {}: {error}", settings_file.display()));
             }
-            wrote.push(".claude/settings.json (breadboard's hooks)".into());
+            wrote.push(what);
         }
     }
     if is_check {
@@ -788,6 +830,23 @@ mod tests {
             "sh \"$CLAUDE_PROJECT_DIR/packages/breadboard/hooks/pre-edit\""
         );
         assert_eq!(with_hooks(&developed, false), None);
+    }
+
+    #[test]
+    fn adds_the_deny_rules_once_beside_the_repos_own() {
+        let deny = config::Deny {
+            paths: vec!["**/migrations/*.sql".into()],
+            commands: vec!["git tag:*".into()],
+        };
+        let own = json!({ "permissions": { "deny": ["Bash(git tag:*)"], "allow": ["Bash(ls)"] } });
+        let merged = with_denies(&own, &deny).unwrap();
+        assert_eq!(
+            merged["permissions"]["deny"],
+            json!(["Bash(git tag:*)", "Edit(**/migrations/*.sql)"])
+        );
+        assert_eq!(merged["permissions"]["allow"], json!(["Bash(ls)"]));
+        assert_eq!(with_denies(&merged, &deny), None, "once");
+        assert_eq!(with_denies(&json!({}), &config::Deny::default()), None);
     }
 
     #[test]

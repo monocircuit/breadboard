@@ -160,21 +160,92 @@ pub fn paused_now(main: &Path) -> Option<String> {
     Some(paused_text(&paused, queue.events.len()))
 }
 
-/// The runs in flight of `main` ended (`pause --now`): SIGTERM to each
-/// live claude of the status table. How many were asked to end. The run
-/// engine gives their lines back to the queue (a run ended in a pause).
+/// How long a run's processes have after SIGTERM before SIGKILL (#488).
+pub const END_GRACE_MS: i64 = 10_000;
+/// END_GRACE_MS, or what `BREADBOARD_END_GRACE_MS` says (a test's process that ignores SIGTERM).
+fn end_grace_ms() -> i64 {
+    std::env::var("BREADBOARD_END_GRACE_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or(END_GRACE_MS)
+}
+
+/// The runs in flight of `main` ended (`pause --now`) with everything they
+/// started (#488): their claude and each process carrying its run's marker
+/// (`wake::marked_of`), also one in a session of its own, as claude starts
+/// every Bash command. SIGTERM first, so a wt:check clears its `running`
+/// and stamps nothing; what lives on past END_GRACE_MS gets SIGKILL. Waits
+/// until they are gone. How many runs were asked to end. The run engine
+/// gives their lines back to the queue (a run ended in a pause).
 pub fn end_running(main: &Path) -> usize {
     let table: Table = read_or_default(&status_file(main));
-    let mut ended = 0;
-    for run in table.runs.values().filter(|run| run.state == State::Running) {
-        if let Some(pid) = run.pid.filter(|pid| is_alive(*pid)) {
-            // SAFETY: a signal to a pid, no memory involved.
-            if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
-                ended += 1;
-            }
+    let running: Vec<(&String, i64)> = table
+        .runs
+        .iter()
+        .filter(|(_, run)| run.state == State::Running)
+        .filter_map(|(session, run)| Some((session, run.pid.filter(|pid| is_alive(*pid))?)))
+        .collect();
+    let processes = || {
+        let mut pids: Vec<i64> = running
+            .iter()
+            .flat_map(|(session, pid)| std::iter::once(*pid).chain(crate::wake::marked_of(session)))
+            .filter(|pid| is_alive(*pid) && !is_spared(*pid))
+            .collect();
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    };
+    let signal = |pid: i64, signal| {
+        // SAFETY: a signal to a pid, no memory involved.
+        unsafe { libc::kill(pid as libc::pid_t, signal) };
+    };
+    let mut termed = std::collections::HashSet::new();
+    let until = crate::time::now_ms() + end_grace_ms();
+    loop {
+        let left = processes();
+        if left.is_empty() {
+            break;
         }
+        if crate::time::now_ms() >= until {
+            left.iter().for_each(|pid| signal(*pid, libc::SIGKILL));
+            let gone = crate::time::now_ms() + 2_000;
+            while !processes().is_empty() && crate::time::now_ms() < gone {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            break;
+        }
+        // One started meanwhile (a stopped wt:check's last step) gets its SIGTERM too.
+        for pid in left.into_iter().filter(|pid| termed.insert(*pid)) {
+            signal(pid, libc::SIGTERM);
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
-    ended
+    running.len()
+}
+
+/// What a pause spares of a run's processes: breadboard's own in a session
+/// of its own (its daemon, a stack's supervisor) that an agent's command
+/// happened to start, and sccache's server, which every build on the
+/// machine shares.
+fn is_spared(pid: i64) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some((head, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    let name = head.split_once('(').map(|(_, name)| name).unwrap_or_default();
+    // After the name: state, ppid, pgrp, session.
+    let session = rest
+        .split_whitespace()
+        .nth(3)
+        .and_then(|field| field.parse::<i64>().ok());
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+    let is_breadboard = exe
+        .as_deref()
+        .and_then(Path::file_name)
+        .is_some_and(|file| file == "breadboard");
+    name == "sccache" || (is_breadboard && session == Some(pid))
 }
 
 /// The line put before the lines of a run a pause ended: they come again.

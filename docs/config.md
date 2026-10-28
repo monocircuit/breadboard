@@ -3,13 +3,16 @@
 Everything breadboard knows about the repository it runs in comes from
 `breadboard.toml` at the root of a checkout (#342). A worktree reads its own
 file, so a branch that changes it uses its version; a worktree made before the
-file existed reads the main checkout's. A repo without the file gets the
-defaults below: worktrees, the overview and orchestrations work, with no stack.
+file existed reads the main checkout's. Without the file no command runs but
+`breadboard init`, which writes one (#320): each names the missing file and
+prints the smallest one with the repo's names. A key left out takes its default
+below; a section left out turns its feature off (no `[stack]`: no stacks).
 
 The file is read again when it changes. One that doesn't match this schema is
-refused with the key and why (`stack (db): port 3000 is app's already`), never
-read in half: the defaults hold until it is fixed. Unknown keys are refused too,
-so a typo doesn't pass for a default.
+refused with its line, the key and why (`breadboard.toml line 12: stack (db):
+port 3000 is app's already`), never read in half: a command fails with it, and
+a running overview keeps the defaults until it is fixed. Unknown keys are
+refused too, so a typo doesn't pass for a default.
 
 ## The smallest file
 
@@ -18,8 +21,8 @@ so a typo doesn't pass for a default.
 name = "me/shop"
 ```
 
-Or none at all: then the default branch is origin's `HEAD`, the commands show
-as `breadboard <command>`, and there is no stack.
+Even `[repo]` may stay empty: then the default branch is origin's `HEAD`, the
+commands show as `breadboard <command>`, and there is no stack.
 
 ## `[repo]`
 
@@ -220,6 +223,53 @@ journal says it (`auto-merge into batch: off (by you)`).
 | `auto_fresh` | `[orchestrator] auto_fresh` | the overview starts the orchestrator's chat fresh at a quiet point by itself |
 | (panel only) `agent fresh start`, `agent fresh start when idle`, `agent idle time` | `[agents] fresh_above`, `idle_fresh_above`, `idle_minutes` | when an agent retires at its merge (#381, #445), in thousands of tokens and minutes; their team defaults stay `[agents]`'s |
 
+## `[notifications]`
+
+The desktop notifications of the repo's events (#449): `notify-send` with
+the app name `breadboard`, the issue or MR as its title (`!449 feat: …`),
+what happened as its body. The daemon behind the overviews (`breadboard
+serve`) reads GitLab's newest issues and MRs and the repo's open `decide`
+actions every 10 s, and one daemon per checkout sends each event once: what
+it saw is kept in `.claude/ci/notified.json`, so a restart repeats nothing,
+and its first read only learns what is there. Only for a repo GitLab serves.
+Without `notify-send` on the machine the overview says so in one line and
+none are sent. herdr's own notifications (an agent asks, a pipeline failed
+in a worktree's space) stay as they are.
+
+The settings panel has a switch for all (`desktop notifications`) and one
+per event; they are the repo's, not an orchestration's: a change is kept in
+`.claude/notifications.json` and holds in every orchestration's panel.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `desktop` | `true` | any desktop notification at all; off: none, and what was seen is forgotten (switched on again, it starts from what is there) |
+| `events` | every one | the events that send one: `issue_created` (by anyone, an agent or the orchestrator too), `mr_opened`, `mr_merged` (into develop, an epic or a batch), `mr_ready`, `pipeline_failed` (an MR's newest pipeline), `mr_conflict`, `decide` (an agent or an orchestrator asks the user) |
+
+## `[web]`
+
+The web UI of the daemon behind the overviews (#435): `breadboard serve`
+serves the overview as a page from its binary, on `127.0.0.1` only, at
+`http://127.0.0.1:7435/`. The page shows the view of everything or one
+orchestration of each repo the daemon's overviews show, drawn as the
+terminal draws it, and reads it again every two seconds; GitLab comes from
+the daemon's feed of that view, so an open page costs GitLab nothing more
+than an overview does. It loads nothing from anywhere else and sends
+nothing (its content security policy allows only itself). The daemon
+starts with the first overview: the first repo's `[web]` holds for it.
+
+It answers only to `127.0.0.1:<port>` and `localhost:<port>`, so a page of
+another site can't reach it through a name of its own. A proxy in front of
+it (`tailscale serve`) sends its own name: add it to `hosts`, or keep it
+out of the committed file in `BREADBOARD_WEB_HOSTS` (comma-separated).
+`BREADBOARD_WEB_PORT` wins over `port`. Read-only unless `writes` is on;
+never switch it on with a proxy in front.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `port` | `7435` | its port on 127.0.0.1; `0`: no web UI. A port in use leaves the daemon without one (said on its stderr) |
+| `writes` | `false` | whether the page may change something: today `read GitLab again` for every overview of the view; off, any request but a read is refused (405) |
+| `hosts` | none | names the page answers to besides 127.0.0.1 and localhost, with or without a port: a proxy's (`<machine>.<tailnet>.ts.net`) |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.
@@ -256,6 +306,23 @@ orchestration_budget = "200 M"
 fresh_above = 150_000
 idle_fresh_above = 100_000
 idle_minutes = 55
+```
+
+### `[agents.deny]`
+
+What the repo's agents must never touch (#375), on top of Claude Code's own
+deny rules. Run `breadboard init` after a change: CI's `init --check` fails
+while `.claude/settings.json` lacks a rule.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `paths` | `[]` | gitignore-style globs from the repo's top. `breadboard init` makes each an `Edit(<path>)` deny rule (every tool that edits), and the pre-push gate refuses a push whose diff against its base changes or deletes a file one holds, naming the rule and the files. A new file passes: a tool made it (a generated migration), since agents can't edit it. So a file that tools rewrite (a lockfile) belongs in Claude Code's own deny rules, not here |
+| `commands` | `[]` | Claude Code Bash rule patterns (`git tag:*`): `breadboard init` makes each a `Bash(<command>)` deny rule |
+
+```toml
+[agents.deny]
+paths = ["**/migrations/*.sql"]
+commands = ["git tag:*"]
 ```
 
 ### `[agents.models]`

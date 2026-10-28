@@ -1668,6 +1668,7 @@ mod tests {
                 boxes: vec![],
                 open_boxes: vec![],
                 issue: None,
+                issues: vec![],
                 spent: None,
                 review: None,
             }),
@@ -2018,6 +2019,7 @@ mod tests {
         if let Some(facts) = merge_requests.open[0].mr.as_mut() {
             facts.boxes = boxes();
             facts.issue = Some(302);
+            facts.issues = vec![302];
         }
         let draw = |worktrees: &Worktrees, merge_requests: &MergeRequests, folds: Folds| {
             draw_all(worktrees, merge_requests, folds, 100, super::super::actor::idle())

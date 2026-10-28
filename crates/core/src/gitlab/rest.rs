@@ -10,7 +10,7 @@
 use super::cache::Cache;
 use super::client::{Gitlab, Result};
 use super::read::{Ask, DRAFT, FINISHED, Final, Memory, id_of, lower, settle_jobs, str_at};
-use super::{BranchRemote, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, boxes_of, number_of};
+use super::{BranchRemote, DevelopPipeline, Issue, Job, Mr, Pipeline, Remote, boxes_of};
 use crate::time::now_ms;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -122,7 +122,7 @@ pub async fn read_orchestration(
         let mut seen = BTreeSet::new();
         branches
             .iter()
-            .filter_map(|branch| number_of(branch))
+            .flat_map(|branch| ask.issues_of(branch))
             .filter(|number| seen.insert(*number))
             .collect()
     };
@@ -210,7 +210,14 @@ pub async fn read_orchestration(
         } else {
             (None, Vec::new())
         };
-        of.insert(branch.clone(), BranchRemote { mr, jobs, issue: None });
+        of.insert(
+            branch.clone(),
+            BranchRemote {
+                mr,
+                jobs,
+                ..BranchRemote::default()
+            },
+        );
     }
 
     // The issues: closed ones known, the open ones' links on a full read.
@@ -247,7 +254,7 @@ pub async fn read_orchestration(
         issues.insert(iid, issue);
     }
     for (branch, remote) in of.iter_mut() {
-        remote.issue = number_of(branch).and_then(|number| issues.get(&number).cloned());
+        remote.set_issues(&ask.issues_of(branch), &issues);
     }
 
     // develop's last finished pipeline, its jobs only when it failed.

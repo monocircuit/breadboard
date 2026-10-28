@@ -4,7 +4,9 @@
 //! panel is kept per product (`.claude/products/<name>.json`, local, never
 //! committed), for an orchestration of no product in its record, and wins
 //! over the default until it is reset. Read on every tick: a change holds
-//! from the next one, without a restart.
+//! from the next one, without a restart. The desktop notifications (#449)
+//! are the repo's, not an orchestration's: their changes are kept in
+//! `.claude/notifications.json`, their defaults are `[notifications]`.
 
 use crate::config::Config;
 use crate::json;
@@ -30,6 +32,16 @@ pub struct Def {
     /// One line: what it does when on (or what its number means).
     pub about: &'static str,
     pub kind: Kind,
+    pub scope: Scope,
+}
+
+/// Whose a setting is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// An orchestration's, kept per product.
+    Product,
+    /// The repo's, the same in every orchestration (the notifications, #449).
+    Repo,
 }
 
 pub const BATCHING: &str = "batching";
@@ -43,19 +55,24 @@ pub const AGENT_FRESH: &str = "agent_fresh_above_k";
 pub const AGENT_IDLE_FRESH: &str = "agent_idle_fresh_above_k";
 pub const AGENT_IDLE_MINUTES: &str = "agent_idle_minutes";
 
+/// Any desktop notification (#449); each event's own is `notify_<event>`.
+pub const NOTIFICATIONS: &str = "notifications";
+
 /// Every setting, in the panel's order.
-pub const DEFS: [Def; 9] = [
+pub const DEFS: [Def; 17] = [
     Def {
         key: BATCHING,
         label: "batching",
         about: "tasks branch off a batch branch and merge into it; off: their MRs go straight into develop",
         kind: Kind::Switch,
+        scope: Scope::Product,
     },
     Def {
         key: AUTO_MERGE,
         label: "auto-merge into batch",
         about: "a task MR merges into the batch by itself once its bar is full and its checks are green; off: it waits for your click",
         kind: Kind::Switch,
+        scope: Scope::Product,
     },
     Def {
         key: SHIP_TASKS,
@@ -66,6 +83,7 @@ pub const DEFS: [Def; 9] = [
             min: 1,
             max: 99,
         },
+        scope: Scope::Product,
     },
     Def {
         key: SHIP_DAYS,
@@ -76,18 +94,21 @@ pub const DEFS: [Def; 9] = [
             min: 1,
             max: 30,
         },
+        scope: Scope::Product,
     },
     Def {
         key: TRY_CHECKER,
         label: "try checker",
         about: "a small model checks and answers the tries (auto mode, #384); off: they wait for you",
         kind: Kind::Switch,
+        scope: Scope::Product,
     },
     Def {
         key: AUTO_FRESH,
         label: "orchestrator fresh start",
         about: "the overview starts the orchestrator's chat fresh at a quiet point by itself; off: it offers a click",
         kind: Kind::Switch,
+        scope: Scope::Product,
     },
     Def {
         key: AGENT_FRESH,
@@ -98,6 +119,7 @@ pub const DEFS: [Def; 9] = [
             min: 10,
             max: 1000,
         },
+        scope: Scope::Product,
     },
     Def {
         key: AGENT_IDLE_FRESH,
@@ -108,6 +130,7 @@ pub const DEFS: [Def; 9] = [
             min: 10,
             max: 1000,
         },
+        scope: Scope::Product,
     },
     Def {
         key: AGENT_IDLE_MINUTES,
@@ -118,8 +141,55 @@ pub const DEFS: [Def; 9] = [
             min: 1,
             max: 600,
         },
+        scope: Scope::Product,
     },
+    Def {
+        key: NOTIFICATIONS,
+        label: "desktop notifications",
+        about: "a desktop notification (notify-send) for each event switched on below, from one overview of the repo; off: none",
+        kind: Kind::Switch,
+        scope: Scope::Repo,
+    },
+    notify_def(
+        "notify_issue_created",
+        "· issue created",
+        "an issue is created, by anyone",
+    ),
+    notify_def("notify_mr_opened", "· MR opened", "an MR is opened"),
+    notify_def(
+        "notify_mr_merged",
+        "· MR merged",
+        "an MR is merged: into develop, an epic or a batch",
+    ),
+    notify_def("notify_mr_ready", "· MR ready", "an MR is marked ready"),
+    notify_def("notify_pipeline_failed", "· pipeline failed", "an MR's pipeline failed"),
+    notify_def(
+        "notify_mr_conflict",
+        "· MR conflict",
+        "an MR got a conflict with its target",
+    ),
+    notify_def(
+        "notify_decide",
+        "· asks you",
+        "an agent or an orchestrator asks you (a decide is posted)",
+    ),
 ];
+
+/// The switch of one notification event: `notify_<event>`.
+const fn notify_def(key: &'static str, label: &'static str, about: &'static str) -> Def {
+    Def {
+        key,
+        label,
+        about,
+        kind: Kind::Switch,
+        scope: Scope::Repo,
+    }
+}
+
+/// The setting of the event `event` (`notify::EVENTS`).
+pub fn notify_key(event: &str) -> String {
+    format!("notify_{event}")
+}
 
 /// The setting of `key`.
 pub fn def_of(key: &str) -> Option<&'static Def> {
@@ -143,6 +213,15 @@ pub fn defaults_of(config: &Config) -> Map<String, Value> {
     out.insert(AGENT_FRESH.into(), json!(config.agents.fresh_above / 1000));
     out.insert(AGENT_IDLE_FRESH.into(), json!(config.agents.idle_fresh_above / 1000));
     out.insert(AGENT_IDLE_MINUTES.into(), json!(config.agents.idle_minutes));
+    let notifications = &config.notifications;
+    out.insert(NOTIFICATIONS.into(), json!(notifications.desktop));
+    for event in crate::notify::EVENTS {
+        let is_on = notifications
+            .events
+            .as_ref()
+            .is_none_or(|events| events.iter().any(|key| key == event.key));
+        out.insert(notify_key(event.key), json!(is_on));
+    }
     out
 }
 
@@ -155,18 +234,34 @@ fn file_of(main: &Path, name: &str) -> PathBuf {
     }
 }
 
+/// Where the overrides of the repo's settings are kept (`Scope::Repo`, #449).
+pub fn repo_file(main: &Path) -> PathBuf {
+    main.join(".claude").join("notifications.json")
+}
+
 /// What holds for a new orchestration of `product` (none yet recorded):
-/// the product's overrides over the team's defaults.
+/// the product's overrides over the team's defaults. With no product: the
+/// repo's settings as they hold (the daemon's notifications).
 pub fn of_product(main: &Path, product: Option<&str>) -> Settings {
-    let overrides = product
-        .map(|product| overrides_in(&product_file(main, product)))
+    let mut overrides = product
+        .map(|product| of_scope(overrides_in(&product_file(main, product)), Scope::Product))
         .unwrap_or_default();
+    overrides.extend(of_scope(overrides_in(&repo_file(main)), Scope::Repo));
     settings_of(&rows_from(main, &overrides))
+}
+
+/// Only the overrides of settings of `scope`.
+fn of_scope(overrides: Map<String, Value>, scope: Scope) -> Map<String, Value> {
+    overrides
+        .into_iter()
+        .filter(|(key, _)| def_of(key).is_some_and(|def| def.scope == scope))
+        .collect()
 }
 
 /// The overrides the panel wrote, only those of a known setting with a value of its kind.
 pub fn overrides_of(main: &Path, name: &str) -> Map<String, Value> {
-    let mut out = overrides_in(&file_of(main, name));
+    let mut out = of_scope(overrides_in(&file_of(main, name)), Scope::Product);
+    out.extend(of_scope(overrides_in(&repo_file(main)), Scope::Repo));
     // The auto mode of before (#384) was the record's `auto`: it holds until the panel says.
     if !out.contains_key(TRY_CHECKER)
         && let Some(auto) = json::read(&record_file(main, name))
@@ -263,6 +358,8 @@ pub struct Settings {
     /// When an agent starts fresh (#445): `agent fresh start`, `… when idle`
     /// and `agent idle time`, by default `[agents]`'s.
     pub agent_fresh: crate::fresh::Fresh,
+    /// The events that send a desktop notification (#449, `notify::EVENTS`'s keys): none while they are off.
+    pub notify: Vec<&'static str>,
 }
 
 pub fn of(main: &Path, name: &str) -> Settings {
@@ -286,6 +383,11 @@ pub fn settings_of(rows: &[Row]) -> Settings {
             idle_above: count(AGENT_IDLE_FRESH).max(0) as u64 * 1000,
             idle_ms: count(AGENT_IDLE_MINUTES) * 60_000,
         },
+        notify: crate::notify::EVENTS
+            .iter()
+            .filter(|event| switch(NOTIFICATIONS) && switch(&notify_key(event.key)))
+            .map(|event| event.key)
+            .collect(),
     }
 }
 
@@ -299,7 +401,10 @@ pub fn set(main: &Path, name: &str, key: &str, value: Option<Value>, at: i64) ->
     if let Some(value) = value.as_ref().filter(|value| !is_of_kind(def, value)) {
         return Err(invalid(format!("{} takes no {value}", def.label)));
     }
-    let file = file_of(main, name);
+    let file = match def.scope {
+        Scope::Product => file_of(main, name),
+        Scope::Repo => repo_file(main),
+    };
     let mut raw = match json::read(&file) {
         Some(Value::Object(raw)) => raw,
         _ if file == record_file(main, name) => {
@@ -439,6 +544,39 @@ mod tests {
         assert!(set(&main, "a", SHIP_TASKS, Some(json!(0)), 0).is_err());
         assert!(set(&main, "a", BATCHING, Some(json!(3)), 0).is_err());
         assert!(set(&main, "a", "nothing", Some(json!(true)), 0).is_err());
+    }
+
+    #[test]
+    fn the_notifications_are_the_repos_from_the_file_until_the_panel_says() {
+        let (_scratch, main) = world("[products.breadboard]\npaths = [\"packages/breadboard\"]\n");
+        record(&main, "a", json!({ "issues": [], "product": "breadboard" }));
+        record(&main, "alone", json!({ "issues": [] }));
+        assert_eq!(
+            of(&main, "a").notify.len(),
+            crate::notify::EVENTS.len(),
+            "every one by default"
+        );
+        for event in crate::notify::EVENTS {
+            assert_eq!(def_of(&notify_key(event.key)).map(|def| def.scope), Some(Scope::Repo));
+        }
+        set(&main, "a", &notify_key(crate::notify::MR_OPENED), Some(json!(false)), 0).unwrap();
+        // The repo's: every orchestration's, and the daemon's (no product).
+        for settings in [of(&main, "alone"), of_product(&main, None)] {
+            assert!(!settings.notify.contains(&crate::notify::MR_OPENED));
+            assert!(settings.notify.contains(&crate::notify::MR_MERGED));
+        }
+        assert!(json::read(&repo_file(&main)).is_some());
+        set(&main, "alone", NOTIFICATIONS, Some(json!(false)), 0).unwrap();
+        assert!(of(&main, "a").notify.is_empty(), "off: none");
+        // The team's default: off, or only some events.
+        let (_scratch, main) = world("[notifications]\ndesktop = false\n");
+        assert!(of_product(&main, None).notify.is_empty());
+        let (_scratch, main) = world("[notifications]\nevents = [\"decide\", \"mr_merged\"]\n");
+        assert_eq!(
+            of_product(&main, None).notify,
+            vec![crate::notify::MR_MERGED, crate::notify::DECIDE]
+        );
+        assert!(Config::parse("[notifications]\nevents = [\"nothing\"]\n").is_err());
     }
 
     #[test]

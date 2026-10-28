@@ -121,6 +121,67 @@ pub struct Issue {
     pub milestone: Option<String>,
     /// Its kind of work by its labels, its agent's model (#373).
     pub stage: Stage,
+    /// The other issues of its task (#321, `<n>+<m>`): its branch carries `number`.
+    pub also: Vec<i64>,
+}
+
+impl Issue {
+    /// Every issue of its task, `number` first.
+    pub fn numbers(&self) -> Vec<i64> {
+        std::iter::once(self.number).chain(self.also.iter().copied()).collect()
+    }
+
+    /// It as a command line names it: `12-feature`, a bundle's `12-feature+13+14` (#321).
+    pub fn arg(&self) -> String {
+        let others: String = self.also.iter().map(|number| format!("+{number}")).collect();
+        format!("{}{others}", self.feature)
+    }
+}
+
+/// `arg` split into the issue its branch carries and the others of its
+/// bundle (#321): `12-x+13+14` → (`12-x`, [13, 14]); None when an other is no number.
+pub fn bundle_of_arg(arg: &str) -> Option<(&str, Vec<i64>)> {
+    let mut parts = arg.split('+');
+    let first = parts.next().unwrap_or_default();
+    let others: Option<Vec<i64>> = parts
+        .map(|part| {
+            part.strip_prefix('#')
+                .unwrap_or(part)
+                .parse()
+                .ok()
+                .filter(|number| *number > 0)
+        })
+        .collect();
+    others.map(|others| (first, others))
+}
+
+/// Whether `arg` names an issue: `12`, `12-<feature>`, either with `+<m>…` (#321).
+pub fn is_issue_arg(arg: &str) -> bool {
+    let Some((first, _)) = bundle_of_arg(arg) else {
+        return false;
+    };
+    let digits = first.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0 && (digits == first.len() || (is_name(first) && first.as_bytes()[digits] == b'-'))
+}
+
+/// `arg` with the others of its bundle the record of `name` keeps (#321):
+/// a queued bundle is handed out by its first number alone.
+pub fn with_bundle(main: &Path, name: &str, arg: &str) -> String {
+    if arg.contains('+') {
+        return arg.to_string();
+    }
+    let number: i64 = arg
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or_default();
+    let numbers = record::record_of(main, name)
+        .and_then(|found| found.issues.into_iter().find(|issue| issue.number == Some(number)))
+        .map(|issue| issue.numbers)
+        .unwrap_or_default();
+    let others: String = numbers.iter().skip(1).map(|other| format!("+{other}")).collect();
+    format!("{arg}{others}")
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -235,6 +296,36 @@ pub fn claim_on_origin(main: &Path, feature: &str) -> Result<Option<String>, Str
     Ok(first_claim(&heads.stdout, &number))
 }
 
+/// What claims the issue `number` of a bundle (#321) elsewhere: a branch on
+/// origin carrying it, else an open MR whose description closes it (the
+/// claim of another bundle's issue). Ok(None) when nothing does; Err(why)
+/// when origin did not answer. GitLab not answering claims nothing: the
+/// branch is the claim, the MR only the claim of a bundle's other issues.
+pub fn bundle_claim(main: &Path, number: i64) -> Result<Option<String>, String> {
+    if let Some(branch) = claim_on_origin(main, &format!("{number}-issue"))? {
+        return Ok(Some(format!("origin has the branch {branch}")));
+    }
+    let open = crate::cli::setup::gitlab::list("projects/:fullpath/merge_requests?state=opened&per_page=100")
+        .unwrap_or_default();
+    Ok(open.iter().find_map(|mr| {
+        let description = mr
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        crate::cli::write::mr::closed_by(description)
+            .contains(&(number as u64))
+            .then(|| {
+                format!(
+                    "!{} of {} closes it",
+                    mr.get("iid").and_then(serde_json::Value::as_i64).unwrap_or_default(),
+                    mr.get("source_branch")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                )
+            })
+    }))
+}
+
 /// The first branch of `ls-remote` output that claims the issue `number`.
 fn first_claim(ls_remote: &str, number: &str) -> Option<String> {
     ls_remote.lines().find_map(|line| {
@@ -255,6 +346,55 @@ fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
     }
 }
 
+/// How many names `fresh_feature` tries: `feature`, `feature-2` … `feature-9`.
+const FRESH_TRIES: usize = 9;
+
+/// The name `n` of the tries of `feature`: itself first, then `feature-n`.
+fn try_name(feature: &str, n: usize) -> String {
+    if n == 1 {
+        feature.to_string()
+    } else {
+        format!("{feature}-{n}")
+    }
+}
+
+/// The feature a start takes (#486): `feature` itself, else `feature-2`,
+/// `-3`, … the first whose branch (`<kind>/<name>`) was no MR's source
+/// branch, open, closed or merged: the push guard refuses the claim on the
+/// branch of a closed or merged MR (#184), so the work would reach no one.
+/// With the name it says why it is not `feature`. GitLab not answering
+/// keeps the name tried: the claim push says so then, and wt:new stops.
+pub fn fresh_feature(main: &Path, feature: &str, kind: &str) -> (String, Option<String>) {
+    let mut first: Option<String> = None;
+    let mut name = feature.to_string();
+    for n in 1..=FRESH_TRIES {
+        name = try_name(feature, n);
+        let branch = format!("{kind}/{name}");
+        let endpoint = format!(
+            "projects/:fullpath/merge_requests?state=all&source_branch={}&per_page=1",
+            gitlab::encode(&branch)
+        );
+        let read = gitlab::api(
+            main,
+            &endpoint,
+            &format!("the MRs of {branch}"),
+            Duration::from_secs(15),
+        );
+        let Some(mr) = read.as_ref().and_then(Value::as_array).and_then(|mrs| mrs.first()) else {
+            break;
+        };
+        first.get_or_insert_with(|| {
+            format!(
+                "{branch} was the branch of !{} ({})",
+                mr.get("iid").map(Value::to_string).unwrap_or_default(),
+                str_of(mr, "state").unwrap_or("an MR")
+            )
+        });
+    }
+    let why = first.map(|first| format!("{first}: it starts as {kind}/{name}"));
+    (name, why)
+}
+
 /// Why the issue `number` could not be read, and what to do.
 fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
     Fail(match unread {
@@ -268,6 +408,7 @@ fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
 /// The issue `arg` (its number, or `<n>-<feature>`) as GitLab has it, or
 /// why it can't be read (orchestrator.mjs `readIssue`).
 pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
+    let (arg, also) = bundle_of_arg(arg).ok_or_else(|| Fail(format!("{arg}: a bundle is <n>+<m>, each a number")))?;
     let number: String = arg.chars().take_while(char::is_ascii_digit).collect();
     let found = as_step(&format!("GitLab: issue #{number}"), || {
         gitlab::view(&repo.main, &["issue", "view", &number], &format!("issue #{number}"))
@@ -284,11 +425,13 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         .and_then(Value::as_array)
         .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
         .unwrap_or_default();
-    let is_fix = labels.iter().any(|label| label == "bug");
     let is_hotfix = labels.iter().any(|label| label == "hotfix");
-    let dir = repo.dir_of(&feature);
+    // A hotfix is a fix (#487): `fix/…` and `wt:new --fix`, or the batch is its base.
+    let is_fix = is_hotfix || labels.iter().any(|label| label == "bug");
+    let kind = if is_fix { "fix" } else { "feature" };
+    let mut dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
-    let why = if state != "opened" {
+    let mut why = if state != "opened" {
         Some(format!("#{number} is {state}"))
     } else if dir.exists() {
         Some(format!(
@@ -300,13 +443,30 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     } else {
         claimed_elsewhere(repo, &feature)
     };
+    // The others of a bundle (#321): each open and claimed nowhere else.
+    if why.is_none() {
+        why = also.iter().find_map(|other| other_why(repo, *other));
+    }
+    // A free issue starts on a branch no MR had (#486).
+    let mut feature = feature;
+    if why.is_none() {
+        let (fresh, renamed) = fresh_feature(&repo.main, &feature, kind);
+        if let Some(renamed) = renamed {
+            step(&renamed);
+            dir = repo.dir_of(&fresh);
+            if dir.exists() {
+                why = Some(format!("{} exists already", repo.feature_of(&dir)));
+            }
+            feature = fresh;
+        }
+    }
     Ok(Issue {
         number: number
             .parse()
             .map_err(|_| unread_issue(&number, gitlab::Unread::Missing))?,
         title,
         description: str_of(&found, "description").unwrap_or_default().to_string(),
-        branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
+        branch: format!("{kind}/{feature}"),
         feature,
         is_fix,
         is_hotfix,
@@ -317,12 +477,39 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
             .and_then(|milestone| str_of(milestone, "title"))
             .map(String::from),
         stage: stage::of_labels(&breadboard_core::config::of(&repo.main).config, &labels),
+        also,
     })
+}
+
+/// Why the issue `number` can't join a bundle (#321): it is closed or not
+/// there, or a branch or an MR elsewhere claims it.
+fn other_why(repo: &Repo, number: i64) -> Option<String> {
+    let label = format!("issue #{number}");
+    let found = match as_step(&format!("GitLab: {label}"), || {
+        gitlab::view(&repo.main, &["issue", "view", &number.to_string()], &label)
+    }) {
+        Ok(found) => found,
+        Err(unread) => return Some(unread_issue(&number.to_string(), unread).0),
+    };
+    let state = str_of(&found, "state").unwrap_or_default();
+    if state != "opened" {
+        return Some(format!("#{number} is {state}"));
+    }
+    match bundle_claim(&repo.main, number) {
+        Ok(Some(taken)) => Some(format!("#{number} is claimed elsewhere: {taken}")),
+        Ok(None) => None,
+        Err(why) => Some(why),
+    }
 }
 
 /// An issue as the record keeps it.
 pub fn record_entry(issue: &Issue, why: Option<&str>) -> Value {
-    json!({ "number": issue.number, "title": issue.title, "feature": issue.feature, "branch": issue.branch, "why": why })
+    let mut entry = json!({ "number": issue.number, "title": issue.title, "feature": issue.feature, "branch": issue.branch, "why": why });
+    // A bundle (#321): every issue of its task, its branch's first.
+    if !issue.also.is_empty() {
+        entry["numbers"] = json!(issue.numbers());
+    }
+    entry
 }
 
 /// The record's entry of an issue whose start runs or failed (#272): a
@@ -704,10 +891,21 @@ pub struct Made {
     pub status: Option<i32>,
 }
 
+/// How wt:new's failure begins when origin refused the claim (#486).
+pub const CLAIM_REFUSED: &str = "origin refused the claim on";
+
 impl Made {
     /// Made, but wt:new failed after the setup (#130): the worktree counts, said with a note.
     pub fn failed_after_setup(&self) -> bool {
-        self.is_there && (self.failed.is_some() || self.status != Some(0))
+        self.is_there && !self.is_unclaimed() && (self.failed.is_some() || self.status != Some(0))
+    }
+
+    /// Its claim never reached origin (#486): the worktree goes to no agent,
+    /// its push would be refused once the work is done.
+    pub fn is_unclaimed(&self) -> bool {
+        self.failed
+            .as_deref()
+            .is_some_and(|failed| failed.starts_with(CLAIM_REFUSED))
     }
 }
 
@@ -727,7 +925,11 @@ pub fn make_worktree(repo: &Repo, issue: &Issue, name: &str, is_shared: bool) ->
             status: None,
         };
     }
+    let others: Vec<String> = issue.also.iter().map(i64::to_string).collect();
     let mut args = vec!["wt:new", issue.feature.as_str(), "--origin", name];
+    for other in &others {
+        args.extend(["--also", other.as_str()]);
+    }
     if issue.is_fix {
         args.push("--fix");
     }
@@ -901,12 +1103,10 @@ pub fn command(args: &Args) -> Done {
     else {
         return fail(USAGE);
     };
-    let is_issue = |arg: &str| {
-        let digits = arg.bytes().take_while(u8::is_ascii_digit).count();
-        digits > 0 && (digits == arg.len() || (is_name(arg) && arg.as_bytes()[digits] == b'-'))
-    };
-    if let Some(issue) = issues.iter().find(|issue| !is_issue(issue)) {
-        return fail(format!("{issue} is no issue (12, or 12-<feature>)\n{USAGE}"));
+    if let Some(issue) = issues.iter().find(|issue| !is_issue_arg(issue)) {
+        return fail(format!(
+            "{issue} is no issue (12, 12-<feature>, a bundle 12+13)\n{USAGE}"
+        ));
     }
     let brief_file = args.value("--brief");
     if let Some(file) = brief_file.filter(|file| !Path::new(file).exists()) {
@@ -920,6 +1120,8 @@ pub fn command(args: &Args) -> Done {
         return fail("--to hands over one issue at a time");
     }
     let repo = Repo::here()?;
+    // A queued bundle comes by its first number: the record knows the others (#321).
+    let issue = with_bundle(&repo.main, name, issues[0]);
     let is_dry = args.has("--dry-run");
     // A --brief applies to the issues of the run that passes it only (#247).
     let extra = match brief_file {
@@ -937,13 +1139,13 @@ pub fn command(args: &Args) -> Done {
             brief: brief_file.zip(extra.as_deref()),
             peer,
         };
-        return announce(&repo, name, issues[0], to, &after, &given, is_dry);
+        return announce(&repo, name, &issue, to, &after, &given, is_dry);
     }
     hand_over(
         &repo,
         &Request {
             name,
-            issue: issues[0],
+            issue: &issue,
             to,
             limit: args.value("--limit"),
             peer: peer.map(String::from),
@@ -1170,7 +1372,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         if made.failed_after_setup() {
             setup_note = " (wt:new failed after the setup, see above)";
         }
-        if !made.is_there {
+        if !made.is_there || made.is_unclaimed() {
             let reason = made.failed.unwrap_or_else(|| "no worktree".into());
             let why = format!("its worktree failed: {reason}");
             undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());
@@ -1473,6 +1675,7 @@ mod tests {
             branch: "feature/5-t".into(),
             milestone: None,
             stage: breadboard_core::stage::Stage::Build,
+            also: vec![],
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1497,6 +1700,7 @@ mod tests {
             branch: "fix/247-t".into(),
             milestone: None,
             stage: breadboard_core::stage::Stage::Build,
+            also: vec![],
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);

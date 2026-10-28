@@ -19,15 +19,13 @@ use crate::cli::setup::proc::{self, Args, Shape, fail, name_refusal, outln, quot
 use crate::cli::setup::repo;
 use breadboard_core::record::{self, ORCHESTRATOR, is_name};
 use breadboard_core::time::{now_ms, to_iso};
-use issue::{
-    BRIEF_PROMPT, Brief, Item, brief_of, known_entry, make_worktree, number_of, object, read_issue, record_entry,
-};
+use issue::{BRIEF_PROMPT, Brief, Item, brief_of, known_entry, make_worktree, object, read_issue, record_entry};
 use serde_json::{Value, json};
 use std::fs;
 use std::process::{ExitCode, Stdio};
 use workers::Start;
 
-pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature>… [--title <text>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
+pub const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue|n-feature|n+m>… [--title <text>] [--product <name>] [--shared] [--peer <session>] [--brief <file>] [--queue [--after !<mr>…]] [--dry-run]
        pnpm wt:orchestrate <name> --title <text>
        pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--dry-run]
        pnpm wt:orchestrate <name> --end
@@ -83,10 +81,7 @@ pub const SHAPE: Shape = Shape::new(
     USAGE,
 );
 
-fn is_issue_arg(arg: &str) -> bool {
-    (!arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()))
-        || (is_name(arg) && !number_of(arg).is_empty() && arg[number_of(arg).len()..].starts_with('-'))
-}
+use crate::cli::lifecycle::handover::{is_issue_arg, with_bundle};
 
 fn read_or_fail(arg: &str) -> Item {
     read_issue(arg).unwrap_or_else(|why| fail(&why))
@@ -249,7 +244,7 @@ pub fn command(args: &Args) -> ExitCode {
     };
     if let Some(arg) = wanted.iter().find(|arg| !is_issue_arg(arg)) {
         fail(&format!(
-            "{arg} is no issue: its number (12) or <n>-<feature> (12-my-feature)\n{USAGE}"
+            "{arg} is no issue: its number (12), <n>-<feature> (12-my-feature) or a bundle (12+13)\n{USAGE}"
         ));
     }
     let brief_file = args.value("--brief");
@@ -271,7 +266,11 @@ pub fn command(args: &Args) -> ExitCode {
         crate::cli::setup::heal_plugin();
     }
 
-    let mut plan: Vec<Item> = wanted.iter().map(|arg| read_or_fail(arg)).collect();
+    // A bundle (#321) `<n>+<m>`; a queued one named by its first number gets its others from the record.
+    let mut plan: Vec<Item> = wanted
+        .iter()
+        .map(|arg| read_or_fail(&with_bundle(&main, &name, arg)))
+        .collect();
     // A worktree its agent left (#455): a fresh agent in it, no refusal.
     let orphans: Vec<bool> = plan.iter().map(|item| orphan::is_orphan(&name, item)).collect();
     for (item, _) in plan.iter_mut().zip(&orphans).filter(|(_, is_orphan)| **is_orphan) {
@@ -491,7 +490,7 @@ pub fn command(args: &Args) -> ExitCode {
                     let mut child = vec![
                         "wt:orchestrate".to_string(),
                         name.clone(),
-                        item.number.to_string(),
+                        item.arg(),
                         "--to".into(),
                         worker.name.clone(),
                     ];
@@ -555,7 +554,7 @@ pub fn command(args: &Args) -> ExitCode {
                     if let Some(made) = made.as_ref().filter(|made| !made.is_there || made.failed.is_some()) {
                         let failed = made.failed.clone().unwrap_or_else(|| "no worktree".into());
                         results.push(format!("✗ #{} {}: {failed}", item.number, item.feature));
-                        if !made.is_there || is_now {
+                        if !made.is_there || made.is_unclaimed() || is_now {
                             issue::undo_start(
                                 &name,
                                 item,
@@ -761,5 +760,10 @@ mod tests {
         assert!(is_issue_arg("12-x"));
         assert!(!is_issue_arg("abc"));
         assert!(!is_issue_arg("x-12"));
+        // A bundle (#321).
+        assert!(is_issue_arg("12+13"));
+        assert!(is_issue_arg("12-x+#13+14"));
+        assert!(!is_issue_arg("12+x"));
+        assert!(!is_issue_arg("x+12"));
     }
 }

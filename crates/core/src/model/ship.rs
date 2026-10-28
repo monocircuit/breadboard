@@ -15,6 +15,12 @@ use crate::record::ORCHESTRATOR;
 const TASKS: i64 = 5;
 const DAYS: i64 = 2;
 
+/// The settings' `ship_after_tasks` of the orchestration, its default where none is read.
+pub fn after_tasks(local: &OrchestrationLocal) -> i64 {
+    let tasks = crate::settings::settings_of(&local.settings).ship_after_tasks;
+    if tasks > 0 { tasks } else { TASKS }
+}
+
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// Why the batch should ship now, the first reason that holds; None while none does.
@@ -60,12 +66,7 @@ pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) ->
     // A batch shipped before is red (#413): its fix first, into this batch;
     // once it is in, the ship replaces the red one (#464).
     if let Some(red) = super::red_batch::red_of(local, remote) {
-        let is_fixed = red.fix.is_some_and(|number| {
-            found
-                .tasks
-                .iter()
-                .any(|task| crate::git::issue_of_branch(&task.branch) == Some(number as u64))
-        });
+        let is_fixed = red.is_fixed_in(&found.tasks);
         if could_ship && is_fixed {
             return Some(Item {
                 key: format!("ship:{}", epic.branch),
@@ -102,12 +103,11 @@ pub fn ship_of(local: &OrchestrationLocal, remote: Option<&Remote>, now: i64) ->
     if !could_ship {
         return None;
     }
-    let settings = crate::settings::settings_of(&local.settings);
-    let positive = |value: i64, default: i64| if value > 0 { value } else { default };
+    let days = crate::settings::settings_of(&local.settings).ship_after_days;
     let reason = reason_of(
         &found.tasks,
-        positive(settings.ship_after_tasks, TASKS),
-        positive(settings.ship_after_days, DAYS),
+        after_tasks(local),
+        if days > 0 { days } else { DAYS },
         now,
     )?;
     Some(Item {

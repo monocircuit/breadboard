@@ -161,7 +161,7 @@ pub fn act(app: &mut Overview, act: Act) -> Flow {
                 Fold::Mrs => folds.is_every_mr_shown = !folds.is_every_mr_shown,
                 Fold::Issues => folds.is_every_issue_shown = !folds.is_every_issue_shown,
                 Fold::Done => folds.is_every_command_shown = !folds.is_every_command_shown,
-                Fold::Batch => folds.is_batch_shown = !folds.is_batch_shown,
+                Fold::Batch => folds.is_batch_folded = !folds.is_batch_folded,
                 Fold::MrBoxes(iid) => folds.boxes.fold_mr(iid, has_open),
                 Fold::TreeBoxes(number) => toggle(&mut folds.boxes.worktrees, number),
                 Fold::Collides(number) => toggle(&mut folds.boxes.collides, number),

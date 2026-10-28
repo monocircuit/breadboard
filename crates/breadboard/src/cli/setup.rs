@@ -11,7 +11,7 @@ mod commands;
 mod conversations;
 pub(in crate::cli) mod epic;
 mod fragments;
-mod gitlab;
+pub(crate) mod gitlab;
 mod herdr;
 mod hook;
 pub(crate) mod init;

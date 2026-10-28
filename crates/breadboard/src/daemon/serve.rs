@@ -32,16 +32,16 @@ type Answer = Arc<tokio::sync::Mutex<Option<(Instant, Option<Value>)>>>;
 type Status = Arc<tokio::sync::Mutex<Option<(u64, i64, Option<String>)>>>;
 
 #[derive(Default)]
-struct State {
+pub(super) struct State {
     connections: AtomicUsize,
-    idle_since: Mutex<Option<Instant>>,
+    pub(super) idle_since: Mutex<Option<Instant>>,
     herdr: Mutex<HashMap<Vec<String>, Answer>>,
     /// The last `git status` by worktree.
     status: Mutex<HashMap<std::path::PathBuf, Status>>,
     /// The feeds followed now, by view.
     feeds: Mutex<HashMap<String, Arc<Feed>>>,
-    /// The repos whose CI queue runs (`ci`), one each.
-    queues: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// The repos whose CI queue runs (`ci`), one each: the repos its overviews show.
+    pub(super) queues: Mutex<std::collections::HashSet<std::path::PathBuf>>,
     /// The run engines of the repos (`runs`), each busy while lines are queued or runs in flight.
     engines: Mutex<HashMap<std::path::PathBuf, Arc<std::sync::atomic::AtomicBool>>>,
     /// The last answer of a feed that ended, by view, for GRACE.
@@ -50,6 +50,8 @@ struct State {
     is_keeping_up: bool,
     /// The main checkouts kept on develop: each one an overview asked GitLab about.
     kept_up: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// The web UI (`web`, #435): whether it was started, the feeds its pages follow.
+    pub(super) web: super::web::Pages,
 }
 
 /// How the serving ended.
@@ -223,6 +225,7 @@ async fn serve(
                     return Ok(Ended::Done);
                 }
                 state.kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (at, _)| at.elapsed() < GRACE);
+                super::web::forget_closed(&state);
                 // A worktree no overview asked about for a while (removed, its views closed): forgotten.
                 let old = breadboard_core::time::now_ms() - STALE_MS - GRACE.as_millis() as i64;
                 state.status.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, status| match status.try_lock() {
@@ -279,7 +282,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             write.write_all(b"true\n").await
         }
         Ok(Request::Gitlab { main, view, ask }) => {
-            // The first overview of a repo starts its CI queue, its marks and its pushes, for as long as the daemon runs.
+            // The first overview of a repo starts its CI queue, its marks, its pushes and its notifications, for as long as the daemon runs.
             if main.is_absolute()
                 && state
                     .queues
@@ -289,8 +292,11 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             {
                 tokio::spawn(super::ci::schedule(main.clone()));
                 tokio::spawn(super::ready::mark(main.clone()));
+                tokio::spawn(super::notify::notify(main.clone()));
                 tokio::spawn(super::watch::watch(main.clone()));
                 tokio::spawn(super::push::push(main.clone()));
+                // The web UI, on the port of the first repo's `[web]`.
+                super::web::start(state, &main);
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.
             start_engine(state, &main);
@@ -303,35 +309,58 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             {
                 tokio::spawn(super::keep_up::keep_up(main.clone()));
             }
-            let key = serde_json::to_string(&(&main, &view)).unwrap_or_default();
-            let (feed, said, last) = {
-                let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
-                let feed = feeds
-                    .entry(key.clone())
-                    .or_insert_with(|| {
-                        let kept = state.kept.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
-                        Feed::start(main, view.clone(), ask.clone(), kept.map(|(_, last)| last))
-                    })
-                    .clone();
-                let (said, last) = feed.follow();
-                (feed, said, last)
-            };
-            feed.ask(ask);
+            let key = feed_key(&main, &view);
+            let (feed, said, last) = feed_of(state, &key, main, view, ask);
             let result = follow(&feed, said, last, &mut lines, &mut write).await;
-            let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
-            if feed.leave() {
-                feeds.remove(&key);
-                if let Some(last) = feed.last() {
-                    state
-                        .kept
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(key, (Instant::now(), last));
-                }
-            }
+            leave(state, key, &feed);
             result
         }
         Err(_) => Ok(()),
+    }
+}
+
+/// What names a feed: its repo and view.
+pub(super) fn feed_key(main: &Path, view: &str) -> String {
+    serde_json::to_string(&(main, view)).unwrap_or_default()
+}
+
+/// The feed of `view` in `main`, started (with the answer kept of the one
+/// before) unless one runs, followed from now on, `ask` its next read's.
+pub(super) fn feed_of(
+    state: &State,
+    key: &str,
+    main: std::path::PathBuf,
+    view: String,
+    ask: breadboard_core::reader::RemoteAsk,
+) -> (Arc<Feed>, tokio::sync::broadcast::Receiver<Arc<str>>, Option<Arc<str>>) {
+    let (feed, said, last) = {
+        let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
+        let feed = feeds
+            .entry(key.to_string())
+            .or_insert_with(|| {
+                let kept = state.kept.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
+                Feed::start(main, view, ask.clone(), kept.map(|(_, last)| last))
+            })
+            .clone();
+        let (said, last) = feed.follow();
+        (feed, said, last)
+    };
+    feed.ask(ask);
+    (feed, said, last)
+}
+
+/// A follower of `feed` left: the last one ends it, its answer kept for GRACE.
+pub(super) fn leave(state: &State, key: String, feed: &Feed) {
+    let mut feeds = state.feeds.lock().unwrap_or_else(|e| e.into_inner());
+    if feed.leave() {
+        feeds.remove(&key);
+        if let Some(last) = feed.last() {
+            state
+                .kept
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(key, (Instant::now(), last));
+        }
     }
 }
 

@@ -18,9 +18,14 @@ pub fn brief_of(
     main: &Path,
 ) -> String {
     let (number, title, dir, branch) = (&issue.number, &issue.title, text(&issue.dir), &issue.branch);
-    // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
-    let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
     let loaded = breadboard_core::config::of(main);
+    // A hotfix goes into develop past the batch (#487), whatever the orchestration's base.
+    // Else its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
+    let (base, why) = if issue.is_hotfix {
+        (loaded.branch.clone(), ": a hotfix, past the batch;")
+    } else {
+        (breadboard_core::record::base_for(main, name, &issue.dir).local, ":")
+    };
     let (repo, bb) = (loaded.name(), loaded.bb());
     // A reused agent stands in its old worktree until it moves (#359).
     let stand = match before {
@@ -32,6 +37,36 @@ pub fn brief_of(
     let peer = match peer {
         Some(peer) => format!("the session `{peer}`"),
         None => format!("the one in `{}` (`ListAgents`; it messages you first)", text(main)),
+    };
+    // A bundle (#321): one task, one MR, every issue of it closed.
+    let (work, closes) = if issue.also.is_empty() {
+        (
+            format!("Issue #{number} of {repo} (`glab issue view {number} --comments`)"),
+            format!("#{number}"),
+        )
+    } else {
+        let numbers = issue.numbers();
+        let views: Vec<String> = numbers
+            .iter()
+            .map(|each| format!("`glab issue view {each} --comments`"))
+            .collect();
+        let others: Vec<String> = issue
+            .also
+            .iter()
+            .map(|each| format!("`{bb} wt:tick {each} <box>…`"))
+            .collect();
+        (
+            format!(
+                "Issues {} of {repo} as one task ({})",
+                breadboard_core::gitlab::issues_text(&numbers),
+                views.join(", ")
+            ),
+            format!(
+                "{}, a `Closes` line each; `submit` ticks #{number}'s boxes, the others' {}",
+                breadboard_core::gitlab::issues_text(&numbers),
+                others.join(", ")
+            ),
+        )
     };
     let mut tail = String::new();
     if let Some(before) = before {
@@ -45,9 +80,9 @@ pub fn brief_of(
     format!(
         r#"# #{number} {title}
 
-Issue #{number} of {repo} (`glab issue view {number} --comments`), orchestration `{name}` (herdr space `{label}`).
+{work}, orchestration `{name}` (herdr space `{label}`).
 Branch `{branch}` in `{dir}`, pushed as the claim. {stand}
-Base `{base}`: your one MR goes into it and closes only #{number}.
+Base `{base}`{why} your one MR goes into it and closes only {closes}.
 
 - Each step: commit it (staged by path), then `{bb} submit [<box>…]`: checks, pushes, ticks.
 - Where you are and what is next: `{bb} status`.
@@ -75,6 +110,7 @@ mod tests {
             branch: "feature/12-a-title".into(),
             milestone: None,
             stage: breadboard_core::stage::Stage::Build,
+            also: vec![],
         }
     }
 
@@ -97,6 +133,17 @@ Base `main`: your one MR goes into it and closes only #12.
 - The orchestrator: the one in `/r/p` (`ListAgents`; it messages you first).
 "
         );
+    }
+
+    #[test]
+    fn a_bundle_closes_every_issue_of_its_task() {
+        let bundle = Issue {
+            also: vec![13],
+            ..issue()
+        };
+        let brief = brief_of(&bundle, "o", "⇶ O", None, "", None, Path::new("/r/p"));
+        assert!(brief.contains("\nIssues #12 and #13 of p as one task (`glab issue view 12 --comments`, `glab issue view 13 --comments`), orchestration `o`"), "{brief}");
+        assert!(brief.contains("closes only #12 and #13, a `Closes` line each; `submit` ticks #12's boxes, the others' `breadboard wt:tick 13 <box>…`.\n"), "{brief}");
     }
 
     #[test]
@@ -139,6 +186,17 @@ Base `main`: your one MR goes into it and closes only #12.
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
         assert!(brief.contains("Base `epic/15-o`: your one MR goes into it"), "{brief}");
+        // #487: a hotfix past the batch or the epic, into develop.
+        let hotfix = Issue {
+            is_fix: true,
+            is_hotfix: true,
+            ..issue()
+        };
+        let brief = brief_of(&hotfix, "o", "⇶ O", None, "", None, &main);
+        assert!(
+            brief.contains("Base `develop`: a hotfix, past the batch; your one MR goes into it"),
+            "{brief}"
+        );
         let _ = std::fs::remove_dir_all(&main);
     }
 }

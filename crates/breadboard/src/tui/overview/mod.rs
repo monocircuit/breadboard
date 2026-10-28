@@ -216,6 +216,25 @@ fn once(app: &mut Overview, mut reader: LocalReader) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `view` of the repo `main` drawn once for the web UI (#435): its local
+/// read, then what the daemon's GitLab feed of the view said, as `--once`
+/// draws it (a print never acts).
+pub fn drawn(main: &Path, view: View, local: Local, gitlab: Vec<Feed>, width: u16) -> ratatui::buffer::Buffer {
+    look::init(main);
+    let args = Args {
+        view,
+        is_once: true,
+        is_herdr: false,
+        product: None,
+    };
+    let mut app = Overview::new(&args, main);
+    app.update(Msg::Local(Box::new(local)));
+    for said in gitlab {
+        app.update(Msg::Gitlab(said));
+    }
+    view::buffer(&app, width)
+}
+
 /// The local read on a thread of its own: again when a file it reads or
 /// herdr's state of a pane changed, at the latest after LOCAL_AT_LEAST; what GitLab is asked for goes to `asks`.
 /// `woken` looks at once: what the overview did by itself (a `wt:remove` ended) shows without waiting for the poll.
@@ -292,7 +311,7 @@ async fn read_gitlab(
 }
 
 /// Which view the daemon's GitLab feed is of: every overview of it shares one.
-fn view_key(view: &View) -> String {
+pub fn view_key(view: &View) -> String {
     match view {
         View::Orchestration(name) => format!("orchestration {name}"),
         View::Worktree(dir) => format!("worktree {}", dir.display()),
@@ -349,9 +368,9 @@ pub struct Folds {
     pub is_every_command_shown: bool,
     /// The settings panel is open (#415): `,` or `⚙ settings`.
     pub is_settings_open: bool,
-    /// BATCH's task MRs (#414), folded until opened.
+    /// BATCH's task MRs (#414), shown until folded (#491).
     #[serde(default)]
-    pub is_batch_shown: bool,
+    pub is_batch_folded: bool,
     /// The boxes opened under an MR's row and a worktree's node (#346).
     /// Not handed to a new build: it reads them from their file (`folds_file`).
     #[serde(skip)]

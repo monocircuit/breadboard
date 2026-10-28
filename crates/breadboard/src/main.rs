@@ -36,7 +36,9 @@ fn main() -> ExitCode {
             println!("{}", source_key());
             ExitCode::SUCCESS
         }
-        "overview" => cli::overview_refused(rest).unwrap_or_else(|| tui::main(rest)),
+        "overview" => cli::overview_refused(rest)
+            .or_else(cli::refused)
+            .unwrap_or_else(|| tui::main(rest)),
         // The overviews' one reader, started by the first of them (daemon/).
         "serve" => daemon::main(rest),
         // A stack's dev server or tool in the background (#407), started by `stack:*`.

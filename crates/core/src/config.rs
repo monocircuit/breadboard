@@ -1,9 +1,9 @@
 //! `breadboard.toml` (#342): everything breadboard knows about the repo it
 //! runs in, read from the root of the checkout it runs in, else of the main
-//! checkout (a worktree made before the file came). Without the file every
-//! default holds: the branch origin's HEAD names, no stack, commands shown as
-//! `breadboard <command>`. The schema is `docs/config.md`; a file that
-//! doesn't match it is refused with the key and why, never half read.
+//! checkout (a worktree made before the file came). Without the file the
+//! defaults hold here, but no command runs (`refusal`, #320). The schema is
+//! `docs/config.md`; a file that doesn't match it is refused with its line,
+//! the key and why, never half read.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -44,6 +44,60 @@ pub struct Config {
     pub settings: Settings,
     /// What a merge into the default branch needs (#443).
     pub merge: Merge,
+    /// The desktop notifications of the repo's events (#449).
+    pub notifications: Notifications,
+    /// The daemon's web UI (#435).
+    pub web: Web,
+}
+
+/// The web UI `breadboard serve` serves (`[web]`, #435): on 127.0.0.1
+/// only, read-only unless `writes` says otherwise.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Web {
+    /// Its port on 127.0.0.1; 0: no web UI. `BREADBOARD_WEB_PORT` wins (a second daemon, the gauntlet).
+    pub port: u16,
+    /// Whether the page may do what changes something (read GitLab again
+    /// for every overview); off, it only reads.
+    pub writes: bool,
+    /// Names the page answers to besides 127.0.0.1 and localhost: a proxy's
+    /// in front of it (`tailscale serve`: `<machine>.<tailnet>.ts.net`), with
+    /// or without a port.
+    pub hosts: Vec<String>,
+}
+
+/// The web UI's port by default: the issue that brought it.
+pub const WEB_PORT: u16 = 7435;
+
+impl Default for Web {
+    fn default() -> Self {
+        Web {
+            port: WEB_PORT,
+            writes: false,
+            hosts: Vec::new(),
+        }
+    }
+}
+
+/// The team's default of the desktop notifications (`[notifications]`,
+/// #449, core's `notify`): on or off, and which events; the settings
+/// panel's local choice wins.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Notifications {
+    /// Any desktop notification at all.
+    pub desktop: bool,
+    /// The events that send one, by key (`issue_created`, `mr_merged`, …): every one by default.
+    pub events: Option<Vec<String>>,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Notifications {
+            desktop: true,
+            events: None,
+        }
+    }
 }
 
 /// What a merge into the default branch needs (`[merge]`, #443).
@@ -449,6 +503,23 @@ pub struct Agents {
     /// How many runs may be in flight at once (#445): after a crash every
     /// cut-off agent is picked up, a few at a time, never all together.
     pub max_runs: usize,
+    /// What the repo's agents must never touch (#375), on top of Claude
+    /// Code's own deny rules.
+    pub deny: Deny,
+}
+
+/// `[agents.deny]` (#375): `breadboard init` renders each path as an
+/// `Edit(<path>)` and each command as a `Bash(<command>)` deny rule of
+/// `.claude/settings.json`, and the pre-push gate refuses a push that
+/// changes or deletes a denied file its base has (a new one passes: made by
+/// a tool, since agents can't edit it).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Deny {
+    /// Gitignore-style globs from the repo's top (`**/migrations/*.sql`).
+    pub paths: Vec<String>,
+    /// Claude Code Bash rule patterns (`git tag:*`).
+    pub commands: Vec<String>,
 }
 
 /// `[agents.models]` (#373): a model per stage, `default` for the ones
@@ -477,6 +548,7 @@ impl Default for Agents {
             models: Models::default(),
             docs_labels: vec!["documentation".into()],
             max_runs: 4,
+            deny: Deny::default(),
         }
     }
 }
@@ -749,8 +821,26 @@ impl Service {
 impl Config {
     /// Parses and checks a file's text.
     pub fn parse(text: &str) -> Result<Config, String> {
-        let config: Config = toml::from_str(text).map_err(|error| error.to_string().trim_end().to_string())?;
-        config.validate()?;
+        Self::located(text).map_err(|(_, error)| error)
+    }
+
+    /// `parse`, its error with the line it is on (#320): `key: why`, the key
+    /// as the file spells it (`agents.max_runs`, `stack.services[1].name`).
+    fn located(text: &str) -> Result<Config, (Option<usize>, String)> {
+        let config: Config = toml::from_str(text).map_err(|error| {
+            let line = error
+                .span()
+                .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+            let why = error.message().trim_end();
+            match line.and_then(|line| key_at(text, line)) {
+                Some(key) => (line, format!("{key}: {why}")),
+                None => (line, why.to_string()),
+            }
+        })?;
+        config.validate().map_err(|error| {
+            let key = error.split([':', ' ']).next().unwrap_or_default();
+            (line_of(text, key), error)
+        })?;
         Ok(config)
     }
 
@@ -766,6 +856,15 @@ impl Config {
         }
         if agents.max_runs == 0 {
             return bad("agents.max_runs", "must be at least 1");
+        }
+        let deny = &agents.deny;
+        if deny
+            .paths
+            .iter()
+            .chain(&deny.commands)
+            .any(|rule| rule.trim().is_empty() || rule.contains(')'))
+        {
+            return bad("agents.deny", "a path or command is empty or holds a `)`");
         }
         if agents.idle_minutes == 0 {
             return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");
@@ -824,6 +923,15 @@ impl Config {
         ] {
             if value.is_some_and(|value| !(1..=max).contains(&value)) {
                 return bad(&format!("settings.{key}"), &format!("must be 1 to {max}"));
+            }
+        }
+        for event in self.notifications.events.iter().flatten() {
+            if crate::notify::event_of(event).is_none() {
+                let keys: Vec<&str> = crate::notify::EVENTS.iter().map(|event| event.key).collect();
+                return bad(
+                    "notifications.events",
+                    &format!("no event {event}: one of {}", keys.join(", ")),
+                );
             }
         }
         for (name, product) in &self.products {
@@ -1057,15 +1165,85 @@ impl Loaded {
     }
 }
 
+/// Each line's key as `validate` names it: the table of a header line
+/// (`stack.services[1]` for the second `[[stack.services]]`), its key on a
+/// `key = …` line; None for a blank or comment line.
+fn keys_of(text: &str) -> Vec<Option<String>> {
+    let mut table = String::new();
+    let mut arrays: HashMap<String, usize> = HashMap::new();
+    let clean = |name: &str| {
+        name.split('.')
+            .map(|part| part.trim().trim_matches('"'))
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    text.lines()
+        .map(|line| {
+            let line = line.trim();
+            if let Some(name) = line
+                .strip_prefix("[[")
+                .and_then(|rest| rest.split_once("]]"))
+                .map(|(name, _)| clean(name))
+            {
+                let at = arrays.entry(name.clone()).or_insert(0);
+                table = format!("{name}[{at}]");
+                *at += 1;
+                return Some(table.clone());
+            }
+            if let Some(name) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.split_once(']'))
+                .map(|(name, _)| clean(name))
+            {
+                // A table under an array of tables belongs to its last entry.
+                table = arrays
+                    .iter()
+                    .filter(|(array, _)| name.starts_with(&format!("{array}.")))
+                    .max_by_key(|(array, _)| array.len())
+                    .map(|(array, at)| format!("{array}[{}]{}", at - 1, &name[array.len()..]))
+                    .unwrap_or(name);
+                return Some(table.clone());
+            }
+            let (key, _) = line.split_once('=').filter(|_| !line.starts_with('#'))?;
+            let key = clean(key);
+            Some(if table.is_empty() {
+                key
+            } else {
+                format!("{table}.{key}")
+            })
+        })
+        .collect()
+}
+
+/// The line (from 1) of `key`: its own line, else its table's, else that of
+/// the table it is in (`stack (db)` → `[stack]`).
+fn line_of(text: &str, key: &str) -> Option<usize> {
+    let keys = keys_of(text);
+    let mut key = key.to_string();
+    loop {
+        if let Some(at) = keys.iter().position(|line| line.as_deref() == Some(&key)) {
+            return Some(at + 1);
+        }
+        let cut = key.rfind(['.', '['])?;
+        key.truncate(cut);
+    }
+}
+
+/// The key of line `line` (from 1).
+fn key_at(text: &str, line: usize) -> Option<String> {
+    keys_of(text).into_iter().nth(line.checked_sub(1)?).flatten()
+}
+
 /// `Config::parse` of a text, once per text: every worktree has its copy of
 /// the file, mostly the same, and a parse of each was a share of every
 /// overview's start (#342).
-fn parsed(text: &str) -> Result<Config, String> {
-    static PARSED: LazyLock<Mutex<HashMap<String, Result<Config, String>>>> = LazyLock::new(Mutex::default);
+fn parsed(text: &str) -> Result<Config, (Option<usize>, String)> {
+    type Parsed = Result<Config, (Option<usize>, String)>;
+    static PARSED: LazyLock<Mutex<HashMap<String, Parsed>>> = LazyLock::new(Mutex::default);
     let mut known = PARSED.lock().unwrap_or_else(|e| e.into_inner());
     known
         .entry(text.to_string())
-        .or_insert_with(|| Config::parse(text))
+        .or_insert_with(|| Config::located(text))
         .clone()
 }
 
@@ -1075,7 +1253,11 @@ pub fn load(main: &Path) -> Loaded {
     let (config, error) = match std::fs::read_to_string(&file) {
         Ok(text) => match parsed(&text) {
             Ok(config) => (config, None),
-            Err(error) => (Config::default(), Some(format!("{}: {error}", file.display()))),
+            Err((Some(line), error)) => (
+                Config::default(),
+                Some(format!("{} line {line}: {error}", file.display())),
+            ),
+            Err((None, error)) => (Config::default(), Some(format!("{}: {error}", file.display()))),
         },
         Err(_) => (Config::default(), None),
     };
@@ -1210,6 +1392,26 @@ pub fn here() -> Arc<Loaded> {
     }
 }
 
+/// Why no command runs in the repo of `dir` (#320): it has no
+/// breadboard.toml (the message holds a minimal one with the repo's names), or
+/// one that is refused (its key and line). None outside a repo.
+pub fn refusal(dir: &Path) -> Option<String> {
+    let top = dir.ancestors().find(|at| at.join(".git").exists())?;
+    let loaded = of(dir);
+    if let Some(error) = &loaded.error {
+        return Some(error.clone());
+    }
+    if top.join(FILE).is_file() || loaded.main.join(FILE).is_file() {
+        return None;
+    }
+    Some(format!(
+        "no {FILE} in {}: breadboard reads what it knows about the repo from it. A minimal one:\n\n[repo]\nname = \"{}\"\ndefault_branch = \"{}\"\n\nbreadboard init writes it; every key and its default: docs/config.md of breadboard.",
+        loaded.main.display(),
+        loaded.name(),
+        loaded.branch
+    ))
+}
+
 /// The main checkout of `dir` from its `.git` alone, no git process: a
 /// worktree's `.git` file names `<main>/.git/worktrees/<name>`.
 fn main_of(dir: &Path) -> Option<PathBuf> {
@@ -1324,6 +1526,26 @@ mod tests {
         assert_eq!(error, "main_checkout.every_minutes: must be 1 or more");
         let error = Config::parse("[main_checkout]\ninstall_when = [\"x.lock\"]\n").unwrap_err();
         assert_eq!(error, "main_checkout.install_when: needs an `install` to run");
+    }
+
+    #[test]
+    fn a_wrong_file_is_refused_with_its_line() {
+        let at = |text: &str| Config::located(text).map(|_| ()).unwrap_err();
+        let error = at("[repo]\nname = \"a/b\"\n\n[agents]\n# runs\nmax_runs = \"two\"\n");
+        assert_eq!(error.0, Some(6));
+        assert!(error.1.starts_with("agents.max_runs: invalid type"), "{}", error.1);
+        assert_eq!(
+            at("[agents]\nmax_runs = 0\n"),
+            (Some(2), "agents.max_runs: must be at least 1".into())
+        );
+        let services = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\nenv = \"P\"\n[[stack.services]]\nname = \"db\"\nport = 1\n[[stack.services]]\nname = \" \"\nport = 2\n";
+        assert_eq!(
+            at(services),
+            (Some(10), "stack.services[1].name: must not be empty".into())
+        );
+        let error = at("[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n");
+        assert_eq!(error.0, Some(1), "{}", error.1);
+        assert_eq!(at("[repo]\nname = \n").0, Some(2));
     }
 
     #[test]
