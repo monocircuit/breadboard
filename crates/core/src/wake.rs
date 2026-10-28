@@ -168,15 +168,14 @@ pub fn says_it_waits(text: &str) -> bool {
     WAITS.is_match(&text.replace('’', "'"))
 }
 
-/// The processes still alive that a run of `session` left behind: the ones
-/// carrying `BREADBOARD_RUN=<session>`, not breadboard itself (a daemon
-/// an agent's command started). Linux only (`/proc`); elsewhere none.
-pub fn leftover_of(session: &str) -> Vec<i64> {
+/// The processes alive that carry `BREADBOARD_RUN=<session>`: its claude
+/// and whatever a run of it started, this process left out. Linux only
+/// (`/proc`); elsewhere none. A zombie's environ reads empty: not counted.
+pub fn marked_of(session: &str) -> Vec<i64> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
     let marker = format!("{RUN_ENV}={session}");
-    let own = std::env::current_exe().ok();
     let me = i64::from(std::process::id());
     entries
         .flatten()
@@ -186,6 +185,15 @@ pub fn leftover_of(session: &str) -> Vec<i64> {
             std::fs::read(format!("/proc/{pid}/environ"))
                 .is_ok_and(|environ| environ.split(|byte| *byte == 0).any(|pair| pair == marker.as_bytes()))
         })
+        .collect()
+}
+
+/// The processes still alive that a run of `session` left behind
+/// (`marked_of`), not breadboard itself (a daemon an agent's command started).
+pub fn leftover_of(session: &str) -> Vec<i64> {
+    let own = std::env::current_exe().ok();
+    marked_of(session)
+        .into_iter()
         .filter(|pid| {
             let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
             own.is_none() || exe != own
