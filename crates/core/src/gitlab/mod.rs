@@ -219,6 +219,8 @@ pub struct EpicRemote {
     pub mr: Option<Mr>,
     /// The task MRs merged into it, newest first (#414): what a batch ships.
     pub tasks: Vec<BatchTask>,
+    /// The task MRs open into it, not merged yet (#491), newest first.
+    pub waiting: Vec<BatchTask>,
     /// The open MRs into develop of the product's batches shipped before it (#414).
     pub shipping: Vec<Mr>,
     /// The failed jobs of each of those MRs (its own, the shipping ones') whose

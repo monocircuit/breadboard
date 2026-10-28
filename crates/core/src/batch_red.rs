@@ -12,11 +12,6 @@ use std::sync::{LazyLock, Mutex};
 /// Top-level keys of `.gitlab-ci.yml` that are no jobs.
 const GLOBAL: [&str; 5] = ["workflow", "default", "stages", "variables", "include"];
 
-/// What the band and the batch row say.
-pub fn headline(job: &str) -> String {
-    format!("batch red: {job}")
-}
-
 /// The job of a pipeline's job name: `check:breadboard-gauntlet 2/3` (a
 /// copy of `parallel`) and `deploy: [test]` (a matrix's) are their job's.
 pub fn job_of(name: &str) -> &str {
@@ -172,7 +167,7 @@ fn regex_of(glob: &str) -> String {
 }
 
 /// A task merged into the batch: one merge commit on its first-parent line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Merged {
     pub sha: String,
     pub subject: String,
@@ -417,7 +412,6 @@ build:breadboard:
         assert_eq!(job_of("check:breadboard-gauntlet 2/3"), "check:breadboard-gauntlet");
         assert_eq!(job_of("deploy: [test]"), "deploy");
         assert_eq!(job_of("check:vita"), "check:vita");
-        assert_eq!(headline("check:vita"), "batch red: check:vita");
     }
 
     fn merged(sha: &str, files: &[&str]) -> Merged {
