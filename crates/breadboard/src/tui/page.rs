@@ -88,6 +88,8 @@ pub enum Ground {
     /// The terminal's own, between islands and under plain sections.
     Plain,
     Island,
+    /// The island's lighter grey: every second block of WORK (#490).
+    Stripe,
     Head,
 }
 
@@ -262,7 +264,14 @@ impl<A: Clone> Page<A> {
         part.rows
             .extend(scene.lines.into_iter().enumerate().map(|(i, line)| Row {
                 is_continued: scene.continued.contains(&(i as u16)),
-                ..margin(line, ground)
+                ..margin(
+                    line,
+                    if ground == Ground::Island && scene.striped.contains(&(i as u16)) {
+                        Ground::Stripe
+                    } else {
+                        ground
+                    },
+                )
             }));
         part.regions.extend(scene.regions.into_iter().map(|mut region| {
             region.area.y += top;

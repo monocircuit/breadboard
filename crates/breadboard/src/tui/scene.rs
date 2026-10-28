@@ -55,6 +55,8 @@ pub struct Scene<A> {
     /// The lines that go on with the line before them (a wrap, an atom
     /// moved down): a page never lands on one, its start would be above.
     pub(super) continued: Vec<u16>,
+    /// The lines on the island's lighter grey (#490): every second block of WORK.
+    pub(super) striped: Vec<u16>,
     pub(super) note: Option<String>,
     pub(super) redraw_in: Option<Duration>,
 }
@@ -69,6 +71,7 @@ impl<A: Clone> Scene<A> {
             x: 0,
             indent: 0,
             continued: vec![],
+            striped: vec![],
             note: None,
             redraw_in: None,
         }
@@ -277,6 +280,16 @@ impl<A: Clone> Scene<A> {
                 target: Target::Block(action),
             });
         }
+    }
+
+    /// The lines `build` writes on the island's lighter grey (#490), so a
+    /// block stands apart from the one above it.
+    pub fn stripe(&mut self, build: impl FnOnce(&mut Self)) {
+        self.end_line();
+        let from = self.y();
+        build(self);
+        self.end_line();
+        self.striped.extend(from..self.y());
     }
 
     /// The scene as it ends: the current line ended.

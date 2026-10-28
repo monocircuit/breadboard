@@ -48,6 +48,37 @@ pub struct Config {
     pub notifications: Notifications,
     /// The LikeC4 model of the repo (#439); None: no `arch:deltas`.
     pub architecture: Option<Architecture>,
+    /// The daemon's web UI (#435).
+    pub web: Web,
+}
+
+/// The web UI `breadboard serve` serves (`[web]`, #435): on 127.0.0.1
+/// only, read-only unless `writes` says otherwise.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Web {
+    /// Its port on 127.0.0.1; 0: no web UI. `BREADBOARD_WEB_PORT` wins (a second daemon, the gauntlet).
+    pub port: u16,
+    /// Whether the page may do what changes something (read GitLab again
+    /// for every overview); off, it only reads.
+    pub writes: bool,
+    /// Names the page answers to besides 127.0.0.1 and localhost: a proxy's
+    /// in front of it (`tailscale serve`: `<machine>.<tailnet>.ts.net`), with
+    /// or without a port.
+    pub hosts: Vec<String>,
+}
+
+/// The web UI's port by default: the issue that brought it.
+pub const WEB_PORT: u16 = 7435;
+
+impl Default for Web {
+    fn default() -> Self {
+        Web {
+            port: WEB_PORT,
+            writes: false,
+            hosts: Vec::new(),
+        }
+    }
 }
 
 /// The LikeC4 model of the repo (`[architecture]`, #439): the folder of its

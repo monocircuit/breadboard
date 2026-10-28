@@ -18,9 +18,14 @@ pub fn brief_of(
     main: &Path,
 ) -> String {
     let (number, title, dir, branch) = (&issue.number, &issue.title, text(&issue.dir), &issue.branch);
-    // Its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
-    let base = breadboard_core::record::base_for(main, name, &issue.dir).local;
     let loaded = breadboard_core::config::of(main);
+    // A hotfix goes into develop past the batch (#487), whatever the orchestration's base.
+    // Else its worktree may not exist yet: what wt:new will base it on, read from the main checkout (#380).
+    let (base, why) = if issue.is_hotfix {
+        (loaded.branch.clone(), ": a hotfix, past the batch;")
+    } else {
+        (breadboard_core::record::base_for(main, name, &issue.dir).local, ":")
+    };
     let (repo, bb) = (loaded.name(), loaded.bb());
     // A reused agent stands in its old worktree until it moves (#359).
     let stand = match before {
@@ -77,7 +82,7 @@ pub fn brief_of(
 
 {work}, orchestration `{name}` (herdr space `{label}`).
 Branch `{branch}` in `{dir}`, pushed as the claim. {stand}
-Base `{base}`: your one MR goes into it and closes only {closes}.
+Base `{base}`{why} your one MR goes into it and closes only {closes}.
 
 - Each step: commit it (staged by path), then `{bb} submit [<box>…]`: checks, pushes, ticks.
 - Where you are and what is next: `{bb} status`.
@@ -181,6 +186,17 @@ Base `main`: your one MR goes into it and closes only #12.
         std::fs::write(&record, r#"{"issues": [], "base": "epic/15-o"}"#).unwrap();
         let brief = brief_of(&issue(), "o", "⇶ O", None, "", None, &main);
         assert!(brief.contains("Base `epic/15-o`: your one MR goes into it"), "{brief}");
+        // #487: a hotfix past the batch or the epic, into develop.
+        let hotfix = Issue {
+            is_fix: true,
+            is_hotfix: true,
+            ..issue()
+        };
+        let brief = brief_of(&hotfix, "o", "⇶ O", None, "", None, &main);
+        assert!(
+            brief.contains("Base `develop`: a hotfix, past the batch; your one MR goes into it"),
+            "{brief}"
+        );
         let _ = std::fs::remove_dir_all(&main);
     }
 }

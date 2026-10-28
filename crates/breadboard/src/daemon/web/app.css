@@ -1,0 +1,56 @@
+/* The overview as the terminal draws it: a dark page, one monospace frame. */
+:root {
+  color-scheme: dark;
+  --ground: #1a1a1a;
+  --text: #d0d0d0;
+  --quiet: #8a8a8a;
+  --chip: #3a3a3a;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font: 14px/1.25 ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+  padding: 0.5rem 1ch;
+  border-bottom: 1px solid var(--chip);
+}
+
+nav .repo {
+  color: var(--quiet);
+}
+
+nav a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 0 0.5ch;
+}
+
+nav a.shown {
+  background: var(--chip);
+}
+
+nav a.write {
+  margin-left: auto;
+  color: #56b6c2;
+}
+
+.frame {
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.quiet {
+  color: var(--quiet);
+  padding: 0 1ch;
+}
