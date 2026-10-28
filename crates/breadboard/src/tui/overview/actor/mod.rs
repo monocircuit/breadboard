@@ -180,6 +180,20 @@ impl Actor {
         });
         self.sender = Some(sender);
         self.jobs = Some(jobs);
+        self.tell_missing_notify();
+    }
+
+    /// One line when the repo's desktop notifications (#449) are on and
+    /// GitLab serves it, but nothing can show them: no `notify-send`.
+    fn tell_missing_notify(&mut self) {
+        use breadboard_core::notify;
+        let main = self.main.clone();
+        if !breadboard_core::settings::of_product(&main, None).notify.is_empty()
+            && notify::program().is_none()
+            && breadboard_core::ci::is_served(&main)
+        {
+            self.log(Paint::Yellow, notify::MISSING);
+        }
     }
 
     /// Whether this overview acts for the orchestration `name`: live, and

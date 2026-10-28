@@ -58,25 +58,49 @@ pub fn sections_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) 
     sections
 }
 
-/// The sections of an issue's boxes, then the MR's own (its description's
-/// Tests, #346) apart, each of those headed `!iid · Tests`: both lists as
-/// GitLab shows them, neither mixed into the other.
+/// The boxes of a task's issues, by issue: `(number, boxes)`, its branch's first.
+pub type TaskBoxes<'a> = [(i64, &'a [IssueBox])];
+
+/// `sections` each headed by `mark`: `<mark> · <heading>`, `<mark>` alone
+/// for the boxes before any heading.
+fn headed(sections: Vec<BoxSection>, mark: &str) -> Vec<BoxSection> {
+    sections
+        .into_iter()
+        .map(|section| {
+            let heading = if section.heading.is_empty() {
+                mark.to_string()
+            } else {
+                format!("{mark} · {}", section.heading)
+            };
+            BoxSection { heading, ..section }
+        })
+        .collect()
+}
+
+/// The sections of every issue of a task, `of` making them from one issue's
+/// boxes: one issue's as they are, a bundle's (#321) each headed `#n · Work`.
+fn task_sections_of(task: &TaskBoxes, of: impl Fn(&[IssueBox]) -> Vec<BoxSection>) -> Vec<BoxSection> {
+    match task {
+        [(_, boxes)] => of(boxes),
+        _ => task
+            .iter()
+            .flat_map(|(number, boxes)| headed(of(boxes), &format!("#{number}")))
+            .collect(),
+    }
+}
+
+/// The sections of a task's issues' boxes, then the MR's own (its
+/// description's Tests, #346) apart, each of those headed `!iid · Tests`:
+/// both lists as GitLab shows them, neither mixed into the other.
 pub fn all_sections_of(
-    issue: &[IssueBox],
+    task: &TaskBoxes,
     mr: Option<(i64, &[IssueBox])>,
     actions: &[Action],
     answered: &[Action],
 ) -> Vec<BoxSection> {
-    let mut sections = sections_of(issue, actions, answered);
+    let mut sections = task_sections_of(task, |boxes| sections_of(boxes, actions, answered));
     if let Some((iid, boxes)) = mr {
-        sections.extend(sections_of(boxes, actions, answered).into_iter().map(|section| {
-            let heading = if section.heading.is_empty() {
-                format!("!{iid}")
-            } else {
-                format!("!{iid} · {}", section.heading)
-            };
-            BoxSection { heading, ..section }
-        }));
+        sections.extend(headed(sections_of(boxes, actions, answered), &format!("!{iid}")));
     }
     sections
 }
@@ -84,14 +108,16 @@ pub fn all_sections_of(
 /// The boxes that still hold the merge (#354): the open Work and acceptance
 /// boxes, those the deployment checks left out, as the row's reasons count
 /// them; shown under the row before any click.
-pub fn open_sections_of(boxes: &[IssueBox], actions: &[Action], answered: &[Action]) -> Vec<BoxSection> {
+pub fn open_sections_of(task: &TaskBoxes, actions: &[Action], answered: &[Action]) -> Vec<BoxSection> {
     use super::merge::{is_acceptance, is_after_deploy, is_work};
-    let open: Vec<IssueBox> = boxes
-        .iter()
-        .filter(|found| !found.is_ticked && (is_work(found) || is_acceptance(found)) && !is_after_deploy(found))
-        .cloned()
-        .collect();
-    sections_of(&open, actions, answered)
+    task_sections_of(task, |boxes| {
+        let open: Vec<IssueBox> = boxes
+            .iter()
+            .filter(|found| !found.is_ticked && (is_work(found) || is_acceptance(found)) && !is_after_deploy(found))
+            .cloned()
+            .collect();
+        sections_of(&open, actions, answered)
+    })
 }
 
 fn line_of(found: &IssueBox, actions: &[Action], answered: &[Action]) -> BoxLine {
@@ -245,11 +271,18 @@ mod tests {
     fn the_mrs_own_boxes_follow_the_issues_under_its_iid() {
         let issue = [found("Scope", "the fold", false)];
         let mr = [found("Tests", "pnpm wt:check passed", true)];
-        let headings: Vec<String> = all_sections_of(&issue, Some((334, &mr)), &[], &[])
+        let headings: Vec<String> = all_sections_of(&[(7, &issue)], Some((334, &mr)), &[], &[])
             .into_iter()
             .map(|section| section.heading)
             .collect();
         assert_eq!(headings, ["Scope", "!334 · Tests"]);
+        // A bundle (#321): each issue's under its number.
+        let other = [found("Work", "the second issue", false)];
+        let headings: Vec<String> = all_sections_of(&[(7, &issue), (9, &other)], Some((334, &mr)), &[], &[])
+            .into_iter()
+            .map(|section| section.heading)
+            .collect();
+        assert_eq!(headings, ["#7 · Scope", "#9 · Work", "!334 · Tests"]);
         let loose = [IssueBox {
             heading: None,
             ..found("", "a box", true)
@@ -270,7 +303,7 @@ mod tests {
                 false,
             ),
         ];
-        let open: Vec<(String, Vec<String>)> = open_sections_of(&boxes, &[], &[])
+        let open: Vec<(String, Vec<String>)> = open_sections_of(&[(7, &boxes)], &[], &[])
             .into_iter()
             .map(|section| {
                 (

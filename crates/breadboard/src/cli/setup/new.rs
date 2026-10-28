@@ -1,9 +1,11 @@
-//! `pnpm wt:new <feature> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]`
+//! `pnpm wt:new <feature> [--also <issue>]… [--shared] [--fix] [--origin <orchestration>] [--base <branch>]`
 //! (commands/new.mjs): a worktree on a new branch from its base (#349:
 //! `--base`, else develop for a hotfix, its orchestration's epic, its
 //! product's batch (#411), else develop), the
 //! empty branch pushed as the claim on its issue, installed, its own stack,
-//! its herdr space; the agent that ran it moves along.
+//! its herdr space; the agent that ran it moves along. `--also` bundles
+//! more issues into its task (#321): written to its `.claude/origin`,
+//! claimed by its MR's `Closes` lines, refused when one is claimed elsewhere.
 
 use super::conversations;
 use super::epic::{self, Epic};
@@ -12,7 +14,7 @@ use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, s
 use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
-use crate::cli::lifecycle::handover::{CLAIM_REFUSED, claim_on_origin, fresh_feature};
+use crate::cli::lifecycle::handover::{CLAIM_REFUSED, bundle_claim, claim_on_origin, fresh_feature};
 use breadboard_core::git::{Base, Worktree, base_of};
 use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
@@ -21,14 +23,13 @@ use std::process::{ExitCode, Stdio};
 
 /// What `wt:new` takes.
 pub const SHAPE: Shape = Shape::new(
-    &["--shared", "--fix", "--origin", "--base"],
-    &["--origin", "--base"],
+    &["--shared", "--fix", "--origin", "--base", "--also"],
+    &["--origin", "--base", "--also"],
     Some(1),
     USAGE,
 );
 
-pub const USAGE: &str =
-    "usage: pnpm wt:new <feature-in-kebab-case> [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
+pub const USAGE: &str = "usage: pnpm wt:new <feature-in-kebab-case> [--also <issue>]… [--shared] [--fix] [--origin <orchestration>] [--base <branch>]";
 
 /// The worktree an agent leaves for the new one: the space its tab stands
 /// in, else where it ran this. None for a human.
@@ -98,8 +99,28 @@ fn hand_over(previous: &Worktree) -> String {
     }
 }
 
+/// The issues of the task of `feature` (#321): the one it carries first, then
+/// those `--also` names, each once; Err when one is no issue number or the
+/// feature carries none to come first.
+pub fn bundle_numbers(feature: &str, also: &[String]) -> Result<Vec<i64>, String> {
+    let first = breadboard_core::gitlab::number_of(&format!("feature/{feature}"));
+    let mut others = Vec::new();
+    for given in also {
+        match given.strip_prefix('#').unwrap_or(given).parse::<i64>() {
+            Ok(number) if number > 0 => others.push(number),
+            _ => return Err(format!("--also {given}: no issue number (34 or #34)\n{USAGE}")),
+        }
+    }
+    if !others.is_empty() && first.is_none() {
+        return Err(format!(
+            "--also bundles issues with the one the feature carries: name it after the first (<n>-<feature>)\n{USAGE}"
+        ));
+    }
+    Ok(record::bundle_of(first, &others))
+}
+
 pub fn command(args: &Args) -> ExitCode {
-    let feature = match args.first_word(&["--origin", "--base"]) {
+    let feature = match args.first_word(&["--origin", "--base", "--also"]) {
         Some(feature) if is_name(&feature) => feature,
         given => fail(&name_refusal("the feature", given.as_deref(), USAGE)),
     };
@@ -117,6 +138,7 @@ pub fn command(args: &Args) -> ExitCode {
             dir.display()
         ));
     }
+    let numbers = bundle_numbers(&feature, &args.values("--also")).unwrap_or_else(|why| fail(&why));
     let origin_name = args.value("--origin");
     if let Some(name) = origin_name.as_deref().filter(|name| !is_name(name)) {
         fail(&name_refusal("the orchestration", Some(name), USAGE));
@@ -174,6 +196,14 @@ pub fn command(args: &Args) -> ExitCode {
             "origin has the branch {taken} — someone works on that issue already"
         ));
     }
+    // The others of a bundle (#321): a branch or an MR elsewhere claims one.
+    for number in numbers.iter().skip(1) {
+        if let Ok(Some(taken)) = bundle_claim(&main, *number) {
+            fail(&format!(
+                "#{number} is claimed elsewhere: {taken} — the bundle starts without it, or not at all"
+            ));
+        }
+    }
 
     let dir_text = dir.to_string_lossy().into_owned();
     step(&format!("git worktree add {dir_text} -b {branch} {}", base.remote));
@@ -198,7 +228,8 @@ pub fn command(args: &Args) -> ExitCode {
     let written = origin
         .as_ref()
         .map_or(Ok(()), |origin| record::write_origin(&dir, origin))
-        .and_then(|()| record::write_base(&dir, &base.local));
+        .and_then(|()| record::write_base(&dir, &base.local))
+        .and_then(|()| record::write_issues(&dir, &numbers));
     if let Err(error) = written {
         fail(&format!(
             "couldn't write {}: {error}",
@@ -359,4 +390,27 @@ pub fn command(args: &Args) -> ExitCode {
         epic_port,
     });
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_is_the_features_issue_and_those_also_names() {
+        let also = |given: &[&str]| given.iter().map(|each| each.to_string()).collect::<Vec<_>>();
+        assert_eq!(bundle_numbers("7-x", &[]), Ok(vec![7]));
+        assert_eq!(bundle_numbers("7-x", &also(&["9", "#11", "7"])), Ok(vec![7, 9, 11]));
+        assert_eq!(bundle_numbers("x", &[]), Ok(vec![]));
+        assert!(
+            bundle_numbers("x", &also(&["9"]))
+                .unwrap_err()
+                .starts_with("--also bundles")
+        );
+        assert!(
+            bundle_numbers("7-x", &also(&["nine"]))
+                .unwrap_err()
+                .starts_with("--also nine")
+        );
+    }
 }

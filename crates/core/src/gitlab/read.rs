@@ -14,7 +14,7 @@ use crate::time::now_ms;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
 
 /// iids per batched call: GitLab prices a page asked by iids at five times another (#454).
@@ -172,6 +172,58 @@ const EVERYTHING_QUERY: &str = "query($project: ID!) { project(fullPath: $projec
     issues(state: opened, first: 100) { nodes { iid title webUrl labels { nodes { title } } assignees { nodes { username } } } } \
     develop: pipelines(ref: \"develop\", first: 1) { nodes { id iid status path sha ref } } } }";
 
+/// The desktop notifications' read (#449): the newest issues, the open MRs
+/// with what a notification follows, the newest merged ones.
+pub const NOTIFY_QUERY: &str = "query($project: ID!) { project(fullPath: $project) { \
+    issues(first: 20) { nodes { iid title } } \
+    open: mergeRequests(state: opened, first: 100) { nodes { iid title draft conflicts targetBranch pipelines(first: 20) { nodes { id status ref } } } } \
+    merged: mergeRequests(state: merged, first: 20, sort: MERGED_AT_DESC) { nodes { iid title targetBranch } } } }";
+
+/// What NOTIFY_QUERY's answer says, the actions left to the caller.
+pub fn notify_of(project: &Value) -> crate::notify::Now {
+    let title = |node: &Value| str_at(node, "title").unwrap_or_default().to_string();
+    let target = |node: &Value| str_at(node, "targetBranch").unwrap_or_default().to_string();
+    crate::notify::Now {
+        issues: nodes(project, "issues")
+            .iter()
+            .map(|node| (id_of(node.get("iid")), title(node)))
+            .collect(),
+        open: nodes(project, "open")
+            .iter()
+            .map(|node| {
+                // Its newest MR pipeline, by id, as the CI queue takes it (`open_mrs_of`).
+                let newest = nodes(node, "pipelines")
+                    .into_iter()
+                    .filter(|pipeline| {
+                        str_at(pipeline, "ref").is_some_and(|reference| reference.starts_with("refs/merge-requests/"))
+                    })
+                    .max_by_key(|pipeline| id_of(pipeline.get("id")));
+                crate::notify::OpenMr {
+                    iid: id_of(node.get("iid")),
+                    title: title(node),
+                    target: target(node),
+                    state: crate::notify::MrState {
+                        is_draft: node.get("draft").and_then(Value::as_bool).unwrap_or(false),
+                        is_conflict: node.get("conflicts").and_then(Value::as_bool).unwrap_or(false),
+                        failed: newest
+                            .filter(|pipeline| lower(str_at(pipeline, "status")) == "failed")
+                            .map(|pipeline| id_of(pipeline.get("id"))),
+                    },
+                }
+            })
+            .collect(),
+        merged: nodes(project, "merged")
+            .iter()
+            .map(|node| crate::notify::MergedMr {
+                iid: id_of(node.get("iid")),
+                title: title(node),
+                target: target(node),
+            })
+            .collect(),
+        decides: Vec::new(),
+    }
+}
+
 /// Every query breadboard sends to GitLab, each with all its parts, by name.
 pub fn queries() -> Vec<(&'static str, String)> {
     vec![
@@ -184,6 +236,7 @@ pub fn queries() -> Vec<(&'static str, String)> {
         ("issues page", ISSUES_PAGE_QUERY.into()),
         ("worktree", worktree_query(true, true)),
         ("everything", EVERYTHING_QUERY.into()),
+        ("notifications", NOTIFY_QUERY.into()),
     ]
 }
 
@@ -598,6 +651,19 @@ pub struct Ask {
     /// Its product's batches shipped before the epic's (#414): their MRs into develop are read.
     #[serde(default)]
     pub shipping: Vec<String>,
+    /// The branches whose task closes several issues (#321): every issue, the branch's first.
+    #[serde(default)]
+    pub bundles: BTreeMap<String, Vec<i64>>,
+}
+
+impl Ask {
+    /// Every issue of the task of `branch`, the one it carries first.
+    pub fn issues_of(&self, branch: &str) -> Vec<i64> {
+        match self.bundles.get(branch) {
+            Some(numbers) => numbers.clone(),
+            None => number_of(branch).into_iter().collect(),
+        }
+    }
 }
 
 /// The links GitLab has of the open issues `numbers`, in the shape real GitLab
@@ -677,7 +743,7 @@ pub async fn read_orchestration(
         let mut seen = BTreeSet::new();
         branches
             .iter()
-            .filter_map(|branch| number_of(branch))
+            .flat_map(|branch| ask.issues_of(branch))
             .filter(|number| seen.insert(*number))
             .collect()
     };
@@ -816,7 +882,14 @@ pub async fn read_orchestration(
         } else {
             (None, Vec::new())
         };
-        of.insert(branch.clone(), BranchRemote { mr, jobs, issue: None });
+        of.insert(
+            branch.clone(),
+            BranchRemote {
+                mr,
+                jobs,
+                ..BranchRemote::default()
+            },
+        );
     }
 
     // Merged, with a try on the test instance waiting: where its deployment stands.
@@ -864,7 +937,7 @@ pub async fn read_orchestration(
         }
     }
     for (branch, remote) in of.iter_mut() {
-        remote.issue = number_of(branch).and_then(|number| issues.get(&number).cloned());
+        remote.set_issues(&ask.issues_of(branch), &issues);
     }
 
     // develop's last finished pipeline, its jobs only when it failed; the epic's the same way.

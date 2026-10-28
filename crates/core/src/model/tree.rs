@@ -562,7 +562,7 @@ pub struct Doing {
 }
 
 /// The lines of a node (`Lines`).
-fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeFacts) -> Lines {
+fn lines_of(issue: &Entry, found: Option<&Issue>, also: &[Issue], mr: Option<&Mr>, facts: &TreeFacts) -> Lines {
     let tree = issue.tree.as_ref();
     let now = facts.now;
     let mut lines = Lines::default();
@@ -576,6 +576,17 @@ fn lines_of(issue: &Entry, found: Option<&Issue>, mr: Option<&Mr>, facts: &TreeF
             None => Some(Span::dim(if facts.has_remote { " ?" } else { " …" })),
         };
         lines.issue = [link].into_iter().chain(state).collect();
+        // The other issues its task closes (#321), each a link of its own.
+        for number in issue.numbers.iter().skip(1) {
+            let other = also.iter().find(|other| other.iid == *number);
+            lines.issue.push(Span::plain(" "));
+            lines
+                .issue
+                .push(Span::link(format!("#{number}"), other.map(|other| other.url.as_str())));
+            if other.is_some_and(|other| other.state == "closed") {
+                lines.issue.push(Span::new(" closed", Paint::Cyan));
+            }
+        }
     }
     let merged_at = issue
         .merged_at
@@ -872,7 +883,8 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                 .and_then(|claude| facts.agents.and_then(|agents| agents.get(&claude.id)))
                 .and_then(|agent| agent.status.as_deref());
             let handover = handover_of(tree, facts.announced);
-            let boxes = found.map(|found| &found.boxes[..]).unwrap_or(&[]);
+            let boxes = part.map(crate::gitlab::BranchRemote::boxes).unwrap_or_default();
+            let boxes = &boxes[..];
             let checks = tree
                 .map(|tree| checks_of(boxes, &tree.actions, &tree.answered))
                 .unwrap_or_else(|| checks_of(boxes, &[], &[]));
@@ -948,7 +960,13 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
             };
             let agent = agent_line(issue, &state, status, &names, facts.known, &is_merged, facts.spent);
             let collides = collides_of(index);
-            let lines = lines_of(issue, found, mr, facts);
+            let lines = lines_of(
+                issue,
+                found,
+                part.map(|part| &part.also[..]).unwrap_or_default(),
+                mr,
+                facts,
+            );
             let doing = doing_of(issue, mr, &state, handover.as_ref(), facts);
             Node {
                 index,
@@ -983,9 +1001,9 @@ pub fn tree_of(issues: &[Entry], remote: Option<&Remote>, facts: &TreeFacts) -> 
                     .map(|found| found.title.clone())
                     .or_else(|| issue.title.clone())
                     .unwrap_or_else(|| issue.branch.clone()),
-                boxes: match (tree, found) {
-                    (Some(tree), Some(found)) => all_sections_of(
-                        &found.boxes,
+                boxes: match (tree, part.filter(|part| part.issue.is_some())) {
+                    (Some(tree), Some(part)) => all_sections_of(
+                        &part.task_boxes(),
                         mr.map(|mr| (mr.iid, &mr.boxes[..])),
                         &tree.actions,
                         &tree.answered,

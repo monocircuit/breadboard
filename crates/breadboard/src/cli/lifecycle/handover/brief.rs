@@ -33,6 +33,36 @@ pub fn brief_of(
         Some(peer) => format!("the session `{peer}`"),
         None => format!("the one in `{}` (`ListAgents`; it messages you first)", text(main)),
     };
+    // A bundle (#321): one task, one MR, every issue of it closed.
+    let (work, closes) = if issue.also.is_empty() {
+        (
+            format!("Issue #{number} of {repo} (`glab issue view {number} --comments`)"),
+            format!("#{number}"),
+        )
+    } else {
+        let numbers = issue.numbers();
+        let views: Vec<String> = numbers
+            .iter()
+            .map(|each| format!("`glab issue view {each} --comments`"))
+            .collect();
+        let others: Vec<String> = issue
+            .also
+            .iter()
+            .map(|each| format!("`{bb} wt:tick {each} <box>…`"))
+            .collect();
+        (
+            format!(
+                "Issues {} of {repo} as one task ({})",
+                breadboard_core::gitlab::issues_text(&numbers),
+                views.join(", ")
+            ),
+            format!(
+                "{}, a `Closes` line each; `submit` ticks #{number}'s boxes, the others' {}",
+                breadboard_core::gitlab::issues_text(&numbers),
+                others.join(", ")
+            ),
+        )
+    };
     let mut tail = String::new();
     if let Some(before) = before {
         tail.push_str(&format!("\n## Before this issue\n\n{before}\n"));
@@ -45,9 +75,9 @@ pub fn brief_of(
     format!(
         r#"# #{number} {title}
 
-Issue #{number} of {repo} (`glab issue view {number} --comments`), orchestration `{name}` (herdr space `{label}`).
+{work}, orchestration `{name}` (herdr space `{label}`).
 Branch `{branch}` in `{dir}`, pushed as the claim. {stand}
-Base `{base}`: your one MR goes into it and closes only #{number}.
+Base `{base}`: your one MR goes into it and closes only {closes}.
 
 - Each step: commit it (staged by path), then `{bb} submit [<box>…]`: checks, pushes, ticks.
 - Where you are and what is next: `{bb} status`.
@@ -75,6 +105,7 @@ mod tests {
             branch: "feature/12-a-title".into(),
             milestone: None,
             stage: breadboard_core::stage::Stage::Build,
+            also: vec![],
         }
     }
 
@@ -97,6 +128,17 @@ Base `main`: your one MR goes into it and closes only #12.
 - The orchestrator: the one in `/r/p` (`ListAgents`; it messages you first).
 "
         );
+    }
+
+    #[test]
+    fn a_bundle_closes_every_issue_of_its_task() {
+        let bundle = Issue {
+            also: vec![13],
+            ..issue()
+        };
+        let brief = brief_of(&bundle, "o", "⇶ O", None, "", None, Path::new("/r/p"));
+        assert!(brief.contains("\nIssues #12 and #13 of p as one task (`glab issue view 12 --comments`, `glab issue view 13 --comments`), orchestration `o`"), "{brief}");
+        assert!(brief.contains("closes only #12 and #13, a `Closes` line each; `submit` ticks #12's boxes, the others' `breadboard wt:tick 13 <box>…`.\n"), "{brief}");
     }
 
     #[test]
