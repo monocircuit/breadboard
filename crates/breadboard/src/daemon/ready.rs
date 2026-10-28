@@ -14,15 +14,18 @@ use super::glab::{glab_api, glab_get};
 use crate::tui::overview::actor::glab::ready_title;
 use breadboard_core::ci;
 use breadboard_core::gitlab::client::Gitlab;
-use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
+use breadboard_core::gitlab::read::open_mrs_of;
 use breadboard_core::ready::{self, Mark, Marks, Step};
 use breadboard_core::time::now_ms;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+/// The marks in the request log (#462).
+const TASK: &str = "ready marks";
 
 /// The marks of `main`, as long as the daemon runs.
 pub async fn mark(main: PathBuf) {
-    let gitlab = Gitlab::new(&main);
+    let gitlab = Gitlab::new(&main).for_task(TASK);
     let mut tick = tokio::time::interval(every());
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -39,7 +42,7 @@ pub async fn mark(main: PathBuf) {
         if !is_on {
             continue;
         }
-        let Ok(project) = gitlab.graphql(CI_QUERY, json!({})).await else {
+        let Ok(project) = super::ci::open_mrs_project(&gitlab, &main).await else {
             continue;
         };
         let mrs = open_mrs_of(&project);

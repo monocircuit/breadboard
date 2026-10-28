@@ -140,6 +140,36 @@ pub struct Answer {
     pub at: i64,
     pub usage: Usage,
     pub dollars: f64,
+    /// What it read and wrote before answering: its cost but the output's
+    /// (#445), a wake-up's when it is the first answer of a run.
+    pub reading: f64,
+}
+
+/// How long after an answer the next one starts a run of its own (#445):
+/// past the prompt cache's 5 minutes its first call reads the history anew.
+pub const WAKE_GAP_MS: i64 = 5 * 60_000;
+
+/// What the wake-ups among `answers` (one conversation's, any order) from
+/// `from` on cost (#445): of each run's first answer, the first at all or
+/// one past `WAKE_GAP_MS` after the one before, what it read and wrote
+/// before answering: the history re-read, written to the cache again once
+/// it went cold. Tokens as everywhere, cache reads only in the dollars.
+pub fn wakes_of(answers: &[Answer], from: i64) -> Spend {
+    let mut sorted: Vec<&Answer> = answers.iter().collect();
+    sorted.sort_by_key(|answer| answer.at);
+    let mut wakes = Spend::default();
+    let mut before: Option<i64> = None;
+    for answer in sorted {
+        let is_wake = before.is_none_or(|at| answer.at - at > WAKE_GAP_MS);
+        if is_wake && answer.at >= from {
+            wakes.add(Spend {
+                tokens: answer.usage.tokens() - answer.usage.output,
+                dollars: answer.reading,
+            });
+        }
+        before = Some(answer.at);
+    }
+    wakes
 }
 
 /// A sum of answers: their tokens and dollars.
@@ -231,10 +261,12 @@ pub fn answers_in<'a>(lines: impl IntoIterator<Item = &'a str>, seen: &mut HashS
             continue;
         };
         let usage = Usage::of(usage);
+        let price = price_of(model);
         answers.push(Answer {
             at,
             usage,
-            dollars: price_of(model).of(&usage),
+            dollars: price.of(&usage),
+            reading: price.of(&Usage { output: 0, ..usage }),
         });
     }
     answers
@@ -379,6 +411,8 @@ pub struct Today {
     pub day: String,
     pub total: Spend,
     pub by_session: HashMap<String, Spend>,
+    /// Of `total`, what the runs' wake-ups cost (#445, `wakes_of`): the rest is work.
+    pub wakes: Spend,
 }
 
 /// What the claudes in the repo of `main` spent since local midnight: every
@@ -399,6 +433,8 @@ pub fn today_of(main: &Path, now: i64) -> Today {
         let Ok(entries) = fs::read_dir(&project) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
+            // A session's own runs wake it; a subagent starts small, it isn't one.
+            let is_own = path.is_file();
             let (session, files) = if path.extension().is_some_and(|ext| ext == "jsonl") {
                 (
                     path.file_stem().map(|stem| stem.to_string_lossy().into_owned()),
@@ -414,6 +450,9 @@ pub fn today_of(main: &Path, now: i64) -> Today {
             };
             let Some(session) = session else { continue };
             for file in files.into_iter().filter(|file| is_today(file)) {
+                if is_own {
+                    today.wakes.add(wakes_of(&answers_of_file(&file), midnight));
+                }
                 for answer in answers_of_file(&file).iter().filter(|answer| answer.at >= midnight) {
                     let spend = Spend::of(answer);
                     today.total.add(spend);
@@ -568,11 +607,25 @@ pub fn band_text(spent: &Spent) -> Option<String> {
     if let Some(limit) = spent.daily_limit {
         text.push_str(&format!(" of {} a day", limit.text()));
     }
+    text.push_str(&wakes_text(&spent.today));
     if let Some(budget) = spent.budget {
         text.push_str(&format!(" · budget {}", budget.against(&spent.total)));
     }
     text.push_str(&format!(" · {BASIS}"));
     (!spent.today.total.is_empty() || spent.daily_limit.is_some() || spent.budget.is_some()).then_some(text)
+}
+
+/// ` · wake-ups ≈ $3, work ≈ $9`: what of today's dollars went into the
+/// runs' wake-ups (#445) and what into work; empty without a wake-up.
+pub fn wakes_text(today: &Today) -> String {
+    if today.wakes.dollars <= 0.0 {
+        return String::new();
+    }
+    format!(
+        " · wake-ups ≈ {}, work ≈ {}",
+        dollars_text(today.wakes.dollars),
+        dollars_text((today.total.dollars - today.wakes.dollars).max(0.0))
+    )
 }
 
 /// A limit in tokens or dollars (`[agents] daily_limit`, `orchestration_budget`):
@@ -840,6 +893,38 @@ mod tests {
     }
 
     #[test]
+    fn a_runs_first_answer_after_a_gap_is_its_wake_up() {
+        let answer = |minute: i64, read: u64, written: u64| {
+            let usage = Usage {
+                read,
+                write_1h: written,
+                output: 100,
+                ..Usage::default()
+            };
+            let price = price_of("claude-opus-5-5");
+            Answer {
+                at: minute * 60_000,
+                usage,
+                dollars: price.of(&usage),
+                reading: price.of(&Usage { output: 0, ..usage }),
+            }
+        };
+        // A run at 0 (two answers), one 90 minutes later woken cold: 500 k written anew.
+        let answers = [
+            answer(0, 0, 20_000),
+            answer(1, 20_000, 2_000),
+            answer(91, 0, 500_000),
+            answer(92, 500_000, 1_000),
+        ];
+        let wakes = wakes_of(&answers, 0);
+        assert_eq!(wakes.tokens, 520_000);
+        // 520 k cache writes at Opus 5.5's $8/M.
+        assert!((wakes.dollars - 4.16).abs() < 1e-9, "{}", wakes.dollars);
+        // Only those from `from` on.
+        assert_eq!(wakes_of(&answers, 60 * 60_000).tokens, 500_000);
+    }
+
+    #[test]
     fn says_in_the_band_what_was_spent_against_the_limits() {
         let mut spent = Spent::default();
         assert_eq!(band_text(&spent), None);
@@ -851,6 +936,15 @@ mod tests {
             band_text(&spent).as_deref(),
             Some("today 4.2 M tokens · ≈ $12 · list prices")
         );
+        spent.today.wakes = Spend {
+            tokens: 900_000,
+            dollars: 3.1,
+        };
+        assert_eq!(
+            band_text(&spent).as_deref(),
+            Some("today 4.2 M tokens · ≈ $12 · wake-ups ≈ $3.10, work ≈ $9.30 · list prices")
+        );
+        spent.today.wakes = Spend::default();
         spent.daily_limit = Some(Limit::Dollars(40.0));
         spent.budget = Some(Limit::Tokens(200_000_000));
         spent.total.tokens = 80_000_000;

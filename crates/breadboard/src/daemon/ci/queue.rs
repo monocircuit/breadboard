@@ -6,15 +6,17 @@ use super::preempt::{self, Preempter};
 use super::{clicks, every, fix, is_queued, start};
 use breadboard_core::ci::{self, Asked, Decision, Queue, Ranks, RunNow, Slots};
 use breadboard_core::gitlab::client::Gitlab;
-use breadboard_core::gitlab::read::{CI_QUERY, open_mrs_of};
+use breadboard_core::gitlab::read::open_mrs_of;
 use breadboard_core::time::now_ms;
-use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// The queue in the request log (#462).
+const TASK: &str = "ci queue";
+
 /// The queue of `main`, as long as the daemon runs.
 pub async fn schedule(main: PathBuf) {
-    let gitlab = Gitlab::new(&main);
+    let gitlab = Gitlab::new(&main).for_task(TASK);
     let mut preempter = Preempter::default();
     let is_dry = std::env::var_os("BREADBOARD_CI_DRY").is_some();
     let mut last: Option<String> = None;
@@ -44,8 +46,15 @@ pub async fn schedule(main: PathBuf) {
         }
         // Read anew each tick: what a daemon before asked for counts.
         let mut asked: Asked = ci::read_or_default(&ci::asked_file(&main));
-        let Ok(project) = gitlab.graphql(CI_QUERY, json!({})).await else {
-            continue;
+        let project = match super::open_mrs_project(&gitlab, &main).await {
+            Ok(project) => project,
+            // GitLab paused after a 429 (#462): the queue still runs, its heartbeat stays fresh,
+            // or every push would drop `ci.skip` and start a pipeline of its own meanwhile.
+            Err(error) if error.status == Some(429) => {
+                beat(&main);
+                continue;
+            }
+            Err(_) => continue,
         };
         let mrs = open_mrs_of(&project);
         let main_now = main.clone();
@@ -74,9 +83,9 @@ pub async fn schedule(main: PathBuf) {
             ranks.cancelled = own_cancels;
             ranks.preempts = preempts;
             ranks.now = now;
-            // `[merge] needs_pipeline = false` (#443): MRs into the default branch merge on wt:check.
-            let loaded = breadboard_core::config::of_main(&main_now);
-            ranks.no_pipeline_into = (!loaded.config.merge.needs_pipeline).then(|| loaded.branch.clone());
+            // `[merge] needs_pipeline = false` (#443), `batch_needs_pipeline = false` (#461):
+            // those MRs merge on wt:check.
+            ranks.on_check = breadboard_core::model::merge::OnCheck::of_main(&main_now);
             let members: HashSet<i64> = mrs.iter().filter(|mr| ranks.is_member(mr)).map(|mr| mr.iid).collect();
             (
                 ci::decide(&mrs, &ranks, slots, &started),
@@ -178,4 +187,15 @@ pub async fn schedule(main: PathBuf) {
         };
         let _ = ci::write_whole(&ci::queue_file(&main), &queue);
     }
+}
+
+/// The queue's heartbeat (`at` of queue.json) renewed, the rest as it was.
+fn beat(main: &std::path::Path) {
+    let file = ci::queue_file(main);
+    let mut queue = breadboard_core::json::read_object(&file);
+    if queue.is_empty() {
+        return;
+    }
+    queue.insert("at".into(), now_ms().into());
+    let _ = breadboard_core::json::write_pretty(&file, &serde_json::Value::Object(queue));
 }

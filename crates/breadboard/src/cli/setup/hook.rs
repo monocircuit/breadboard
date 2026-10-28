@@ -3,7 +3,9 @@
 //! to the branch of a merged or closed MR (#184) and one of a commit
 //! `pnpm wt:check` didn't pass (#298, the stamp in `.claude/checked.json`).
 //! Same texts as the Node hook: an agent reads them and acts on them. It
-//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`).
+//! also sets the worktree's pushes to skip CI (#357, `ci::set_push_option`),
+//! and moves a worktree off a batch that shipped onto the next (#411). What
+//! carries no code passes unchecked: a commit origin has, changelog fragments (#464).
 
 use super::check::{self, Failure};
 use super::gitlab;
@@ -98,10 +100,28 @@ pub struct Pushed<'a> {
     pub record: &'a Map<String, Value>,
     /// None when not asked (nothing changed, or stamped).
     pub plan: Option<&'a Plan>,
-    /// Nothing changed against develop (a claim, wt:new).
+    /// No code to check: nothing changed against develop (a claim, wt:new),
+    /// a commit origin has already (the next batch, #464) or changelog
+    /// fragments only (a shipped batch's line, #464).
     pub is_empty: bool,
     /// What the stamp of its tree left out of what it changes (#366), when stamped.
     pub gap: Option<&'a str>,
+}
+
+/// Whether a diff (`git diff --name-status`) only adds or rewrites changelog
+/// fragments, `.changelog/<name>.md`: no code, nothing to check (#464).
+pub fn is_changelog_only(name_status: &str) -> bool {
+    let mut lines = name_status.lines().filter(|line| !line.trim().is_empty()).peekable();
+    lines.peek().is_some()
+        && lines.all(|line| {
+            let mut parts = line.split('\t');
+            let (status, path) = (parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+            matches!(status, "A" | "M")
+                && parts.next().is_none()
+                && path
+                    .strip_prefix(".changelog/")
+                    .is_some_and(|name| !name.contains('/') && name.ends_with(".md"))
+        })
 }
 
 /// The tree of a record's `passed` / `failed`.
@@ -131,7 +151,7 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         return gap.map(|gap| {
             format!(
                 "✗ push refused: {branch} at {short} isn't checked (#298), its check left out what it changes: {gap} (#366).
-  Run pnpm wt:check again: it checks every package git says the branch changes."
+  Run bb submit: wt:check again, of every package git says the branch changes, then the push."
             )
         });
     }
@@ -149,23 +169,21 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
             .unwrap_or_default();
         format!(
             "its last check failed: {}.
-  Fix it, commit, run {run} wt:check again. Red on develop too: it is fixed once, in its own fix MR,
-  and you wait for that with {run} wt:wait !<mr>.",
+  Fix it, commit, then bb submit: wt:check again, then the push. Red on develop too: it is fixed once,
+  in its own fix MR, and you wait for that with {run} wt:wait !<mr>.",
             breadboard_core::check::failures_text(&failures),
             run = breadboard_core::config::run_word()
         )
     } else if let Some(Err(error)) = plan {
         format!(
             "which packages it changes can't be told ({error}).
-  Run pnpm install, then {run} wt:check.",
-            run = breadboard_core::config::run_word()
+  Run pnpm install, then bb submit: wt:check, then the push."
         )
     } else if let Some(passed) = record.get("passed") {
         let checked: String = str_of(passed, "sha").unwrap_or_default().chars().take(8).collect();
         format!(
             "the last check that passed was of {checked}, not of this commit.
-  Run {run} wt:check (it runs only what changed, a second run is quick).",
-            run = breadboard_core::config::run_word()
+  Run bb submit: wt:check (only what changed, a second run is quick), then the push."
         )
     } else {
         let packages = match plan {
@@ -178,8 +196,7 @@ pub fn gate_refusal_of(pushed: &Pushed) -> Option<String> {
         };
         format!(
             "no check of it ran in this worktree yet.
-  Run {run} wt:check: lint, typecheck and test of {packages}.",
-            run = breadboard_core::config::run_word()
+  Run bb submit: wt:check (lint, typecheck and test of {packages}), then the push."
         )
     };
     Some(format!(
@@ -208,13 +225,27 @@ fn check_gate(refs: &[(String, String)], dir: &Path) -> Vec<String> {
     let tree_of = |rev: &str| text_of(&["rev-parse", "--verify", "--quiet", &format!("{rev}^{{tree}}")]);
     let mut refusals = Vec::new();
     // Empty against the worktree's base: the claim of a task off an epic is empty against the epic (#349).
-    let remote = breadboard_core::git::base_of(dir).remote;
+    let base = breadboard_core::git::base_of(dir).remote;
     for (branch, sha) in refs {
+        // A push onto a batch branch adds to the batch as origin has it (#414:
+        // a shipped batch's changelog line): that part is what is checked.
+        let onto = format!("origin/{branch}");
+        let remote = if breadboard_core::batch::is_batch(branch) && tree_of(&onto).is_some() {
+            onto
+        } else {
+            base.clone()
+        };
         let tree = tree_of(sha);
         let base = text_of(&["merge-base", &remote, sha]);
-        let is_empty = base
-            .as_ref()
-            .is_some_and(|base| git(&["diff", "--quiet", base, sha], dir).is_ok);
+        // What the push brings that origin hasn't seen: nothing (a branch made
+        // at a commit origin has, the next batch), or changelog fragments only
+        // (the shipped batch's line) carry no code (#464).
+        let is_on_origin = text_of(&["for-each-ref", "--count=1", "--contains", sha, "refs/remotes/origin"]).is_some();
+        let is_empty = is_on_origin
+            || base.as_ref().is_some_and(|base| {
+                git(&["diff", "--quiet", base, sha], dir).is_ok
+                    || is_changelog_only(git(&["diff", "--no-renames", "--name-status", base, sha], dir).text())
+            });
         let is_stamped = tree.is_some() && tree_of_part(&record, "passed") == tree.as_deref();
         let plan: Option<Plan> = (!is_empty && !is_stamped).then(|| match (&base, check::turbo_of(dir)) {
             (None, _) => Err(format!("no merge base with {remote}: git fetch origin")),
@@ -285,6 +316,14 @@ pub fn command(words: &[String]) -> ExitCode {
     let dir = git(&["rev-parse", "--show-toplevel"], &super::repo::cwd())
         .text()
         .to_string();
+    // A base that shipped gives way to the product's next batch before the gate reads it (#411).
+    if let Some((branch, _)) = refs
+        .first()
+        .filter(|(branch, _)| !breadboard_core::batch::is_batch(branch))
+        && let Some(line) = super::batch::follow_shipped(Path::new(&dir), branch)
+    {
+        errln!("{line}");
+    }
     let mut refusals = check_push(&refs);
     // git read this push's options before the hook ran: a change counts from the next push.
     match breadboard_core::ci::set_push_option(Path::new(&dir), now_ms()) {
@@ -299,7 +338,7 @@ pub fn command(words: &[String]) -> ExitCode {
     if refusals.is_empty() {
         return ExitCode::SUCCESS;
     }
-    errln!("{}", refusals.join("\n\n"));
+    errln!("{}", breadboard_core::config::in_repo(&refusals.join("\n\n")));
     ExitCode::FAILURE
 }
 
@@ -328,6 +367,22 @@ mod tests {
         let text = refusal_of("feature/1-a", &[merged]).unwrap();
         assert!(text.starts_with("✗ push refused: !7 of feature/1-a is merged, so no merge request"));
         assert!(text.ends_with("pnpm wt:new <n>-<feature>.\n  https://g/mr/7"));
+    }
+
+    #[test]
+    fn changelog_fragments_alone_carry_no_code() {
+        assert!(is_changelog_only("A\t.changelog/batch-breadboard-6.md\n"));
+        assert!(is_changelog_only(
+            "M\t.changelog/batch-breadboard-6.md\nA\t.changelog/464-ship.md\n"
+        ));
+        assert!(!is_changelog_only(""));
+        assert!(!is_changelog_only("D\t.changelog/batch-breadboard-6.md"));
+        assert!(!is_changelog_only(
+            "A\t.changelog/a.md\nM\tpackages/breadboard/src/x.rs"
+        ));
+        assert!(!is_changelog_only("A\t.changelog/sub/a.md"));
+        assert!(!is_changelog_only("A\t.changelog/a.sh"));
+        assert!(!is_changelog_only("A\tdocs/.changelog/a.md"));
     }
 
     #[test]

@@ -51,6 +51,30 @@ pub fn session_file(dir: &Path) -> PathBuf {
     dir.join(".claude").join("herdr-session")
 }
 
+/// Written where a conversation was unbound and moved on with the work there
+/// unmerged (#455): a `wt:new` from inside it, a handover. Its worktree's
+/// agent is gone, not unknown: the overview starts a fresh one in it. A new
+/// binding ([`bind`]) removes it.
+pub fn left_file(dir: &Path) -> PathBuf {
+    dir.join(".claude").join("agent-left")
+}
+
+/// The conversation `id` unbound from `dir` as it moves on (#455): its
+/// binding goes, [`left_file`] says so.
+pub fn unbind_leaving(dir: &Path, id: Option<&str>) {
+    let _ = fs::remove_file(session_file(dir));
+    if let Some(id) = id {
+        let _ = fs::write(left_file(dir), format!("{id}\n"));
+    }
+}
+
+/// `id` bound to `dir`: a gone agent's [`left_file`] goes with it.
+pub fn bind(dir: &Path, id: &str) -> std::io::Result<()> {
+    fs::write(session_file(dir), format!("{id}\n"))?;
+    let _ = fs::remove_file(left_file(dir));
+    Ok(())
+}
+
 /// The conversation bound to a worktree's space, its id or None.
 pub fn bound_session(dir: &Path) -> Option<String> {
     let id = fs::read_to_string(session_file(dir)).ok()?.trim().to_string();
@@ -196,28 +220,41 @@ fn context_window() -> u64 {
 /// The share of its window (0 to 1) the conversation `id` had used at its
 /// last answer; read again only when its transcript changed.
 pub fn context_share_of(id: &str) -> Option<f64> {
-    static SHARES: Mutex<Option<HashMap<PathBuf, (Stamp, f64)>>> = Mutex::new(None);
+    usage_by_id(id).map(|usage| (usage.used as f64 / usage.window as f64).min(1.0))
+}
+
+/// The context the conversation `id` held at its last answer and when that
+/// came (#445): what a fresh start is judged by.
+pub fn context_of(id: &str) -> Option<crate::fresh::Context> {
+    usage_by_id(id).map(|usage| crate::fresh::Context {
+        used: usage.used,
+        at: usage.at,
+    })
+}
+
+/// The last answer's usage of the conversation `id`; read again only when its transcript changed.
+fn usage_by_id(id: &str) -> Option<Usage> {
+    static USAGES: Mutex<Option<HashMap<PathBuf, (Stamp, Usage)>>> = Mutex::new(None);
     let transcript = transcript_of(id)?;
     let meta = fs::metadata(&transcript).ok()?;
     let stamp = (meta.len(), meta.modified().ok());
-    if let Some((known, share)) = SHARES
+    if let Some((known, usage)) = USAGES
         .lock()
         .ok()?
         .as_ref()
-        .and_then(|cache| cache.get(&transcript).copied())
+        .and_then(|cache| cache.get(&transcript).cloned())
         && known == stamp
     {
-        return Some(share);
+        return Some(usage);
     }
     let (lines, _) = tail_lines(&transcript, TAIL_BYTES)?;
     let usage = usage_of(&lines);
-    let share = (usage.used as f64 / usage.window as f64).min(1.0);
-    if let Ok(mut cache) = SHARES.lock() {
+    if let Ok(mut cache) = USAGES.lock() {
         cache
             .get_or_insert_with(HashMap::new)
-            .insert(transcript, (stamp, share));
+            .insert(transcript, (stamp, usage.clone()));
     }
-    Some(share)
+    Some(usage)
 }
 
 /// The conversation bound to a worktree, as the overview reads it (claude.mjs `readClaude`).
@@ -247,6 +284,14 @@ impl Claude {
             0.0
         } else {
             (self.used as f64 / self.window as f64).min(1.0)
+        }
+    }
+
+    /// What it holds, for a fresh start (#445).
+    pub fn context(&self) -> crate::fresh::Context {
+        crate::fresh::Context {
+            used: self.used,
+            at: self.at,
         }
     }
 }

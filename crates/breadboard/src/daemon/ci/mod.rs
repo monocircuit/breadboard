@@ -22,8 +22,13 @@ mod queue;
 mod start;
 
 use breadboard_core::ci::{self, MODE_KEY};
-use std::path::Path;
-use std::time::Duration;
+use breadboard_core::gitlab::client::Gitlab;
+use breadboard_core::gitlab::read::CI_QUERY;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 pub use queue::schedule;
 
@@ -37,6 +42,25 @@ pub(super) fn every() -> Duration {
         .map(Duration::from_millis)
         .unwrap_or(EVERY)
 }
+/// The open MRs of `main` as CI_QUERY reads them, one answer for the queue
+/// and the marks of the same tick (#462): both ask every EVERY, GitLab is
+/// asked once. An answer younger than most of a tick is taken as it is.
+pub(super) async fn open_mrs_project(gitlab: &Gitlab, main: &Path) -> breadboard_core::gitlab::client::Result<Value> {
+    type Answers = HashMap<PathBuf, (Instant, Value)>;
+    static ANSWERS: LazyLock<tokio::sync::Mutex<Answers>> = LazyLock::new(Default::default);
+    let fresh = every().mul_f64(0.8);
+    // Held across the read: the other task of the tick waits for its answer instead of asking too.
+    let mut answers = ANSWERS.lock().await;
+    if let Some((at, project)) = answers.get(main)
+        && at.elapsed() < fresh
+    {
+        return Ok(project.clone());
+    }
+    let project = gitlab.graphql(CI_QUERY, json!({})).await?;
+    answers.insert(main.to_path_buf(), (Instant::now(), project.clone()));
+    Ok(project)
+}
+
 /// Whether `main` leaves its pipelines to the queue (the default) or to the
 /// pushes: `breadboard.ci = push`, or an origin that takes no push options
 /// (a gauntlet world's), whose pushes never skip CI (`ci::set_push_option`).

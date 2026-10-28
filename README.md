@@ -77,8 +77,8 @@ One binary, `breadboard`, in Rust with ratatui (#314; why:
 | [`herdr/`](herdr/README.md) | the herdr plugin of the repo breadboard is developed in (`herdr-plugin.toml`, its id `[herdr] plugin`; `breadboard init` writes another repo's) and `breadboard.sh`, the launcher everything starts the binary through (below) |
 | `hooks/` | the shims of the git pre-push hook (`wt:new` and `wt:mr` install it) and of Claude Code's Stop hook (`.claude/settings.json`) |
 | [`chromium/`](chromium/README.md) | the Chromium extension for tab groups |
-| `nvim/changes.lua` | a worktree's `nvim` tab: neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
-| `nvim/colours.lua` | the colours the nvim tabs mark changes in (gitsigns' lines included), readable on any theme |
+| `nvim/changes.lua` | a worktree's nvim (the detail pane's `e`): neo-tree and gitsigns against develop, `:Changes`, `:ChangesDiff`, `:ChangesInline`; see "The nvim tab" below |
+| `nvim/colours.lua` | the colours nvim marks changes in (gitsigns' lines included), readable on any theme |
 | `nvim/orchestration.lua` | `:OrchestrationChanges` and `:OrchestrationDiff` in an orchestration's `changes` tab: what its MRs changed |
 | `nvim/ide.lua` | Claude Code's IDE integration in a worktree's `nvim` tab (coder/claudecode.nvim): see "claude in nvim" below |
 
@@ -100,33 +100,57 @@ from: a few ms), else makes it first:
 - from the repo's store, `<git common dir>/breadboard/bin/<key>/`, when any
   checkout of the clone built these sources before (a copy, ~15 MB): a new
   worktree of `wt:new`, a pull another checkout made first;
-- else `cargo build --release` into the store's `target/`, one for every
-  worktree (the dependencies are built once; one build at a time), its
-  progress on stderr, kept in the store for the others (the newest 8).
+- else `cargo build --release` in the checkout's own `target/`, its progress
+  on stderr, kept in the store for the others (the newest 8).
 
-Uncommitted changes to the crates build in the store's `target/` too, but
-stay out of the store's `bin/`. So a `git pull` never leaves the code from
-before running, `wt:new` needs no `pnpm install`, and a worktree costs no
-cargo target of its own. Without cargo (https://rustup.rs) and without a build
-of those sources, the binary from before runs and says so.
+`BREADBOARD_STORE` moves the store (#456): CI's `build:breadboard` keeps it
+in a cache, so a pipeline whose sources an earlier one built copies the
+binary instead of compiling it; a build there takes the dependencies from a
+second cache, by `Cargo.lock`.
 
-**Every cargo run goes through `herdr/cargo.sh`** (#336): the launcher's
-build and `lint:rs`, `test:rs`. It sets `CARGO_TARGET_DIR` to the store's
-`target/` (cargo locks it: a second run waits instead of compiling beside
-it), runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`). A plain
-`cargo` in the package would compile everything again into a `target/` of
-its own (~2 GB): use the scripts. The launcher removes such a `target/` once
-(keeping the binary), unless a cargo holds it.
+Uncommitted changes to the crates build there too, but stay out of the
+store's `bin/`. **One build per tree** (#451): a build is keyed by the
+sources as they are on disk, uncommitted and untracked ones too (the
+checkout's index copied, the package added to it, its tree listed), so the
+build of a change before its commit carries the key the commit has.
+`breadboard.sh --tree` (`pnpm build:rs`, and the gauntlet before it runs)
+builds the tree when it isn't built; the scripts keep running that binary
+until HEAD's sources move, and once the change is committed as it was built
+it is HEAD's binary: `wt:check` builds nothing, and the first launch after
+the commit puts it into the store. So a `git pull` never leaves the code from before running and
+`wt:new` needs no `pnpm install`. Without cargo (https://rustup.rs) and
+without a build of those sources, the binary from before runs and says so.
+
+**Every cargo run goes through `herdr/cargo.sh`** (#336, #446): the
+launcher's build and `lint:rs`, `test:rs`. Each checkout compiles in its own
+`target/`, so no worktree waits for another's build or check; a
+`CARGO_TARGET_DIR` you set wins (one of your own for an uncommitted binary).
+It runs at `nice 10` on half the cores (`CARGO_BUILD_JOBS`).
+
+**Install [sccache](https://github.com/mozilla/sccache)** once per machine:
+`pacman -S sccache`, `brew install sccache`, `apt install sccache` or
+`cargo install --locked sccache`. `cargo.sh` makes it rustc's wrapper (cc-rs
+uses it for the C code too, `aws-lc-sys`), so a dependency is compiled once
+per version and feature set for every `target/`: a new worktree's first
+build and check compile only the workspace's crates. `sccache --show-stats`
+shows the hits. `cargo.sh` hands cargo the target and the jobs as `--config`,
+not as `CARGO_*` variables: sccache counts those into every crate's key, so
+another target would miss them all. Without sccache every `target/` compiles
+all dependencies (minutes, ~2 GB), after one line that says so; a
+`RUSTC_WRAPPER` you set (empty: none) wins. CI's cargo jobs don't use it.
+The store's `target/` from before (`<git common dir>/breadboard/target`) is
+unused once every worktree has this `cargo.sh`: remove it then.
 
 **A stored copy is what its key says** (#339). cargo's hash of a workspace
 crate leaves out where the workspace is, and it judges freshness by mtimes:
-in a shared `target/`, a worktree's older files count as built after another
-worktree's build, and the binary (or clippy's verdict, the test binaries) is
-the other one's. So `cargo.sh` holds a `flock` on the target for the whole
+in a `target/` two checkouts share (a `CARGO_TARGET_DIR` set by hand), a
+worktree's older files count as built after the other's build, and the
+binary (or clippy's verdict, the test binaries) is the other one's. So
+`cargo.sh` holds a `flock` on the target for the whole
 run and, when another checkout used it last (`.breadboard-from`), cleans the
 workspace's own crates first: switching worktrees recompiles breadboard and
-core, never the dependencies. The launcher reads the sources' key under the
-store's lock, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
+core, never the dependencies. The launcher reads the sources' key (of the tree, #451) right
+before the build, passes it to the build (`BREADBOARD_SOURCE_KEY`), and the
 binary carries it (`breadboard --source-key`). It stores a build only when
 the sources were committed and unchanged across it and the file carries the
 key, and it uses a stored copy only when that copy carries its key (found with
@@ -139,10 +163,10 @@ A task agent is a Claude Code session, not a process (#358, rollout
 #359–#362): every agent of an orchestration runs headless, and a worktree
 of your own keeps its claude in a tab (#361).
 
-- **A click opens one in a tab** (its node, an action that opens it, the
-  worktree view's `resume` row): `claude --resume <id> --name <feature>` in
-  the tab `<feature>` of its worktree's space, once no run of it is in
-  flight; its queue waits until that claude ends.
+- **A click opens one in the detail pane** (its node, an action that opens
+  it, the worktree view's `resume` row, `a`): `claude --resume <id> --name
+  <feature>` beside the overview, once no run of it is in flight; its queue
+  waits until that claude ends.
 - **The tab bar reads the status table**: "N need you" counts its `asks`;
   what an agent waits for is its row in the overview (a worktree has no
   space of its own, #409).
@@ -160,6 +184,8 @@ of your own keeps its claude in a tab (#361).
   A session open in an interactive claude (`~/.claude/sessions`) holds its
   queue. Between runs no claude process exists. The daemon stays while a
   line is queued or a run in flight; one engine per repo (`.claude/runs/engine.pid`).
+  `BREADBOARD_LOOKS` names a file each look at the queue appends
+  `{ at, started }` to (the gauntlet's, #470).
 - **Capacity**: a run starts while `MemAvailable` less 6 GB (the reserve
   `gitlab-runner-autoscale` keeps) and 0.5 GB for each run still starting
   leaves 0.5 GB. Waiting sessions go in the merge order of their
@@ -194,6 +220,22 @@ of your own keeps its claude in a tab (#361).
   `[breadboard] the usage limit reset: continue where you stopped` ahead of
   them. The band says `usage limit until 23:30`, and the orchestrator's
   chat is told once when it holds and once when the runs go on.
+- **Unpushed commits** (#450, `crates/breadboard/src/daemon/push.rs`, the
+  rules in `crates/core/src/push.rs`): a run cut off (herdr killed, OOM)
+  leaves its commits unpushed while the agent idles, and a push needs no
+  LLM. Every 15 s the daemon looks at each orchestrated worktree; one with
+  commits its upstream lacks, its agent's last run ended a minute ago and
+  none queued, no claude open in it, no `wt:check` or background command
+  running and nothing uncommitted gets `wt:check` run by breadboard, then
+  `git push` and a draft MR (`wt:mr`, `Closes #<n>`) when it has none. One
+  at a time across the clone's daemons (`.claude/runs/push.pid`), only while
+  memory allows a run. A red check is one line to the agent (the failing
+  task, the log's end); red again after its fix, or a push git refused, a
+  `look` action of the worktree. Uncommitted changes are one line to the
+  agent, never checked. ACTIONS has no row for them: the node says
+  `2 commits + a merge of develop not pushed · wt:check running, then push`
+  (`.claude/pushing.json`). Off with `git config breadboard.push off`
+  (every gauntlet world but `push.check.mjs`'s).
 - **The status table**, `.claude/runs/status.json`: `running`, `idle`,
   `asks` (the run was denied a tool, its `permission_denials`), `limit`
   (the usage limit), and `queued` from the queue. The overview reads it as
@@ -252,7 +294,7 @@ closed is forgotten.
 
 ## The nvim tab
 
-A worktree's `nvim` tab is your own nvim (LazyVim with neo-tree and gitsigns)
+A worktree's nvim (the detail pane's `e`, or one you start yourself) is your own nvim (LazyVim with neo-tree and gitsigns)
 looking at the branch: everything it changed since it left develop
 (`git merge-base HEAD origin/develop`), committed, uncommitted or untracked,
 what the MR will hold. `nvim/changes.lua` sets the base and the layout,
@@ -304,7 +346,7 @@ own, so every worktree's claude connects to its own nvim. With that
 - claude sees the open file and the selection: select lines, then ask about
   "this" in claude's tab; `<leader>as` sends the selection as a reference.
 
-The first nvim tab clones the plugin, pinned by tag and commit (`PLUGIN_TAG` in
+The first nvim clones the plugin, pinned by tag and commit (`PLUGIN_TAG` in
 `crates/breadboard/src/cli/lifecycle/layout/nvim.rs`), into `.claude/nvim/` of the main checkout; git
 ignores it. Your nvim and claude config stay as they are; while it runs, the
 plugin writes its lock file into `~/.claude/ide/` like any IDE.
@@ -316,7 +358,7 @@ git config breadboard.ide false   # off
 git config --unset breadboard.ide # on again (the default)
 ```
 
-The next nvim tab and the next claude breadboard starts follow it; quit the
+The next nvim and the next claude breadboard starts follow it; quit the
 nvim of a running tab (`:qa`), the next layout starts it again. claude looks
 for its nvim for 30 s after it starts: one started earlier, or a claude that
 came into the worktree with EnterWorktree, connects with `/ide`.
@@ -430,6 +472,30 @@ breadboard decides which pipelines exist at all:
   `CI 3/4 slots · 2 queued`. The queue's state is
   `.claude/ci/queue.json`.
 
+## The bench
+
+What breadboard's instructions save (#430): the same small issues, each
+run by one headless agent in a probe of its own (a throwaway clone with the
+gauntlet's fake GitLab, nothing reaching the real one), with the long brief
+and AGENTS.md (`full`), the pointer, skill and lean brief of #426–#429
+(`lean`), or no breadboard instructions at all (`none`: hooks, lint and the
+pre-push check stay, they are not instructions).
+`packages/breadboard-gauntlet/src/bench/` holds it.
+
+```sh
+pnpm --filter @monocircuit/breadboard-gauntlet bench           # every task × full and none
+pnpm --filter @monocircuit/breadboard-gauntlet bench --fake    # the harness alone, no spend
+pnpm --filter @monocircuit/breadboard-gauntlet bench --table   # this table from bench/results/
+```
+
+A real run needs Claude's login in the environment
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`): a probe has no
+`~/.claude`.
+
+<!-- BEGIN:bench -->
+No results yet: `pnpm --filter @monocircuit/breadboard-gauntlet bench`.
+<!-- END:bench -->
+
 ## Checks
 
 ```sh
@@ -437,7 +503,7 @@ pnpm --filter @monocircuit/breadboard lint      # ESLint of the JavaScript left
 pnpm --filter @monocircuit/breadboard lint:rs   # cargo fmt, clippy -D warnings
 pnpm --filter @monocircuit/breadboard test      # nvim's Lua in a headless nvim
 pnpm --filter @monocircuit/breadboard test:rs   # cargo test (tests next to the code)
-pnpm --filter @monocircuit/breadboard build:rs  # the binary of HEAD, through the launcher
+pnpm --filter @monocircuit/breadboard build:rs  # the binary of the tree (uncommitted changes too), through the launcher
 pnpm --filter @monocircuit/breadboard-gauntlet gauntlet   # the black-box suite against this checkout's binary
 ```
 

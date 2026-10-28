@@ -601,9 +601,9 @@ pub struct Ranks {
     pub preempts: HashMap<i64, Preemption>,
     /// Now (ms): how long a pipeline ran, how long ago an MR was preempted.
     pub now: i64,
-    /// The branch whose MRs merge on wt:check, without a pipeline of their own
-    /// (#443, `[merge] needs_pipeline = false`): the default branch, else None.
-    pub no_pipeline_into: Option<String>,
+    /// Which MRs merge on wt:check, without a pipeline of their own (#443,
+    /// `[merge] needs_pipeline = false`; #461, `batch_needs_pipeline = false`).
+    pub on_check: crate::model::merge::OnCheck,
 }
 
 impl Ranks {
@@ -619,13 +619,13 @@ impl Ranks {
             cancelled: HashSet::new(),
             preempts: HashMap::new(),
             now: 0,
-            no_pipeline_into: None,
+            on_check: Default::default(),
         }
     }
 
     /// Its merge needs no pipeline (#443): none starts by itself, a click still runs one.
     fn needs_none(&self, mr: &OpenMr) -> bool {
-        self.no_pipeline_into.as_deref() == Some(mr.target.as_str()) && !self.run_now.contains_key(&mr.iid)
+        self.on_check.covers(&mr.source, &mr.target) && !self.run_now.contains_key(&mr.iid)
     }
 
     /// An MR of an orchestration whose order the queue reads, or a batch
@@ -1436,11 +1436,32 @@ mod tests {
         };
         let mrs = [mr(1, "a", None), into_epic];
         let mut ranks = order(&[1, 2]);
-        ranks.no_pipeline_into = Some("develop".into());
+        ranks.on_check.into_default = true;
         let decision = decide_now(&mrs, &ranks, slots(4, 0));
         assert_eq!(decision.start.map(|start| start.iid), Some(2));
         assert_eq!(decision.places.get(&1), None, "its row says it merges on wt:check");
         // A click still runs one.
+        ranks.run_now.insert(1, 5);
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start.unwrap().iid, 1);
+    }
+
+    #[test]
+    fn starts_no_pipeline_for_a_task_into_its_batch_but_for_the_batch() {
+        // #461: `[merge] batch_needs_pipeline = false`: a task into its batch
+        // merges on wt:check; the batch MR into develop runs the full set,
+        // `[merge] needs_pipeline = false` or not.
+        let mrs = [into_batch(1, "a", None), batch(9, "b", None)];
+        let mut ranks = order(&[1]);
+        ranks.on_check.into_batch = true;
+        ranks.on_check.into_default = true;
+        let decision = decide_now(&mrs, &ranks, slots(4, 0));
+        assert_eq!(decision.start.map(|start| start.iid), Some(9));
+        assert_eq!(decision.places.get(&1), None, "its row says it merges on wt:check");
+        ranks.on_check.into_batch = false;
+        let mrs = [into_batch(1, "a", None)];
+        assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start.unwrap().iid, 1);
+        // A click still runs one.
+        ranks.on_check.into_batch = true;
         ranks.run_now.insert(1, 5);
         assert_eq!(decide_now(&mrs, &ranks, slots(4, 0)).start.unwrap().iid, 1);
     }

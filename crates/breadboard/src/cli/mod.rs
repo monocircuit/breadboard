@@ -113,7 +113,7 @@ mod tests {
         assert_eq!(meant("up"), Some("stack:up"));
         assert_eq!(meant("frobnicate"), None);
         assert!(
-            usage().contains("\n  wt:action  wt:epic  wt:journal  wt:merge-base  wt:mr  wt:note  wt:tick  wt:wait\n")
+            usage().contains("\n  status  submit  wt:action  wt:batch  wt:epic  wt:journal  wt:merge-base  wt:mr  wt:note  wt:tick\n  wt:wait\n")
         );
     }
 
@@ -141,8 +141,8 @@ mod tests {
             })
         };
         let ours = add(&[
-            ("mod action;", "mod bisect;"),
-            ("    (\"wt:action\", action::run),", "    (\"wt:bisect\", bisect::run),"),
+            ("mod batch;", "mod bisect;"),
+            ("    (\"wt:batch\", batch::run),", "    (\"wt:bisect\", bisect::run),"),
         ]);
         let theirs = add(&[
             ("mod epic;", "mod fold;"),

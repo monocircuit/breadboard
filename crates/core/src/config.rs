@@ -24,7 +24,6 @@ pub struct Config {
     /// The dev stack of a checkout; None: worktrees have none.
     pub stack: Option<Stack>,
     pub mr: Mr,
-    pub orchestration: Orchestration,
     pub orchestrator: Orchestrator,
     pub agents: Agents,
     pub tries: Tries,
@@ -79,11 +78,19 @@ pub struct Merge {
     /// enough, the CI queue starts none, and the default branch's pipeline
     /// after the merge is the safety net.
     pub needs_pipeline: bool,
+    /// A task MR into a batch (#461) must pass its own pipeline before the
+    /// overview merges it. Off: `wt:check` passed at its pushed head is
+    /// enough, the CI queue starts none, and the batch MR's full pipeline
+    /// into the default branch is the test.
+    pub batch_needs_pipeline: bool,
 }
 
 impl Default for Merge {
     fn default() -> Self {
-        Merge { needs_pipeline: true }
+        Merge {
+            needs_pipeline: true,
+            batch_needs_pipeline: true,
+        }
     }
 }
 
@@ -252,8 +259,9 @@ pub struct Stack {
     /// What a worktree may run beside its stack, on a port moved with it (Storybook).
     #[serde(default)]
     pub tools: Vec<Tool>,
-    /// An orchestration's epic stack and the task stacks on it (#351, #365);
+    /// The batch stack (`[stack.batch]`, #411; the epic stack of #351, #365) and the task stacks on it;
     /// None: an orchestration's worktrees get own stacks.
+    #[serde(rename = "batch")]
     pub epic: Option<Epic>,
 }
 
@@ -414,16 +422,6 @@ impl Default for Mr {
     }
 }
 
-/// How an orchestration works.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub struct Orchestration {
-    /// A new orchestration makes an epic branch its tasks branch off and
-    /// merge into (#350), its number from the issues' milestone
-    /// (`… Epic N: …`) or `--epic`; else it works on the default branch.
-    pub epic_branches: bool,
-}
-
 /// The orchestrator's chat (#382): when it gets a fresh start.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -454,29 +452,55 @@ pub struct Agents {
     /// What an orchestration's agents may spend in all, shown against its
     /// spend in its band; None: none shown.
     pub orchestration_budget: Option<crate::spend::Limit>,
-    /// The share of its context window, in percent, above which an agent
-    /// retires at its merge instead of taking a next issue: its next one
-    /// goes to a fresh agent with its written handoff (#381).
-    pub fresh_above: u8,
+    /// The context, in tokens, above which an agent retires at its merge
+    /// instead of taking a next issue: its next one goes to a fresh agent
+    /// with its written handoff (#381, #445).
+    pub fresh_above: u64,
+    /// The context above which it retires once idle longer than
+    /// `idle_minutes`: its prompt cache is gone, a resume writes it all again.
+    pub idle_fresh_above: u64,
+    /// How long idle that is: a little under the cache's hour.
+    pub idle_minutes: u32,
+    /// The MCP configs (files, relative to the main checkout) a headless
+    /// run loads (#445); none by default: every server's tools are in
+    /// each call's context.
+    pub mcp_configs: Vec<String>,
+    /// The model of each kind of work (#373, `stage.rs`).
+    pub models: Models,
+    /// The labels that make an issue's agent a `docs` one (#373).
+    pub docs_labels: Vec<String>,
+    /// How many runs may be in flight at once (#445): after a crash every
+    /// cut-off agent is picked up, a few at a time, never all together.
+    pub max_runs: usize,
 }
 
-/// `[agents] fresh_above` when the file says nothing.
-pub const FRESH_ABOVE: u8 = 40;
+/// `[agents.models]` (#373): a model per stage, `default` for the ones
+/// without; none at all leaves claude's own default.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Models {
+    pub default: Option<String>,
+    pub build: Option<String>,
+    pub docs: Option<String>,
+    /// The try checker's; None: `[tries] checker`.
+    pub review: Option<String>,
+    pub ci_fix: Option<String>,
+    pub orchestrator: Option<String>,
+}
 
 impl Default for Agents {
     fn default() -> Self {
         Agents {
             daily_limit: None,
             orchestration_budget: None,
-            fresh_above: FRESH_ABOVE,
+            fresh_above: 150_000,
+            idle_fresh_above: 100_000,
+            idle_minutes: 55,
+            mcp_configs: Vec::new(),
+            models: Models::default(),
+            docs_labels: vec!["documentation".into()],
+            max_runs: 4,
         }
-    }
-}
-
-impl Agents {
-    /// `fresh_above` as a share of the window, 0.4.
-    pub fn limit(&self) -> f64 {
-        f64::from(self.fresh_above) / 100.0
     }
 }
 
@@ -756,11 +780,18 @@ impl Config {
     /// What serde can't say: names and ports that must be there and apart.
     fn validate(&self) -> Result<(), String> {
         let bad = |key: &str, why: &str| Err(format!("{key}: {why}"));
-        if !(1..=100).contains(&self.agents.fresh_above) {
+        let agents = &self.agents;
+        if agents.fresh_above < 10_000 || agents.idle_fresh_above < 10_000 {
             return bad(
                 "agents.fresh_above",
-                "must be a percent of the context window, 1 to 100",
+                "fresh_above and idle_fresh_above are tokens of context now (#445), at least 10_000, e.g. 150_000",
             );
+        }
+        if agents.max_runs == 0 {
+            return bad("agents.max_runs", "must be at least 1");
+        }
+        if agents.idle_minutes == 0 {
+            return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");
         }
         if let Some(branch) = &self.repo.default_branch
             && (branch.trim().is_empty() || branch.contains(char::is_whitespace))
@@ -875,7 +906,7 @@ fn is_product_name(name: &str) -> bool {
 
 impl Epic {
     fn validate(&self, stack: &Stack) -> Result<(), String> {
-        let bad = |key: &str, why: &str| Err(format!("stack.epic.{key}: {why}"));
+        let bad = |key: &str, why: &str| Err(format!("stack.batch.{key}: {why}"));
         if stack.service(&self.service).is_none_or(|service| service.env.is_none()) {
             return bad(
                 "service",
@@ -886,7 +917,7 @@ impl Epic {
             );
         }
         if stack.migrations.is_none() {
-            return Err("stack.epic: needs [stack.migrations], its `run` migrates the template".into());
+            return Err("stack.batch: needs [stack.migrations], its `run` migrates the template".into());
         }
         if self.template.trim().is_empty() {
             return bad("template", "must not be empty");
@@ -930,7 +961,8 @@ pub fn has_stack() -> bool {
 
 /// `text` in the words of the repo of the working directory: its commands
 /// as it types them (`pnpm wt:new` → `breadboard wt:new` where breadboard.toml
-/// names no `[repo] run`) and its default branch for `develop`. For what is
+/// names no `[repo] run`; `bb submit` → `breadboard submit` there too, `bb`
+/// is the monorepo's shim, #427) and its default branch for `develop`. For what is
 /// written once in the words of the repo breadboard is developed in: the
 /// usage and help texts, the lines said.
 pub fn in_repo(text: &str) -> String {
@@ -940,12 +972,14 @@ pub fn in_repo(text: &str) -> String {
         )
         .unwrap()
     });
+    static BB: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bbb (status|submit)\b").unwrap());
     static DEVELOP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\bdevelop\b").unwrap());
     let loaded = here();
     let run = loaded.config.repo.run.as_deref().unwrap_or("breadboard");
     let mut text = std::borrow::Cow::Borrowed(text);
     if run != "pnpm" {
         text = std::borrow::Cow::Owned(COMMAND.replace_all(&text, format!("{run} $1").as_str()).into_owned());
+        text = std::borrow::Cow::Owned(BB.replace_all(&text, "breadboard $1").into_owned());
     }
     if loaded.branch != "develop" {
         text = std::borrow::Cow::Owned(DEVELOP.replace_all(&text, loaded.branch.as_str()).into_owned());
@@ -966,6 +1000,17 @@ pub struct Loaded {
 }
 
 impl Loaded {
+    /// How an agent of this repo types `bb status` / `bb submit`: `bb`, the
+    /// monorepo's shim (#427), where breadboard runs through pnpm, else
+    /// `breadboard` (as `in_repo` says it).
+    pub fn bb(&self) -> &'static str {
+        if self.config.repo.run.as_deref() == Some("pnpm") {
+            "bb"
+        } else {
+            "breadboard"
+        }
+    }
+
     /// `origin/<branch>`.
     pub fn base(&self) -> String {
         format!("origin/{}", self.branch)
@@ -1225,13 +1270,13 @@ mod tests {
     #[test]
     fn says_a_command_as_the_repo_types_it() {
         // Here, in the repo breadboard is developed in, `pnpm` stays when its file names it.
-        let text = "usage: pnpm wt:new <f> · pnpm install · pnpm herdr:install, from develop";
+        let text = "usage: pnpm wt:new <f> · pnpm install · pnpm herdr:install · bb submit, from develop";
         if run_word() == "pnpm" && here().branch == "develop" {
             assert_eq!(in_repo(text), text);
         } else if run_word() == "breadboard" {
-            assert!(
-                in_repo(text).starts_with("usage: breadboard wt:new <f> · pnpm install · breadboard herdr:install")
-            );
+            assert!(in_repo(text).starts_with(
+                "usage: breadboard wt:new <f> · pnpm install · breadboard herdr:install · breadboard submit"
+            ));
         }
     }
 
@@ -1272,16 +1317,16 @@ mod tests {
         let stack = "[stack]\nproject = \"p\"\n[stack.app]\nport = 3000\n\
                      [[stack.services]]\nname = \"postgres\"\nport = 5432\nenv = \"DB_PORT\"\n";
         let migrations = "[stack.migrations]\njournal = \"j\"\nrun = \"migrate\"\n";
-        let epic = "[stack.epic]\ntemplate = \"t\"\nstamp = \"db\"\n";
-        let clone = "[[stack.epic.databases]]\nname = \"app\"\nowner = \"o\"\nis_clone = true\n";
+        let epic = "[stack.batch]\ntemplate = \"t\"\nstamp = \"db\"\n";
+        let clone = "[[stack.batch.databases]]\nname = \"app\"\nowner = \"o\"\nis_clone = true\n";
         assert!(Config::parse(&format!("{stack}{migrations}{epic}{clone}")).is_ok());
         let error = Config::parse(&format!("{stack}{epic}{clone}")).unwrap_err();
-        assert!(error.starts_with("stack.epic: needs [stack.migrations]"), "{error}");
+        assert!(error.starts_with("stack.batch: needs [stack.migrations]"), "{error}");
         let error = Config::parse(&format!("{stack}{migrations}{epic}")).unwrap_err();
-        assert!(error.starts_with("stack.epic.databases: exactly one"), "{error}");
+        assert!(error.starts_with("stack.batch.databases: exactly one"), "{error}");
         let error = Config::parse(&format!("{stack}{migrations}{epic}service = \"db\"\n{clone}")).unwrap_err();
         assert!(
-            error.starts_with("stack.epic.service: \"db\" is no [[stack.services]]"),
+            error.starts_with("stack.batch.service: \"db\" is no [[stack.services]]"),
             "{error}"
         );
     }

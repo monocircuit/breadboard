@@ -1,4 +1,4 @@
-//! `wt:orchestrate <name> <issue> --to <agent> [--limit <percent>] [--after
+//! `wt:orchestrate <name> <issue> --to <agent> [--limit <k tokens>] [--after
 //! !<mr>…] [--dry-run] [--shared] [--peer <session>] [--brief <file>]`, the
 //! one handover (cli/lifecycle.rs routes it here)
 //! (worktree/commands/handover.mjs, workers.mjs, history.mjs): the issue goes
@@ -17,12 +17,14 @@ use super::herdr;
 use super::plugin;
 use super::proc::{Done, Fail, Wait, as_step, done, exe, fail, output_within, step, text};
 use super::repo::Repo;
-use breadboard_core::conversations::interactive_pids_of;
+use breadboard_core::conversations::{self, context_of, interactive_pids_of};
+use breadboard_core::fresh::Fresh;
 use breadboard_core::git::branch_files;
 use breadboard_core::json::{self, int_of, str_of};
 use breadboard_core::record::{self, is_name, origin_of};
 use breadboard_core::runs;
 use breadboard_core::setups::{Claim, claim_setup, setup_text};
+use breadboard_core::stage::{self, Stage};
 use breadboard_core::time::{now_ms, to_iso};
 pub use brief::brief_of;
 use regex::Regex;
@@ -34,14 +36,13 @@ use std::process::{Command, Stdio};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <percent>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
-const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <percent>]";
-/// The share of its context above which an agent gets no next issue: it would run out in the middle of it.
-/// The share of its context above which an agent gets no next issue but
-/// retires (#381): the setting `agent fresh start` of the orchestration
-/// `name` (#415), by default breadboard.toml's `[agents] fresh_above`.
-pub fn context_limit(main: &Path, name: &str) -> f64 {
-    breadboard_core::settings::of(main, name).agent_limit
+const USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--after !<mr>…] [--limit <k tokens>] [--shared] [--peer <session>] [--brief <file>] [--dry-run]";
+const LIMIT_USAGE: &str = "usage: pnpm wt:orchestrate <name> <issue> --to <agent> [--limit <k tokens>]";
+/// When an agent gets no next issue but retires (#381, #445): the settings
+/// `agent fresh start`, `… when idle` and `agent idle time` of the
+/// orchestration `name` (#415), by default breadboard.toml's `[agents]`.
+pub fn fresh_rule(main: &Path, name: &str) -> Fresh {
+    breadboard_core::settings::of(main, name).agent_fresh
 }
 /// The flags whose next word is their value, not an issue.
 const VALUED: [&str; 4] = ["--peer", "--brief", "--to", "--limit"];
@@ -51,7 +52,7 @@ const TAKES: Takes = Takes {
     lists: &["--after"],
     // `--to hands over one issue at a time` says more than "one argument too many".
     words: usize::MAX,
-    about: "Hands the issue to an idle agent of the orchestration <name> instead of a fresh one: its worktree is made, the agent moves into it, is renamed after it and told in its prompt. --after !<mr>… only announces it: the overview hands it over once those MRs are merged. --limit: the share of its context (default breadboard.toml's [agents] fresh_above, 40 %) above which the agent gets no next issue. --dry-run shows the brief and changes nothing.",
+    about: "Hands the issue to an idle agent of the orchestration <name> instead of a fresh one: its worktree is made, the agent moves into it, is renamed after it and told in its prompt. --after !<mr>… only announces it: the overview hands it over once those MRs are merged. --limit: the context in thousands of tokens (default breadboard.toml's [agents] fresh_above, 150) above which the agent gets no next issue; past [agents] idle_fresh_above (100) it gets none either once idle longer than idle_minutes (55). --dry-run shows the brief and changes nothing.",
     usage: USAGE,
 };
 /// The flags of `wt:orchestrate` that start or queue fresh agents: none of them goes with `--to`.
@@ -110,12 +111,16 @@ pub struct Issue {
     pub description: String,
     pub feature: String,
     pub is_fix: bool,
+    /// Labelled `hotfix` (#411): a fix of it bypasses the batch.
+    pub is_hotfix: bool,
     pub dir: PathBuf,
     /// Why it can't get a worktree: closed, there already, claimed on origin.
     pub why: Option<String>,
     pub branch: String,
     /// Its milestone's title: which epic it belongs to (#350).
     pub milestone: Option<String>,
+    /// Its kind of work by its labels, its agent's model (#373).
+    pub stage: Stage,
 }
 
 const STOPWORDS: [&str; 15] = [
@@ -274,10 +279,13 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     } else {
         arg.to_string()
     };
-    let is_fix = found
+    let labels: Vec<String> = found
         .get("labels")
         .and_then(Value::as_array)
-        .is_some_and(|labels| labels.iter().any(|l| l == "bug"));
+        .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
+        .unwrap_or_default();
+    let is_fix = labels.iter().any(|label| label == "bug");
+    let is_hotfix = labels.iter().any(|label| label == "hotfix");
     let dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
     let why = if state != "opened" {
@@ -301,12 +309,14 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
         feature,
         is_fix,
+        is_hotfix,
         dir,
         why,
         milestone: found
             .get("milestone")
             .and_then(|milestone| str_of(milestone, "title"))
             .map(String::from),
+        stage: stage::of_labels(&breadboard_core::config::of(&repo.main).config, &labels),
     })
 }
 
@@ -485,8 +495,8 @@ fn herdr_unanswered(why: &str, worker: &str) -> Fail {
 
 /// Why an agent can't take a next issue, or None: no pane runs it (a free
 /// agent sleeps without one, #345), it works or waits, herdr can't tell, or
-/// its context `share` is above `limit`.
-pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit: f64) -> Option<String> {
+/// it starts fresh (`fresh`, why: `Fresh::why`, #445).
+pub fn refusal_of(pane: Option<&Value>, is_free: bool, fresh: Option<String>) -> Option<String> {
     let status = match pane {
         Some(pane) => pane.get("agent_status").and_then(Value::as_str).unwrap_or("unknown"),
         None if is_free => "idle",
@@ -500,13 +510,7 @@ pub fn refusal_of(pane: Option<&Value>, is_free: bool, share: Option<f64>, limit
         "idle" | "done" => {}
         other => return Some(format!("herdr can't tell what it does ({other})")),
     }
-    let share = share.filter(|share| *share > limit)?;
-    let percent = |value: f64| (value * 100.0).round() as i64;
-    Some(format!(
-        "its context is at {} %, above the limit of {} %",
-        percent(share),
-        percent(limit)
-    ))
+    fresh
 }
 
 /// The first prompt of an agent resumed in the worktree of its next issue;
@@ -1044,16 +1048,12 @@ fn no_agent(label: &str, who: &str, workers: &[Worker]) -> Fail {
 pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let name = request.name;
     let label = repo.space_label_of(name);
-    let limit = match request.limit {
-        None => context_limit(&repo.main, name),
-        Some(percent) => percent
-            .trim()
-            .parse::<f64>()
-            .map(|percent| percent / 100.0)
-            .unwrap_or(f64::NAN),
-    };
-    if !(limit > 0.0 && limit <= 1.0) {
-        return fail(LIMIT_USAGE);
+    let mut rule = fresh_rule(&repo.main, name);
+    if let Some(limit) = request.limit {
+        match limit.trim().trim_end_matches(['k', 'K']).trim().parse::<u64>() {
+            Ok(thousands) if thousands > 0 => rule.above = thousands * 1000,
+            _ => return fail(LIMIT_USAGE),
+        }
     }
     let workers = workers_of(repo, name);
     let Some(worker) = find_worker(&workers, request.to).cloned() else {
@@ -1063,8 +1063,11 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     let idle = format!("herdr: is {} idle?", worker.name);
     let pane =
         as_step(&idle, || agent_of(&repo.main, &worker.id)).map_err(|why| herdr_unanswered(&why, &worker.name))?;
+    let context = context_of(&worker.id);
     let share = context_share_of(&worker.id);
-    let refusal = refusal_of(pane.as_ref(), worker.is_free, share, limit);
+    let fresh = context.and_then(|context| rule.why(&context, now_ms()));
+    let is_full = fresh.is_some();
+    let refusal = refusal_of(pane.as_ref(), worker.is_free, fresh);
     let issue = read_issue(repo, request.issue)?;
     let number = issue.number;
     // The handover fails: in the agent's history (not on a dry run), then said.
@@ -1075,7 +1078,19 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         fail(format!("{} gets no next issue: {reason}", worker.name))
     };
     if let Some(refusal) = refusal {
-        return failed(&refusal);
+        if !is_full {
+            return failed(&refusal);
+        }
+        // Too full to take it (#445): a fresh agent instead, in its worktree
+        // should that be there without one (#455).
+        if !request.is_dry {
+            record_failure(repo, name, &worker.id, number, &refusal);
+        }
+        return fail(format!(
+            "{} gets no next issue: {refusal}; a fresh agent instead: {} wt:orchestrate {name} {number}",
+            worker.name,
+            breadboard_core::config::run_word()
+        ));
     }
     // Once nothing refused it: a refusal costs no extra herdr call (#230).
     if !request.is_dry {
@@ -1183,7 +1198,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
             ));
         }
     };
-    if let Some(now) = refusal_of(pane.as_ref(), worker.is_free, None, limit) {
+    if let Some(now) = refusal_of(pane.as_ref(), worker.is_free, None) {
         let why = format!(
             "after the setup, {} {}",
             worker.name,
@@ -1202,6 +1217,8 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
     if let Err(error) = record::write_brief(&issue.dir, &brief) {
         return fail(format!("the brief of #{number} could not be written: {error}"));
     }
+    // Its runs there are on the model of the issue's kind of work (#373).
+    let _ = stage::write(&issue.dir, issue.stage);
     let feature = issue.feature.as_str();
     let line = next_issue_line(number, feature, &issue.dir);
     // A headless agent (#359, #361): its next run, in the worktree under its new name; nothing is typed.
@@ -1257,16 +1274,17 @@ fn alarm(repo: &Repo, name: &str, text: &str) {
 fn unbind(worker: &Worker, issue: &Issue) {
     let _ = fs::remove_file(session_file(&issue.dir));
     if !worker.is_free {
-        let _ = fs::write(session_file(&worker.dir), format!("{}\n", worker.id));
+        let _ = conversations::bind(&worker.dir, &worker.id);
     }
 }
 
 /// The binding follows the conversation: a restart resumes it in its new
 /// worktree; a free agent's checkout is the orchestration's, no binding of its own there.
 fn bind(worker: &Worker, issue: &Issue) {
-    let _ = fs::write(session_file(&issue.dir), format!("{}\n", worker.id));
+    let _ = conversations::bind(&issue.dir, &worker.id);
     if !worker.is_free {
-        let _ = fs::remove_file(session_file(&worker.dir));
+        // Its MR merged, its worktree goes; unmerged, a fresh agent takes it on (#455).
+        conversations::unbind_leaving(&worker.dir, Some(&worker.id));
     }
 }
 
@@ -1418,29 +1436,27 @@ mod tests {
     fn refuses_an_agent_at_work_or_full() {
         let pane = |status: &str| json!({ "agent_status": status });
         assert_eq!(
-            refusal_of(None, false, None, 0.5).unwrap(),
+            refusal_of(None, false, None).unwrap(),
             "no claude runs it (herdr knows no pane with its conversation)"
         );
         assert_eq!(
-            refusal_of(Some(&pane("working")), false, None, 0.5).unwrap(),
+            refusal_of(Some(&pane("working")), false, None).unwrap(),
             "it is working"
         );
         assert_eq!(
-            refusal_of(Some(&pane("blocked")), false, None, 0.5).unwrap(),
+            refusal_of(Some(&pane("blocked")), false, None).unwrap(),
             "it waits for an answer"
         );
         assert_eq!(
-            refusal_of(Some(&json!({})), false, None, 0.5).unwrap(),
+            refusal_of(Some(&json!({})), false, None).unwrap(),
             "herdr can't tell what it does (unknown)"
         );
-        assert_eq!(
-            refusal_of(Some(&pane("idle")), false, Some(0.62), 0.5).unwrap(),
-            "its context is at 62 %, above the limit of 50 %"
-        );
-        assert_eq!(refusal_of(Some(&pane("done")), false, Some(0.4), 0.5), None);
-        // A free agent sleeps without a pane (#345): it takes one, unless full.
-        assert_eq!(refusal_of(None, true, Some(0.4), 0.5), None);
-        assert!(refusal_of(None, true, Some(0.62), 0.5).is_some());
+        let full = || Some("its context holds 162 k tokens, above 150 k".to_string());
+        assert_eq!(refusal_of(Some(&pane("idle")), false, full()), full());
+        assert_eq!(refusal_of(Some(&pane("done")), false, None), None);
+        // A free agent sleeps without a pane (#345): it takes one, unless it starts fresh.
+        assert_eq!(refusal_of(None, true, None), None);
+        assert_eq!(refusal_of(None, true, full()), full());
     }
 
     #[test]
@@ -1451,10 +1467,12 @@ mod tests {
             description: String::new(),
             feature: "5-t".into(),
             is_fix: false,
+            is_hotfix: false,
             dir: PathBuf::from("/r/p-5-t"),
             why: None,
             branch: "feature/5-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         let known = json!({ "number": 5, "queued": true, "queuedAt": "2026-10-01T10:00:00.000Z" });
         assert_eq!(
@@ -1473,10 +1491,12 @@ mod tests {
             description: String::new(),
             feature: "247-t".into(),
             is_fix: true,
+            is_hotfix: false,
             dir: PathBuf::from("/r/p-247-t"),
             why: None,
             branch: "fix/247-t".into(),
             milestone: None,
+            stage: breadboard_core::stage::Stage::Build,
         };
         assert_eq!(undone(true, &issue), "the worktree of #247 is removed again");
         let stays = undone(false, &issue);

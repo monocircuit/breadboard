@@ -94,6 +94,15 @@ fn js_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
+/// A box's text as a line shows it: cut at a hundred.
+pub fn cut(text: &str) -> String {
+    if js_len(text) > 100 {
+        format!("{}…", js_slice(text, 99))
+    } else {
+        text.to_string()
+    }
+}
+
 /// The boxes numbered under their headings, the way wt:tick shows them;
 /// `marked`: the indexes just ticked. Lines, each as console.log prints one.
 pub fn print_boxes(boxes: &[Box], marked: &[usize]) -> Vec<String> {
@@ -104,11 +113,7 @@ pub fn print_boxes(boxes: &[Box], marked: &[usize]) -> Vec<String> {
             heading = Some(each.heading.as_deref());
             lines.push(format!("\n  {}", each.heading.as_deref().unwrap_or("(no heading)")));
         }
-        let text = if js_len(&each.text) > 100 {
-            format!("{}…", js_slice(&each.text, 99))
-        } else {
-            each.text.clone()
-        };
+        let text = cut(&each.text);
         lines.push(format!(
             "  {:>3} {} {text}{}",
             index + 1,

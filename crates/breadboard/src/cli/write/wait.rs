@@ -137,7 +137,7 @@ fn parse_wait(argv: &[String]) -> Result<Parsed, String> {
         at += 1;
     }
     if parsed.mrs.is_empty() {
-        return Err("name the MRs to wait for: !213 !217".into());
+        return Err("name the MRs to wait for: pnpm wt:wait !213 !217".into());
     }
     Ok(parsed)
 }
@@ -371,7 +371,10 @@ pub fn run(argv: &Argv) -> Outcome {
     }
     let here = Here::find();
     let Some(dir) = here.worktree() else {
-        return Err("wt:wait is for a worktree's agent".into());
+        return Err(
+            "wt:wait is for a worktree's agent: run it in your worktree (cd <worktree>, then pnpm wt:wait !<mr>)"
+                .into(),
+        );
     };
     if argv.has("--cancel") {
         let wait = wait_of(dir);
@@ -395,7 +398,10 @@ pub fn run(argv: &Argv) -> Outcome {
         .map(|(&iid, _)| iid)
         .collect();
     if !unknown.is_empty() {
-        return Err(format!("GitLab has no MR {}", list_of(&unknown)));
+        return Err(format!(
+            "GitLab has no MR {}: glab mr list shows the open ones",
+            list_of(&unknown)
+        ));
     }
     if let Some(failure) = failure_of(&first) {
         return Err(failure.to_string());
@@ -547,7 +553,7 @@ mod tests {
         );
         assert_eq!(
             parse_wait(&args(&["--then", "x"])),
-            Err("name the MRs to wait for: !213 !217".into())
+            Err("name the MRs to wait for: pnpm wt:wait !213 !217".into())
         );
         assert_eq!(parse_wait(&args(&["!1", "--then="])).unwrap().then, None);
     }

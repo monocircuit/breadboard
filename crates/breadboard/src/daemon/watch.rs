@@ -67,7 +67,7 @@ fn look(main: &Path, glab: &str, docker: &str) {
     let Some(report) = read(main, glab, docker, &mut history, &watch) else {
         return;
     };
-    post(main, &mut history, &report);
+    post(main, &mut history, &report, |job| open_issue_of(main, glab, job));
     let _ = breadboard_core::ci::write_whole(&file, &history);
     let _ = breadboard_core::ci::write_whole(&ci_watch::watch_file(main), &report);
 }
@@ -233,6 +233,60 @@ pub fn plan_text(flag: &Flag) -> String {
     format!("file an issue to speed up {}? {}", flag.job, flag.line())
 }
 
+/// A slow job with an open issue naming it (its title): the issue pointed
+/// to, no question to file another (#462).
+pub fn known_text(flag: &Flag, iid: i64) -> String {
+    format!(
+        "{} still holds pipelines up, #{iid} is open for it: {}",
+        flag.job,
+        flag.line()
+    )
+}
+
+/// The open issue whose title names `job`, asked of GitLab once per new
+/// suggestion; None when there is none or GitLab didn't answer.
+fn open_issue_of(main: &Path, glab: &str, job: &str) -> Option<i64> {
+    let job = base_of(job);
+    let endpoint = format!(
+        "projects/:fullpath/issues?state=opened&in=title&per_page=20&search={}",
+        crate::cli::lifecycle::gitlab::encode(job)
+    );
+    let Ok(Value::Array(issues)) = super::glab::glab_get(main, glab, &endpoint) else {
+        return None;
+    };
+    issue_naming(&issues, job)
+}
+
+/// A parallel job without its copy (`check:x 3/3` → `check:x`): an issue names the job.
+fn base_of(job: &str) -> &str {
+    match job.rsplit_once(' ') {
+        Some((base, copy))
+            if copy.split_once('/').is_some_and(|(of, among)| {
+                !of.is_empty() && !among.is_empty() && of.chars().chain(among.chars()).all(|c| c.is_ascii_digit())
+            }) =>
+        {
+            base
+        }
+        _ => job,
+    }
+}
+
+/// The newest of `issues` whose title names `job` as a word (`check:g`, not `check:gx`).
+fn issue_naming(issues: &[Value], job: &str) -> Option<i64> {
+    let is_part = |c: char| c.is_alphanumeric() || matches!(c, ':' | '-' | '_');
+    issues
+        .iter()
+        .filter(|issue| {
+            let title = issue.get("title").and_then(Value::as_str).unwrap_or_default();
+            title.match_indices(job).any(|(at, _)| {
+                !title[..at].chars().next_back().is_some_and(is_part)
+                    && !title[at + job.len()..].chars().next().is_some_and(is_part)
+            })
+        })
+        .filter_map(|issue| issue.get("iid").and_then(Value::as_i64))
+        .max()
+}
+
 /// The question of a hung job, its id and page to act on.
 pub fn hung_text(hung: &Hung) -> String {
     let url = hung.url.as_deref().map(|url| format!(", {url}")).unwrap_or_default();
@@ -241,20 +295,29 @@ pub fn hung_text(hung: &Hung) -> String {
 
 /// The report's flags as actions, each once into every orchestration's
 /// record; a hung job's question goes once the job ended unanswered.
-fn post(main: &Path, history: &mut History, report: &Report) {
+/// `issue_of` names the open issue of a slow job: asked only for a flag not posted yet.
+fn post(main: &Path, history: &mut History, report: &Report, issue_of: impl Fn(&str) -> Option<i64>) {
     let names = breadboard_core::record::recorded(main);
     let mut wanted: Vec<(String, NewAction)> = report
         .flags
         .iter()
         .map(|flag| {
-            (
-                flag.key(),
-                NewAction {
-                    kind: "plan".into(),
-                    text: plan_text(flag),
-                    ..NewAction::default()
+            let new = match history.posted.contains_key(&flag.key()) {
+                true => NewAction::default(),
+                false => match issue_of(&flag.job) {
+                    Some(iid) => NewAction {
+                        kind: "look".into(),
+                        text: known_text(flag, iid),
+                        ..NewAction::default()
+                    },
+                    None => NewAction {
+                        kind: "plan".into(),
+                        text: plan_text(flag),
+                        ..NewAction::default()
+                    },
                 },
-            )
+            };
+            (flag.key(), new)
         })
         .collect();
     wanted.extend(report.hung.iter().filter(|hung| !hung.is_caching()).map(|hung| {
@@ -324,6 +387,30 @@ pub fn once(main: &Path) -> Option<Report> {
 mod tests {
     use super::*;
     use breadboard_core::ci_watch::Why;
+
+    #[test]
+    fn points_to_the_open_issue_of_a_slow_job_instead_of_asking_again() {
+        let issues: Vec<Value> = serde_json::from_str(
+            r#"[{"iid": 460, "title": "check:breadboard-gauntlet 3/3 slow"},
+                {"iid": 457, "title": "speed up check:breadboard-rs"},
+                {"iid": 12, "title": "check:breadboard-rs2 flakes"}]"#,
+        )
+        .unwrap();
+        assert_eq!(issue_naming(&issues, "check:breadboard-rs"), Some(457));
+        assert_eq!(base_of("check:breadboard-gauntlet 3/3"), "check:breadboard-gauntlet");
+        assert_eq!(base_of("check:breadboard-rs"), "check:breadboard-rs");
+        assert_eq!(issue_naming(&issues, "check:breadboard-gauntlet"), Some(460));
+        assert_eq!(issue_naming(&issues, "check:breadboard"), None);
+        let flag = Flag {
+            job: "check:breadboard-rs".into(),
+            median: 638.0,
+            why: vec![Why::Critical { of: 9, among: 10 }],
+        };
+        assert_eq!(
+            known_text(&flag, 457),
+            "check:breadboard-rs still holds pipelines up, #457 is open for it: check:breadboard-rs holds pipelines up · median 10:38, critical path in 9/10"
+        );
+    }
 
     #[test]
     fn says_what_to_do_with_a_flag() {

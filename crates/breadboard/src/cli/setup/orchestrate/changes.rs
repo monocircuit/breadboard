@@ -6,8 +6,11 @@
 use crate::cli::setup::gitlab;
 use crate::cli::setup::proc::git;
 use crate::cli::setup::repo;
+use breadboard_core::gitlab::cache::{Cache, cache_file};
+use breadboard_core::gitlab::merged::{keep_settled, known_of};
 use breadboard_core::json::{int_of, str_of};
 use breadboard_core::record;
+use breadboard_core::time::now_ms;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -159,6 +162,8 @@ pub fn combine(groups: &[Value]) -> Vec<Value> {
 /// What `name` changed: `{ name, title, root, groups, combined, missing }`,
 /// None without a record. Err: the branch GitLab didn't answer for after its
 /// tries, and why: no set that leaves its MRs out as if there were none (#306).
+/// A branch merged for good is read from the cache, an open one from the list
+/// of the open MRs, one with neither asked once an hour (#484).
 pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
     let main = repo::main_dir();
     let found = record::record_of(&main, name)?;
@@ -171,17 +176,50 @@ pub fn read_change_set(name: &str) -> Option<Result<Value, (String, String)>> {
             branches.push(branch.clone());
         }
     }
-    let read_mrs = gitlab::all_in_turns(&branches, 12, |branch| {
+    // One list of the open MRs, the rest from the cache: only a branch that
+    // moved otherwise is asked (#484). A full page may leave some out: then
+    // an open branch is asked too.
+    let opened = gitlab::list("projects/:fullpath/merge_requests?state=opened&per_page=100")
+        .map_err(|failure| ("the open merge requests".to_string(), failure.reason));
+    let opened = match opened {
+        Ok(opened) => Some(opened).filter(|opened| opened.len() < 100),
+        Err(unanswered) => return Some(Err(unanswered)),
+    };
+    let mut cache = Cache::open(Some(cache_file(&main)));
+    let now = now_ms();
+    let known: Vec<Option<Vec<Value>>> = branches
+        .iter()
+        .map(|branch| known_of(&mut cache, branch, opened.as_deref(), now))
+        .collect();
+    let unknown: Vec<&String> = branches
+        .iter()
+        .zip(&known)
+        .filter(|(_, known)| known.is_none())
+        .map(|(branch, _)| branch)
+        .collect();
+    let asked = gitlab::all_in_turns(&unknown, 12, |branch| {
         gitlab::list(&format!(
             "projects/:fullpath/merge_requests?source_branch={}",
             gitlab::encode(branch)
         ))
-        .map_err(|failure| (branch.clone(), failure.reason))
+        .map_err(|failure| ((*branch).clone(), failure.reason))
     });
-    let read_mrs = match read_mrs {
-        Ok(read) => read,
+    let mut asked = match asked {
+        Ok(read) => read.into_iter(),
         Err(unanswered) => return Some(Err(unanswered)),
     };
+    let read_mrs: Vec<Vec<Value>> = branches
+        .iter()
+        .zip(known)
+        .map(|(branch, known)| {
+            known.unwrap_or_else(|| {
+                let listed = asked.next().unwrap_or_default();
+                keep_settled(&mut cache, branch, &listed, now);
+                listed
+            })
+        })
+        .collect();
+    cache.save();
     let mut groups: Vec<Value> = Vec::new();
     let mut missing: Vec<i64> = Vec::new();
     for (branch, mrs) in branches.iter().zip(read_mrs) {

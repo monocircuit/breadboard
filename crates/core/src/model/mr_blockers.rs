@@ -220,11 +220,8 @@ pub fn row_blockers_of(
             add(format!("change requested: {}", change.text), "agent", false);
         }
         if tree.unpushed > 0 {
-            add(
-                format!("{} not pushed", super::counted(tree.unpushed, "commit")),
-                "agent",
-                false,
-            );
+            // breadboard checks and pushes them (#450), its agent only once that is red.
+            add(super::change::unpushed_text(tree), "breadboard", false);
         }
     }
     // Due or running, it holds only an MR nothing else holds: the actor starts it on `review due`.
@@ -760,7 +757,7 @@ mod tests {
                 "after !253 (needs #1) → !253",
                 "waits for !249 → !249",
                 "change requested: shorter title → agent",
-                "2 commits not pushed → agent",
+                "2 commits not pushed → breadboard",
             ]
         );
     }

@@ -19,6 +19,7 @@ use breadboard_core::epic::epic_of;
 use breadboard_core::git::orchestrator_checkouts;
 use breadboard_core::json;
 use breadboard_core::record::{self, ORCHESTRATOR, Origin, Record, SLOTS, SPACE, is_session_id};
+use breadboard_core::stage::orchestrator_model;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -33,8 +34,9 @@ fn token_of(slot: u32) -> String {
 }
 
 /// The checkout of the orchestration `name`, made on first use: on its epic
-/// branch (#350), with its dependencies installed, else (an orchestration
-/// made before) detached on the default branch's; None when git refuses.
+/// branch (#350), else detached on its product's batch (#411), both with
+/// their dependencies installed, else detached on the default branch's;
+/// None when git refuses.
 pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     let dir = repo.checkout_of(name);
     if orchestrator_checkouts(&repo.main).contains(&dir) {
@@ -45,8 +47,8 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     fs::create_dir_all(dir.parent()?).ok()?;
     let epic = json::read(&record::record_file(&repo.main, name)).and_then(|raw| epic_of(&raw));
     let path = text(&dir);
-    let base = breadboard_core::git::Base::of(&breadboard_core::git::branch(&repo.main)).remote;
-    let add = checkout_args(epic.as_deref(), &path, &base, |branch| {
+    let planned = record::planned_base(&repo.main, Some(name));
+    let add = checkout_args(epic.as_deref(), &path, &planned.remote, |branch| {
         git(
             &repo.main,
             &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")],
@@ -58,8 +60,8 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
     if !git(&repo.main, &args, None).is_ok {
         return None;
     }
-    if epic.is_some() {
-        // The epic's own wt:check and stack (#351, #352) need its setup: breadboard.toml's [[worktrees.setup]].
+    if epic.is_some() || planned.local != breadboard_core::git::branch(&repo.main) {
+        // The batch's own wt:check and stack (#351, #352) need its setup: breadboard.toml's [[worktrees.setup]].
         for step in &breadboard_core::config::of(&repo.main).config.worktrees.setup {
             let _ = std::process::Command::new("sh")
                 .args(["-c", &step.run])
@@ -74,7 +76,8 @@ pub fn orchestrator_checkout(repo: &Repo, name: &str) -> Option<PathBuf> {
 }
 
 /// The checkout of an orchestration `dir` moved up to its base as origin
-/// has it (fetched before): detached on the default branch's, or its epic
+/// has it (fetched before): detached on its product's batch (#411) or the
+/// default branch's (the next batch once one shipped), or its epic
 /// branch fast-forwarded (never reset: it may hold merges not pushed yet).
 /// It stood on the commit it was made from (#380: d21c737c, two weeks and
 /// a config behind). Ok(true) moved, Ok(false) up to date or ahead; Err
@@ -85,7 +88,8 @@ pub fn follow_base(main: &std::path::Path, dir: &std::path::Path) -> Result<bool
     let target = if branch.is_ok {
         format!("origin/{}", branch.out())
     } else {
-        breadboard_core::git::Base::of(&breadboard_core::config::of(main).branch).remote
+        let name = dir.file_name().map(|name| name.to_string_lossy().into_owned());
+        record::planned_base(main, name.as_deref()).remote
     };
     if !git(&["rev-parse", "--verify", "--quiet", &target]).is_ok {
         return Err(format!("origin has no {target}"));
@@ -113,7 +117,7 @@ pub fn follow_base(main: &std::path::Path, dir: &std::path::Path) -> Result<bool
 
 /// `git worktree add` of a checkout at `path`: on the local `epic` branch
 /// when it exists (never reset: it may hold merges not pushed yet), else
-/// made from origin's, tracking it; detached on `base` (the default branch's) without one.
+/// made from origin's, tracking it; detached on `base` (its batch, the default branch's) without one.
 fn checkout_args(epic: Option<&str>, path: &str, base: &str, has_local: impl Fn(&str) -> bool) -> Vec<String> {
     let mut args: Vec<String> = ["worktree", "add", "--quiet"].map(String::from).to_vec();
     match epic {
@@ -604,7 +608,12 @@ pub fn restore_chat(repo: &Repo, name: &str) -> Option<String> {
                 return Some(format!("the conversation {id} runs elsewhere, outside herdr's panes"));
             }
             let ChatState::Idle { pane } = state else { return None };
-            let command = format!("cd {} && claude --resume {id}{}", quote(&text(&cwd)), ide_flag(&cwd));
+            let command = format!(
+                "cd {} && claude --resume {id}{}{}",
+                quote(&text(&cwd)),
+                ide_flag(&cwd),
+                orchestrator_model(&repo.main)
+            );
             resume(s(&pane, "pane_id"), &id, &command).then(|| format!("resumed {id} in its tab"))
         }
     }
