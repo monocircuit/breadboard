@@ -36,6 +36,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 pub const EVERY: Duration = Duration::from_millis(500);
 /// The program a run is: `claude` on PATH (the gauntlet's fake there).
 const CLAUDE: &str = "claude";
+/// A file each look of the queue appends its line to (#470): what didn't
+/// start is then seen on the looks, not guessed by the clock. Only the
+/// gauntlet sets it.
+const LOOKS_ENV: &str = "BREADBOARD_LOOKS";
 
 /// The runs this engine started and still waits for: session → (pid, started ms).
 type InFlight = Arc<Mutex<HashMap<String, (i64, i64)>>>;
@@ -71,6 +75,7 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
                 .unwrap_or_default()
             };
             is_wake_pending = is_waking;
+            mark_look(starts.len());
             for start in starts {
                 tokio::spawn(run(main.clone(), start, in_flight.clone(), table.clone()));
             }
@@ -87,6 +92,20 @@ pub async fn schedule(main: PathBuf, busy: Arc<AtomicBool>) {
             Ordering::SeqCst,
         );
         tokio::time::sleep(EVERY).await;
+    }
+}
+
+/// One look of the queue in `BREADBOARD_LOOKS`, if set: when, and how many
+/// runs it started.
+fn mark_look(started: usize) {
+    use std::io::Write;
+    let Some(file) = std::env::var_os(LOOKS_ENV) else {
+        return;
+    };
+    // One write: a reader never sees half a line.
+    let line = format!("{}\n", serde_json::json!({ "at": now_ms(), "started": started }));
+    if let Ok(mut looks) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+        let _ = looks.write_all(line.as_bytes());
     }
 }
 
