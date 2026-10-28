@@ -75,10 +75,24 @@ pub fn overview_refused(args: &[String]) -> Option<ExitCode> {
     read::overview_refused(args)
 }
 
+/// A command's exit when the repo's breadboard.toml is missing or wrong
+/// (#320); `init` alone runs without one, it writes it.
+pub fn refused() -> Option<ExitCode> {
+    let cwd = std::env::current_dir().ok()?;
+    let why = breadboard_core::config::refusal(&cwd)?;
+    let _ = writeln!(std::io::stderr(), "\n✗ {why}");
+    Some(ExitCode::FAILURE)
+}
+
 pub fn main(command: &str, args: &[String]) -> ExitCode {
     if matches!(command, "--help" | "-h" | "help") {
         let _ = writeln!(std::io::stdout(), "{}", usage());
         return ExitCode::SUCCESS;
+    }
+    if command != "init" && groups().iter().flatten().any(|name| *name == command) {
+        if let Some(code) = refused() {
+            return code;
+        }
     }
     if let Some(code) = read::run(command, args) {
         return code;

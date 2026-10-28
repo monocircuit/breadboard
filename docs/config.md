@@ -3,13 +3,16 @@
 Everything breadboard knows about the repository it runs in comes from
 `breadboard.toml` at the root of a checkout (#342). A worktree reads its own
 file, so a branch that changes it uses its version; a worktree made before the
-file existed reads the main checkout's. A repo without the file gets the
-defaults below: worktrees, the overview and orchestrations work, with no stack.
+file existed reads the main checkout's. Without the file no command runs but
+`breadboard init`, which writes one (#320): each names the missing file and
+prints the smallest one with the repo's names. A key left out takes its default
+below; a section left out turns its feature off (no `[stack]`: no stacks).
 
 The file is read again when it changes. One that doesn't match this schema is
-refused with the key and why (`stack (db): port 3000 is app's already`), never
-read in half: the defaults hold until it is fixed. Unknown keys are refused too,
-so a typo doesn't pass for a default.
+refused with its line, the key and why (`breadboard.toml line 12: stack (db):
+port 3000 is app's already`), never read in half: a command fails with it, and
+a running overview keeps the defaults until it is fixed. Unknown keys are
+refused too, so a typo doesn't pass for a default.
 
 ## The smallest file
 
@@ -18,8 +21,8 @@ so a typo doesn't pass for a default.
 name = "me/shop"
 ```
 
-Or none at all: then the default branch is origin's `HEAD`, the commands show
-as `breadboard <command>`, and there is no stack.
+Even `[repo]` may stay empty: then the default branch is origin's `HEAD`, the
+commands show as `breadboard <command>`, and there is no stack.
 
 ## `[repo]`
 
