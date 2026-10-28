@@ -31,7 +31,7 @@ pub fn build(page: &mut Page<Act>, model: &OrchestrationModel, ctx: &Ctx) {
         return;
     }
     page.section(Section::new("SETTINGS"), |scene| {
-        scene.note(", or ✕ closes · kept per product, they hold from the next tick");
+        scene.note(", or ✕ closes · kept per product (notifications: the repo's), they hold from the next tick");
         for row in &model.settings {
             let key = row.def.key.to_string();
             let main_act = match row.def.kind {
