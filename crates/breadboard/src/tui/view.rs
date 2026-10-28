@@ -1154,6 +1154,7 @@ pub fn buffer<P: App>(app: &P, width: u16) -> Buffer {
             let ground = match row.ground {
                 Ground::Plain => None,
                 Ground::Island => Some(theme::ISLAND),
+                Ground::Stripe => Some(theme::STRIPE),
                 Ground::Head => Some(theme::HEAD),
             };
             (&row.line, ground)
