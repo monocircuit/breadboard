@@ -88,6 +88,8 @@ What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md)
 What it knows about the repo (the default branch, the stack, the MR
 template's boxes, the changelog, its name in herdr) comes from the repo's
 `breadboard.toml`: [`docs/config.md`](docs/config.md).
+The web UI of `breadboard serve` from the phone or another laptop, through
+`tailscale serve`: [`docs/tailscale.md`](docs/tailscale.md).
 The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
 
