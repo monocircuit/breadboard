@@ -44,14 +44,6 @@ pub fn ensure_batch(name: &str, product: Option<&str>, is_dry: bool) -> Result<O
 pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<Base, String> {
     let main = repo::main_dir();
     let develop = breadboard_core::git::branch(&main);
-    let record = origin.and_then(|name| record::record_of(&main, name));
-    if let Some(epic) = record
-        .as_ref()
-        .and_then(|record| record.base.clone())
-        .filter(|base| is_epic(base))
-    {
-        return Ok(Base::of(&epic));
-    }
     let issue = feature
         .starts_with(|c: char| c.is_ascii_digit())
         .then(|| read_issue(&repo::lifecycle(), feature).ok())
@@ -59,6 +51,14 @@ pub fn base_of_new(feature: &str, origin: Option<&str>, is_fix: bool) -> Result<
     if is_fix && issue.as_ref().is_some_and(|issue| issue.is_hotfix) {
         step(&format!("a hotfix: from {develop}, past the batch"));
         return Ok(Base::of(&develop));
+    }
+    let record = origin.and_then(|name| record::record_of(&main, name));
+    if let Some(epic) = record
+        .as_ref()
+        .and_then(|record| record.base.clone())
+        .filter(|base| is_epic(base))
+    {
+        return Ok(Base::of(&epic));
     }
     let config = &breadboard_core::config::of(&main).config;
     let product = record.and_then(|record| record.product).or_else(|| {

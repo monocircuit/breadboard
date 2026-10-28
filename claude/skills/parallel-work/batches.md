@@ -127,8 +127,8 @@ batches on their way.
 
 ## Hotfixes
 
-`{{run}} wt:new <n>-<feature> --fix` of an issue labelled `hotfix`, or `--base main`,
-bypasses the batch: it branches off `{{branch}}` (or `main`), its MR goes there with
+`{{run}} wt:new <n>-<feature> --fix` of an issue labelled `hotfix` (`wt:orchestrate`
+starts one so, on `fix/…`, its brief saying so), or `--base main`, bypasses the batch: it branches off `{{branch}}` (or `main`), its MR goes there with
 the full pipeline. The batch takes `{{branch}}` in only when the two conflict:
 the overview says so, and the batch's checkout merges it with `{{run}} wt:merge-base`.
 

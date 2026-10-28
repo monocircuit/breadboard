@@ -284,8 +284,9 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         .and_then(Value::as_array)
         .map(|labels| labels.iter().filter_map(Value::as_str).map(String::from).collect())
         .unwrap_or_default();
-    let is_fix = labels.iter().any(|label| label == "bug");
     let is_hotfix = labels.iter().any(|label| label == "hotfix");
+    // A hotfix is a fix (#487): `fix/…` and `wt:new --fix`, or the batch is its base.
+    let is_fix = is_hotfix || labels.iter().any(|label| label == "bug");
     let dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
     let why = if state != "opened" {
