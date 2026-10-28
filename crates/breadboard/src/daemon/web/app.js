@@ -15,7 +15,10 @@ const columns = () => {
   document.body.append(probe);
   const width = probe.getBoundingClientRect().width / 100;
   probe.remove();
-  return Math.max(40, Math.floor(document.documentElement.clientWidth / (width || 8)) - 1);
+  return Math.max(
+    40,
+    Math.floor(document.documentElement.clientWidth / (width || 8)) - 1,
+  );
 };
 
 const query = () => {
