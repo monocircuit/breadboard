@@ -449,6 +449,23 @@ pub struct Agents {
     /// How many runs may be in flight at once (#445): after a crash every
     /// cut-off agent is picked up, a few at a time, never all together.
     pub max_runs: usize,
+    /// What the repo's agents must never touch (#375), on top of Claude
+    /// Code's own deny rules.
+    pub deny: Deny,
+}
+
+/// `[agents.deny]` (#375): `breadboard init` renders each path as an
+/// `Edit(<path>)` and each command as a `Bash(<command>)` deny rule of
+/// `.claude/settings.json`, and the pre-push gate refuses a push that
+/// changes or deletes a denied file its base has (a new one passes: made by
+/// a tool, since agents can't edit it).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Deny {
+    /// Gitignore-style globs from the repo's top (`**/migrations/*.sql`).
+    pub paths: Vec<String>,
+    /// Claude Code Bash rule patterns (`git tag:*`).
+    pub commands: Vec<String>,
 }
 
 /// `[agents.models]` (#373): a model per stage, `default` for the ones
@@ -477,6 +494,7 @@ impl Default for Agents {
             models: Models::default(),
             docs_labels: vec!["documentation".into()],
             max_runs: 4,
+            deny: Deny::default(),
         }
     }
 }
@@ -766,6 +784,15 @@ impl Config {
         }
         if agents.max_runs == 0 {
             return bad("agents.max_runs", "must be at least 1");
+        }
+        let deny = &agents.deny;
+        if deny
+            .paths
+            .iter()
+            .chain(&deny.commands)
+            .any(|rule| rule.trim().is_empty() || rule.contains(')'))
+        {
+            return bad("agents.deny", "a path or command is empty or holds a `)`");
         }
         if agents.idle_minutes == 0 {
             return bad("agents.idle_minutes", "must be a number of minutes, e.g. 55");

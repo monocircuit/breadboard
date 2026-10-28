@@ -258,6 +258,23 @@ idle_fresh_above = 100_000
 idle_minutes = 55
 ```
 
+### `[agents.deny]`
+
+What the repo's agents must never touch (#375), on top of Claude Code's own
+deny rules. Run `breadboard init` after a change: CI's `init --check` fails
+while `.claude/settings.json` lacks a rule.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `paths` | `[]` | gitignore-style globs from the repo's top. `breadboard init` makes each an `Edit(<path>)` deny rule (every tool that edits), and the pre-push gate refuses a push whose diff against its base changes or deletes a file one holds, naming the rule and the files. A new file passes: a tool made it (a generated migration), since agents can't edit it. So a file that tools rewrite (a lockfile) belongs in Claude Code's own deny rules, not here |
+| `commands` | `[]` | Claude Code Bash rule patterns (`git tag:*`): `breadboard init` makes each a `Bash(<command>)` deny rule |
+
+```toml
+[agents.deny]
+paths = ["**/migrations/*.sql"]
+commands = ["git tag:*"]
+```
+
 ### `[agents.models]`
 
 A model per kind of work (#373): every claude breadboard starts gets
