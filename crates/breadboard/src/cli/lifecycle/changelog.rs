@@ -63,6 +63,10 @@ pub fn entry_of(mr: &Value, number: Option<i64>, text: &str, retired: Option<Str
     let merged = Merged {
         iid: int_of(mr, "iid").unwrap_or_default(),
         issue: number.map(|number| (number, issue_url(text, &url, number))),
+        also: crate::cli::setup::changelog::also_closed(str_of(mr, "description").unwrap_or_default(), number)
+            .into_iter()
+            .map(|other| (other, issue_url(text, &url, other)))
+            .collect(),
         summary: summary_of(str_of(mr, "description").unwrap_or_default(), title),
         title: title.strip_prefix("Draft:").map_or(title, str::trim_start).to_string(),
         merged_at: str_of(mr, "merged_at").unwrap_or_default().to_string(),

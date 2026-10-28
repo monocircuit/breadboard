@@ -202,7 +202,9 @@ of your own keeps its claude in a tab (#361).
 - **Pause** (#397): `breadboard runs pause` (or `⏸ pause agents` under the
   orchestration overview's chat) starts no run until `breadboard runs
   resume`; runs in flight finish, `--now` ends them and puts their lines
-  back in the queue, `--ci` switches the CI queue off too
+  back in the queue: each claude and every process its run started (its
+  `BREADBOARD_RUN` marker, #488), SIGTERM, SIGKILL after 10 s, waited for;
+  breadboard's own daemons and sccache's server stay. `--ci` switches the CI queue off too
   (`breadboard.ci = push`, undone by the resume). Lines keep queueing; the
   band says `agents paused since 13:05 · N lines waiting`. The state is
   `.claude/runs/pause.json`, so it outlives `serve`, herdr and a reboot.

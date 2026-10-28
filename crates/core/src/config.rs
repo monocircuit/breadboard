@@ -44,6 +44,29 @@ pub struct Config {
     pub settings: Settings,
     /// What a merge into the default branch needs (#443).
     pub merge: Merge,
+    /// The desktop notifications of the repo's events (#449).
+    pub notifications: Notifications,
+}
+
+/// The team's default of the desktop notifications (`[notifications]`,
+/// #449, core's `notify`): on or off, and which events; the settings
+/// panel's local choice wins.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Notifications {
+    /// Any desktop notification at all.
+    pub desktop: bool,
+    /// The events that send one, by key (`issue_created`, `mr_merged`, …): every one by default.
+    pub events: Option<Vec<String>>,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Notifications {
+            desktop: true,
+            events: None,
+        }
+    }
 }
 
 /// What a merge into the default branch needs (`[merge]`, #443).
@@ -842,6 +865,15 @@ impl Config {
         ] {
             if value.is_some_and(|value| !(1..=max).contains(&value)) {
                 return bad(&format!("settings.{key}"), &format!("must be 1 to {max}"));
+            }
+        }
+        for event in self.notifications.events.iter().flatten() {
+            if crate::notify::event_of(event).is_none() {
+                let keys: Vec<&str> = crate::notify::EVENTS.iter().map(|event| event.key).collect();
+                return bad(
+                    "notifications.events",
+                    &format!("no event {event}: one of {}", keys.join(", ")),
+                );
             }
         }
         for (name, product) in &self.products {
