@@ -46,6 +46,25 @@ pub struct Config {
     pub merge: Merge,
     /// The desktop notifications of the repo's events (#449).
     pub notifications: Notifications,
+    /// The LikeC4 model of the repo (#439); None: no `arch:deltas`.
+    pub architecture: Option<Architecture>,
+}
+
+/// The LikeC4 model of the repo (`[architecture]`, #439): the folder of its
+/// sources, whose elements `arch:deltas` maps changed files to.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Architecture {
+    /// The folder of the `.c4` files, from the repo's root.
+    pub model: String,
+}
+
+impl Default for Architecture {
+    fn default() -> Self {
+        Architecture {
+            model: "architecture".into(),
+        }
+    }
 }
 
 /// The team's default of the desktop notifications (`[notifications]`,

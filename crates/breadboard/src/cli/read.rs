@@ -3,6 +3,7 @@
 
 mod args;
 mod ci_watch;
+mod deltas;
 mod gitlab;
 mod issues;
 mod list;
@@ -23,6 +24,7 @@ type Command = (&'static str, &'static args::Takes, fn(&[String]) -> ExitCode);
 /// change different lines, `cli::tests` checks the order): what each takes
 /// and what runs it once its command line is fine.
 const COMMANDS: &[Command] = &[
+    ("arch:deltas", &deltas::TAKES, deltas::run),
     ("ci:watch", &ci_watch::TAKES, |_| ci_watch::run()),
     ("gitlab:usage", &usage::TAKES, usage::run),
     ("wt:issues", &issues::TAKES, |_| issues::run()),

@@ -245,6 +245,44 @@ per event; they are the repo's, not an orchestration's: a change is kept in
 | `desktop` | `true` | any desktop notification at all; off: none, and what was seen is forgotten (switched on again, it starts from what is there) |
 | `events` | every one | the events that send one: `issue_created` (by anyone, an agent or the orchestrator too), `mr_opened`, `mr_merged` (into develop, an epic or a batch), `mr_ready`, `pipeline_failed` (an MR's newest pipeline), `mr_conflict`, `decide` (an agent or an orchestrator asks the user) |
 
+## `[architecture]`
+
+The LikeC4 model of the repo (#439). `arch:deltas` says which of its
+elements a change adds, changes or removes, as JSON for the architecture
+view: `--worktree [<dir>]` (the default, the worktree you stand in: its work
+against its base, uncommitted changes included), `--mr <iid>` (GitLab's
+diff of it, fetched where it isn't here yet) or `--epic [<branch>]` (an epic
+or batch branch against the default branch; alone, your worktree's base);
+`--out <file>` writes it there instead of stdout. Without the section there
+is no `arch:deltas`.
+
+An element owns the paths of its `metadata { paths '<path>, <path>' }`
+(from the repo's root, a folder or a file); a changed file belongs to the
+element with the longest path that holds it, and one that none holds is
+`unmapped`. An element only the change's model has is `added`, one only its
+base's has is `removed` (with the deleted files it owned), one in both is
+`changed` when it owns a changed file or its kind, title or paths differ.
+A head without the model (a branch from before it) is mapped with the
+model of the checkout the command runs in: then nothing is added or removed.
+Of LikeC4's language only the kinds of `specification`, the elements of
+`model` (nested, `extend`), their `title` and `metadata` are read.
+
+```json
+{
+  "scope": "worktree",
+  "name": "feature/439-…",
+  "base": "<sha>",
+  "head": "<sha>",
+  "model": "architecture",
+  "elements": [{ "id": "breadboard.core", "status": "changed", "files": ["…"] }],
+  "unmapped": []
+}
+```
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `model` | `architecture` | the folder of the model's `.c4` / `.likec4` files, from the repo's root |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.
