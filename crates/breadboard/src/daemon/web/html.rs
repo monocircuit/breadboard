@@ -20,7 +20,12 @@ pub fn nav(
         let name = main.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
         let _ = write!(out, "<span class=\"repo\">{}</span>", escaped(&name));
         let is_here = |other: &View| index == shown && other == view;
-        link(&mut out, &format!("?repo={index}"), "everything", is_here(&View::Everything));
+        link(
+            &mut out,
+            &format!("?repo={index}"),
+            "everything",
+            is_here(&View::Everything),
+        );
         for orchestration in orchestrations_of(main) {
             let href = format!("?repo={index}&orchestration={}", encoded(&orchestration));
             let is_shown = is_here(&View::Orchestration(orchestration.clone()));
@@ -238,8 +243,14 @@ mod tests {
         );
         buffer.set_line(0, 1, &Line::from("⇶ 漢x"), 12);
         let html = frame(&buffer);
-        assert!(html.contains("<span style=\"color:#ff0000;\">&lt;b&gt;</span> &amp; "), "{html}");
-        assert!(html.contains("<span style=\"background:#98c379;font-weight:bold;\">ok</span>"), "{html}");
+        assert!(
+            html.contains("<span style=\"color:#ff0000;\">&lt;b&gt;</span> &amp; "),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span style=\"background:#98c379;font-weight:bold;\">ok</span>"),
+            "{html}"
+        );
         // A wide character covers the cell after it: drawn once, the row as wide as the terminal's.
         assert!(html.contains("\n⇶ 漢x\n"), "{html}");
         assert!(!html.contains("<script"));

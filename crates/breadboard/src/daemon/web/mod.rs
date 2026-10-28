@@ -292,7 +292,10 @@ fn decoded(text: &str) -> String {
 
 async fn route(asked: Asked, state: &Arc<State>, served: &Served) -> Answer {
     if !served.is_own_host(asked.host.as_deref()) {
-        return Answer::text("403 Forbidden", "only as 127.0.0.1, localhost or a name of `[web] hosts`");
+        return Answer::text(
+            "403 Forbidden",
+            "only as 127.0.0.1, localhost or a name of `[web] hosts`",
+        );
     }
     // A page that looks keeps the daemon, as an overview does.
     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
@@ -328,11 +331,7 @@ fn repos(state: &State) -> Vec<PathBuf> {
 
 /// The repo and view a request names: `repo` its index, `orchestration` one of the repo's.
 fn chosen(asked: &Asked, repos: &[PathBuf]) -> Option<(usize, View)> {
-    let index = asked
-        .query
-        .get("repo")
-        .and_then(|repo| repo.parse().ok())
-        .unwrap_or(0);
+    let index = asked.query.get("repo").and_then(|repo| repo.parse().ok()).unwrap_or(0);
     let main = repos.get(index)?;
     let view = match asked.query.get("orchestration") {
         Some(name) if breadboard_core::record::recorded(main).contains(name) => View::Orchestration(name.clone()),
@@ -354,7 +353,13 @@ async fn page(asked: &Asked, state: &Arc<State>, served: &Served) -> Answer {
         .and_then(|width| width.parse::<u16>().ok())
         .map_or(WIDTH, |width| width.clamp(40, 400));
     let main = repos[index].clone();
-    let nav = html::nav(&repos, index, &view, breadboard_core::record::recorded, served.is_writable);
+    let nav = html::nav(
+        &repos,
+        index,
+        &view,
+        breadboard_core::record::recorded,
+        served.is_writable,
+    );
     let read = {
         let (main, view) = (main.clone(), view.clone());
         tokio::task::spawn_blocking(move || {
@@ -399,7 +404,13 @@ fn followed(state: &State, main: &Path, view: &View, ask: breadboard_core::reade
             feed
         }
         None => {
-            let (feed, _, _) = feed_of(state, &key, main.to_path_buf(), crate::tui::overview::view_key(view), ask);
+            let (feed, _, _) = feed_of(
+                state,
+                &key,
+                main.to_path_buf(),
+                crate::tui::overview::view_key(view),
+                ask,
+            );
             let mut followed = state.web.followed.lock().unwrap_or_else(|e| e.into_inner());
             match followed.get(&key) {
                 // Another look of the page started it meanwhile: this one's follow is given back.
