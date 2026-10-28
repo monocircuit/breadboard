@@ -346,6 +346,55 @@ fn claimed_elsewhere(repo: &Repo, feature: &str) -> Option<String> {
     }
 }
 
+/// How many names `fresh_feature` tries: `feature`, `feature-2` … `feature-9`.
+const FRESH_TRIES: usize = 9;
+
+/// The name `n` of the tries of `feature`: itself first, then `feature-n`.
+fn try_name(feature: &str, n: usize) -> String {
+    if n == 1 {
+        feature.to_string()
+    } else {
+        format!("{feature}-{n}")
+    }
+}
+
+/// The feature a start takes (#486): `feature` itself, else `feature-2`,
+/// `-3`, … the first whose branch (`<kind>/<name>`) was no MR's source
+/// branch, open, closed or merged: the push guard refuses the claim on the
+/// branch of a closed or merged MR (#184), so the work would reach no one.
+/// With the name it says why it is not `feature`. GitLab not answering
+/// keeps the name tried: the claim push says so then, and wt:new stops.
+pub fn fresh_feature(main: &Path, feature: &str, kind: &str) -> (String, Option<String>) {
+    let mut first: Option<String> = None;
+    let mut name = feature.to_string();
+    for n in 1..=FRESH_TRIES {
+        name = try_name(feature, n);
+        let branch = format!("{kind}/{name}");
+        let endpoint = format!(
+            "projects/:fullpath/merge_requests?state=all&source_branch={}&per_page=1",
+            gitlab::encode(&branch)
+        );
+        let read = gitlab::api(
+            main,
+            &endpoint,
+            &format!("the MRs of {branch}"),
+            Duration::from_secs(15),
+        );
+        let Some(mr) = read.as_ref().and_then(Value::as_array).and_then(|mrs| mrs.first()) else {
+            break;
+        };
+        first.get_or_insert_with(|| {
+            format!(
+                "{branch} was the branch of !{} ({})",
+                mr.get("iid").map(Value::to_string).unwrap_or_default(),
+                str_of(mr, "state").unwrap_or("an MR")
+            )
+        });
+    }
+    let why = first.map(|first| format!("{first}: it starts as {kind}/{name}"));
+    (name, why)
+}
+
 /// Why the issue `number` could not be read, and what to do.
 fn unread_issue(number: &str, unread: gitlab::Unread) -> Fail {
     Fail(match unread {
@@ -379,9 +428,10 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
     let is_hotfix = labels.iter().any(|label| label == "hotfix");
     // A hotfix is a fix (#487): `fix/…` and `wt:new --fix`, or the batch is its base.
     let is_fix = is_hotfix || labels.iter().any(|label| label == "bug");
-    let dir = repo.dir_of(&feature);
+    let kind = if is_fix { "fix" } else { "feature" };
+    let mut dir = repo.dir_of(&feature);
     let state = str_of(&found, "state").unwrap_or_default();
-    let why = if state != "opened" {
+    let mut why = if state != "opened" {
         Some(format!("#{number} is {state}"))
     } else if dir.exists() {
         Some(format!(
@@ -394,17 +444,29 @@ pub fn read_issue(repo: &Repo, arg: &str) -> Result<Issue, Fail> {
         claimed_elsewhere(repo, &feature)
     };
     // The others of a bundle (#321): each open and claimed nowhere else.
-    let why = match why {
-        Some(why) => Some(why),
-        None => also.iter().find_map(|other| other_why(repo, *other)),
-    };
+    if why.is_none() {
+        why = also.iter().find_map(|other| other_why(repo, *other));
+    }
+    // A free issue starts on a branch no MR had (#486).
+    let mut feature = feature;
+    if why.is_none() {
+        let (fresh, renamed) = fresh_feature(&repo.main, &feature, kind);
+        if let Some(renamed) = renamed {
+            step(&renamed);
+            dir = repo.dir_of(&fresh);
+            if dir.exists() {
+                why = Some(format!("{} exists already", repo.feature_of(&dir)));
+            }
+            feature = fresh;
+        }
+    }
     Ok(Issue {
         number: number
             .parse()
             .map_err(|_| unread_issue(&number, gitlab::Unread::Missing))?,
         title,
         description: str_of(&found, "description").unwrap_or_default().to_string(),
-        branch: format!("{}/{feature}", if is_fix { "fix" } else { "feature" }),
+        branch: format!("{kind}/{feature}"),
         feature,
         is_fix,
         is_hotfix,
@@ -829,10 +891,21 @@ pub struct Made {
     pub status: Option<i32>,
 }
 
+/// How wt:new's failure begins when origin refused the claim (#486).
+pub const CLAIM_REFUSED: &str = "origin refused the claim on";
+
 impl Made {
     /// Made, but wt:new failed after the setup (#130): the worktree counts, said with a note.
     pub fn failed_after_setup(&self) -> bool {
-        self.is_there && (self.failed.is_some() || self.status != Some(0))
+        self.is_there && !self.is_unclaimed() && (self.failed.is_some() || self.status != Some(0))
+    }
+
+    /// Its claim never reached origin (#486): the worktree goes to no agent,
+    /// its push would be refused once the work is done.
+    pub fn is_unclaimed(&self) -> bool {
+        self.failed
+            .as_deref()
+            .is_some_and(|failed| failed.starts_with(CLAIM_REFUSED))
     }
 }
 
@@ -1299,7 +1372,7 @@ pub fn hand_over(repo: &Repo, request: &Request) -> Done {
         if made.failed_after_setup() {
             setup_note = " (wt:new failed after the setup, see above)";
         }
-        if !made.is_there {
+        if !made.is_there || made.is_unclaimed() {
             let reason = made.failed.unwrap_or_else(|| "no worktree".into());
             let why = format!("its worktree failed: {reason}");
             undo_start(repo, name, &issue, known.as_ref(), &why, || claim.release());

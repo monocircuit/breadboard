@@ -28,7 +28,9 @@ cargo install --locked --git https://github.com/monocircuit/breadboard breadboar
 Then, in your repository, `breadboard init` writes a `breadboard.toml`
 when there is none and brings in what breadboard adds for Claude Code and
 herdr: the skill `parallel-work`, the hooks, the herdr plugin, the nvim Lua
-and the Chromium extension. Run it again after an update. `breadboard herdr`
+and the Chromium extension. Every other command needs the file and says so
+without it; what goes in it: [`docs/config.md`](docs/config.md). Run init
+again after an update. `breadboard herdr`
 starts herdr with the plugin and the layout of your worktrees
 ([`herdr/`](herdr/README.md)).
 
@@ -86,6 +88,8 @@ What stays outside Rust, and why: [`docs/rewrite-plan.md`](docs/rewrite-plan.md)
 What it knows about the repo (the default branch, the stack, the MR
 template's boxes, the changelog, its name in herdr) comes from the repo's
 `breadboard.toml`: [`docs/config.md`](docs/config.md).
+The web UI of `breadboard serve` from the phone or another laptop, through
+`tailscale serve`: [`docs/tailscale.md`](docs/tailscale.md).
 The commands run from the root `package.json` (`sh packages/breadboard/herdr/breadboard.sh <command>`),
 so they work from every checkout without a `--filter`.
 

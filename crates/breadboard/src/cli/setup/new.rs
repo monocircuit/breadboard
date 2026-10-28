@@ -14,7 +14,7 @@ use super::proc::{self, Args, How, Shape, fail, name_refusal, outln, set_hint, s
 use super::repo;
 use super::stack::{self, Summary};
 use super::sweep;
-use crate::cli::lifecycle::handover::{bundle_claim, claim_on_origin};
+use crate::cli::lifecycle::handover::{CLAIM_REFUSED, bundle_claim, claim_on_origin, fresh_feature};
 use breadboard_core::git::{Base, Worktree, base_of};
 use breadboard_core::record::{self, Origin, is_name};
 use std::fs;
@@ -124,7 +124,13 @@ pub fn command(args: &Args) -> ExitCode {
         Some(feature) if is_name(&feature) => feature,
         given => fail(&name_refusal("the feature", given.as_deref(), USAGE)),
     };
-    let branch = format!("{}/{feature}", if args.has("--fix") { "fix" } else { "feature" });
+    let kind = if args.has("--fix") { "fix" } else { "feature" };
+    // A branch an MR had is refused by the push guard (#184): a fresh name (#486).
+    let (feature, renamed) = fresh_feature(&repo::main_dir(), &feature, kind);
+    if let Some(renamed) = renamed {
+        step(&renamed);
+    }
+    let branch = format!("{kind}/{feature}");
     let dir = repo::dir_of(&feature);
     if dir.exists() {
         fail(&format!(
@@ -279,8 +285,21 @@ pub fn command(args: &Args) -> ExitCode {
             ..How::default()
         },
     );
+    // No claim, no start (#486): the worktree goes to no agent, its push would be refused at the end.
     if !pushed.is_ok {
-        outln!("! origin refused the branch, push it yourself: git push -u origin {branch}");
+        // The guard's lines as they are, origin's after git's `remote: `.
+        let lines = || {
+            pushed
+                .err
+                .lines()
+                .map(|line| line.trim().trim_start_matches("remote:").trim())
+                .filter(|line| !line.is_empty())
+        };
+        let reason = lines()
+            .find_map(|line| line.strip_prefix("✗ "))
+            .or_else(|| lines().next())
+            .unwrap_or("git push failed");
+        fail(&format!("{CLAIM_REFUSED} {branch}: {reason}"));
     }
 
     // breadboard.toml's `[[worktrees.setup]]` in order (the install, what lint loads); a quiet one
