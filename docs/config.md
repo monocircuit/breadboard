@@ -242,6 +242,31 @@ per event; they are the repo's, not an orchestration's: a change is kept in
 | `desktop` | `true` | any desktop notification at all; off: none, and what was seen is forgotten (switched on again, it starts from what is there) |
 | `events` | every one | the events that send one: `issue_created` (by anyone, an agent or the orchestrator too), `mr_opened`, `mr_merged` (into develop, an epic or a batch), `mr_ready`, `pipeline_failed` (an MR's newest pipeline), `mr_conflict`, `decide` (an agent or an orchestrator asks the user) |
 
+## `[web]`
+
+The web UI of the daemon behind the overviews (#435): `breadboard serve`
+serves the overview as a page from its binary, on `127.0.0.1` only, at
+`http://127.0.0.1:7435/`. The page shows the view of everything or one
+orchestration of each repo the daemon's overviews show, drawn as the
+terminal draws it, and reads it again every two seconds; GitLab comes from
+the daemon's feed of that view, so an open page costs GitLab nothing more
+than an overview does. It loads nothing from anywhere else and sends
+nothing (its content security policy allows only itself). The daemon
+starts with the first overview: the first repo's `[web]` holds for it.
+
+It answers only to `127.0.0.1:<port>` and `localhost:<port>`, so a page of
+another site can't reach it through a name of its own. A proxy in front of
+it (`tailscale serve`) sends its own name: add it to `hosts`, or keep it
+out of the committed file in `BREADBOARD_WEB_HOSTS` (comma-separated).
+`BREADBOARD_WEB_PORT` wins over `port`. Read-only unless `writes` is on;
+never switch it on with a proxy in front.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `port` | `7435` | its port on 127.0.0.1; `0`: no web UI. A port in use leaves the daemon without one (said on its stderr) |
+| `writes` | `false` | whether the page may change something: today `read GitLab again` for every overview of the view; off, any request but a read is refused (405) |
+| `hosts` | none | names the page answers to besides 127.0.0.1 and localhost, with or without a port: a proxy's (`<machine>.<tailnet>.ts.net`) |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.

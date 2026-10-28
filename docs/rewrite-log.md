@@ -4,6 +4,20 @@ Newest first, one entry per decision with the rule of
 [`rewrite-rules.md`](rewrite-rules.md) it follows. The loop decides; the
 user reads this instead of answering questions.
 
+## 2026-10-28 12:00 · daemon / web UI · the TUI's frame as HTML, HTTP/1 by hand
+Chose: the page is `tui::overview::drawn`, the `--once` path of the
+overview drawn into a ratatui buffer (`view::buffer`) and written cell by
+cell as spans (`daemon/web/html.rs`); the local read runs per look of the
+page, GitLab comes from the daemon's feed of the view, followed while a
+page looks. The server is a short HTTP/1 responder on tokio's `TcpListener`
+with `httparse` (already built for reqwest), one request per connection.
+Against: a JSON API and a page of its own (a second way to draw the
+overview); hyper's or axum's server (a dependency and its features for
+four GET routes and one POST).
+Why: rule 4 (ties go to the simpler: one way to draw the overview, no new
+dependency) and rule 6 (no GitLab write the user didn't ask for: the page's
+one write, a read of GitLab for every overview, sits behind `[web] writes`).
+
 ## 2026-10-17 06:00 · CLI / every command · each group keeps its own sorted table
 Chose: no shared command list in `cli/mod.rs`: each group (`read.rs`,
 `write.rs`, `lifecycle.rs`, `setup.rs`) has one `COMMANDS` table, sorted by

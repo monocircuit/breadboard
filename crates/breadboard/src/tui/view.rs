@@ -15,6 +15,7 @@ use super::page::{self, Ground, Page, Row, Sheet, guarded};
 use super::scene::Target;
 use super::theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -1133,6 +1134,39 @@ pub fn once<P: App>(app: &P, width: u16) -> String {
         .collect();
     lines.extend(view.sheet.as_ref().map(Sheet::text).unwrap_or_default());
     lines.iter().map(|line| line.trim_end().to_string() + "\n").collect()
+}
+
+/// The whole page of `app` at `width`, drawn as the terminal draws it (the
+/// band on its grey, each row on its ground), none of it lit: the web UI's
+/// frame (#435), one way to draw the overview (rewrite rule 4).
+pub fn buffer<P: App>(app: &P, width: u16) -> Buffer {
+    let mut view = View::<P::Action>::default();
+    view.build(app, width);
+    let band = band::lines(&view.header, "", width);
+    let rows = view.sheet.as_ref().map_or(&[][..], |sheet| &sheet.rows[..]);
+    let height = u16::try_from(band.len() + rows.len()).unwrap_or(u16::MAX);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+    let lines = band
+        .iter()
+        .map(|line| (line, Some(theme::HEAD)))
+        .chain(rows.iter().map(|row| {
+            let ground = match row.ground {
+                Ground::Plain => None,
+                Ground::Island => Some(theme::ISLAND),
+                Ground::Head => Some(theme::HEAD),
+            };
+            (&row.line, ground)
+        }));
+    for (y, (line, ground)) in (0..height).zip(lines) {
+        if let Some(ground) = ground {
+            buffer.set_style(Rect::new(0, y, width, 1), Style::new().bg(ground));
+        }
+        if y < band.len() as u16 {
+            buffer.set_style(Rect::new(0, y, width, 1), Style::new().fg(theme::BAND_TEXT));
+        }
+        buffer.set_line(0, y, line, width);
+    }
+    buffer
 }
 
 #[cfg(test)]
