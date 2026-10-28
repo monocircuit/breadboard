@@ -254,9 +254,7 @@ pub fn marker_file(main: &Path) -> PathBuf {
 
 /// What the last read saw, None before the first (or after the switch was off).
 pub fn read_seen(main: &Path) -> Option<Seen> {
-    seen_file(main)
-        .exists()
-        .then(|| read_or_default(&seen_file(main)))
+    seen_file(main).exists().then(|| read_or_default(&seen_file(main)))
 }
 
 /// `notify-send` on PATH: None without one.

@@ -852,7 +852,10 @@ impl Config {
         for event in self.notifications.events.iter().flatten() {
             if crate::notify::event_of(event).is_none() {
                 let keys: Vec<&str> = crate::notify::EVENTS.iter().map(|event| event.key).collect();
-                return bad("notifications.events", &format!("no event {event}: one of {}", keys.join(", ")));
+                return bad(
+                    "notifications.events",
+                    &format!("no event {event}: one of {}", keys.join(", ")),
+                );
             }
         }
         for (name, product) in &self.products {

@@ -150,13 +150,29 @@ pub const DEFS: [Def; 17] = [
         kind: Kind::Switch,
         scope: Scope::Repo,
     },
-    notify_def("notify_issue_created", "· issue created", "an issue is created, by anyone"),
+    notify_def(
+        "notify_issue_created",
+        "· issue created",
+        "an issue is created, by anyone",
+    ),
     notify_def("notify_mr_opened", "· MR opened", "an MR is opened"),
-    notify_def("notify_mr_merged", "· MR merged", "an MR is merged: into develop, an epic or a batch"),
+    notify_def(
+        "notify_mr_merged",
+        "· MR merged",
+        "an MR is merged: into develop, an epic or a batch",
+    ),
     notify_def("notify_mr_ready", "· MR ready", "an MR is marked ready"),
     notify_def("notify_pipeline_failed", "· pipeline failed", "an MR's pipeline failed"),
-    notify_def("notify_mr_conflict", "· MR conflict", "an MR got a conflict with its target"),
-    notify_def("notify_decide", "· asks you", "an agent or an orchestrator asks you (a decide is posted)"),
+    notify_def(
+        "notify_mr_conflict",
+        "· MR conflict",
+        "an MR got a conflict with its target",
+    ),
+    notify_def(
+        "notify_decide",
+        "· asks you",
+        "an agent or an orchestrator asks you (a decide is posted)",
+    ),
 ];
 
 /// The switch of one notification event: `notify_<event>`.
@@ -535,7 +551,11 @@ mod tests {
         let (_scratch, main) = world("[products.breadboard]\npaths = [\"packages/breadboard\"]\n");
         record(&main, "a", json!({ "issues": [], "product": "breadboard" }));
         record(&main, "alone", json!({ "issues": [] }));
-        assert_eq!(of(&main, "a").notify.len(), crate::notify::EVENTS.len(), "every one by default");
+        assert_eq!(
+            of(&main, "a").notify.len(),
+            crate::notify::EVENTS.len(),
+            "every one by default"
+        );
         for event in crate::notify::EVENTS {
             assert_eq!(def_of(&notify_key(event.key)).map(|def| def.scope), Some(Scope::Repo));
         }
