@@ -8,9 +8,14 @@
 //! Its JSON keys are camelCase, its times ms since the epoch; a field that
 //! is unknown is `null`, a list without entries `[]`: every key is always
 //! there, so its shape stays one (`tests` pins it).
+//!
+//! An orchestration's daemon-side actor (#498) is in it too (#509): what it
+//! has under way and its log, from `<name>.acting`, so a reader sees what
+//! the node does by itself.
 
 use crate::check::CheckState;
 use crate::conversations::question_of;
+use crate::model::acting::MergePhase;
 use crate::model::agent_state::{Facts, agent_state_of};
 use crate::model::everything::EverythingLocal;
 use crate::model::orchestration::OrchestrationLocal;
@@ -82,6 +87,95 @@ pub struct Orchestration {
     pub batch: Option<Batch>,
     /// What its agents and its orchestrator spent, all time.
     pub spent: Tokens,
+    /// What its actor keeps, None while no process acts for it.
+    pub acting: Option<Acting>,
+}
+
+/// What the actor of an orchestration has under way and did (#498's `Acting`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Acting {
+    /// The process that acts.
+    pub pid: i64,
+    /// The automatic wt:removes, by worktree.
+    pub removals: Vec<Removal>,
+    /// The starts and handovers, by issue.
+    pub starts: Vec<Start>,
+    /// The failed pipelines' lines that didn't get in.
+    pub pipeline_tries: Vec<PipelineTry>,
+    /// The worktrees whose ended wait didn't get in yet.
+    pub undelivered_waits: Vec<PathBuf>,
+    /// The merges, by MR.
+    pub merges: Vec<Merge>,
+    /// What it did, newest first.
+    pub log: Vec<Act>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Removal {
+    pub worktree: PathBuf,
+    pub is_armed: bool,
+    pub is_running: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Start {
+    pub issue: i64,
+    pub is_running: bool,
+    pub error: Option<String>,
+    /// When it ended, None while it never did.
+    pub ended: Option<i64>,
+    /// The worktree of the agent it hands the issue to.
+    pub worktree: Option<PathBuf>,
+    /// For a fresh agent.
+    pub is_fresh: bool,
+    /// The agent it goes to.
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineTry {
+    pub key: String,
+    pub why: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Merge {
+    pub mr: i64,
+    pub phase: Phase,
+    pub error: Option<String>,
+}
+
+/// Where a merge stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    Armed,
+    Running,
+    Merged,
+    Failed,
+}
+
+/// An entry of the actor's log, without its paint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Act {
+    /// When it was done first, ms.
+    pub at: i64,
+    /// When it was done the last time, ms.
+    pub last: i64,
+    /// How often it was done.
+    pub times: u32,
+    /// One act's entry: its end replaces its start.
+    pub key: Option<String>,
+    pub text: String,
+    /// The command run or the line typed, word for word.
+    pub detail: Option<String>,
 }
 
 /// An issue of an orchestration, as its record keeps it.
@@ -311,6 +405,8 @@ pub struct RepoFacts {
     pub held: Option<String>,
     pub usage: Option<String>,
     pub today: crate::spend::Today,
+    /// What the actors of its orchestrations keep, by name, of a process that lives.
+    pub acting: HashMap<String, crate::model::acting::Acting>,
 }
 
 impl RepoFacts {
@@ -320,9 +416,11 @@ impl RepoFacts {
         reader.should_wait_for_docker = true;
         let main = reader.main.clone();
         let everything = reader.read_everything(now);
-        let orchestrations = crate::record::recorded(&main)
+        let names = crate::record::recorded(&main);
+        let orchestrations = names.iter().map(|name| reader.read_orchestration(name, now)).collect();
+        let acting = names
             .iter()
-            .map(|name| reader.read_orchestration(name, now))
+            .filter_map(|name| Some((name.clone(), crate::model::acting::read(&main, name)?)))
             .collect();
         Some(RepoFacts {
             develop: crate::git::default_branch().to_string(),
@@ -334,6 +432,7 @@ impl RepoFacts {
             held: crate::runs::held_now(&main, now),
             usage: crate::runs::usage_now(&main, now),
             today: crate::spend::today_of(&main, now),
+            acting,
             main,
         })
     }
@@ -394,7 +493,11 @@ fn repo_of(facts: &RepoFacts) -> Repo {
             .unwrap_or_default(),
         main: facts.main.clone(),
         develop: facts.develop.clone(),
-        orchestrations: facts.orchestrations.iter().map(orchestration_of).collect(),
+        orchestrations: facts
+            .orchestrations
+            .iter()
+            .map(|local| orchestration_of(local, facts.acting.get(&local.name)))
+            .collect(),
         worktrees,
         agents,
         runs: runs_of(facts),
@@ -406,7 +509,7 @@ fn today_of(today: &crate::spend::Today, session: &str) -> Tokens {
     today.by_session.get(session).copied().unwrap_or_default().into()
 }
 
-fn orchestration_of(local: &OrchestrationLocal) -> Orchestration {
+fn orchestration_of(local: &OrchestrationLocal, acting: Option<&crate::model::acting::Acting>) -> Orchestration {
     let record = local.record.as_ref();
     let entries: Vec<Entry> = record
         .map(|record| issues_of(&record.issues, &local.trees))
@@ -446,6 +549,71 @@ fn orchestration_of(local: &OrchestrationLocal) -> Orchestration {
             .map(String::from),
         batch,
         spent: local.spent.total.into(),
+        acting: acting.map(acting_of),
+    }
+}
+
+fn acting_of(acting: &crate::model::acting::Acting) -> Acting {
+    Acting {
+        pid: acting.pid,
+        removals: acting
+            .removals
+            .iter()
+            .map(|(dir, removal)| Removal {
+                worktree: dir.clone(),
+                is_armed: removal.is_armed,
+                is_running: removal.is_running,
+                error: removal.error.clone(),
+            })
+            .collect(),
+        starts: acting
+            .starts
+            .iter()
+            .map(|(issue, run)| Start {
+                issue: *issue,
+                is_running: run.is_running,
+                error: run.error.clone(),
+                ended: (run.ended > 0).then_some(run.ended),
+                worktree: run.dir.clone(),
+                is_fresh: run.is_fresh,
+                to: run.to.clone(),
+            })
+            .collect(),
+        pipeline_tries: acting
+            .pipeline_tries
+            .iter()
+            .map(|(key, why)| PipelineTry {
+                key: key.clone(),
+                why: why.clone(),
+            })
+            .collect(),
+        undelivered_waits: acting.undelivered_waits.iter().cloned().collect(),
+        merges: acting
+            .merges
+            .iter()
+            .map(|(mr, merging)| Merge {
+                mr: *mr,
+                phase: match merging.phase {
+                    MergePhase::Armed => Phase::Armed,
+                    MergePhase::Running => Phase::Running,
+                    MergePhase::Merged => Phase::Merged,
+                    MergePhase::Failed => Phase::Failed,
+                },
+                error: merging.error.clone(),
+            })
+            .collect(),
+        log: acting
+            .did
+            .iter()
+            .map(|did| Act {
+                at: did.at,
+                last: did.last,
+                times: did.times,
+                key: did.key.clone(),
+                text: did.text.clone(),
+                detail: did.detail.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -804,6 +972,56 @@ mod tests {
                 .into(),
                 ..Default::default()
             },
+            acting: [("lab".to_string(), acting())].into(),
+        }
+    }
+
+    fn acting() -> crate::model::acting::Acting {
+        use crate::model::acting::{Acting, Did, MergePhase, Merging};
+        use crate::model::auto_actions::Removal;
+        use crate::model::workers::StartRun;
+        Acting {
+            pid: 42,
+            did: vec![Did {
+                at: 960,
+                paint: crate::model::Paint::Green,
+                text: "removed 6-y".into(),
+                detail: Some("pnpm wt:remove 6-y".into()),
+                key: Some("remove:/r/platform-6-y".into()),
+                times: 2,
+                last: 990,
+            }],
+            removals: [(
+                PathBuf::from("/r/platform-6-y"),
+                Removal {
+                    is_armed: false,
+                    is_running: true,
+                    error: None,
+                },
+            )]
+            .into(),
+            starts: [(
+                9,
+                StartRun {
+                    is_running: false,
+                    error: Some("no free agent".into()),
+                    ended: 970,
+                    dir: Some("/r/platform-7-x".into()),
+                    is_fresh: false,
+                    to: Some("s-1".into()),
+                },
+            )]
+            .into(),
+            pipeline_tries: [("failed:12:300".to_string(), "the agent runs".to_string())].into(),
+            undelivered_waits: [PathBuf::from("/r/platform-7-x")].into(),
+            merges: [(
+                12,
+                Merging {
+                    phase: MergePhase::Running,
+                    error: None,
+                },
+            )]
+            .into(),
         }
     }
 
@@ -861,6 +1079,21 @@ mod tests {
                         "fixes": [{ "issue": 30, "batch": "batch/lab-1" }],
                     },
                     "spent": { "tokens": 2_000, "dollars": 1.5 },
+                    "acting": {
+                        "pid": 42,
+                        "removals": [{ "worktree": "/r/platform-6-y", "isArmed": false, "isRunning": true, "error": null }],
+                        "starts": [{
+                            "issue": 9, "isRunning": false, "error": "no free agent", "ended": 970,
+                            "worktree": "/r/platform-7-x", "isFresh": false, "to": "s-1",
+                        }],
+                        "pipelineTries": [{ "key": "failed:12:300", "why": "the agent runs" }],
+                        "undeliveredWaits": ["/r/platform-7-x"],
+                        "merges": [{ "mr": 12, "phase": "running", "error": null }],
+                        "log": [{
+                            "at": 960, "last": 990, "times": 2, "key": "remove:/r/platform-6-y",
+                            "text": "removed 6-y", "detail": "pnpm wt:remove 6-y",
+                        }],
+                    },
                 }],
                 "worktrees": [
                     {
