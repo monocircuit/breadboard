@@ -24,6 +24,7 @@ pub mod local;
 pub mod lock;
 pub mod main_update;
 pub mod model;
+pub mod node;
 pub mod notify;
 pub mod permissions;
 pub mod pickup;

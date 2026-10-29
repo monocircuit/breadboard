@@ -9,6 +9,7 @@ mod issues;
 mod list;
 mod overview;
 mod plan;
+mod snapshot;
 mod usage;
 
 use std::process::ExitCode;
@@ -27,6 +28,7 @@ const COMMANDS: &[Command] = &[
     ("arch:deltas", &deltas::TAKES, deltas::run),
     ("ci:watch", &ci_watch::TAKES, |_| ci_watch::run()),
     ("gitlab:usage", &usage::TAKES, usage::run),
+    ("snapshot", &snapshot::TAKES, snapshot::run),
     ("wt:issues", &issues::TAKES, |_| issues::run()),
     ("wt:list", &list::TAKES, |_| list::run()),
     ("wt:plan", &plan::TAKES, plan::run),
