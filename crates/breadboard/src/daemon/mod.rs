@@ -39,7 +39,12 @@
 //! wt:check passes, else a look action of the orchestration (#352).
 //! And the web UI (#435, `web`): the overviews of its repos as a page on
 //! 127.0.0.1, read-only unless `[web] writes` says otherwise.
+//! And it acts (#498, `acts`): what the overview of an orchestration does by
+//! itself runs here, one headless overview per orchestration of its repos,
+//! with or without a pane showing it; an overview in a pane draws what it
+//! did (core's `model::acting`) and acts only when it can't reach the daemon.
 
+mod acts;
 mod ci;
 pub mod client;
 mod feed;
@@ -141,7 +146,7 @@ const PROTOCOL: &str = env!("BREADBOARD_PROTOCOL");
 const TOOLS: [&str; 4] = ["herdr", "glab", "git", "claude"];
 
 /// The environment the daemon's reads depend on besides those programs.
-const ENV: [&str; 10] = [
+const ENV: [&str; 11] = [
     "HOME",
     "XDG_CONFIG_HOME",
     "HERDR_ENV",
@@ -155,6 +160,8 @@ const ENV: [&str; 10] = [
     // Another port of the web UI (#435): a world's daemon never takes the user's.
     "BREADBOARD_WEB_PORT",
     "BREADBOARD_WEB_HOSTS",
+    // A daemon that acts for no orchestration (#498, a check of its other parts) is another one.
+    "BREADBOARD_NO_ACTS",
 ];
 
 /// What the daemon must share with its clients: its protocol, the programs

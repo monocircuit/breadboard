@@ -158,6 +158,77 @@ pub fn main(args: &[String]) -> ExitCode {
     code
 }
 
+/// Where a headless overview's GitLab comes from: the daemon's feed of its
+/// view, in its process (`asks`: what its local read asks for, `refreshes`:
+/// read again now, `out`: what was read).
+pub type GitlabFeed = Box<
+    dyn FnOnce(
+            watch::Receiver<Option<RemoteAsk>>,
+            mpsc::UnboundedReceiver<()>,
+            mpsc::UnboundedSender<Feed>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send,
+>;
+
+/// The overview of the orchestration `name` of `main` with no terminal
+/// (#498): the daemon's, which acts for it as the overview in a pane did
+/// (auto, merges, answers, `actor/`): same reads, same model, same actor,
+/// only nothing is drawn. It writes what its actor keeps for the overviews
+/// that draw it (`publish_acting`). It runs on the calling thread until
+/// `stop` is set and nothing it does would be cut off; `busy` says whether
+/// something is (a merge, the end of the orchestration). Its acting file goes with it.
+pub fn headless(
+    main: &Path,
+    name: &str,
+    gitlab: GitlabFeed,
+    runtime: &tokio::runtime::Handle,
+    stop: &std::sync::atomic::AtomicBool,
+    busy: &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering;
+    let view = View::Orchestration(name.to_string());
+    let Some(reader) = LocalReader::new(main, view.clone()) else {
+        return;
+    };
+    let args = Args {
+        view: view.clone(),
+        is_once: false,
+        is_herdr: false,
+        product: None,
+    };
+    let mut app = Overview::new(&args, main);
+    app.actor.is_headless = true;
+    let (sender, mut models) = mpsc::unbounded_channel();
+    let (asks, asked) = watch::channel(None);
+    let (refresh, refreshes) = mpsc::unbounded_channel();
+    app.refresh = Some(refresh);
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    app.wake_local = Some(wake);
+    act::start(&mut app, sender.clone());
+    read_locally(reader, sender.clone(), asks, woken, false);
+    let (out, mut said) = mpsc::unbounded_channel();
+    runtime.spawn(gitlab(asked, refreshes, out));
+    runtime.spawn(async move {
+        while let Some(feed) = said.recv().await {
+            if sender.send(Msg::Gitlab(feed)).is_err() {
+                return;
+            }
+        }
+    });
+    while let Some(message) = models.blocking_recv() {
+        app.update(message);
+        let is_busy = app.actor.is_busy();
+        busy.store(is_busy, Ordering::SeqCst);
+        if stop.load(Ordering::SeqCst) && !is_busy {
+            break;
+        }
+    }
+    if app.actor.acting_written.is_some() {
+        let _ = std::fs::remove_file(breadboard_core::model::acting::acting_file(main, name));
+    }
+    busy.store(false, Ordering::SeqCst);
+}
+
 /// The readers of a live view started, their models to `sender`: the local
 /// one on its thread, GitLab's on `runtime`, the actor's jobs.
 fn start_reading(
@@ -563,6 +634,112 @@ impl Overview {
             Err(why) => self.broken = Some(why),
         }
     }
+
+    /// The orchestration this live overview shows, None in a print or another view.
+    fn acting_name(&self) -> Option<String> {
+        match &self.view {
+            View::Orchestration(name) if !self.is_once => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// What the actor keeps, written for the overviews that don't act (#498): only the one that acts.
+    fn publish_acting(&mut self) {
+        use breadboard_core::model::acting::{self, Acting, Merging};
+        let Some(name) = self.acting_name().filter(|_| self.state.is_deliverer) else {
+            return;
+        };
+        let acting = Acting {
+            pid: i64::from(std::process::id()),
+            did: self.actor.did.iter().cloned().collect(),
+            removals: self.state.removals.clone().into_iter().collect(),
+            starts: self.state.runs.clone().into_iter().collect(),
+            pipeline_tries: self.state.pipeline_tries.clone().into_iter().collect(),
+            undelivered_waits: self.state.undelivered_waits.iter().cloned().collect(),
+            merges: self
+                .actor
+                .merges
+                .of
+                .iter()
+                .map(|(iid, merge)| {
+                    (
+                        *iid,
+                        Merging {
+                            phase: merge.phase,
+                            error: merge.error.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        acting::write(&self.actor.main, &name, &acting, &mut self.actor.acting_written);
+    }
+
+    /// What the actor of the orchestration (the daemon's, #498) keeps, drawn
+    /// here: what came from its file before goes, what it says now comes,
+    /// this overview's own clicks stay and win.
+    fn adopt_acting(&mut self) {
+        use breadboard_core::model::acting::{self, merged_log};
+        let Some(name) = self.acting_name().filter(|_| !self.state.is_deliverer) else {
+            return;
+        };
+        let now = acting::read(&self.actor.main, &name).unwrap_or_default();
+        if now == self.actor.adopted {
+            return;
+        }
+        let was = std::mem::replace(&mut self.actor.adopted, now);
+        let now = &self.actor.adopted;
+        let own: Vec<actor::Did> = self
+            .actor
+            .did
+            .iter()
+            .filter(|did| !was.did.contains(did))
+            .cloned()
+            .collect();
+        self.actor.did = merged_log(&own, &now.did, actor::DID_KEPT).into();
+        adopt(&mut self.state.removals, &was.removals, &now.removals);
+        adopt(&mut self.state.runs, &was.starts, &now.starts);
+        adopt(&mut self.state.pipeline_tries, &was.pipeline_tries, &now.pipeline_tries);
+        for dir in &was.undelivered_waits {
+            self.state.undelivered_waits.remove(dir);
+        }
+        self.state
+            .undelivered_waits
+            .extend(now.undelivered_waits.iter().cloned());
+        let merges = &mut self.actor.merges.of;
+        for (iid, merging) in &was.merges {
+            if merges
+                .get(iid)
+                .is_some_and(|merge| merge.phase == merging.phase && merge.error == merging.error)
+            {
+                merges.remove(iid);
+            }
+        }
+        for (iid, merging) in &now.merges {
+            merges.entry(*iid).or_insert_with(|| actor::merge::Merge {
+                phase: merging.phase,
+                error: merging.error.clone(),
+                seq: 0,
+            });
+        }
+    }
+}
+
+/// `now` into `map` in place of `was`: an entry of `was` this overview
+/// didn't change goes, one of `now` comes where this overview has none.
+fn adopt<K: Ord + Clone + std::hash::Hash + Eq, V: Clone + PartialEq>(
+    map: &mut std::collections::HashMap<K, V>,
+    was: &std::collections::BTreeMap<K, V>,
+    now: &std::collections::BTreeMap<K, V>,
+) {
+    for (key, value) in was {
+        if map.get(key) == Some(value) {
+            map.remove(key);
+        }
+    }
+    for (key, value) in now {
+        map.entry(key.clone()).or_insert_with(|| value.clone());
+    }
 }
 
 impl App for Overview {
@@ -621,6 +798,7 @@ impl App for Overview {
             Msg::Look => return,
             Msg::Acted(effect) => {
                 effect(self);
+                self.publish_acting();
                 // A full channel: a look is already due.
                 if let Some(wake) = &self.wake_local {
                     let _ = wake.try_send(());
@@ -655,6 +833,7 @@ impl App for Overview {
             }
         }
         act::gate(self);
+        self.adopt_acting();
         self.rebuild();
         act::after_read(self, is_local, is_remote);
         // Answers that didn't get in, again once their agent's pane changed: only the deliverer.
@@ -664,6 +843,7 @@ impl App for Overview {
         {
             actions::retry_answers(&self.actor, model);
         }
+        self.publish_acting();
     }
 
     fn act(&mut self, input: Input<Act>) -> Flow {

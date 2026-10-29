@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader as StdBufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -42,6 +42,15 @@ pub fn share_reads() {
 
 /// Until when (ms) the reads skip the daemon: it left one unanswered.
 static SKIPPED_UNTIL: AtomicI64 = AtomicI64::new(0);
+
+/// The daemon lost for this process's GitLab feed (`follow`): it reads by itself, and acts by itself (#498).
+static IS_LOST: AtomicBool = AtomicBool::new(false);
+
+/// Whether this process gave the daemon up: until then the daemon acts for
+/// the orchestrations (#498), an overview here only draws what it did.
+pub fn is_lost() -> bool {
+    IS_LOST.load(Ordering::Relaxed)
+}
 
 /// herdr's answer to `args` from the daemon; None when it doesn't answer (herdr is asked here then).
 fn herdr_read(args: &[&str]) -> Option<Option<Value>> {
@@ -200,6 +209,9 @@ pub async fn follow(
     out: &mpsc::UnboundedSender<Feed>,
 ) -> Followed {
     let followed = follow_at(main, view, asks, refreshes, out, SILENT, connect).await;
+    if followed != Followed::Done {
+        IS_LOST.store(true, Ordering::Relaxed);
+    }
     if followed == Followed::Silent {
         // Given up for GitLab, given up for herdr: no read waits for it again.
         SKIPPED_UNTIL.store(i64::MAX, Ordering::Relaxed);

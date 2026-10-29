@@ -52,6 +52,8 @@ pub(super) struct State {
     kept_up: Mutex<std::collections::HashSet<std::path::PathBuf>>,
     /// The web UI (`web`, #435): whether it was started, the feeds its pages follow.
     pub(super) web: super::web::Pages,
+    /// The orchestrations it acts for (`acts`, #498).
+    pub(super) acts: super::acts::Acts,
 }
 
 /// How the serving ended.
@@ -226,6 +228,11 @@ async fn serve(
                 }
                 state.kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, (at, _)| at.elapsed() < GRACE);
                 super::web::forget_closed(&state);
+                // The orchestrations of its repos acted for: a new record's starts, an ended one's stops.
+                let mains: Vec<std::path::PathBuf> = state.queues.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+                for main in &mains {
+                    super::acts::keep(&state, main);
+                }
                 // A worktree no overview asked about for a while (removed, its views closed): forgotten.
                 let old = breadboard_core::time::now_ms() - STALE_MS - GRACE.as_millis() as i64;
                 state.status.lock().unwrap_or_else(|e| e.into_inner()).retain(|_, status| match status.try_lock() {
@@ -241,12 +248,15 @@ async fn serve(
                     .unwrap_or_else(|e| e.into_inner())
                     .values()
                     .any(|busy| busy.load(Ordering::SeqCst));
-                if is_running {
+                // An orchestration acted for keeps it too (#498): it goes on with no overview open.
+                if is_running || state.acts.is_acting() {
                     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 }
                 // A build installed over its binary: the overviews connect to the new one. Not
-                // while a run is queued or in flight: the new one wouldn't know its claude.
-                if !is_running && binary.is_replaced() {
+                // while a run is queued or in flight: the new one wouldn't know its claude;
+                // nor while a merge of an orchestration runs here.
+                if !is_running && !state.acts.is_busy() && binary.is_replaced() {
+                    state.acts.release();
                     let _ = std::fs::remove_file(socket);
                     return Ok(Ended::Replaced);
                 }
@@ -300,6 +310,8 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             }
             // An overview of a repo starts its run engine: lines left queued by a daemon before run.
             start_engine(state, &main);
+            // And the daemon acts for its orchestrations from now on (#498).
+            super::acts::keep(state, &main);
             if state.is_keeping_up
                 && state
                     .kept_up

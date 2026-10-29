@@ -8,6 +8,10 @@
 //!   `deliversAnswers`): it delivers answers, tells agents, hands out
 //!   issues, removes merged worktrees. Node's overview and this one exclude
 //!   each other through that same file.
+//!   That is the daemon's headless overview (#498, `daemon/acts.rs`); one in
+//!   a pane holds it only while it can't reach the daemon, and otherwise
+//!   draws what the daemon's actor keeps (`Overview::adopt_acting`). Its own
+//!   clicks still act here.
 //! - Where: a click's state changes on the view's thread at once (an
 //!   answer is stored before the next frame); what waits for herdr, git or
 //!   GitLab runs on the actor's thread, one job after the other, and comes
@@ -54,26 +58,9 @@ pub type Effect = Box<dyn FnOnce(&mut Overview) + Send>;
 type Job = Box<dyn FnOnce() -> Option<Effect> + Send>;
 
 /// How many things done the log keeps: a `--herdr` layout alone may say a dozen.
-const DID_KEPT: usize = 40;
+pub const DID_KEPT: usize = 40;
 
-/// A thing done, for the log: when, how it went, what — in words, and
-/// what exactly was run or typed, the way lazygit's command log puts the
-/// command under its action.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Did {
-    pub at: i64,
-    /// Green done, red failed, yellow under way or waiting.
-    pub paint: Paint,
-    pub text: String,
-    /// The command run or the line typed, word for word.
-    pub detail: Option<String>,
-    /// One act's entry: its end replaces its start, never a second entry.
-    pub key: Option<String>,
-    /// How often it was done: an act done again, at any later tick, counts here.
-    pub times: u32,
-    /// When it was done the last time (ms): `at` stays its first.
-    pub last: i64,
-}
+pub use breadboard_core::model::acting::Did;
 
 /// The actor of one overview.
 pub struct Actor {
@@ -121,6 +108,12 @@ pub struct Actor {
     pub prompt: Option<super::actions::Prompt>,
     /// The pane beside the overview a click on a worktree opens (#406).
     pub detail: detail::Detail,
+    /// The daemon's overview of an orchestration (#498): it acts for it, no terminal shows it.
+    pub is_headless: bool,
+    /// What the actor of the orchestration kept, as last taken from its file (`acting`).
+    pub adopted: breadboard_core::model::acting::Acting,
+    /// The text of the acting file as last written: one change, one write.
+    pub acting_written: Option<String>,
 }
 
 impl Actor {
@@ -151,6 +144,9 @@ impl Actor {
             names: Names::default(),
             prompt: None,
             detail: detail::Detail::new(main, view, is_once),
+            is_headless: false,
+            adopted: breadboard_core::model::acting::Acting::default(),
+            acting_written: None,
         }
     }
 
@@ -198,8 +194,14 @@ impl Actor {
 
     /// Whether this overview acts for the orchestration `name`: live, and
     /// holding its pid file (taken over once the one holding it is gone).
+    /// The daemon acts (#498): an overview in a terminal only while it can't
+    /// reach it, and it gives the file back once it can.
     pub fn delivers(&mut self, name: &str) -> bool {
         if !self.is_live || self.sender.is_none() {
+            return false;
+        }
+        if !self.is_headless && !crate::daemon::client::is_lost() {
+            self.holder = None;
             return false;
         }
         if self.holder.is_none() {

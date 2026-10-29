@@ -3,6 +3,7 @@
 //! ported with its tests. Each section of a view is derived on its own
 //! (#306): one that fails costs that section, which says so in its place.
 
+pub mod acting;
 pub mod agent_state;
 pub mod auto_actions;
 pub mod boxes;
@@ -50,7 +51,7 @@ use std::path::PathBuf;
 /// The colour of a piece of text, as the Node overview paints it; the view
 /// maps it to its theme. `Wait` is whom an agent waits for (herdr-tones.mjs
 /// `paintOf`), `State` herdr's state of an agent (`toneOf`).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Paint {
     #[default]
     Plain,
@@ -67,7 +68,7 @@ pub enum Paint {
 }
 
 /// Whom an agent waits for (agent-state.mjs): each in a colour of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tone {
     /// At work: yellow.
     Work,

@@ -318,7 +318,7 @@ pub const RETRY_MS: i64 = 60_000;
 /// A start or handover running in the background, or what stopped it (the
 /// writing side keeps these): `dir` the worktree of the agent it hands the
 /// issue to, held until the agent moved; `is_fresh` for a fresh agent.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct StartRun {
     pub is_running: bool,
     pub error: Option<String>,
