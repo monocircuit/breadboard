@@ -5,7 +5,8 @@
 //! queued while a run is in flight wait for the next. A session open in an
 //! interactive claude (`~/.claude/sessions`, a live pid that isn't a run's)
 //! holds its queue. Runs start while memory allows (`runs::room_for`), in
-//! merge order, then by age. One engine per repo across daemons of other
+//! merge order, then by age, never two in one worktree (#511: a fresh
+//! session waits for the run of the one before). One engine per repo across daemons of other
 //! builds: `.claude/runs/engine.pid`. A run that stopped at the Claude usage
 //! limit holds every run until it resets; then the runs it stopped go on
 //! (#393, core's `Usage`). A run that ends on a background command or
@@ -41,8 +42,17 @@ const CLAUDE: &str = "claude";
 /// gauntlet sets it.
 const LOOKS_ENV: &str = "BREADBOARD_LOOKS";
 
-/// The runs this engine started and still waits for: session → (pid, started ms).
-type InFlight = Arc<Mutex<HashMap<String, (i64, i64)>>>;
+/// The runs this engine started and still waits for, by session.
+type InFlight = Arc<Mutex<HashMap<String, Flight>>>;
+
+/// A run in flight: its claude's pid (0 until it spawned), when it was
+/// taken from the queue (ms), the worktree it runs in.
+#[derive(Debug, Clone)]
+struct Flight {
+    pid: i64,
+    at: i64,
+    dir: PathBuf,
+}
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -120,8 +130,9 @@ pub struct Start {
 
 /// The sessions that may run now, their lines taken from the queue: none in
 /// flight (here or by an engine before, its claude alive), none open
-/// interactively, as many as memory allows, in merge order, then by age. A
-/// session whose worktree is gone loses its lines. Nothing while the usage
+/// interactively, as many as memory allows, in merge order, then by age,
+/// one per worktree and none where a run is in flight (#511, whichever
+/// session's). A session whose worktree is gone loses its lines. Nothing while the usage
 /// limit holds; once it reset, the sessions it stopped first get their line.
 fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Start> {
     if !release_usage(main, table, now_ms()) {
@@ -137,7 +148,7 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
     }
     let table: Table = read_or_default(&status_file(main));
     let flying = locked(in_flight).clone();
-    let ours: HashSet<i64> = flying.values().map(|(pid, _)| *pid).collect();
+    let ours: HashSet<i64> = flying.values().map(|flight| flight.pid).collect();
     let mut open: HashSet<String> = running_claudes()
         .into_iter()
         .filter(|claude| !ours.contains(&claude.pid))
@@ -148,16 +159,32 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
     open.extend(interactive_resumes());
     let states = runs::states_of(&table, &queue);
     let now = now_ms();
-    let starting = flying.values().filter(|(_, at)| now - at < STARTING_MS).count();
+    let starting = flying.values().filter(|flight| now - flight.at < STARTING_MS).count();
+    // The worktrees a run stands in: this engine's, and one an engine before left running.
+    let busy: HashSet<PathBuf> = flying
+        .values()
+        .map(|flight| flight.dir.clone())
+        .chain(
+            states
+                .values()
+                .filter(|run| run.state == State::Running)
+                .map(|run| run.dir.clone()),
+        )
+        .collect();
     let waiting: Vec<Waiting> = runs::waiting_in(&queue)
         .into_iter()
         .filter(|(session, ..)| !flying.contains_key(session) && !open.contains(session))
         .filter(|(session, ..)| states.get(session).is_none_or(|run| run.state != State::Running))
-        .map(|(session, dir, at)| Waiting {
-            place: runs::place_of(main, &dir),
-            session,
-            at,
+        .map(|(session, _, at)| {
+            let dir = newest_dir(&queue, &session);
+            Waiting {
+                place: runs::place_of(main, &dir),
+                session,
+                at,
+                dir,
+            }
         })
+        .filter(|waiting| !busy.contains(&waiting.dir))
         .collect();
     // A few at a time (#445): after a crash every cut-off agent waits its turn.
     let max_runs = breadboard_core::config::of_main(main).config.agents.max_runs;
@@ -166,7 +193,7 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
     if chosen.is_empty() {
         return Vec::new();
     }
-    change_queue(main, |queue| {
+    let starts = change_queue(main, |queue| {
         let mut starts = Vec::new();
         for session in &chosen {
             let (events, rest): (Vec<Event>, Vec<Event>) = std::mem::take(&mut queue.events)
@@ -187,12 +214,37 @@ fn take_starts(main: &Path, in_flight: &InFlight, table: &Mutex<()>) -> Vec<Star
         }
         starts
     })
-    .unwrap_or_default()
+    .unwrap_or_default();
+    // In flight from here: the next look starts nothing beside them, spawned or not yet.
+    let mut flying = locked(in_flight);
+    for start in &starts {
+        flying.insert(
+            start.session.clone(),
+            Flight {
+                pid: 0,
+                at: now,
+                dir: start.dir.clone(),
+            },
+        );
+    }
+    starts
+}
+
+/// The worktree `session` stands in now: its newest line's (a handover moves it).
+fn newest_dir(queue: &Queue, session: &str) -> PathBuf {
+    queue
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.session == session)
+        .map(|event| event.dir.clone())
+        .unwrap_or_default()
 }
 
 /// The runs a crash, an OOM kill or a reboot cut off (#445): each picked up
 /// once, resumed with a line or, past the fresh-start rule, taken over by a
-/// fresh session with a handoff from the disk (core's `pickup`).
+/// fresh session with a handoff from the disk (core's `pickup`). One with
+/// lines queued is resumed with them (#511): no fresh run beside its own.
 fn pick_up_cut(main: &Path, in_flight: &InFlight, table: &Mutex<()>, now: i64) {
     let read: Table = read_or_default(&status_file(main));
     let flying = locked(in_flight).clone();
@@ -200,7 +252,9 @@ fn pick_up_cut(main: &Path, in_flight: &InFlight, table: &Mutex<()>, now: i64) {
     if cut.is_empty() {
         return;
     }
+    let queue: Queue = read_or_default(&runs::queue_file(main));
     let mut events = Vec::new();
+    let mut taken = Vec::new();
     change_table(main, table, |read| {
         for session in &cut {
             let Some(run) = read.runs.get_mut(session) else {
@@ -217,14 +271,18 @@ fn pick_up_cut(main: &Path, in_flight: &InFlight, table: &Mutex<()>, now: i64) {
             let fresh = breadboard_core::record::origin_of(&run.dir)
                 .map(|origin| breadboard_core::settings::of(main, &origin.name).agent_fresh)
                 .unwrap_or_default();
-            if let Some(event) = pickup::pick_up(main, session, run, &fresh, now) {
+            let is_queued = pickup::is_queued(&queue, session);
+            if let Some(event) = pickup::pick_up(main, session, run, &fresh, is_queued, now) {
                 eprintln!("breadboard runs: {}", pickup::said_of(run, &event, session));
+                if event.session != *session {
+                    taken.push((session.clone(), event.session.clone()));
+                }
                 events.push(event);
             }
         }
     });
     if !events.is_empty() {
-        let _ = change_queue(main, |queue| pickup::queue_first(queue, events));
+        let _ = change_queue(main, |queue| pickup::queue_first(queue, events, &taken));
     }
 }
 
@@ -299,10 +357,13 @@ fn release_usage(main: &Path, table: &Mutex<()>, now: i64) -> bool {
     true
 }
 
-/// The sessions to start: the first `room` in merge order, then by age.
+/// The sessions to start: the first `room` in merge order, then by age,
+/// one per worktree (#511).
 pub fn pick(waiting: Vec<Waiting>, room: usize) -> Vec<String> {
+    let mut dirs = HashSet::new();
     runs::ordered(waiting)
         .into_iter()
+        .filter(|waiting| dirs.insert(waiting.dir.clone()))
         .take(room)
         .map(|waiting| waiting.session)
         .collect()
@@ -410,11 +471,14 @@ async fn run(main: PathBuf, start: Start, in_flight: InFlight, table: Arc<Mutex<
                 read.runs
                     .insert(session.clone(), row(State::Idle, None, None, Vec::new()));
             });
+            locked(&in_flight).remove(&session);
             return;
         }
     };
     let pid = child.id().map(i64::from).unwrap_or_default();
-    locked(&in_flight).insert(session.clone(), (pid, now_ms()));
+    if let Some(flight) = locked(&in_flight).get_mut(&session) {
+        flight.pid = pid;
+    }
     change_table(&main, &table, |read| {
         read.runs
             .insert(session.clone(), row(State::Running, Some(pid), None, Vec::new()));
@@ -778,6 +842,7 @@ mod tests {
             session: session.into(),
             place,
             at,
+            dir: PathBuf::from(session),
         };
         let all = vec![
             waiting("back", Some(4), 1),
@@ -787,5 +852,21 @@ mod tests {
         assert_eq!(pick(all.clone(), 0), Vec::<String>::new());
         assert_eq!(pick(all.clone(), 1), ["front"]);
         assert_eq!(pick(all, usize::MAX), ["front", "back", "none"]);
+    }
+
+    #[test]
+    fn picks_one_run_per_worktree() {
+        let waiting = |session: &str, at, dir: &str| Waiting {
+            session: session.into(),
+            place: None,
+            at,
+            dir: PathBuf::from(dir),
+        };
+        let all = vec![
+            waiting("fresh", 2, "/w/7-x"),
+            waiting("old", 1, "/w/7-x"),
+            waiting("other", 3, "/w/8-y"),
+        ];
+        assert_eq!(pick(all, usize::MAX), ["old", "other"]);
     }
 }

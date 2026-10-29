@@ -661,12 +661,14 @@ pub fn place_of(main: &Path, dir: &Path) -> Option<usize> {
     plan.merge.iter().position(|planned| *planned == number)
 }
 
-/// A session waiting for a run: when its oldest line came, its place in the merge order.
+/// A session waiting for a run: when its oldest line came, its place in the
+/// merge order, the worktree its run would stand in (one run each, #511).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
     pub session: String,
     pub place: Option<usize>,
     pub at: i64,
+    pub dir: PathBuf,
 }
 
 /// Which waiting sessions start first: by merge order (a session without a
@@ -1150,6 +1152,7 @@ mod tests {
             session: session.into(),
             place,
             at,
+            dir: PathBuf::from(session),
         };
         let order = ordered(vec![
             waiting("late", None, 1),
