@@ -167,7 +167,7 @@ fn node() -> Node {
 }
 
 /// Whether this daemon is the one of the user that pushes: the first one alive holds `lab.pid`.
-fn holds() -> bool {
+pub(super) fn holds() -> bool {
     let file = lab::config_file().with_file_name("lab.pid");
     let own = i64::from(std::process::id());
     match breadboard_core::lock::pid_in(&file) {
