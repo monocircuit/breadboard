@@ -308,6 +308,18 @@ never switch it on with a proxy in front.
 | `writes` | `false` | whether the page may change something: today `read GitLab again` for every overview of the view; off, any request but a read is refused (405) |
 | `hosts` | none | names the page answers to besides 127.0.0.1 and localhost, with or without a port: a proxy's (`<machine>.<tailnet>.ts.net`) |
 
+## `[lab]`
+
+The lab web the nodes of the repo report to (#501). `lab login` signs this
+machine in there with the device flow of the OpenID provider lab web names,
+and keeps lab's node token in `$XDG_CONFIG_HOME/breadboard/lab.json` (0600).
+While logged in, the daemon stays and pushes the node's snapshot, then
+batched events. `--server <url>` wins over `server`.
+
+| Key | Default | What it does |
+| --- | ------- | ------------ |
+| `server` | none | lab web's origin; none: `lab login` needs `--server` |
+
 ## `[orchestrator]`
 
 The orchestrator's chat (#382): its context shows in the overview's title band.

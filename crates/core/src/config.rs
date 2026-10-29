@@ -50,6 +50,17 @@ pub struct Config {
     pub architecture: Option<Architecture>,
     /// The daemon's web UI (#435).
     pub web: Web,
+    /// The lab web the repo's nodes report to (#501).
+    pub lab: Lab,
+}
+
+/// The lab web of the repo (`[lab]`, #501): where `lab login` signs the
+/// node in when it is given no `--server`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lab {
+    /// Its origin (`https://lab.example`); None: `lab login` needs `--server`.
+    pub server: Option<String>,
 }
 
 /// The web UI `breadboard serve` serves (`[web]`, #435): on 127.0.0.1

@@ -1,8 +1,8 @@
 //! A node's side of lab web (#501): its login and what it sends.
 //!
 //! `breadboard lab login` signs the user in with the device flow (RFC 8628)
-//! against lab's Keycloak realm, which lab web names (`GET /api/node/login`).
-//! The Keycloak token goes to `POST /api/node/register` once, which answers
+//! against lab's OpenID provider, which lab web names (`GET /api/node/login`).
+//! The provider's token goes to `POST /api/node/register` once, which answers
 //! lab's own node token, bound to the user and this machine (`machine`, an
 //! id the node keeps). The node keeps only that token (`config_file`, 0600),
 //! a new login replaces it.
@@ -25,8 +25,6 @@ use std::time::Duration;
 
 /// The version of the envelope: a node and a lab web of another refuse each other (409).
 pub const PROTOCOL: u32 = 1;
-/// lab web when `lab login` is given no `--server`.
-pub const DEFAULT_SERVER: &str = "https://lab.monocircuit.net";
 /// The longest a node stays silent: lab web marks a node offline after three of them.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// How long a request may take.
@@ -110,12 +108,12 @@ pub fn new_machine() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Login {
     pub protocol: u32,
-    /// The Keycloak realm's issuer.
+    /// The OpenID provider's issuer.
     pub issuer: String,
     pub client_id: String,
 }
 
-/// `POST /api/node/register`, with the Keycloak access token as its bearer.
+/// `POST /api/node/register`, with the provider's access token as its bearer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Register {
@@ -166,7 +164,7 @@ pub struct Pushed {
     pub seq: i64,
 }
 
-/// Why a request to lab web or Keycloak failed.
+/// Why a request to lab web or its provider failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failed {
     /// 401: the token is unknown or revoked: `lab login` again.
@@ -209,7 +207,7 @@ pub fn slim_event(mut event: Event) -> Event {
     event
 }
 
-/// The HTTP client of lab web and its Keycloak.
+/// The HTTP client of lab web and its OpenID provider.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -231,7 +229,7 @@ impl Client {
         Ok(login)
     }
 
-    /// The node registered with the Keycloak `access` token: its node token.
+    /// The node registered with the provider's `access` token: its node token.
     pub async fn register(&self, access: &str, register: &Register) -> Result<Registered, Failed> {
         let request = self
             .http
@@ -272,7 +270,10 @@ impl Client {
 
     /// The device flow started at the realm of `login`.
     pub async fn device(&self, login: &Login) -> Result<(Endpoints, Device), Failed> {
-        let discovery = format!("{}/.well-known/openid-configuration", login.issuer.trim_end_matches('/'));
+        let discovery = format!(
+            "{}/.well-known/openid-configuration",
+            login.issuer.trim_end_matches('/')
+        );
         let endpoints: Endpoints = answer(self.http.get(discovery).send().await).await?;
         let request = self
             .http
@@ -303,16 +304,16 @@ impl Client {
             ]))
             .send()
             .await
-            .map_err(|error| Failed::Other(format!("Keycloak didn't answer: {error}")))?;
+            .map_err(|error| Failed::Other(format!("the login provider didn't answer: {error}")))?;
         let is_ok = response.status().is_success();
         let body: serde_json::Value = response
             .json()
             .await
-            .map_err(|error| Failed::Other(format!("Keycloak's answer: {error}")))?;
+            .map_err(|error| Failed::Other(format!("the login provider's answer: {error}")))?;
         if is_ok {
             return crate::json::str_of(&body, "access_token")
                 .map(|token| Some(token.to_string()))
-                .ok_or_else(|| Failed::Other("Keycloak's answer has no access_token".into()));
+                .ok_or_else(|| Failed::Other("the login provider's answer has no access_token".into()));
         }
         match crate::json::str_of(&body, "error").unwrap_or_default() {
             "authorization_pending" => Ok(None),
@@ -322,7 +323,7 @@ impl Client {
             }
             "access_denied" => Err(Failed::Other("the login was denied".into())),
             "expired_token" => Err(Failed::Other("the code expired: run lab login again".into())),
-            other => Err(Failed::Other(format!("Keycloak refused: {other}"))),
+            other => Err(Failed::Other(format!("the login provider refused: {other}"))),
         }
     }
 }
@@ -378,7 +379,10 @@ async fn answer<T: serde::de::DeserializeOwned>(sent: reqwest::Result<reqwest::R
         return Err(Failed::Protocol(why));
     }
     if !status.is_success() {
-        return Err(Failed::Other(format!("{status}: {}", text.chars().take(200).collect::<String>())));
+        return Err(Failed::Other(format!(
+            "{status}: {}",
+            text.chars().take(200).collect::<String>()
+        )));
     }
     serde_json::from_str(&text).map_err(|error| Failed::Other(format!("an answer it didn't take: {error}")))
 }
@@ -437,7 +441,7 @@ mod tests {
         let pushed: Pushed = serde_json::from_value(json!({ "protocol": 1, "seq": 7 })).unwrap();
         assert_eq!(pushed.seq, 7);
         let login: Login = serde_json::from_value(
-            json!({ "protocol": 1, "issuer": "https://id.example/realms/monocircuit", "clientId": "lab-node" }),
+            json!({ "protocol": 1, "issuer": "https://id.example/realms/lab", "clientId": "lab-node" }),
         )
         .unwrap();
         assert_eq!(login.client_id, "lab-node");

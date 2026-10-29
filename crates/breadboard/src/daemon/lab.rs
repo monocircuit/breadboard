@@ -103,7 +103,11 @@ impl Pusher {
             let pushed = client.snapshot(&token, snapshot.clone()).await;
             pushed.map(|pushed| {
                 self.seq = pushed.seq;
-                self.sent = snapshot.repos.into_iter().map(|repo| (repo.main.clone(), repo)).collect();
+                self.sent = snapshot
+                    .repos
+                    .into_iter()
+                    .map(|repo| (repo.main.clone(), repo))
+                    .collect();
             })
         } else {
             let events = self.events_of(snapshot, now);
@@ -155,7 +159,13 @@ impl Pusher {
 
 /// The main checkouts pushed: those of its overviews, those of the login.
 fn mains_of(state: &State, config: &Config) -> Vec<PathBuf> {
-    let mut mains: Vec<PathBuf> = state.queues.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+    let mut mains: Vec<PathBuf> = state
+        .queues
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
     for main in &config.repos {
         if !mains.contains(main) && main.is_dir() {
             mains.push(main.clone());
@@ -209,10 +219,19 @@ pub fn cli(args: &[String]) -> ExitCode {
 fn login(args: &[String]) -> ExitCode {
     let kept = lab::read();
     let server = match args {
-        [] => kept
-            .as_ref()
-            .map(|config| config.server.clone())
-            .unwrap_or_else(|| lab::DEFAULT_SERVER.to_string()),
+        [] => {
+            let here = std::env::current_dir().unwrap_or_default();
+            let named = breadboard_core::git::main_dir(&here)
+                .and_then(|main| breadboard_core::config::of_main(&main).config.lab.server.clone());
+            match named.or_else(|| kept.as_ref().map(|config| config.server.clone())) {
+                Some(server) => server.trim_end_matches('/').to_string(),
+                None => {
+                    return fail(
+                        "no lab web to sign in to: lab login --server <url>, or [lab] server in breadboard.toml",
+                    );
+                }
+            }
+        }
         [flag, url] if flag == "--server" => url.trim_end_matches('/').to_string(),
         _ => {
             eprintln!("{USAGE}");
@@ -232,7 +251,10 @@ fn login(args: &[String]) -> ExitCode {
         let client = Client::new(&server);
         let login = client.login().await?;
         let (endpoints, device) = client.device(&login).await?;
-        let link = device.verification_uri_complete.as_deref().unwrap_or(&device.verification_uri);
+        let link = device
+            .verification_uri_complete
+            .as_deref()
+            .unwrap_or(&device.verification_uri);
         println!("Open {link}\nand confirm the code {}", device.user_code);
         let mut interval = Duration::from_secs(device.interval.max(1));
         let until = tokio::time::Instant::now() + Duration::from_secs(device.expires_in);
@@ -257,7 +279,9 @@ fn login(args: &[String]) -> ExitCode {
         Err(error) => return fail(&error.to_string()),
     };
     let mut repos = kept.map(|config| config.repos).unwrap_or_default();
-    let here = std::env::current_dir().ok().and_then(|cwd| breadboard_core::git::main_dir(&cwd));
+    let here = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| breadboard_core::git::main_dir(&cwd));
     if let Some(main) = here.filter(|main| !repos.contains(main)) {
         repos.push(main);
     }
@@ -277,7 +301,11 @@ fn login(args: &[String]) -> ExitCode {
         "✓ logged in to {} as {}{}",
         config.server,
         registered.user,
-        if is_pushing { ", this node pushes" } else { ": the daemon didn't start, an overview starts it" }
+        if is_pushing {
+            ", this node pushes"
+        } else {
+            ": the daemon didn't start, an overview starts it"
+        }
     );
     ExitCode::SUCCESS
 }
