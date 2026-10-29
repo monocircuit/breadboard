@@ -12,7 +12,7 @@ to call `herdr` by hand. There is a space per purpose:
 | Space | Tabs |
 | ----- | ---- |
 | `{{space}}` | `root` (a shell in the main checkout), `overview` (`{{run}} overview --herdr`, live) |
-| `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview`. A click on a worktree or an MR in `overview` splits it to the right with a **detail pane**: the worktree's nvim, its try's terminal, its stack's logs or its agent's conversation, switched by `e` `t` `l` `a` ("The detail pane" in `packages/breadboard/README.md`) |
+| `<product>`, one per product of `breadboard.toml` (`[products.<name>]`, #405) | `root`, `overview` (`{{run}} overview --product <product>`: each orchestration of the product a section), `orchestrator` (one chat for the product's orchestrations), `changelog` (the repo's) and `changes`. With products the main space keeps only `root` and `overview`. A click on a worktree or an MR in `overview` splits it to the right with a **detail pane**: the worktree's nvim, its try's terminal, its stack's logs, psql on its database or its agent's conversation, switched by `e` `t` `l` `d` `a` ("The detail pane" in `packages/breadboard/README.md`) |
 | `⇶ <name>`, one per orchestration of no product | `root`, `overview` (`{{run}} overview --orchestration <name>`: its issues and merge requests) and `orchestrator`, the tab of the session that ran `{{run}} wt:orchestrate` ([orchestrate.md](orchestrate.md)) |
 
 A worktree has **no space of its own** (#409): a click on its row splits
@@ -54,7 +54,8 @@ when it crashes, their output in `.claude/stack/<name>.log`. They start with
 `stack:up`, `wt:stack` and `wt:new`, only while their port is free (a server
 started by hand isn't started twice), and end with `stack:down` and
 `wt:remove`. `l` in the overview's detail pane follows the services' logs and
-those files together. A worktree on the shared stack has none: that stack is
+those files together. A compile error in `dev`'s log (Next.js's `⨯` lines)
+sends a herdr notification, at most one a minute. A worktree on the shared stack has none: that stack is
 the main checkout's.
 {{/stack}}
 

@@ -315,6 +315,7 @@ there: the same try again runs again once it ended, another try replaces it
 | `e` | the worktree's nvim |
 | `t` | the terminal of its newest open try (`wt:action try … --run`) |
 | `l` | its stack's logs, the services' and its background processes' (`.claude/stack/*.log`) together, or its dev server while nothing runs |
+| `d` | psql on its database, as the migrations' role (`[stack.migrations] database_env` of its env file) |
 | `a` | its agent's conversation (`claude --resume`, once no headless run is in flight; its runs wait while it is open) |
 
 Each worktree's block in WORK has the same as buttons, without a click on

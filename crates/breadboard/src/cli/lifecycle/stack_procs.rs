@@ -6,7 +6,9 @@
 //! which the detail pane's `l` follows; the services' logs it reads from
 //! compose on demand. The supervisor's pid is in `.claude/stack/<name>.pid`:
 //! the files are the state, so any process (`stack:*`, an overview, the next
-//! build of breadboard) finds and ends what another one started.
+//! build of breadboard) finds and ends what another one started. The
+//! supervisor of `dev` reads its log as it grows: a compile error sends a
+//! herdr notification (#91).
 
 use super::proc::exe;
 use super::repo::{Repo, compose_args, env_file_of, offset_of, stack_dir};
@@ -29,6 +31,8 @@ const RAN_WELL: Duration = Duration::from_secs(60);
 const END_WAIT: Duration = Duration::from_secs(5);
 /// How often the supervisor looks at its process and its pid file.
 const LOOK_EVERY: Duration = Duration::from_millis(200);
+/// The dev server's errors notify once in this long: a broken build prints many.
+const NOTIFY_EVERY: Duration = Duration::from_secs(60);
 
 /// The folder of a checkout's stack processes.
 pub fn folder(dir: &Path) -> PathBuf {
@@ -274,6 +278,7 @@ pub fn supervise(args: &[String]) -> ExitCode {
     };
     // A new stack, a new log.
     let _ = fs::write(&log, "");
+    let mut watch = (name == DEV).then(|| Watch::new(dir));
     let mut crashes = 0u32;
     while !IS_ENDING.load(Ordering::SeqCst) && is_ours() {
         let output = fs::OpenOptions::new().create(true).append(true).open(&log);
@@ -310,7 +315,12 @@ pub fn supervise(args: &[String]) -> ExitCode {
             }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) => std::thread::sleep(LOOK_EVERY),
+                Ok(None) => {
+                    if let Some(watch) = &mut watch {
+                        watch.read(&log);
+                    }
+                    std::thread::sleep(LOOK_EVERY);
+                }
                 Err(_) => break std::process::ExitStatus::default(),
             }
         };
@@ -332,6 +342,78 @@ pub fn supervise(args: &[String]) -> ExitCode {
         let _ = fs::remove_file(&pids);
     }
     ExitCode::SUCCESS
+}
+
+/// The dev server's log as it grows (#91): an error line sends a herdr
+/// notification, one per [`NOTIFY_EVERY`].
+struct Watch {
+    title: String,
+    /// How far the log is read.
+    at: u64,
+    /// The last line, not ended yet.
+    rest: String,
+    notified: Option<Instant>,
+}
+
+impl Watch {
+    fn new(dir: &Path) -> Watch {
+        let feature = dir
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        Watch {
+            title: format!("dev server of {feature}"),
+            at: 0,
+            rest: String::new(),
+            notified: None,
+        }
+    }
+
+    /// What the log got since the last read; a notification for its first error.
+    fn read(&mut self, log: &Path) {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut file) = fs::File::open(log) else { return };
+        let size = file.metadata().map_or(0, |meta| meta.len());
+        if size < self.at {
+            self.at = 0;
+            self.rest.clear();
+        }
+        if size == self.at || file.seek(SeekFrom::Start(self.at)).is_err() {
+            return;
+        }
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            return;
+        }
+        self.at += bytes.len() as u64;
+        self.rest.push_str(&String::from_utf8_lossy(&bytes));
+        let Some(end) = self.rest.rfind('\n') else { return };
+        let text: String = self.rest.drain(..=end).collect();
+        let Some(error) = text.lines().find_map(error_of) else {
+            return;
+        };
+        if self.notified.is_some_and(|at| at.elapsed() < NOTIFY_EVERY) {
+            return;
+        }
+        self.notified = Some(Instant::now());
+        crate::tui::overview::actor::herdr::notify(&self.title, &error, "request");
+    }
+}
+
+/// A line of the dev server that says it is broken, shortened: Next.js
+/// marks its errors with `⨯` (a failed compile, an error in a page or a
+/// route); breadboard's own lines (`── … ──`) say nothing of it.
+fn error_of(line: &str) -> Option<String> {
+    let line = crate::tui::overview::actor::spawn::strip_escapes(line);
+    let line = line.trim();
+    let is_error = line.starts_with('⨯') || line.contains("Failed to compile") || line.contains("Module not found");
+    if !is_error {
+        return None;
+    }
+    let line = line.trim_start_matches('⨯').trim();
+    Some(match line.char_indices().nth(120) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_string(),
+    })
 }
 
 /// The process group `group` ended: SIGTERM, SIGKILL after END_WAIT.
@@ -363,6 +445,35 @@ mod tests {
         assert_eq!(backoff(1), Duration::from_secs(2));
         assert_eq!(backoff(4), Duration::from_secs(16));
         assert_eq!(backoff(9), BACKOFF_MAX);
+    }
+
+    #[test]
+    fn the_dev_servers_errors_are_found() {
+        assert_eq!(
+            error_of("\x1b[31m⨯\x1b[39m ./src/app/page.tsx:3:1").as_deref(),
+            Some("./src/app/page.tsx:3:1")
+        );
+        assert_eq!(error_of(" ⨯ Failed to compile").as_deref(), Some("Failed to compile"));
+        assert!(error_of("Module not found: Can't resolve 'x'").is_some());
+        assert_eq!(error_of(" ✓ Ready in 1.2s"), None);
+        assert_eq!(error_of("── 2026-10-28 breadboard starts dev: pnpm dev ──"), None);
+        let long = format!("⨯ {}", "x".repeat(200));
+        assert_eq!(error_of(&long).map(|error| error.chars().count()), Some(121));
+    }
+
+    #[test]
+    fn the_log_is_read_as_it_grows() {
+        let dir = std::env::temp_dir().join(format!("breadboard-watch-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let log = dir.join("dev.log");
+        fs::write(&log, " ✓ Ready\n ⨯ half").unwrap();
+        let mut watch = Watch::new(&dir);
+        watch.read(&log);
+        assert_eq!(watch.rest, " ⨯ half");
+        fs::write(&log, "").unwrap();
+        watch.read(&log);
+        assert_eq!((watch.at, watch.rest.as_str()), (0, ""));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

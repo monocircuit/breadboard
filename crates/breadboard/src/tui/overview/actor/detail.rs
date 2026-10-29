@@ -1,7 +1,8 @@
 //! The detail pane (#406): a click on an MR or a worktree splits the
 //! overview's pane to the right and shows that worktree's nvim there. `e`,
-//! `t`, `l` and `a` switch it to nvim, the try's terminal, the stack's logs
-//! (its dev server while the app is down) and the agent's conversation; a
+//! `t`, `l`, `d` and `a` switch it to nvim, the try's terminal, the stack's
+//! logs (its dev server while the app is down), psql on its database (#91)
+//! and the agent's conversation; a
 //! click on the row it shows, or Esc, closes it. One per overview: a click
 //! on another row ends what runs there and runs its command in the same
 //! pane. A click on a try with a terminal runs it there (#408). Its pane is
@@ -28,6 +29,7 @@ pub enum Shows {
     Editor,
     Try,
     Logs,
+    Db,
     Agent,
 }
 
@@ -38,6 +40,7 @@ impl Shows {
             'e' => Shows::Editor,
             't' => Shows::Try,
             'l' => Shows::Logs,
+            'd' => Shows::Db,
             'a' => Shows::Agent,
             _ => return None,
         })
@@ -48,6 +51,7 @@ impl Shows {
             Shows::Editor => "nvim",
             Shows::Try => "its try",
             Shows::Logs => "its logs",
+            Shows::Db => "its database",
             Shows::Agent => "its agent",
         }
     }
@@ -94,7 +98,7 @@ pub struct Detail {
 }
 
 /// What the overview's keys say while the pane is open.
-pub const KEYS: &str = "e nvim · t try · l logs/dev · a agent · Esc closes";
+pub const KEYS: &str = "e nvim · t try · l logs/dev · d psql · a agent · Esc closes";
 
 /// How long what runs in the pane gets to end before a command goes in.
 const END_WAIT: Duration = Duration::from_secs(3);
@@ -411,6 +415,20 @@ fn command_of(main: &Path, dir: &Path, shows: Shows, at: Option<&At>) -> Result<
                 format!("cd {stack_dir} && {}", stack.app.dev)
             }
         }
+        Shows::Db => {
+            let stack = breadboard_core::stack::of(dir).ok_or_else(|| format!("{feature} has no stack"))?;
+            let variable = stack
+                .migrations
+                .ok_or_else(|| format!("{feature}'s stack names no database ([stack.migrations])"))?
+                .database_env;
+            let env = breadboard_core::stack::env_of(dir).ok_or_else(|| format!("{feature} has no env file yet"))?;
+            let url = env
+                .get(&variable)
+                .map(|url| url.trim())
+                .filter(|url| !url.is_empty())
+                .ok_or_else(|| format!("{feature}'s env file sets no {variable}"))?;
+            psql_command(dir, url)
+        }
         Shows::Agent => {
             let id = breadboard_core::conversations::bound_session(dir)
                 .ok_or_else(|| format!("{feature}'s worktree binds no conversation"))?;
@@ -458,6 +476,12 @@ fn attach_command(dir: &Path) -> String {
     )
 }
 
+/// psql on the worktree's database `url` (the migrations' role: it may
+/// change the schema), in its worktree.
+fn psql_command(dir: &Path, url: &str) -> String {
+    format!("cd {} && psql {}", quote(&dir.to_string_lossy()), quote(url))
+}
+
 /// The services' logs from compose (`docker <compose>`) and the files
 /// `logs` of the stack's processes, followed together: one shell without
 /// job control, so a Ctrl-C in the pane ends both.
@@ -492,6 +516,7 @@ mod tests {
         assert_eq!(Shows::of_key('e'), Some(Shows::Editor));
         assert_eq!(Shows::of_key('t'), Some(Shows::Try));
         assert_eq!(Shows::of_key('l'), Some(Shows::Logs));
+        assert_eq!(Shows::of_key('d'), Some(Shows::Db));
         assert_eq!(Shows::of_key('a'), Some(Shows::Agent));
         assert_eq!(Shows::of_key('x'), None);
     }
@@ -512,6 +537,14 @@ mod tests {
         let command = editor_command(Path::new("/nowhere"), Path::new("/nowhere/p-1"), Some(&at));
         assert!(command.starts_with("cd '/nowhere/p-1'; nvim --server"), "{command}");
         assert!(command.ends_with(" +7 'src/a b.ts'"), "{command}");
+    }
+
+    #[test]
+    fn psql_opens_on_the_worktrees_database() {
+        assert_eq!(
+            psql_command(Path::new("/r/p-1"), "postgresql://m:pw@127.0.0.1:5433/vita_f"),
+            "cd /r/p-1 && psql postgresql://m:pw@127.0.0.1:5433/vita_f"
+        );
     }
 
     #[test]
