@@ -66,7 +66,7 @@ impl From<Done> for AckResult {
 /// Where the node reaches lab web and who it is there: its login (`lab login`, #501).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Login {
-    /// The server's origin, `https://lab.monocircuit.net`.
+    /// The server's origin (`[lab] server`).
     server: String,
     token: String,
 }
@@ -74,7 +74,10 @@ struct Login {
 impl Login {
     /// The login of now, None while logged out.
     async fn now() -> Option<Login> {
-        let config = tokio::task::spawn_blocking(breadboard_core::lab::read).await.ok().flatten()?;
+        let config = tokio::task::spawn_blocking(breadboard_core::lab::read)
+            .await
+            .ok()
+            .flatten()?;
         Some(Login {
             token: config.token.clone().filter(|_| config.is_logged_in())?,
             server: config.server,
@@ -137,7 +140,10 @@ pub(super) async fn follow(state: Arc<State>) {
 
 /// One stream, followed until it ends.
 async fn once(state: &Arc<State>, http: &reqwest::Client, login: &Login) -> Ended {
-    let url = format!("{}/api/node/stream?protocol={PROTOCOL}", login.server.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/node/stream?protocol={PROTOCOL}",
+        login.server.trim_end_matches('/')
+    );
     let mut response = match http
         .get(&url)
         .bearer_auth(&login.token)
@@ -273,7 +279,10 @@ mod tests {
     fn cuts_the_stream_into_its_data_wherever_the_chunks_end() {
         let mut blocks = Blocks::default();
         assert!(blocks.push(b"retry: 3000\nevent: ready\ndata: {}\n").is_empty());
-        assert_eq!(blocks.push(b"\n: keep-alive\n\nevent: command\r\ndata: {\"a\":"), vec!["{}"]);
+        assert_eq!(
+            blocks.push(b"\n: keep-alive\n\nevent: command\r\ndata: {\"a\":"),
+            vec!["{}"]
+        );
         assert_eq!(blocks.push(b"1}\r\n\r\n"), vec!["{\"a\":1}"]);
         assert_eq!(blocks.push(b"data: one\ndata:two\n\n"), vec!["one\ntwo"]);
         assert!(blocks.pending.is_empty());
@@ -281,7 +290,8 @@ mod tests {
 
     #[test]
     fn reads_a_command_and_says_its_result_in_camel_case() {
-        let line = r#"{"protocol":1,"id":"c1","main":"/repo","command":{"kind":"tell","dir":"/repo-x","line":"go on"}}"#;
+        let line =
+            r#"{"protocol":1,"id":"c1","main":"/repo","command":{"kind":"tell","dir":"/repo-x","line":"go on"}}"#;
         let streamed = command_of(line).unwrap();
         assert_eq!(
             streamed,
