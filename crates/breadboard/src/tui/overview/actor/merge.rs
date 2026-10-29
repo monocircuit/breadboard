@@ -38,13 +38,7 @@ const RECHECK_OPEN: &str = "projects/:fullpath/merge_requests?state=opened&per_p
 const CHECKING: [&str; 4] = ["checking", "unchecked", "preparing", "approvals_syncing"];
 
 /// Where a merge stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
-    Armed,
-    Running,
-    Merged,
-    Failed,
-}
+pub use breadboard_core::model::acting::MergePhase as Phase;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Merge {

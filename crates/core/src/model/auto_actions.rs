@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The automatic wt:remove of a worktree, as the writing side keeps it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Removal {
     pub is_armed: bool,
     pub is_running: bool,
