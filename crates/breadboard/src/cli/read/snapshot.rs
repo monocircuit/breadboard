@@ -1,6 +1,7 @@
 //! `pnpm snapshot [--json]` (#497): what this node runs, as lab's server
 //! will get it (`breadboard_core::node`): its repo's orchestrations,
-//! worktrees, agents, runs, actions, checks and batch. `--json` prints the
+//! worktrees, agents, runs, actions, checks and batch, and what its
+//! processes take (#513). `--json` prints the
 //! snapshot itself, else a line of counts.
 
 use super::args::{Takes, cwd, fail};
@@ -14,7 +15,7 @@ pub const TAKES: Takes = Takes {
     optional: &[],
     switches: &["--json"],
     words: 0,
-    about: "What this node runs, as lab's server gets it: orchestrations, worktrees, agents, runs, actions, checks, batch (--json: the snapshot itself).",
+    about: "What this node runs, as lab's server gets it: orchestrations, worktrees, agents, runs, actions, checks, batch, CPU and RAM (--json: the snapshot itself).",
     usage: "usage: pnpm snapshot [--json]",
 };
 
@@ -30,7 +31,8 @@ pub fn run(args: &[String]) -> ExitCode {
             .trim_end()
             .to_string(),
     };
-    let snapshot = snapshot_of(node, &[facts], now);
+    let resources = breadboard_core::resources::now_of(std::slice::from_ref(&facts.main));
+    let snapshot = snapshot_of(node, &[facts], resources, now);
     if args.iter().any(|arg| arg == "--json") {
         match serde_json::to_string_pretty(&snapshot) {
             Ok(text) => println!("{text}"),

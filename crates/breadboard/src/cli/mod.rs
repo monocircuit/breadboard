@@ -55,12 +55,15 @@ pub fn usage() -> String {
 /// (`wt:act`), or its name without the prefix (`action`, `up`).
 fn meant(command: &str) -> Option<&'static str> {
     let all: Vec<&'static str> = groups().into_iter().flatten().collect();
-    typo::nearest(command, &all).or_else(|| {
-        let mut short = all
-            .iter()
-            .filter(|name| name.split_once(':').is_some_and(|(_, rest)| rest == command));
-        short.next().filter(|_| short.next().is_none()).copied()
-    })
+    // A name without its group (`up`) before a typo's guess: `top` is one letter off it.
+    let mut short = all
+        .iter()
+        .filter(|name| name.split_once(':').is_some_and(|(_, rest)| rest == command));
+    short
+        .next()
+        .filter(|_| short.next().is_none())
+        .copied()
+        .or_else(|| typo::nearest(command, &all))
 }
 
 /// `breadboard` alone: the usage on stderr, exit 1.

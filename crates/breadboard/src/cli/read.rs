@@ -10,6 +10,7 @@ mod list;
 mod overview;
 mod plan;
 mod snapshot;
+mod top;
 mod usage;
 
 use std::process::ExitCode;
@@ -29,6 +30,7 @@ const COMMANDS: &[Command] = &[
     ("ci:watch", &ci_watch::TAKES, |_| ci_watch::run()),
     ("gitlab:usage", &usage::TAKES, usage::run),
     ("snapshot", &snapshot::TAKES, snapshot::run),
+    ("top", &top::TAKES, top::run),
     ("wt:issues", &issues::TAKES, |_| issues::run()),
     ("wt:list", &list::TAKES, |_| list::run()),
     ("wt:plan", &plan::TAKES, plan::run),

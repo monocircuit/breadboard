@@ -511,6 +511,7 @@ mod tests {
             service: service.to_string(),
             state: state.to_string(),
             health: String::new(),
+            id: String::new(),
         };
         let listed = [
             container("vita", "web", "running"),
