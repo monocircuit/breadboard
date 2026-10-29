@@ -6,6 +6,9 @@
 //! a reboot) is not resumed at all: a fresh session takes its worktree with
 //! a handoff breadboard writes from what is on disk (its last answer, the
 //! worktree's git state), so a restart costs a brief, not a history.
+//! Never beside a run of its own session (#511): one with lines queued is
+//! resumed with them, whatever the rule says; the worktree needs no fresh
+//! start once that run went through.
 
 use crate::conversations::{Claude, bound_session, new_session_id, read_claude, session_file};
 use crate::fresh::Fresh;
@@ -71,9 +74,10 @@ pub fn handoff_of(claude: Option<&Claude>, status: &str, unpushed: &str) -> Stri
 }
 
 /// What picking up `session` (its row `run`) at `now` does: the line queued,
-/// a fresh session in place of it when `fresh` retires it. Its row is set
+/// a fresh session in place of it when `fresh` retires it and no line of its
+/// own waits for a run (`is_queued`, #511: those resume it). Its row is set
 /// `idle`. A session whose worktree is gone is only set idle.
-pub fn pick_up(main: &Path, session: &str, run: &mut Run, fresh: &Fresh, now: i64) -> Option<Event> {
+pub fn pick_up(main: &Path, session: &str, run: &mut Run, fresh: &Fresh, is_queued: bool, now: i64) -> Option<Event> {
     let since = run.since;
     run.state = State::Idle;
     run.pid = None;
@@ -82,7 +86,10 @@ pub fn pick_up(main: &Path, session: &str, run: &mut Run, fresh: &Fresh, now: i6
         return None;
     }
     let claude = read_claude(&run.dir).filter(|claude| claude.id == session);
-    let why = claude.as_ref().and_then(|claude| fresh.why(&claude.context(), now));
+    let why = claude
+        .as_ref()
+        .filter(|_| !is_queued)
+        .and_then(|claude| fresh.why(&claude.context(), now));
     let Some(why) = why else {
         return Some(event(session, run, resume_line(since), now));
     };
@@ -173,8 +180,24 @@ pub fn said_of(run: &Run, event: &Event, session: &str) -> String {
     }
 }
 
+/// Whether a line that starts a run waits for `session` (#511): a notice alone doesn't.
+pub fn is_queued(queue: &Queue, session: &str) -> bool {
+    queue
+        .events
+        .iter()
+        .any(|event| event.session == session && !event.is_notice)
+}
+
 /// The queue with the picked up lines first (their sessions waited longest).
-pub fn queue_first(queue: &mut Queue, mut events: Vec<Event>) {
+/// What waits for a session a fresh one took over goes to the fresh one
+/// (#511): its notices, and a line queued since the pick-up looked, never
+/// a run of the old session beside the fresh one.
+pub fn queue_first(queue: &mut Queue, mut events: Vec<Event>, taken: &[(String, String)]) {
+    for event in &mut queue.events {
+        if let Some((_, new)) = taken.iter().find(|(old, _)| *old == event.session) {
+            event.session.clone_from(new);
+        }
+    }
     events.append(&mut queue.events);
     queue.events = events;
 }
@@ -218,10 +241,47 @@ mod tests {
     fn a_gone_worktree_is_only_set_idle() {
         let mut gone = run(State::Running, Some(999_999_999));
         assert_eq!(
-            pick_up(Path::new("/nonexistent"), "s", &mut gone, &Fresh::default(), 5),
+            pick_up(Path::new("/nonexistent"), "s", &mut gone, &Fresh::default(), false, 5),
             None
         );
         assert_eq!((gone.state, gone.since), (State::Idle, 5));
+    }
+
+    fn line(session: &str, line: &str, is_notice: bool) -> Event {
+        Event {
+            session: session.into(),
+            dir: PathBuf::from("/nonexistent/platform-7-x"),
+            name: "7-x".into(),
+            line: line.into(),
+            at: 0,
+            allowed: Vec::new(),
+            is_notice,
+        }
+    }
+
+    #[test]
+    fn a_session_with_a_line_queued_is_queued_one_with_a_notice_alone_not() {
+        let queue = Queue {
+            events: vec![line("old", "!504 merged", true), line("other", "go on", false)],
+        };
+        assert!(!is_queued(&queue, "old"));
+        assert!(is_queued(&queue, "other"));
+        let queue = Queue {
+            events: vec![line("old", "the pipeline of !504 failed", false)],
+        };
+        assert!(is_queued(&queue, "old"));
+    }
+
+    #[test]
+    fn what_waits_for_a_session_taken_over_goes_to_the_fresh_one() {
+        let mut queue = Queue {
+            events: vec![line("old", "!504 merged", true), line("other", "go on", false)],
+        };
+        let fresh = line("new", "[breadboard] fresh start", false);
+        queue_first(&mut queue, vec![fresh], &[("old".into(), "new".into())]);
+        let sessions: Vec<&str> = queue.events.iter().map(|event| event.session.as_str()).collect();
+        assert_eq!(sessions, ["new", "new", "other"]);
+        assert_eq!(queue.events[1].line, "!504 merged");
     }
 
     #[test]
