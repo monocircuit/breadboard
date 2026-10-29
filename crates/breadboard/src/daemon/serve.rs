@@ -213,6 +213,8 @@ async fn serve(
     // Not a unit test's daemon (`serve_at`); a gauntlet world logs in under its own HOME.
     if is_keeping_up {
         tokio::spawn(super::lab::push(state.clone()));
+        // And follows lab's stream of commands for its agents (#503).
+        tokio::spawn(super::stream::follow(state.clone()));
     }
     let mut look = tokio::time::interval(LOOK_EVERY);
     loop {

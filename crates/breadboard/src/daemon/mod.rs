@@ -59,6 +59,7 @@ mod push;
 mod ready;
 pub mod runs;
 mod serve;
+mod stream;
 pub mod watch;
 mod web;
 
