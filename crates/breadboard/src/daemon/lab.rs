@@ -26,6 +26,15 @@ const EVERY: Duration = Duration::from_secs(10);
 /// How often a node logged out looks for a login.
 const LOOK: Duration = Duration::from_secs(5);
 
+/// EVERY and LOOK, both `BREADBOARD_LAB_EVERY_MS` in a gauntlet world.
+fn every() -> (Duration, Duration) {
+    std::env::var("BREADBOARD_LAB_EVERY_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+        .map(|ms| (Duration::from_millis(ms), Duration::from_millis(ms)))
+        .unwrap_or((EVERY, LOOK))
+}
+
 /// Whether the user is logged in to lab: the daemon stays while they are.
 pub fn is_on() -> bool {
     lab::read().is_some_and(|config| config.is_logged_in())
@@ -57,13 +66,14 @@ struct Pusher {
 impl Pusher {
     /// One round: pushed, or why not; how long until the next one.
     async fn round(&mut self, state: &State) -> Duration {
+        let (every, look) = every();
         let Some(config) = tokio::task::spawn_blocking(lab::read).await.ok().flatten() else {
             *self = Pusher::default();
-            return LOOK;
+            return look;
         };
         let Some(token) = config.token.clone() else {
             *self = Pusher::default();
-            return LOOK;
+            return look;
         };
         let login = Some((config.server.clone(), token.clone()));
         if self.login != login {
@@ -73,7 +83,7 @@ impl Pusher {
             };
         }
         if self.refused.as_deref() == Some(token.as_str()) || !holds() {
-            return LOOK;
+            return look;
         }
         let mains = mains_of(state, &config);
         let mut sampler = self.sampler.take().unwrap_or_default();
@@ -110,11 +120,11 @@ impl Pusher {
         match pushed {
             Ok(()) => {
                 self.failures = 0;
-                EVERY
+                every
             }
             Err(Failed::Unauthorized | Failed::Protocol(_)) => {
                 self.refused = Some(token);
-                LOOK
+                look
             }
             Err(Failed::Other(_)) => {
                 self.failures += 1;

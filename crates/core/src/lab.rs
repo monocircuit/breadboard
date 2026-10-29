@@ -370,7 +370,10 @@ async fn answer<T: serde::de::DeserializeOwned>(sent: reqwest::Result<reqwest::R
     if status == reqwest::StatusCode::CONFLICT {
         let why = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
-            .and_then(|body| crate::json::str_of(&body, "error").map(str::to_string))
+            .and_then(|body| {
+                let why = crate::json::str_of(&body, "message").or_else(|| crate::json::str_of(&body, "error"));
+                why.map(str::to_string)
+            })
             .unwrap_or_else(|| text.clone());
         return Err(Failed::Protocol(why));
     }
