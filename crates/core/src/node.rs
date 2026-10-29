@@ -12,6 +12,10 @@
 //! An orchestration's daemon-side actor (#498) is in it too (#509): what it
 //! has under way and its log, from `<name>.acting`, so a reader sees what
 //! the node does by itself.
+//!
+//! And what the node's processes take (#513, protocol 2): the machine, the
+//! top processes, the sums per worktree and agent run (`resources`), in the
+//! snapshot and, sampled every few seconds, as the stream's `Event::Resources`.
 
 use crate::check::CheckState;
 use crate::conversations::question_of;
@@ -27,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 /// The version of the snapshot's shape: a change a reader of the last one
 /// misreads raises it.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +41,20 @@ pub struct Snapshot {
     pub at: i64,
     pub node: Node,
     pub repos: Vec<Repo>,
+    /// What its processes take, None where the OS couldn't be read.
+    pub resources: Option<crate::resources::Resources>,
+}
+
+/// What a node sends between two snapshots.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Event {
+    /// A sample of what its processes take.
+    #[serde(rename_all = "camelCase")]
+    Resources {
+        at: i64,
+        resources: crate::resources::Resources,
+    },
 }
 
 /// The machine and who runs it.
@@ -438,13 +456,19 @@ impl RepoFacts {
     }
 }
 
-/// The snapshot of `node` with its repos' facts.
-pub fn snapshot_of(node: Node, repos: &[RepoFacts], now: i64) -> Snapshot {
+/// The snapshot of `node` with its repos' facts and what its processes take.
+pub fn snapshot_of(
+    node: Node,
+    repos: &[RepoFacts],
+    resources: Option<crate::resources::Resources>,
+    now: i64,
+) -> Snapshot {
     Snapshot {
         protocol: PROTOCOL,
         at: now,
         node,
         repos: repos.iter().map(repo_of).collect(),
+        resources,
     }
 }
 
@@ -1025,6 +1049,83 @@ mod tests {
         }
     }
 
+    fn resources() -> crate::resources::Resources {
+        use crate::resources::{Machine, Process, Resources, RunShare, Share, Sum, Via};
+        let sum = Sum {
+            processes: 2,
+            cpu: 150.5,
+            rss: 3_000,
+        };
+        Resources {
+            machine: Machine {
+                cores: 16,
+                cpu: 40.5,
+                memory: 32_000,
+                used: 29_000,
+                available: 3_000,
+                swap: 8_000,
+                swap_used: 1_000,
+                load: [12.5, 8.0, 4.25],
+            },
+            top: vec![Process {
+                pid: 812,
+                ppid: 800,
+                command: "node vitest".into(),
+                cpu: 98.5,
+                rss: 2_000,
+                worktree: Some("/r/platform-7-x".into()),
+                run: Some("s-1".into()),
+                stack: None,
+                via: Via::Cwd,
+            }],
+            worktrees: vec![Share {
+                worktree: "/r/platform-7-x".into(),
+                sum,
+            }],
+            runs: vec![RunShare {
+                session: "s-1".into(),
+                name: "7-x".into(),
+                dir: "/r/platform-7-x".into(),
+                sum,
+            }],
+            other: Sum {
+                processes: 300,
+                cpu: 2.0,
+                rss: 9_000,
+            },
+        }
+    }
+
+    fn resources_json() -> serde_json::Value {
+        json!({
+            "machine": {
+                "cores": 16, "cpu": 40.5, "memory": 32_000, "used": 29_000, "available": 3_000,
+                "swap": 8_000, "swapUsed": 1_000, "load": [12.5, 8.0, 4.25],
+            },
+            "top": [{
+                "pid": 812, "ppid": 800, "command": "node vitest", "cpu": 98.5, "rss": 2_000,
+                "worktree": "/r/platform-7-x", "run": "s-1", "stack": null, "via": "cwd",
+            }],
+            "worktrees": [{ "worktree": "/r/platform-7-x", "processes": 2, "cpu": 150.5, "rss": 3_000 }],
+            "runs": [{ "session": "s-1", "name": "7-x", "dir": "/r/platform-7-x", "processes": 2, "cpu": 150.5, "rss": 3_000 }],
+            "other": { "processes": 300, "cpu": 2.0, "rss": 9_000 },
+        })
+    }
+
+    #[test]
+    fn pins_the_shape_of_a_resources_event() {
+        let event = Event::Resources {
+            at: 2_000,
+            resources: resources(),
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            json!({ "kind": "resources", "at": 2_000, "resources": resources_json() })
+        );
+        assert_eq!(serde_json::from_value::<Event>(value).unwrap(), event);
+    }
+
     /// The shape lab's server reads: a change here is a change of `PROTOCOL`.
     #[test]
     fn pins_the_shape_of_a_snapshot() {
@@ -1033,7 +1134,7 @@ mod tests {
             user: "mira".into(),
             version: "0.1.0".into(),
         };
-        let snapshot = snapshot_of(node, &[facts()], 1_000);
+        let snapshot = snapshot_of(node, &[facts()], Some(resources()), 1_000);
         let value = serde_json::to_value(&snapshot).unwrap();
         let worktree = json!({
             "dir": "/r/platform-7-x", "name": "7-x", "branch": "feature/7-x", "base": "batch/lab-2",
@@ -1052,7 +1153,7 @@ mod tests {
             }],
         });
         let expected = json!({
-            "protocol": 1,
+            "protocol": 2,
             "at": 1_000,
             "node": { "host": "machine", "user": "mira", "version": "0.1.0" },
             "repos": [{
@@ -1126,6 +1227,7 @@ mod tests {
                 },
                 "today": { "tokens": 5_000, "dollars": 2.0 },
             }],
+            "resources": resources_json(),
         });
         assert_eq!(value, expected);
         // What a server reads back is what the node sent.

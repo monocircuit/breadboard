@@ -121,6 +121,9 @@ pub struct StackContainer {
     pub state: String,
     /// `healthy`, `unhealthy`, `starting`, or empty without a health check.
     pub health: String,
+    /// docker's short id (#513: which container a process runs in), empty in a file of before.
+    #[serde(default)]
+    pub id: String,
 }
 
 /// What the file holds: when docker was read, and what it said (None: it didn't answer).
@@ -182,16 +185,20 @@ pub fn executable_on(path: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
         .map(|file| std::fs::canonicalize(&file).unwrap_or(file))
 }
 
+/// The shape of the file's containers: a build of another never shares it (2: with the ids, #513).
+const CONTAINERS_FORMAT: u32 = 2;
+
 fn containers_name(docker: Option<&Path>, env: &[std::ffi::OsString]) -> String {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();
+    CONTAINERS_FORMAT.hash(&mut hasher);
     docker.hash(&mut hasher);
     env.hash(&mut hasher);
     format!("containers-{:016x}.json", hasher.finish())
 }
 
 /// The template of `docker ps`: one container a line, tab-separated.
-const PS_FORMAT: &str = "{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}\t{{.Label \"com.docker.compose.oneoff\"}}\t{{.State}}\t{{.Status}}";
+const PS_FORMAT: &str = "{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}\t{{.Label \"com.docker.compose.oneoff\"}}\t{{.State}}\t{{.Status}}\t{{.ID}}";
 
 /// The containers of compose stacks in what `docker ps --format PS_FORMAT` printed; one-off ones (`compose run`) left out, as `compose ps` does.
 pub fn containers_in(text: &str) -> Vec<StackContainer> {
@@ -199,11 +206,12 @@ pub fn containers_in(text: &str) -> Vec<StackContainer> {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split('\t');
-            let (project, service, oneoff, state, status) = (
+            let (project, service, oneoff, state, status, id) = (
                 fields.next()?,
                 fields.next()?,
                 fields.next()?,
                 fields.next()?,
+                fields.next().unwrap_or(""),
                 fields.next().unwrap_or(""),
             );
             if project.is_empty() || oneoff.eq_ignore_ascii_case("true") {
@@ -219,6 +227,7 @@ pub fn containers_in(text: &str) -> Vec<StackContainer> {
                 service: service.to_string(),
                 state: state.to_lowercase(),
                 health,
+                id: id.to_string(),
             })
         })
         .collect();
@@ -714,6 +723,7 @@ mod tests {
                 service: "db".into(),
                 state: "running".into(),
                 health: String::new(),
+                id: String::new(),
             }])
         };
         let reads = std::cell::Cell::new(0);

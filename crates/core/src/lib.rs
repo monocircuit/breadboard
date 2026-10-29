@@ -33,6 +33,7 @@ pub mod push;
 pub mod reader;
 pub mod ready;
 pub mod record;
+pub mod resources;
 pub mod review;
 pub mod runs;
 pub mod said;

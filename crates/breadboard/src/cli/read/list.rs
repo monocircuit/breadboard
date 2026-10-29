@@ -258,6 +258,7 @@ mod tests {
             service: service.into(),
             state: state.into(),
             health: String::new(),
+            id: String::new(),
         };
         let containers = [
             container("p2", "app", "running"),

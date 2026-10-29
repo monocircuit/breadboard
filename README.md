@@ -272,6 +272,22 @@ of your own keeps its claude in a tab (#361).
   carries `protocol: 1`. A merge or a start is done once it started; how it
   ends is in the acting file.
 
+## What the processes take
+
+`pnpm top` (#513) prints what this machine's processes take: the machine's
+CPU, load, RAM and swap, then CPU and RAM per worktree, per agent run and
+for the rest, then the top processes (`--json`: the summary itself). A
+sample reads `/proc` on Linux, `ps`, `lsof` and `sysctl` on macOS
+(`breadboard_core::resources`); CPU is what a process used between two
+samples, 100 % being one core. Each process belongs to the worktree its cwd
+or the nearest ancestor's lies in; else to the worktree whose compose stack
+runs it (its container's cgroup against docker's read); else to the agent
+run that started it (the run's claude is an ancestor), counted to the run's
+worktree; else to "other". `pnpm snapshot` carries the same summary as
+`resources` (protocol 2), and a node's stream sends it as the event
+`{"kind":"resources","at":…,"resources":…}`. RSS counts shared pages once
+per process: a sum is an upper bound.
+
 ## The main checkout follows develop
 
 The main checkout keeps itself on `origin/develop` (#348). `breadboard

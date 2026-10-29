@@ -1099,6 +1099,7 @@ mod tests {
             service: "db".into(),
             state: "running".into(),
             health: String::new(),
+            id: String::new(),
         };
         write(1_000, Some(vec![db]));
         stacks.take_shared(&file);
