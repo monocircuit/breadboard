@@ -102,6 +102,9 @@ pub enum Request {
     /// Lines were queued for the headless agents of `main` (#358): its
     /// engine runs from now on; answered with `true`.
     Runs { main: PathBuf },
+    /// A command of the table (#498, core's `command`): answered with one
+    /// line, its `Done`.
+    Command(breadboard_core::command::Asked),
 }
 
 /// What a client says on its GitLab feed after the request.

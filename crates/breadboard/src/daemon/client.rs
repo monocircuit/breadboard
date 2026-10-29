@@ -138,6 +138,81 @@ pub fn wake_runs(main: &Path) -> bool {
     is_started && ask()
 }
 
+/// How long a command of the table may take: a stop waits for its run to end.
+const COMMAND_WAIT: Duration = Duration::from_secs(120);
+
+/// A command of the table (#498) to the daemon, started when none answers;
+/// None when it can't be reached or didn't answer.
+pub fn command(asked: &breadboard_core::command::Asked) -> Option<breadboard_core::command::Done> {
+    if !super::is_socket_ours() {
+        return None;
+    }
+    let request = Request::Command(asked.clone());
+    let ask = || ask_at(super::socket(), &request, COMMAND_WAIT, &AtomicI64::new(0));
+    if let Some(done) = ask() {
+        return Some(done);
+    }
+    let exe = std::env::current_exe().ok()?;
+    serve_command(&exe).status().ok().filter(|status| status.success())?;
+    ask()
+}
+
+/// `breadboard command '<json>' [--id <id>]` (#498): one command of the
+/// table (core's `command::Command`, e.g. `{"kind":"resume_runs"}`) for this
+/// repo's daemon; its result printed, exit 1 when it was refused. The same
+/// id again is done once.
+pub fn command_cli(args: &[String]) -> std::process::ExitCode {
+    use breadboard_core::command::{Asked, Command, PROTOCOL};
+    use std::process::ExitCode;
+    let usage = "usage: breadboard command '<json command>' [--id <id>]";
+    let Some(json) = args.first() else {
+        eprintln!("{usage}");
+        return ExitCode::from(2);
+    };
+    let command: Command = match serde_json::from_str(json) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("breadboard command: {error}\n{usage}");
+            return ExitCode::from(2);
+        }
+    };
+    let id = match args.iter().position(|arg| arg == "--id") {
+        Some(at) => match args.get(at + 1) {
+            Some(id) => id.clone(),
+            None => {
+                eprintln!("{usage}");
+                return ExitCode::from(2);
+            }
+        },
+        None => format!("cli-{}-{}", std::process::id(), now_ms()),
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let Some(main) = breadboard_core::git::main_dir(&cwd) else {
+        eprintln!("breadboard command: not in a checkout of the repo");
+        return ExitCode::FAILURE;
+    };
+    let asked = Asked {
+        id,
+        protocol: PROTOCOL,
+        main,
+        command,
+    };
+    match self::command(&asked) {
+        Some(done) if done.is_ok => {
+            println!("{}", done.text);
+            ExitCode::SUCCESS
+        }
+        Some(done) => {
+            eprintln!("breadboard command: {}", done.text);
+            ExitCode::FAILURE
+        }
+        None => {
+            eprintln!("breadboard command: the daemon didn't answer");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `<exe> serve`, no pane's (#386): the daemon outlives the pane it was
 /// started from, and every `claude -p` it runs would report its session as
 /// that pane's agent to herdr, which resumes it there after a restart.

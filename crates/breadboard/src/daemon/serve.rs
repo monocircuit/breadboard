@@ -54,6 +54,8 @@ pub(super) struct State {
     pub(super) web: super::web::Pages,
     /// The orchestrations it acts for (`acts`, #498).
     pub(super) acts: super::acts::Acts,
+    /// The ids of the commands under way (#498): one asked twice at once is done once.
+    pub(super) asked: Mutex<std::collections::HashSet<String>>,
 }
 
 /// How the serving ended.
@@ -291,6 +293,12 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             start_engine(state, &main);
             write.write_all(b"true\n").await
         }
+        Ok(Request::Command(asked)) => {
+            let done = super::acts::command(state, asked).await;
+            let mut line = serde_json::to_string(&done).unwrap_or_default();
+            line.push('\n');
+            write.write_all(line.as_bytes()).await
+        }
         Ok(Request::Gitlab { main, view, ask }) => {
             // The first overview of a repo starts its CI queue, its marks, its pushes and its notifications, for as long as the daemon runs.
             if main.is_absolute()
@@ -377,7 +385,7 @@ pub(super) fn leave(state: &State, key: String, feed: &Feed) {
 }
 
 /// The run engine of `main` (`runs`), once per daemon.
-fn start_engine(state: &State, main: &Path) {
+pub(super) fn start_engine(state: &State, main: &Path) {
     if !main.is_absolute() {
         return;
     }

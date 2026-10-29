@@ -28,6 +28,7 @@ mod actions;
 pub(crate) mod actor;
 mod agents;
 mod boxes;
+mod commands;
 mod epic;
 mod everything;
 mod footer;
@@ -43,6 +44,7 @@ mod worktree_view;
 mod worktrees;
 
 pub use act::{Act, Fold};
+pub use commands::NOT_YET;
 
 use super::page::guarded;
 use super::{App, Flow, Header, Input, Page, view};
@@ -184,6 +186,7 @@ pub fn headless(
     runtime: &tokio::runtime::Handle,
     stop: &std::sync::atomic::AtomicBool,
     busy: &std::sync::atomic::AtomicBool,
+    ready: impl FnOnce(Doer),
 ) {
     use std::sync::atomic::Ordering;
     let view = View::Orchestration(name.to_string());
@@ -205,6 +208,7 @@ pub fn headless(
     let (wake, woken) = std::sync::mpsc::sync_channel(1);
     app.wake_local = Some(wake);
     act::start(&mut app, sender.clone());
+    ready(Doer(sender.clone()));
     read_locally(reader, sender.clone(), asks, woken, false);
     let (out, mut said) = mpsc::unbounded_channel();
     runtime.spawn(gitlab(asked, refreshes, out));
@@ -227,6 +231,27 @@ pub fn headless(
         let _ = std::fs::remove_file(breadboard_core::model::acting::acting_file(main, name));
     }
     busy.store(false, Ordering::SeqCst);
+}
+
+/// The way to a headless overview's actor (#498) from the daemon's
+/// threads: a command of its table, done on the overview's thread between
+/// two reads, its result back.
+#[derive(Clone)]
+pub struct Doer(mpsc::UnboundedSender<Msg>);
+
+impl Doer {
+    /// `command` to the actor; None once the overview is gone.
+    pub fn act(
+        &self,
+        command: breadboard_core::command::Command,
+    ) -> Option<tokio::sync::oneshot::Receiver<Result<String, String>>> {
+        let (done, result) = tokio::sync::oneshot::channel();
+        let effect: actor::Effect = Box::new(move |app: &mut Overview| {
+            let _ = done.send(commands::act(app, &command));
+        });
+        self.0.send(Msg::Acted(effect)).ok()?;
+        Some(result)
+    }
 }
 
 /// The readers of a live view started, their models to `sender`: the local

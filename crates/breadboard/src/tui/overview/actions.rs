@@ -966,6 +966,33 @@ pub fn answer_as_checker(app: &mut Overview, file: &Path, id: i64, answer: &str,
     item_of(app, file, id).is_some() && !matches!(answer_with(app, file, id, answer, note), Flow::Same)
 }
 
+/// An answer by a command of the daemon's table (#498): stored and
+/// delivered as a click is, the words of a `broken` / `different` given
+/// with it (no prompt to type them in). Refused when the action isn't open
+/// or the answer isn't one of its own.
+pub fn answer_as_command(
+    app: &mut Overview,
+    file: &Path,
+    id: i64,
+    answer: &str,
+    note: Option<&str>,
+) -> Result<String, String> {
+    let item = item_of(app, file, id).ok_or_else(|| format!("no open action #{id} in {}", file.display()))?;
+    let action = item
+        .action
+        .as_ref()
+        .ok_or_else(|| format!("#{id} is no action to answer"))?;
+    let answers = stored::answers_of(action);
+    if !answers.is_empty() && !answers.iter().any(|known| known == answer) {
+        return Err(format!("#{id} is answered with one of: {}", answers.join(", ")));
+    }
+    let what = what_of(&app.actor, &item, id);
+    match answer_with(app, file, id, answer, note) {
+        Flow::Same => Err(format!("{what} wasn't answered: its file refused the answer")),
+        _ => Ok(format!("{what} → {answer}")),
+    }
+}
+
 /// The words a headless agent's `broken` / `different` waits for (#359): it
 /// has no input to finish a draft in, so the overview asks for them in a
 /// line under the action, sent whole with its answer.

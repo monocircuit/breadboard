@@ -16,7 +16,8 @@
 
 use super::Feed;
 use super::serve::{State, feed_key, feed_of, leave};
-use crate::tui::overview::{GitlabFeed, headless};
+use crate::tui::overview::{Doer, GitlabFeed, headless};
+use breadboard_core::command::{Asked, Command, Done, PROTOCOL};
 use breadboard_core::reader::RemoteAsk;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,12 +25,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, watch};
 
-/// One orchestration acted for: told to stop, busy (a merge), ended.
+/// How long a command waits for the actor of an orchestration started just now, and how often it looks.
+const STARTING: std::time::Duration = std::time::Duration::from_secs(30);
+const STARTING_LOOK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// One orchestration acted for: told to stop, busy (a merge), ended; the way to its actor once it runs.
 #[derive(Default)]
 struct Acting {
     stop: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     is_ended: Arc<AtomicBool>,
+    doer: Arc<Mutex<Option<Doer>>>,
 }
 
 /// The orchestrations acted for, by repo and name.
@@ -89,7 +95,12 @@ pub fn keep(state: &Arc<State>, main: &Path) {
             continue;
         }
         let acting = Acting::default();
-        let (stop, busy, is_ended) = (acting.stop.clone(), acting.busy.clone(), acting.is_ended.clone());
+        let (stop, busy, is_ended, doer) = (
+            acting.stop.clone(),
+            acting.busy.clone(),
+            acting.is_ended.clone(),
+            acting.doer.clone(),
+        );
         let gitlab = feed_in(
             state.clone(),
             main.to_path_buf(),
@@ -99,7 +110,9 @@ pub fn keep(state: &Arc<State>, main: &Path) {
         let spawned = std::thread::Builder::new().name(format!("acts {name}")).spawn(move || {
             // A panic costs this orchestration's actor, not the daemon: the next look starts it again.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                headless(&main, &name, gitlab, &runtime, &stop, &busy);
+                headless(&main, &name, gitlab, &runtime, &stop, &busy, |ready| {
+                    *doer.lock().unwrap_or_else(|e| e.into_inner()) = Some(ready);
+                });
             }));
             busy.store(false, Ordering::SeqCst);
             is_ended.store(true, Ordering::SeqCst);
@@ -107,6 +120,128 @@ pub fn keep(state: &Arc<State>, main: &Path) {
         if spawned.is_ok() {
             of.insert(key, acting);
         }
+    }
+}
+
+/// A command of the table (#498): asked once by its id (asked again, the
+/// first result), done by the actor of its orchestration or here.
+pub async fn command(state: &Arc<State>, asked: Asked) -> Done {
+    let Asked {
+        id,
+        protocol,
+        main,
+        command,
+    } = asked;
+    if protocol != PROTOCOL {
+        return Done::of(
+            &id,
+            Err(format!("protocol {protocol} asked, this node speaks {PROTOCOL}")),
+        );
+    }
+    if !main.is_absolute() {
+        return Done::of(&id, Err(format!("{} is no repo", main.display())));
+    }
+    if let Some(done) = breadboard_core::command::kept(&main, &id) {
+        return done;
+    }
+    if !state.asked.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone()) {
+        return Done::of(&id, Err(format!("command {id} is under way")));
+    }
+    let result = match command.orchestration().map(String::from) {
+        Some(name) => by_actor(state, &main, &name, command).await,
+        None => {
+            let (main, state) = (main.clone(), state.clone());
+            tokio::task::spawn_blocking(move || by_node(&state, &main, &command))
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()))
+        }
+    };
+    let done = Done::of(&id, result);
+    breadboard_core::command::keep(&main, &done);
+    state.asked.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+    done
+}
+
+/// A command of an orchestration's actor: to its headless overview.
+async fn by_actor(state: &Arc<State>, main: &Path, name: &str, command: Command) -> Result<String, String> {
+    if !breadboard_core::record::recorded(main)
+        .iter()
+        .any(|known| known == name)
+    {
+        return Err(format!("no orchestration {name} in {}", main.display()));
+    }
+    keep(state, main);
+    // An actor started just now acts once it read: a while for that, then it is refused.
+    let until = tokio::time::Instant::now() + STARTING;
+    loop {
+        let doer = state
+            .acts
+            .lock()
+            .get(&(main.to_path_buf(), name.to_string()))
+            .and_then(|acting| acting.doer.lock().unwrap_or_else(|e| e.into_inner()).clone());
+        let result = match doer.and_then(|doer| doer.act(command.clone())) {
+            Some(result) => result
+                .await
+                .unwrap_or_else(|_| Err(format!("the actor of {name} ended"))),
+            None => Err(crate::tui::overview::NOT_YET.into()),
+        };
+        let is_not_yet = result.as_ref().is_err_and(|why| why == crate::tui::overview::NOT_YET);
+        if !is_not_yet || tokio::time::Instant::now() >= until {
+            return result.map_err(|why| {
+                if is_not_yet {
+                    format!("the actor of {name} {why}")
+                } else {
+                    why
+                }
+            });
+        }
+        tokio::time::sleep(STARTING_LOOK).await;
+    }
+}
+
+/// A command of the node's alone: the runs of the repo.
+fn by_node(state: &Arc<State>, main: &Path, command: &Command) -> Result<String, String> {
+    use breadboard_core::runs;
+    match command {
+        Command::PauseRuns { now } => {
+            runs::pause(main, breadboard_core::time::now_ms(), false).map_err(|error| error.to_string())?;
+            let ended = if *now { runs::end_running(main) } else { 0 };
+            Ok(match ended {
+                0 => "paused: no run starts until the resume".into(),
+                ended => format!("paused: {ended} runs ended, their lines wait for the resume"),
+            })
+        }
+        Command::ResumeRuns => match runs::resume(main).map_err(|error| error.to_string())? {
+            None => Ok("the agents weren't paused".into()),
+            Some(_) => {
+                super::serve::start_engine(state, main);
+                Ok("the agents run again".into())
+            }
+        },
+        Command::Tell { dir, line } => {
+            if crate::tui::overview::actor::herdr::enqueue(main, dir, line) {
+                Ok(format!(
+                    "queued for the agent of {}",
+                    breadboard_core::git::feature_of(main, dir)
+                ))
+            } else {
+                Err(format!("no agent bound to {}", dir.display()))
+            }
+        }
+        Command::StopAgent { dir } => {
+            let session = breadboard_core::conversations::bound_session(dir)
+                .ok_or_else(|| format!("no agent bound to {}", dir.display()))?;
+            let ended = runs::end_running_of(main, Some(&session));
+            let held = crate::tui::overview::actor::end_held::end(main, dir).ok();
+            let who = breadboard_core::git::feature_of(main, dir);
+            Ok(match (ended, held) {
+                (0, None) => format!("the agent of {who} had no run in flight"),
+                (0, Some(held)) => held,
+                (_, None) => format!("the run of {who}'s agent ended"),
+                (_, Some(held)) => format!("the run of {who}'s agent ended; {held}"),
+            })
+        }
+        _ => Err("an orchestration's actor does it".into()),
     }
 }
 

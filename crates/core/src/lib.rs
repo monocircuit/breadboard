@@ -9,6 +9,7 @@ pub mod check;
 pub mod ci;
 pub mod ci_fix;
 pub mod ci_watch;
+pub mod command;
 pub mod config;
 pub mod conversations;
 pub mod epic;

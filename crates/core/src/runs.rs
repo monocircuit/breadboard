@@ -178,11 +178,16 @@ fn end_grace_ms() -> i64 {
 /// until they are gone. How many runs were asked to end. The run engine
 /// gives their lines back to the queue (a run ended in a pause).
 pub fn end_running(main: &Path) -> usize {
+    end_running_of(main, None)
+}
+
+/// `end_running` of one agent's run alone (`session`), or of all (#498, the stop of an agent).
+pub fn end_running_of(main: &Path, session: Option<&str>) -> usize {
     let table: Table = read_or_default(&status_file(main));
     let running: Vec<(&String, i64)> = table
         .runs
         .iter()
-        .filter(|(_, run)| run.state == State::Running)
+        .filter(|(id, run)| run.state == State::Running && session.is_none_or(|session| session == id.as_str()))
         .filter_map(|(session, run)| Some((session, run.pid.filter(|pid| is_alive(*pid))?)))
         .collect();
     let processes = || {
