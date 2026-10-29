@@ -249,6 +249,29 @@ of your own keeps its claude in a tab (#361).
   `waits for the usage limit`). `breadboard runs`
   prints it, paused or not; each run's stream is in `.claude/runs/log/<session>.jsonl`.
 
+## The daemon acts, the command table
+
+- **One headless overview per orchestration** (#498,
+  `crates/breadboard/src/daemon/acts.rs`): `breadboard serve` runs the
+  overview's model and actor for every orchestration with a record, nothing
+  drawn. It hands out issues, merges into the batch, delivers answers
+  through the run queue and removes merged worktrees with no overview open.
+  It holds the orchestration's pid file and writes what its actor did to
+  `.claude/orchestrations/<name>.acting` (`breadboard_core::model::acting`);
+  an overview in a pane draws that and acts by itself only while the daemon
+  can't be reached. `BREADBOARD_NO_ACTS` switches it off (the gauntlet's
+  checks of the daemon's other parts).
+- **The command table** (`breadboard_core::command`, what lab web will ask
+  of a node): `breadboard command '<json>' [--id <id>]` asks the repo's
+  daemon one of `start_issue`, `answer_action`, `merge_into_batch`,
+  `ship_batch` (done by the orchestration's actor, as its click does),
+  `pause_runs`, `resume_runs`, `tell`, `stop_agent` (done by the daemon),
+  e.g. `{"kind":"tell","dir":"<worktree>","line":"…"}`. It prints the
+  result, exit 1 when refused. The same id again is done once and gets the
+  first result (the newest 200 in `.claude/commands.json`); every command
+  carries `protocol: 1`. A merge or a start is done once it started; how it
+  ends is in the acting file.
+
 ## The main checkout follows develop
 
 The main checkout keeps itself on `origin/develop` (#348). `breadboard
