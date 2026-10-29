@@ -21,6 +21,7 @@ pub mod heal_log;
 pub mod herdr;
 pub mod journal;
 pub mod json;
+pub mod lab;
 pub mod local;
 pub mod lock;
 pub mod main_update;

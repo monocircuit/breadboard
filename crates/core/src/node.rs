@@ -16,6 +16,7 @@
 //! And what the node's processes take (#513, protocol 2): the machine, the
 //! top processes, the sums per worktree and agent run (`resources`), in the
 //! snapshot and, sampled every few seconds, as the stream's `Event::Resources`.
+//! A repo that changed goes as `Event::Repo` (#501), the whole repo.
 
 use crate::check::CheckState;
 use crate::conversations::question_of;
@@ -55,6 +56,10 @@ pub enum Event {
         at: i64,
         resources: crate::resources::Resources,
     },
+    /// A repo whose state changed since the last snapshot or event (#501):
+    /// the whole repo, as the snapshot has it, replacing the one of its `main`.
+    #[serde(rename_all = "camelCase")]
+    Repo { at: i64, repo: Repo },
 }
 
 /// The machine and who runs it.

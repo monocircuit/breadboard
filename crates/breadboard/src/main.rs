@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         // The headless agents' status table, a line queued for one (#358).
         "runs" => daemon::runs::cli(rest),
         "command" => daemon::client::command_cli(rest),
+        "lab" => daemon::lab::cli(rest),
         // pnpm herdr, herdr:install and the herdr plugin's actions (herdr/herdr-plugin.toml).
         "herdr" => herdr::main(rest),
         "herdr:install" => herdr::install(rest),

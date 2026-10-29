@@ -210,6 +210,10 @@ async fn serve(
         ..State::default()
     });
     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    // Not a unit test's daemon (`serve_at`); a gauntlet world logs in under its own HOME.
+    if is_keeping_up {
+        tokio::spawn(super::lab::push(state.clone()));
+    }
     let mut look = tokio::time::interval(LOOK_EVERY);
     loop {
         tokio::select! {
@@ -251,7 +255,8 @@ async fn serve(
                     .values()
                     .any(|busy| busy.load(Ordering::SeqCst));
                 // An orchestration acted for keeps it too (#498): it goes on with no overview open.
-                if is_running || state.acts.is_acting() {
+                // And a login to lab (#501): the node pushes with no overview open.
+                if is_running || state.acts.is_acting() || super::lab::is_on() {
                     *state.idle_since.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 }
                 // A build installed over its binary: the overviews connect to the new one. Not
@@ -335,6 +340,7 @@ async fn connection(read: OwnedReadHalf, mut write: OwnedWriteHalf, state: &Arc<
             leave(state, key, &feed);
             result
         }
+        Ok(Request::Lab) => write.write_all(b"true\n").await,
         Err(_) => Ok(()),
     }
 }

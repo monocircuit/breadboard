@@ -11,7 +11,7 @@ use std::io::Write;
 use std::process::ExitCode;
 
 /// The commands main.rs runs itself, as the root package.json names them.
-const OWN: &[&str] = &["herdr", "herdr:install", "overview"];
+const OWN: &[&str] = &["herdr", "herdr:install", "lab", "overview"];
 
 /// Every command, a list per group: each group keeps its own sorted table,
 /// so a new command touches its group's file, not this one (#420).

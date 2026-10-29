@@ -43,6 +43,8 @@
 //! itself runs here, one headless overview per orchestration of its repos,
 //! with or without a pane showing it; an overview in a pane draws what it
 //! did (core's `model::acting`) and acts only when it can't reach the daemon.
+//! And while the user is logged in to lab (#501, `lab`), it stays and
+//! pushes this node's snapshot and events to lab web.
 
 mod acts;
 mod ci;
@@ -51,6 +53,7 @@ mod feed;
 pub mod gitlab;
 mod glab;
 mod keep_up;
+pub mod lab;
 mod notify;
 mod push;
 mod ready;
@@ -105,6 +108,9 @@ pub enum Request {
     /// A command of the table (#498, core's `command`): answered with one
     /// line, its `Done`.
     Command(breadboard_core::command::Asked),
+    /// The user logged in to lab (#501): the daemon pushes while they are;
+    /// answered with `true`.
+    Lab,
 }
 
 /// What a client says on its GitLab feed after the request.

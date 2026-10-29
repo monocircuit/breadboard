@@ -138,6 +138,22 @@ pub fn wake_runs(main: &Path) -> bool {
     is_started && ask()
 }
 
+/// The daemon started after a login to lab (#501), which then pushes; false when it can't be.
+pub fn wake_lab() -> bool {
+    if !super::is_socket_ours() {
+        return false;
+    }
+    let ask = || ask_at::<bool>(super::socket(), &Request::Lab, HERDR_WAIT, &AtomicI64::new(0)).unwrap_or(false);
+    if ask() {
+        return true;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let is_started = serve_command(&exe).status().is_ok_and(|status| status.success());
+    is_started && ask()
+}
+
 /// How long a command of the table may take: a stop waits for its run to end.
 const COMMAND_WAIT: Duration = Duration::from_secs(120);
 
