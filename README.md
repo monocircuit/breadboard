@@ -271,6 +271,14 @@ of your own keeps its claude in a tab (#361).
   first result (the newest 200 in `.claude/commands.json`); every command
   carries `protocol: 1`. A merge or a start is done once it started; how it
   ends is in the acting file.
+- **GitLab through lab** (#505, `breadboard_core::gitlab::lab`): while the
+  user is logged in to lab, the views', the CI queue's and the
+  notifications' reads are answered from what lab web keeps of the project
+  (it reads GitLab once for every node, `GET /api/node/gitlab`, only what
+  changed since the node's version), REST reads and the CI watcher's polls
+  go through its proxy. A project lab web doesn't read, lab web down or a
+  query it can't answer: GitLab directly, as before; `BREADBOARD_GITLAB_DIRECT`
+  always. Writes (pushes, merges, pipelines started) stay glab as the user.
 
 ## What the processes take
 
