@@ -30,7 +30,8 @@ pub enum Command {
         #[serde(default)]
         to: Option<String>,
     },
-    /// Action `id` in the actions file of `dir` answered, as a click does.
+    /// Action `id` in the actions file of `dir` answered, as a click does;
+    /// `dir` the main checkout: one of the orchestrator's own (its record).
     AnswerAction {
         orchestration: String,
         dir: PathBuf,

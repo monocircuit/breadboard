@@ -24,13 +24,10 @@ pub fn act(app: &mut Overview, command: &Command) -> Result<String, String> {
         Command::StartIssue { number, to, .. } => start_issue(app, *number, to.as_deref()),
         Command::AnswerAction {
             dir, id, answer, note, ..
-        } => actions::answer_as_command(
-            app,
-            &breadboard_core::actions::actions_file(dir),
-            *id,
-            answer,
-            note.as_deref(),
-        ),
+        } => {
+            let file = actions_of(app, dir);
+            actions::answer_as_command(app, &file, *id, answer, note.as_deref())
+        }
         Command::MergeIntoBatch { iid, .. } => merge_into_batch(app, *iid),
         Command::ShipBatch { product, .. } => {
             act::go_to(app, Go::ShipBatch(product.clone()));
@@ -43,6 +40,15 @@ pub fn act(app: &mut Overview, command: &Command) -> Result<String, String> {
         Command::PauseRuns { .. } | Command::ResumeRuns | Command::Tell { .. } | Command::StopAgent { .. } => {
             Err("not the actor's: the daemon does it".into())
         }
+    }
+}
+
+/// The file of the actions of `dir`: a worktree's own, the orchestrator's
+/// in its record for the main checkout (#504).
+fn actions_of(app: &Overview, dir: &std::path::Path) -> std::path::PathBuf {
+    match app.orchestration_local() {
+        Some(local) if dir == app.actor.main => local.record_file.clone(),
+        _ => breadboard_core::actions::actions_file(dir),
     }
 }
 
