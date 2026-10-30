@@ -72,7 +72,7 @@ pub struct Progress {
     pub phase: Option<String>,
 }
 
-/// Host, project, base and token, found once.
+/// Host, project, base and the token first found, found once.
 #[derive(Debug, Clone)]
 struct Connection {
     project: String,
@@ -83,6 +83,13 @@ struct Connection {
 #[derive(Debug, Default)]
 struct Shared {
     connection: OnceCell<Connection>,
+    /// The token glab renewed, in place of the connection's from then on (#483).
+    renewed: Mutex<Option<String>>,
+    /// One renewal at a time: who waits for it takes the token it brought.
+    renewing: tokio::sync::Mutex<()>,
+    /// The token a renewal brings in the unit tests, in place of glab's.
+    #[cfg(test)]
+    renewal: Mutex<Option<String>>,
     calls: AtomicU64,
     rate: Mutex<Option<Rate>>,
     progress: Mutex<Progress>,
@@ -188,7 +195,32 @@ impl Gitlab {
             .await
     }
 
+    /// The token to send: the renewed one once there is one, else the connection's.
+    fn token(&self, connection: &Connection) -> Option<String> {
+        let renewed = self.shared.renewed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        renewed.or_else(|| connection.token.clone())
+    }
+
+    /// A token in place of `stale`, which GitLab refused, kept for every later
+    /// request of every clone: a token renewed meanwhile by another caller is
+    /// taken as it is, else glab renews it.
+    async fn renew(&self, connection: &Connection, stale: &str) -> Option<String> {
+        let _turn = self.shared.renewing.lock().await;
+        if let Some(current) = self.token(connection).filter(|current| current != stale) {
+            return Some(current);
+        }
+        let renewed = self.renewed_token().await?;
+        *self.shared.renewed.lock().unwrap_or_else(|e| e.into_inner()) = Some(renewed.clone());
+        Some(renewed)
+    }
+
+    #[cfg(test)]
+    async fn renewed_token(&self) -> Option<String> {
+        self.shared.renewal.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// The token again after glab renewed it: `glab api user` renews an expired OAuth token.
+    #[cfg(not(test))]
     async fn renewed_token(&self) -> Option<String> {
         let _ = run(&self.main, "glab", &["api", "user"]).await;
         let url = run(&self.main, "git", &["config", "--get", "remote.origin.url"])
@@ -203,9 +235,8 @@ impl Gitlab {
     /// One request with its tries, the body as text.
     async fn request(&self, build: impl Fn(&str) -> reqwest::RequestBuilder, what: &str) -> Result<String> {
         let connection = self.connection().await;
-        let mut token = connection
-            .token
-            .clone()
+        let mut token = self
+            .token(connection)
             .ok_or_else(|| GitlabError::new("no token: glab auth login"))?;
         let mut last = GitlabError::new("no answer");
         let mut has_renewed = false;
@@ -248,7 +279,7 @@ impl Gitlab {
                     // A token GitLab no longer takes: renewed once, the same try again.
                     if status.as_u16() == 401 && !has_renewed {
                         has_renewed = true;
-                        if let Some(renewed) = self.renewed_token().await {
+                        if let Some(renewed) = self.renew(connection, &token).await {
                             token = renewed;
                             continue;
                         }
@@ -401,5 +432,59 @@ mod tests {
             refusal_text("Field 'x' doesn't exist on type 'MergeRequest'"),
             "GraphQL: Field 'x' doesn't exist on type 'MergeRequest'"
         );
+    }
+
+    /// A fake GitLab that takes only `valid`: each request's token, in order.
+    async fn fake_gitlab(valid: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let tokens = Arc::new(Mutex::new(Vec::new()));
+        let seen = tokens.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                    match stream.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).to_lowercase();
+                let token = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("authorization: bearer "))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let status = if token == valid { "200 OK" } else { "401 Unauthorized" };
+                seen.lock().unwrap().push(token);
+                let answer = format!("HTTP/1.1 {status}\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{{}}");
+                let _ = stream.write_all(answer.as_bytes()).await;
+            }
+        });
+        (base, tokens)
+    }
+
+    #[tokio::test]
+    async fn keeps_a_renewed_token_for_every_later_request() {
+        let (base, tokens) = fake_gitlab("fresh").await;
+        let gitlab = Gitlab::new(Path::new("."));
+        gitlab
+            .shared
+            .connection
+            .set(Connection {
+                project: "group/project".into(),
+                base,
+                token: Some("expired".into()),
+            })
+            .unwrap();
+        *gitlab.shared.renewal.lock().unwrap() = Some("fresh".into());
+        let other = gitlab.for_task("other");
+        for client in [&gitlab, &other, &gitlab] {
+            assert_eq!(client.get_text("merge_requests/1").await, Ok("{}".into()));
+        }
+        assert_eq!(*tokens.lock().unwrap(), ["expired", "fresh", "fresh", "fresh"]);
     }
 }
