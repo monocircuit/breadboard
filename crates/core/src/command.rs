@@ -4,7 +4,8 @@
 //! already: a start or a hand-over (`wt:orchestrate`), an answer, a merge
 //! into the batch and the ship of a batch (the overview's actor, the
 //! daemon's headless one), a pause or resume of the runs, a line told and
-//! an agent stopped (`breadboard runs`).
+//! an agent stopped (`breadboard runs`), a worktree's stack stopped
+//! (`stack:down`).
 //!
 //! Every command carries an id of its asker's: the same id twice is done
 //! once, the second gets the first's result (`kept`, the newest KEPT of the
@@ -65,6 +66,10 @@ pub enum Command {
     StopAgent {
         dir: PathBuf,
     },
+    /// The stack of the worktree `dir` stopped, as `stack:down` does (#514); the shared one of the main checkout never.
+    StopStack {
+        dir: PathBuf,
+    },
 }
 
 impl Command {
@@ -75,7 +80,11 @@ impl Command {
             | Command::AnswerAction { orchestration, .. }
             | Command::MergeIntoBatch { orchestration, .. }
             | Command::ShipBatch { orchestration, .. } => Some(orchestration),
-            Command::PauseRuns { .. } | Command::ResumeRuns | Command::Tell { .. } | Command::StopAgent { .. } => None,
+            Command::PauseRuns { .. }
+            | Command::ResumeRuns
+            | Command::Tell { .. }
+            | Command::StopAgent { .. }
+            | Command::StopStack { .. } => None,
         }
     }
 }
