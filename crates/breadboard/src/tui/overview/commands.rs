@@ -40,9 +40,11 @@ pub fn act(app: &mut Overview, command: &Command) -> Result<String, String> {
                 None => Err(format!("the batch of {product} didn't start shipping")),
             }
         }
-        Command::PauseRuns { .. } | Command::ResumeRuns | Command::Tell { .. } | Command::StopAgent { .. } => {
-            Err("not the actor's: the daemon does it".into())
-        }
+        Command::PauseRuns { .. }
+        | Command::ResumeRuns
+        | Command::Tell { .. }
+        | Command::StopAgent { .. }
+        | Command::StopStack { .. } => Err("not the actor's: the daemon does it".into()),
     }
 }
 
