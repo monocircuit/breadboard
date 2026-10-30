@@ -1,0 +1,74 @@
+{
+  "about": "The re-measure of 2026-10-30 (#459): BEFORE as in windows-2026-10-19.json (17 Oct 00:00 to 18 Oct 23:55 CEST), AFTER from the merge of !439 (#451, 2026-10-21 13:10Z) until the run, GitLab as it is. Holds of the AFTER period from the orchestration journal (local time there, CEST until 25 Oct, CET after), in UTC.",
+  "periods": {
+    "BEFORE": {
+      "from": "2026-10-16T22:00:00Z",
+      "to": "2026-10-18T21:55:00Z"
+    },
+    "AFTER": {
+      "from": "2026-10-21T13:10:07Z"
+    }
+  },
+  "held": [
+    {
+      "what": "battery pause + reboot",
+      "from": "2026-10-17T14:27:00Z",
+      "to": "2026-10-17T15:09:30Z"
+    },
+    {
+      "what": "pause (user: stop everything)",
+      "from": "2026-10-17T16:05:00Z",
+      "to": "2026-10-18T09:32:00Z"
+    },
+    {
+      "what": "herdr closed -> woken",
+      "from": "2026-10-18T17:45:00Z",
+      "to": "2026-10-18T18:03:30Z"
+    },
+    {
+      "what": "OOM kill -> woken",
+      "from": "2026-10-18T18:07:45Z",
+      "to": "2026-10-18T18:10:20Z"
+    },
+    {
+      "what": "reboot (evening), stale engine.pid",
+      "from": "2026-10-18T21:05:00Z",
+      "to": "2026-10-18T21:24:00Z"
+    },
+    {
+      "what": "machine down overnight -> reboot",
+      "from": "2026-10-18T21:56:00Z",
+      "to": "2026-10-19T07:23:00Z"
+    },
+    {
+      "what": "GitLab locked the API token (429): runs paused until the user's go",
+      "from": "2026-10-21T13:55:00Z",
+      "to": "2026-10-21T21:25:00Z"
+    },
+    {
+      "what": "GitLab 429 burst, then the 5-hour limit: runs paused",
+      "from": "2026-10-22T07:56:00Z",
+      "to": "2026-10-22T10:27:00Z"
+    },
+    {
+      "what": "paused until the 5-hour reset",
+      "from": "2026-10-22T10:44:00Z",
+      "to": "2026-10-22T12:16:00Z"
+    },
+    {
+      "what": "idle: waiting for the user's merge and reload, then GitLab blocked (expired login)",
+      "from": "2026-10-22T14:33:00Z",
+      "to": "2026-10-27T17:34:00Z"
+    },
+    {
+      "what": "paused: memory and the new week",
+      "from": "2026-10-28T22:55:00Z",
+      "to": "2026-10-29T21:23:00Z"
+    },
+    {
+      "what": "paused: memory (2 GB free)",
+      "from": "2026-10-29T22:49:00Z",
+      "to": "2026-10-30T03:07:00Z"
+    }
+  ]
+}

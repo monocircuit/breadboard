@@ -42,6 +42,25 @@ orchestration's journal.
 | checks & builds | 75.1 % | 51.6 % |
 | waiting on others | 11.8 % | 5.7 % |
 
+**The 2026-10-30 re-measure** (#459): [`windows-2026-10-30.json`](windows-2026-10-30.json),
+BEFORE as above, AFTER from the merge of !439 (#451) until the run, the
+orchestrator transcripts `aa4b1937-…` and `453258af-…` concatenated into one
+file. Since then `bb submit` (it runs `wt:check`) and a `test-runner`
+subagent (it runs `wt:check` or the gauntlet) count as checks & builds, and
+`timeout … tail -f /dev/null` as waiting; BEFORE comes out as before.
+
+| 2026-10-30 | BEFORE (16–18 Oct) | AFTER (21–30 Oct, after #451) |
+| ---------- | ------------------ | ----------------------------- |
+| agent wall in clean runs | 53.0 h | 36.1 h (455 runs, 89 agents, 67 issues merged, up to 8 at once) |
+| model (coding) | 11.0 % | 24.6 % |
+| checks & builds | 75.1 % | 41.7 % |
+| waiting on others | 11.8 % | 16.4 % |
+| `wt:check` in the foreground, p90 | 600 s | 104 s |
+
+Of AFTER's checks: `bb submit` 25 % (median 43 s), the `test-runner`
+subagent 21 % (median 143 s), the gauntlet run directly 14 %, `eslint` 9 %;
+vita's and lab's agents are in it too.
+
 ## How often one change compiles breadboard: `builds.sh`
 
 ```sh

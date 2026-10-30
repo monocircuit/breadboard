@@ -98,13 +98,13 @@ PRIO = {c: i for i, c in enumerate(["waiting on others", "subagents", "checks & 
                                      "other shell", "coordination", "file tools", "api retry", "model"])}
 
 RE_WAIT = re.compile(r"wt:wait|\bsleep\s+\d|\buntil\b|while\s.*;\s*do|--live|inotifywait|wait_for")
-RE_CHECK = re.compile(r"wt:check|\bcargo\b|gauntlet|\bpnpm\b[^|;&]*\b(test|lint|typecheck|build|check)\b|eslint|\btsc\b|vitest|turbo\s+run|build:rs|node --test|dev:ready")
+RE_CHECK = re.compile(r"wt:check|\bcargo\b|gauntlet|\bpnpm\b[^|;&]*\b(test|lint|typecheck|build|check)\b|eslint|\btsc\b|vitest|turbo\s+run|build:rs|node --test|dev:ready|\bbb\s+submit\b")
 RE_GITLAB = re.compile(r"\bglab\b|curl[^|]*gitlab|wt:mr\b|wt:tick\b")
 RE_GIT = re.compile(r"\bgit\s+(-C\s+\S+\s+)?(push|commit|merge|pull|fetch|rebase|cherry-pick|stash|checkout|switch|add|reset|restore|rm|mv)\b|wt:merge-base|wt:snapshot")
 RE_FILE = re.compile(r"^\s*(cd [^;&]+[;&]+\s*)?(python3?\s+-\s*<<|sed\b|cat\b|grep\b|rg\b|head\b|tail\b|ls\b|find\b|wc\b|awk\b|diff\b|echo\b|nl\b|tree\b|jq\b|git\s+(-C\s+\S+\s+)?(log|show|diff|status|blame|grep|rev-parse|branch|ls-files)\b|perl\b|tee\b|printf\b|python3?\s+<<)")
 
 
-RE_LOOP = re.compile(r"\bsleep\s+\d|\buntil\b|\bwhile\b[^\n]*\bdo\b|\bseq\b|--live|inotifywait")
+RE_LOOP = re.compile(r"\bsleep\s+\d|\buntil\b|\bwhile\b[^\n]*\bdo\b|\bseq\b|--live|inotifywait|tail -f /dev/null")
 RE_CHECKLOG = re.compile(r"check[\w.-]*\.log|wt-check|pgrep[^|]*check")
 
 
@@ -134,7 +134,8 @@ def classify_tool(name, inp):
     if name in ("Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit", "MultiEdit"):
         return "file tools"
     if name in ("Agent", "Task"):
-        return "subagents"
+        # test-runner runs wt:check or the gauntlet for the agent (#373): a check.
+        return "checks & builds" if inp.get("subagent_type") == "test-runner" else "subagents"
     if name in ("Monitor", "TaskOutput"):
         return "waiting on others"
     if name in ("SendMessage", "ListAgents", "ToolSearch", "Skill", "TaskStop", "TodoWrite", "AskUserQuestion"):
