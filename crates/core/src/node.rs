@@ -17,6 +17,9 @@
 //! top processes, the sums per worktree and agent run (`resources`), in the
 //! snapshot and, sampled every few seconds, as the stream's `Event::Resources`.
 //! A repo that changed goes as `Event::Repo` (#501), the whole repo.
+//!
+//! And an agent's run as it goes (#504, protocol 3): the new lines of its
+//! run's stream-json log, as `Event::RunLog`, for lab web's agent view.
 
 use crate::check::CheckState;
 use crate::conversations::question_of;
@@ -32,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 /// The version of the snapshot's shape: a change a reader of the last one
 /// misreads raises it.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +63,20 @@ pub enum Event {
     /// the whole repo, as the snapshot has it, replacing the one of its `main`.
     #[serde(rename_all = "camelCase")]
     Repo { at: i64, repo: Repo },
+    /// The lines a run wrote to its log (`runs::log_file`) since the last
+    /// event of the session, each one JSON of claude's stream-json.
+    /// `since` is the run's (`Run::since`): one of another run starts its log
+    /// anew, `from` the index of its first line in it.
+    #[serde(rename_all = "camelCase")]
+    RunLog {
+        at: i64,
+        main: PathBuf,
+        session: String,
+        dir: PathBuf,
+        since: i64,
+        from: u64,
+        lines: Vec<String>,
+    },
 }
 
 /// The machine and who runs it.
@@ -1131,6 +1148,28 @@ mod tests {
         assert_eq!(serde_json::from_value::<Event>(value).unwrap(), event);
     }
 
+    #[test]
+    fn pins_the_shape_of_a_run_log_event() {
+        let event = Event::RunLog {
+            at: 2_000,
+            main: "/r/platform".into(),
+            session: "s-1".into(),
+            dir: "/r/platform-7-x".into(),
+            since: 1_500,
+            from: 4,
+            lines: vec![r#"{"type":"assistant"}"#.into()],
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "kind": "runLog", "at": 2_000, "main": "/r/platform", "session": "s-1",
+                "dir": "/r/platform-7-x", "since": 1_500, "from": 4, "lines": [r#"{"type":"assistant"}"#],
+            })
+        );
+        assert_eq!(serde_json::from_value::<Event>(value).unwrap(), event);
+    }
+
     /// The shape lab's server reads: a change here is a change of `PROTOCOL`.
     #[test]
     fn pins_the_shape_of_a_snapshot() {
@@ -1158,7 +1197,7 @@ mod tests {
             }],
         });
         let expected = json!({
-            "protocol": 2,
+            "protocol": 3,
             "at": 1_000,
             "node": { "host": "machine", "user": "mira", "version": "0.1.0" },
             "repos": [{

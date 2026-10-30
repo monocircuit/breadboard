@@ -207,6 +207,73 @@ pub fn slim_event(mut event: Event) -> Event {
     event
 }
 
+/// The most of a run's log one push carries, in bytes: a run that wrote
+/// more goes on in the next ones.
+pub const LOG_BATCH: u64 = 256 << 10;
+/// A log line longer than this goes cut, with `…` (a tool's whole file).
+pub const LOG_LINE: usize = 16 << 10;
+
+/// Where lab web stands in a run's log (`runs::log_file`): the run, the
+/// bytes and the lines it has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogMark {
+    pub since: i64,
+    pub bytes: u64,
+    pub lines: u64,
+}
+
+/// The whole lines of `file` after `mark`, at most LOG_BATCH of them, and
+/// the mark after them; None while there is nothing new. A run other than
+/// the mark's, or a log shorter than it (written anew), starts at its top.
+pub fn log_after(file: &Path, since: i64, mark: Option<LogMark>) -> Option<(LogMark, Vec<String>)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mark = mark.filter(|mark| mark.since == since).unwrap_or(LogMark {
+        since,
+        bytes: 0,
+        lines: 0,
+    });
+    let mut log = std::fs::File::open(file).ok()?;
+    let length = log.metadata().ok()?.len();
+    let mark = if length < mark.bytes {
+        LogMark {
+            since,
+            bytes: 0,
+            lines: 0,
+        }
+    } else {
+        mark
+    };
+    if length == mark.bytes {
+        return None;
+    }
+    log.seek(SeekFrom::Start(mark.bytes)).ok()?;
+    let mut read = Vec::new();
+    log.take(LOG_BATCH).read_to_end(&mut read).ok()?;
+    // Only whole lines: the rest is still being written.
+    let whole = read.iter().rposition(|byte| *byte == b'\n').map(|at| at + 1)?;
+    let lines: Vec<String> = String::from_utf8_lossy(&read[..whole])
+        .lines()
+        .map(|line| cut(line, LOG_LINE))
+        .collect();
+    let next = LogMark {
+        since,
+        bytes: mark.bytes + whole as u64,
+        lines: mark.lines + lines.len() as u64,
+    };
+    Some((next, lines))
+}
+
+fn cut(line: &str, most: usize) -> String {
+    if line.len() <= most {
+        return line.to_string();
+    }
+    let mut end = most;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &line[..end])
+}
+
 /// The HTTP client of lab web and its OpenID provider.
 #[derive(Debug, Clone)]
 pub struct Client {
@@ -464,5 +531,34 @@ mod tests {
         assert_eq!(read_at(&file), Some(config));
         assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reads_a_runs_log_on_from_its_mark() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("lab-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s-1.jsonl");
+        std::fs::write(&file, "{\"type\":\"system\"}\n{\"type\":\"assistant\"}\n{\"type\":").unwrap();
+        let (mark, lines) = log_after(&file, 10, None).unwrap();
+        assert_eq!(lines, ["{\"type\":\"system\"}", "{\"type\":\"assistant\"}"]);
+        assert_eq!((mark.lines, mark.since), (2, 10));
+        assert_eq!(log_after(&file, 10, Some(mark)), None, "a half line waits");
+        let mut log = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        log.write_all(b"\"result\"}\n").unwrap();
+        let (next, lines) = log_after(&file, 10, Some(mark)).unwrap();
+        assert_eq!(lines, ["{\"type\":\"result\"}"]);
+        assert_eq!(next.lines, 3);
+        // The next run writes its log anew: from its top.
+        std::fs::write(&file, "{\"type\":\"system\"}\n").unwrap();
+        let (fresh, lines) = log_after(&file, 20, Some(next)).unwrap();
+        assert_eq!((fresh.lines, lines.len()), (1, 1));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cuts_a_long_line_on_a_char() {
+        assert_eq!(cut("aéb", 2), "a…");
+        assert_eq!(cut("ab", 2), "ab");
     }
 }

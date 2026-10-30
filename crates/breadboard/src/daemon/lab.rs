@@ -4,14 +4,15 @@
 //! what this node runs, outbound only: the full snapshot first, then every
 //! EVERY a batch of events: each repo whose state changed (`Event::Repo`)
 //! and one sample of what its processes take (`Event::Resources`), which
-//! doubles as the heartbeat. A push that fails is tried again after
+//! doubles as the heartbeat, and the new lines of each run's log
+//! (`Event::RunLog`, #504) for lab web's agent view. A push that fails is tried again after
 //! `lab::backoff`, as a snapshot; a token lab web refuses waits for the
 //! next login. The repos pushed: those of its overviews and those `lab
 //! login` was run in. One daemon of the user pushes (`lab.pid` beside the
 //! login): a build of other sources has its own.
 
 use super::serve::State;
-use breadboard_core::lab::{self, Client, Config, Failed, Register, Sequenced};
+use breadboard_core::lab::{self, Client, Config, Failed, LogMark, Register, Sequenced};
 use breadboard_core::node::{Event, Node, Repo, RepoFacts, host, snapshot_of};
 use breadboard_core::resources::{Owners, Sampler, summary_of};
 use breadboard_core::time::now_ms;
@@ -20,6 +21,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// The most of the runs' logs one batch carries, in bytes.
+const LOGS_BATCH: u64 = 1 << 20;
 
 /// How often a batch of events goes.
 const EVERY: Duration = Duration::from_secs(10);
@@ -61,6 +65,8 @@ struct Pusher {
     /// A token lab web refused: no push until another login.
     refused: Option<String>,
     sampler: Option<Sampler>,
+    /// How far lab web has each run's log, by main and session.
+    logs: HashMap<(PathBuf, String), LogMark>,
 }
 
 impl Pusher {
@@ -98,6 +104,15 @@ impl Pusher {
         self.sampler = Some(sampler);
         let now = now_ms();
         let snapshot = snapshot_of(node(), &repos, resources, now);
+        let logs = if self.sent.is_empty() {
+            Vec::new()
+        } else {
+            let marks = self.logs.clone();
+            let runs = snapshot.repos.clone();
+            tokio::task::spawn_blocking(move || logs_of(&runs, &marks, now))
+                .await
+                .unwrap_or_default()
+        };
         let client = Client::new(&config.server);
         let pushed = if self.sent.is_empty() {
             let pushed = client.snapshot(&token, snapshot.clone()).await;
@@ -110,10 +125,13 @@ impl Pusher {
                     .collect();
             })
         } else {
-            let events = self.events_of(snapshot, now);
+            let events = self.events_of(snapshot, logs.iter().map(|(_, _, event)| event.clone()), now);
             let seq = self.seq;
             client.events(&token, events.clone()).await.map(|pushed| {
                 self.seq = pushed.seq.max(seq);
+                for (key, mark, _) in logs {
+                    self.logs.insert(key, mark);
+                }
                 for sequenced in events {
                     if let Event::Repo { repo, .. } = sequenced.event {
                         self.sent.insert(repo.main.clone(), repo);
@@ -138,8 +156,13 @@ impl Pusher {
         }
     }
 
-    /// The events since the last push: each repo that changed, the resources.
-    fn events_of(&self, snapshot: breadboard_core::node::Snapshot, now: i64) -> Vec<Sequenced> {
+    /// The events since the last push: each repo that changed, the resources, the runs' new log lines.
+    fn events_of(
+        &self,
+        snapshot: breadboard_core::node::Snapshot,
+        logs: impl Iterator<Item = Event>,
+        now: i64,
+    ) -> Vec<Sequenced> {
         let mut events: Vec<Event> = snapshot
             .repos
             .into_iter()
@@ -149,12 +172,49 @@ impl Pusher {
         if let Some(resources) = snapshot.resources {
             events.push(lab::slim_event(Event::Resources { at: now, resources }));
         }
+        events.extend(logs);
         events
             .into_iter()
             .zip(self.seq + 1..)
             .map(|(event, seq)| Sequenced { seq, event })
             .collect()
     }
+}
+
+/// A run's new log lines: its main and session, the mark lab web has after them, their event.
+type Logged = ((PathBuf, String), LogMark, Event);
+
+/// The new lines of each run's log since `marks`, LOGS_BATCH at most: a
+/// run past it goes on in the next batch.
+fn logs_of(repos: &[Repo], marks: &HashMap<(PathBuf, String), LogMark>, now: i64) -> Vec<Logged> {
+    let mut logs = Vec::new();
+    let mut bytes = 0;
+    for repo in repos {
+        for run in &repo.runs.runs {
+            if bytes >= LOGS_BATCH {
+                return logs;
+            }
+            let key = (repo.main.clone(), run.session.clone());
+            let mark = marks.get(&key).copied();
+            let file = breadboard_core::runs::log_file(&repo.main, &run.session);
+            let Some((next, lines)) = lab::log_after(&file, run.since, mark) else {
+                continue;
+            };
+            let kept = mark.filter(|mark| mark.since == run.since && mark.bytes <= next.bytes);
+            bytes += next.bytes - kept.map_or(0, |mark| mark.bytes);
+            let event = Event::RunLog {
+                at: now,
+                main: repo.main.clone(),
+                session: run.session.clone(),
+                dir: run.dir.clone(),
+                since: run.since,
+                from: next.lines - lines.len() as u64,
+                lines,
+            };
+            logs.push((key, next, event));
+        }
+    }
+    logs
 }
 
 /// The main checkouts pushed: those of its overviews, those of the login.

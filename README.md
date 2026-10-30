@@ -293,7 +293,11 @@ runs it (its container's cgroup against docker's read); else to the agent
 run that started it (the run's claude is an ancestor), counted to the run's
 worktree; else to "other". `pnpm snapshot` carries the same summary as
 `resources` (protocol 2), and a node's stream sends it as the event
-`{"kind":"resources","at":…,"resources":…}`. RSS counts shared pages once
+`{"kind":"resources","at":…,"resources":…}`. Since protocol 3 (#504) the
+stream also carries each run's log as it grows, whole lines only:
+`{"kind":"runLog","main":…,"session":…,"dir":…,"since":…,"from":…,"lines":[…]}`,
+`since` the run's (a new run starts its log anew), `from` the index of its
+first line, at most 256 KB a run and 1 MB a batch, a line cut at 16 KB. RSS counts shared pages once
 per process: a sum is an upper bound.
 
 ## The main checkout follows develop

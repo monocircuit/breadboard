@@ -199,7 +199,7 @@ async fn by_actor(state: &Arc<State>, main: &Path, name: &str, command: Command)
     }
 }
 
-/// A command of the node's alone: the runs of the repo.
+/// A command of the node's alone: the runs of the repo, a worktree's stack.
 fn by_node(state: &Arc<State>, main: &Path, command: &Command) -> Result<String, String> {
     use breadboard_core::runs;
     match command {
@@ -241,7 +241,38 @@ fn by_node(state: &Arc<State>, main: &Path, command: &Command) -> Result<String,
                 (_, Some(held)) => format!("the run of {who}'s agent ended; {held}"),
             })
         }
+        Command::StopStack { dir } => stop_stack(main, dir),
         _ => Err("an orchestration's actor does it".into()),
+    }
+}
+
+/// The stack of the worktree `dir` stopped, its dev server and tools with it
+/// (`stack:down` in a child): never the main checkout's, which the
+/// worktrees without one of their own share.
+fn stop_stack(main: &Path, dir: &Path) -> Result<String, String> {
+    let who = breadboard_core::git::feature_of(main, dir);
+    if dir == main || breadboard_core::stack::offset(dir) == 0 {
+        return Err(format!("{who} has no stack of its own: the main checkout's is shared"));
+    }
+    let base = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let output = std::process::Command::new(crate::cli::lifecycle::proc::exe())
+        .args(["stack:down", &base])
+        .current_dir(main)
+        .output()
+        .map_err(|error| format!("stack:down didn't start: {error}"))?;
+    if output.status.success() {
+        Ok(format!("the stack of {who} stopped"))
+    } else {
+        let said = String::from_utf8_lossy(&output.stderr);
+        let last = said
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("it failed");
+        Err(format!("the stack of {who} didn't stop: {}", last.trim()))
     }
 }
 
