@@ -9,6 +9,7 @@ pub mod budget;
 pub mod cache;
 pub mod client;
 pub mod complexity;
+pub mod lab;
 pub mod merged;
 pub mod read;
 pub mod recheck;

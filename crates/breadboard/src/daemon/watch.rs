@@ -79,7 +79,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
     let pages = if history.runs.is_empty() { BACKFILL } else { 1 };
     let mut pipelines: Vec<Value> = Vec::new();
     for page in 1..=pages {
-        let Ok(Value::Array(list)) = super::glab::glab_get(
+        let Ok(Value::Array(list)) = super::glab::polled_get(
             main,
             glab,
             &format!("projects/:fullpath/pipelines?per_page={PER_PAGE}&page={page}"),
@@ -119,7 +119,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
         if !is_live && !(is_ended && history.seen.get(&id) != Some(&updated)) {
             continue;
         }
-        let Ok(Value::Array(jobs)) = super::glab::glab_get(
+        let Ok(Value::Array(jobs)) = super::glab::polled_get(
             main,
             glab,
             &format!("projects/:fullpath/pipelines/{id}/jobs?per_page=100"),
@@ -157,7 +157,7 @@ fn read(main: &Path, glab: &str, docker: &str, history: &mut History, watch: &Ci
     let mut hung = overdue_of(&running, &history.runs, watch);
     hung.retain_mut(|job| {
         // GitLab didn't answer: the log as last read, nothing without one.
-        let trace = super::glab::glab_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id)).ok();
+        let trace = super::glab::polled_text(main, glab, &format!("projects/:fullpath/jobs/{}/trace", job.id)).ok();
         let Some(len) = trace
             .as_ref()
             .map(String::len)
@@ -251,7 +251,7 @@ fn open_issue_of(main: &Path, glab: &str, job: &str) -> Option<i64> {
         "projects/:fullpath/issues?state=opened&in=title&per_page=20&search={}",
         crate::cli::lifecycle::gitlab::encode(job)
     );
-    let Ok(Value::Array(issues)) = super::glab::glab_get(main, glab, &endpoint) else {
+    let Ok(Value::Array(issues)) = super::glab::polled_get(main, glab, &endpoint) else {
         return None;
     };
     issue_naming(&issues, job)

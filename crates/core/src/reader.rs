@@ -939,6 +939,9 @@ impl RemoteReader {
     /// The read `ask` names; `is_full` looks again at what moves slowly (the first, `r`, after a merge).
     pub async fn read(&mut self, ask: &RemoteAsk, is_full: bool) -> Result<RemoteOf, GitlabError> {
         self.gitlab.begin_read();
+        if is_full {
+            self.gitlab.fresh();
+        }
         match ask {
             RemoteAsk::Orchestration(ask) => {
                 read::read_orchestration(&self.gitlab, &mut self.cache, &mut self.memory, ask, is_full)

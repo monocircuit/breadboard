@@ -7,11 +7,15 @@
 //! reason says why in a few words, for the view to draw. A 429 is never
 //! tried again: it pauses every caller of the user until its `retry-after`
 //! (budget.rs, #462), and nothing is asked during a pause.
+//!
+//! While the user is logged in to lab, a read asks lab web first (lab.rs,
+//! #505): lab reads GitLab once for every node, the node answers its
+//! queries from what lab keeps; where lab can't, GitLab is asked here.
 
 use regex::Regex;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 use tokio::sync::OnceCell;
@@ -86,6 +90,8 @@ struct Shared {
     calls: AtomicU64,
     rate: Mutex<Option<Rate>>,
     progress: Mutex<Progress>,
+    /// The next read through lab asks it to read GitLab first.
+    is_fresh: AtomicBool,
 }
 
 /// A GitLab client of the repo whose main checkout is `main`; cheap to clone.
@@ -147,6 +153,11 @@ impl Gitlab {
     /// A read starts: its calls are counted from here.
     pub fn begin_read(&self) {
         *self.shared.progress.lock().unwrap_or_else(|e| e.into_inner()) = Progress::default();
+    }
+
+    /// The next read wants what GitLab says now (a push, `r`): lab web reads it first.
+    pub fn fresh(&self) {
+        self.shared.is_fresh.store(true, Ordering::Relaxed);
     }
 
     /// What the read waits for now, in a word or two.
@@ -294,6 +305,16 @@ impl Gitlab {
     /// A GraphQL query of the project, its `data.project` (None: GitLab knows no such project).
     pub async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
         let connection = self.connection().await;
+        if let Some(source) = super::lab::source() {
+            let is_fresh = self.shared.is_fresh.swap(false, Ordering::Relaxed);
+            if let Some(state) = super::lab::state(&source, &connection.project, is_fresh).await
+                && let Ok(project) = super::lab::answer(query, &variables, &state)
+            {
+                self.step(false);
+                self.step(true);
+                return Ok(project);
+            }
+        }
         let url = format!("{}/api/graphql", connection.base);
         let mut variables = variables;
         if let Some(object) = variables.as_object_mut() {
@@ -325,6 +346,13 @@ impl Gitlab {
     /// A GET of `endpoint` under the project (`merge_requests/5`, `jobs/9/trace`), the body as text.
     pub async fn get_text(&self, endpoint: &str) -> Result<String> {
         let connection = self.connection().await;
+        if let Some(source) = super::lab::source()
+            && let Some(answer) = super::lab::rest(&source, &connection.project, endpoint).await
+        {
+            self.step(false);
+            self.step(true);
+            return answer;
+        }
         let project = connection.project.replace('/', "%2F");
         let url = format!("{}/api/v4/projects/{project}/{endpoint}", connection.base);
         self.step(false);

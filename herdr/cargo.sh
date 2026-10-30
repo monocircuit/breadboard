@@ -34,6 +34,12 @@ command -v cargo >/dev/null 2>&1 || PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 
 cd "$package" || exit 1
 
+# A test never reads GitLab through the user's lab login (#505): its fakes are GitLab's.
+if [ "${1-}" = test ]; then
+  BREADBOARD_GITLAB_DIRECT=1
+  export BREADBOARD_GITLAB_DIRECT
+fi
+
 # The dependencies compiled once for every target/ (#446): sccache as rustc's
 # wrapper keeps each crate it compiles by its inputs, so a target/ of its own
 # (an uncommitted build's, a check's) takes them from the cache instead of
